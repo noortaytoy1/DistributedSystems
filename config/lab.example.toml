@@ -1,0 +1,24 @@
+# Three nodes on three lab machines. Copy to config/lab.toml and set the real addresses.
+# Peer and client ports must be open between the machines.
+# Anything left out uses the defaults in src/config.rs.
+
+[[cluster.nodes]]
+id = 1
+peer_addr = "10.0.0.11:7001"
+client_addr = "10.0.0.11:8001"
+
+[[cluster.nodes]]
+id = 2
+peer_addr = "10.0.0.12:7001"
+client_addr = "10.0.0.12:8001"
+
+[[cluster.nodes]]
+id = 3
+peer_addr = "10.0.0.13:7001"
+client_addr = "10.0.0.13:8001"
+
+[policy]
+assignment = "leader-dispatch"
+
+[metrics]
+dir = "runs/lab"

@@ -1,0 +1,46 @@
+# Three nodes on one machine. Every node, client and ctl reads this same file.
+# Start a node with:  cargo run --release --bin node -- --config config/local.toml --id 1
+
+[[cluster.nodes]]
+id = 1
+peer_addr = "127.0.0.1:7001"
+client_addr = "127.0.0.1:8001"
+
+[[cluster.nodes]]
+id = 2
+peer_addr = "127.0.0.1:7002"
+client_addr = "127.0.0.1:8002"
+
+[[cluster.nodes]]
+id = 3
+peer_addr = "127.0.0.1:7003"
+client_addr = "127.0.0.1:8003"
+
+[timers]
+raft_heartbeat_ms = 50
+election_timeout_min_ms = 150
+election_timeout_max_ms = 300
+peer_heartbeat_ms = 50
+bid_window_ms = 20
+takeover_missed_heartbeats = 3
+client_retry_ms = 2000
+client_max_retries = 3
+propose_timeout_ms = 3000
+peer_rpc_timeout_ms = 500
+
+[policy]
+# "bidding" or "leader-dispatch"
+assignment = "leader-dispatch"
+
+[workers]
+threads = 4
+queue_capacity = 64
+plan_work = 0
+
+[campus]
+seed = 42
+zones = 6
+responders = 30
+
+[metrics]
+dir = "runs/local"

@@ -1,0 +1,5 @@
+# Everyone builds with the same compiler, so the replicated state's hashing and the wire
+# format behave the same on every machine. rustup installs this version automatically.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]

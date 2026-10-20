@@ -1,0 +1,26 @@
+# Build output
+/target/
+
+# Experiment and run output: raw data stays on the machine that produced it
+/runs/
+/experiments/runs/
+*.jsonl
+
+# Python analysis
+__pycache__/
+*.pyc
+.venv/
+/analysis/out/
+
+# Local configs with real lab addresses
+/config/lab.toml
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Personal AI-tool settings
+.claude/settings.local.json

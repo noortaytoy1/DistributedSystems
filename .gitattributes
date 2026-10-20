@@ -1,0 +1,4 @@
+# LF everywhere so scripts run on Linux and WSL no matter where they were checked out.
+* text=auto eol=lf
+*.png binary
+*.pdf binary
