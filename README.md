@@ -34,9 +34,13 @@ responder goes where and makes sure every report gets one answer, even when a se
 
 ## Status
 
-Early development. The node shell, the wire protocol, the transport, the config and the event log
-are in place. The mechanisms (Raft replication, bidding, planner, fault injection, rejoin and
-the load generator) are being built; open work is marked `TODO(<part>)` in the code.
+Early development.
+
+- **Working:** Raft replication. The three nodes elect a leader, replicate every command and end
+  up with identical state; `ctl status` shows matching digests. Results commit before any reply,
+  and the first commit per request wins.
+- **In progress:** bidding, the planner, fault injection, rejoin gating and the load generator.
+  Their files are templates; open work is marked `TODO(<part>)` in the code.
 
 ## Requirements
 

@@ -64,6 +64,43 @@ ignores `NotAllowed`.
 **Why.** The cluster forms no matter which nodes start first. openraft documents that calling
 `initialize` on several nodes with the same membership is safe.
 
+### 2026-10-20 · A · Any node proposes; followers forward to the leader
+
+**Decision.** `Consensus::propose` works on every node. On a follower, openraft answers
+`ForwardToLeader`, and the node sends the command to the leader as `PeerBody::Propose`. The
+leader commits it and answers with the outcome. Failed attempts are retried with backoff (5 ms
+doubling to 100 ms) until `propose_timeout_ms`. A single forward waits at most
+`peer_rpc_timeout_ms`.
+**Why.** The bidding winner is often a follower and must commit its own result. Retrying is safe
+because every command is idempotent: a proposal that did commit before a leader change comes
+back as `Duplicate` with the same result.
+**Rejected.** Only the leader proposes: that turns every winner into a client of the leader with
+its own retry logic, which is the same thing in more places.
+
+### 2026-10-20 · A · State digest is a hash chain over the applied log
+
+**Decision.** `CloudState` keeps `digest = FNV-1a(previous digest, index, command, outcome)`,
+updated on every applied command. Nodes log it every second, and `ctl status` shows it.
+**Why.** Equal digests at equal indexes show that two nodes applied the same log with the same
+results. That is the "state is identical on all nodes" check, at O(1) per command. Hashing the
+outcome as well catches a non-deterministic state machine.
+**Rejected.** Hashing the whole state on demand: O(state) per check, and it misses divergence
+that later cancels out.
+
+### 2026-10-20 · A · Retry unreachable peers after two heartbeats, not 500 ms
+
+**Decision.** `PeerLink::backoff` returns `2 × raft_heartbeat_ms` (100 ms) instead of openraft's
+default 500 ms.
+**Why.** After a fault ends, the leader resumes replication to the returning node within one
+backoff period. 500 ms would add up to half a second to every recovery time measured in E4.
+
+### 2026-10-20 · A · No leader, no executor (leader dispatch)
+
+**Decision.** Under leader dispatch, a request that arrives while no leader is known is not
+planned by anyone. The client's retry after `client_retry_ms` covers it.
+**Why.** Any node guessing would risk two executors, and only first-commit-wins would save us.
+Elections take about 150–300 ms, far below the 2 s retry.
+
 ### 2026-10-20 · B · Leader dispatch is the default policy until bidding lands
 
 **Decision.** `policy.assignment` defaults to `leader-dispatch`.

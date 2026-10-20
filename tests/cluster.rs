@@ -1,20 +1,20 @@
-//! Three nodes in one process: client port and control port smoke tests.
+//! Three nodes in one process, driven through the client and control ports.
 #![allow(clippy::unwrap_used)]
 
 mod common;
 
 use std::time::Duration;
 
-use common::{TestCluster, first_reply};
+use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::client::control;
 use rescuemesh::proto::{
-    Capability, ClientRequest, ControlReply, ControlRequest, Incident, Point, RequestId,
+    Capability, ClientRequest, ControlReply, ControlRequest, Incident, Point, ReplyBody, RequestId,
 };
 
-fn request(seq: u64) -> ClientRequest {
+fn request(seq: u64, attempt: u32) -> ClientRequest {
     ClientRequest {
         id: RequestId { client: 99, seq },
-        attempt: 0,
+        attempt,
         incident: Incident {
             zone: 0,
             location: Point { x: 10, y: 20 },
@@ -26,12 +26,41 @@ fn request(seq: u64) -> ClientRequest {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_request_to_all_nodes_gets_a_reply() {
+async fn a_request_is_committed_before_the_reply_and_retries_get_the_same_result() {
     let cluster = TestCluster::start(3).await;
-    let reply = first_reply(&cluster.config, request(1), Duration::from_secs(5))
+    // Under leader dispatch nobody plans before a leader exists (the client's retry covers that).
+    wait_until(Duration::from_secs(10), "a leader", || {
+        (1..=3).all(|id| cluster.node(id).ctx.consensus.status().leader.is_some())
+    })
+    .await;
+
+    let reply = first_reply(&cluster.config, request(1, 0), Duration::from_secs(10))
         .await
         .expect("no node replied");
-    assert_eq!(reply.id, request(1).id);
+    let ReplyBody::Done(result) = reply.body else {
+        panic!("unexpected reply {reply:?}");
+    };
+    assert_eq!(result.request, request(1, 0).id);
+    // Leader dispatch: the leader planned it and was the one to reply.
+    let leader = cluster.node(1).ctx.consensus.status().leader;
+    assert_eq!(Some(result.executor), leader);
+    assert_eq!(reply.from, result.executor);
+    // Committed before the reply, so it is already in the replier's state.
+    let replier = &cluster.node(reply.from).ctx.state;
+    assert_eq!(
+        replier.with(|s| s.result(&result.request).cloned()),
+        Some(result.clone())
+    );
+
+    // A retry with the same ID gets the same result and commits nothing new.
+    let retry = first_reply(&cluster.config, request(1, 1), Duration::from_secs(10))
+        .await
+        .expect("no reply to the retry");
+    assert_eq!(retry.body, ReplyBody::Done(result));
+    wait_until(Duration::from_secs(5), "result on every node", || {
+        (1..=3).all(|id| cluster.node(id).ctx.state.with(|s| s.result_count()) == 1)
+    })
+    .await;
     cluster.shutdown().await;
 }
 
