@@ -176,6 +176,7 @@ pub async fn start_with(
         }
     };
     tasks.push(raft.spawn_watcher());
+    tasks.push(raft.spawn_heartbeat_summary());
 
     let ctx = Arc::new(NodeContext {
         id,
@@ -231,7 +232,7 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     let PeerEnvelope { from, term, body } = env;
     // openraft judges Raft terms itself; it must see stale RPCs to reject them.
     if let PeerBody::Raft(rpc) = body {
-        return ctx.consensus.handle_rpc(rpc).await;
+        return ctx.consensus.handle_rpc(from, rpc).await;
     }
     let current = ctx.consensus.status().term;
     if term < current {
