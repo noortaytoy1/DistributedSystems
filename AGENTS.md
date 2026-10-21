@@ -62,10 +62,45 @@ Open work is marked in the code as `TODO(<part>)`. To list one part's work:
 4. **Decisions go in the design log.** If a choice would surprise a teammate, such as a timer
    value, a message, a dependency or a trade-off, add a short entry: what, why, what was
    rejected.
-5. **Small PRs, green CI.** Branch from `main`, open a PR, get your pair's review, merge when CI
-   passes. Never force-push `main`.
+5. **Everything goes through a pull request.** Nobody pushes to `main` directly, not even a
+   one-line fix. See [Git workflow](#git-workflow).
 6. **Library code is kept apart from ours.** The report must separate them. openraft is the only
    library doing distributed-systems work; anything new of that kind needs team agreement first.
+
+## Git workflow
+
+1. **Branch from an up-to-date `main`.** Name the branch `part-<letter>-<topic>` for your part's
+   work (`part-a-heartbeat-log`, `part-b-bidding`), or `shared-<topic>` for shared files and
+   docs.
+   ```bash
+   git switch main && git pull --ff-only
+   git switch -c part-b-bid-wiring
+   ```
+2. **Commit in small steps.** The subject line is imperative and at most 72 characters ("Wire bid
+   rounds into decide_executor"). The body says why, not what.
+3. **Before you open the PR**, run `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`
+   and `cargo test` on Linux or WSL. Then rebase onto the latest `main` so the PR is tested
+   against what it will merge into:
+   ```bash
+   git fetch origin && git rebase origin/main
+   git push --force-with-lease origin part-b-bid-wiring   # your own branch only
+   ```
+4. **Open the PR on GitHub** with:
+   - **What and why:** a few sentences, plus the `TODO(<part>)` markers it resolves.
+   - **How it was tested:** commands run, and anything you could not test.
+   - **Contract changes:** any change to `proto.rs` or config keys, and the matching design-log
+     entry.
+5. **Reviews.** Your review pair reviews every PR. The owner of every file you touched outside
+   your part reviews too. At least one approval is required.
+6. **Merge** once CI is green and the PR is approved. Use **Rebase and merge** (or **Squash and
+   merge** for messy histories) so `main` stays linear, then delete the branch.
+7. **If someone rebased your branch** (for example to bring it up to date with `main`), update your
+   copy before adding more work: `git fetch origin && git rebase origin/<branch>`.
+8. **Never force-push `main`,** and only force-push your own branches. Use `--force-with-lease`,
+   never `--force`.
+
+The repo owner should turn on branch protection for `main` (require a PR, an approval and a green
+CI run) so this is enforced, not just agreed.
 
 ## Architecture rules
 
@@ -155,6 +190,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 
 ## Notes for AI coding agents
 
+- **Never push to `main`.** Work on a branch named as in [Git workflow](#git-workflow), push the
+  branch, and stop at the pull request; people merge.
 - **Stay in scope.** Work in the files of the part you were asked about. If the task needs a
   change in another part's file or in `proto.rs`, stop and say so instead of making it.
 - **Follow the architecture rules.** If a request conflicts with one, point out the conflict
