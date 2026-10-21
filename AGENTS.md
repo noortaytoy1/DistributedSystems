@@ -25,6 +25,34 @@ On WSL, keep build output on the Linux filesystem; building onto `/mnt/c` or `/m
 The code must build and pass tests on Linux, which covers the lab machines and WSL. Windows
 builds are a convenience; never use Windows-only APIs or paths.
 
+## Deployment target: six Ubuntu machines
+
+The system must eventually run on **six separate Ubuntu machines on one network**: three cloud
+nodes and three client machines running load generators. Running everything on one machine
+(`config/local.toml`, the tests) is only for development; the demo and the experiments use the
+six machines. Write every change so it works there:
+
+- **No localhost assumptions.** Every address comes from the config file. A node binds the
+  `peer_addr` and `client_addr` listed for its ID, so the lab config must use each machine's real
+  LAN IP (see `config/lab.example.toml`). Never hard-code `127.0.0.1` or a port outside
+  `config.rs` and the configs.
+- **One config file, copied to all six machines.** Every node and client must read the same file;
+  a different node list on one machine breaks Raft membership. Each load generator needs its own
+  `--client-id` so request IDs stay unique across machines.
+- **Same build everywhere.** Each machine builds from the same commit with the toolchain pinned in
+  `rust-toolchain.toml`. Mixed versions can change the wire format or the state digest.
+- **Nothing shared but the network.** No shared filesystem and no shared clock. Each machine
+  writes its own event logs; collect them afterwards. Wall-clock timestamps from different
+  machines are only roughly aligned (run NTP); measure durations on one machine.
+- **Real networks are slower and less tidy than loopback.** Timers in `config.rs` are LAN
+  defaults; anything that relies on timing must be tried on the lab machines, not only in tests
+  on one host.
+- **Open the ports.** Peer ports (default 7001) must be reachable between the three node machines,
+  and client ports (default 8001) from the client machines, e.g. `sudo ufw allow 7001/tcp` and
+  `sudo ufw allow 8001/tcp`.
+- **Ubuntu only.** Scripts are bash, paths are POSIX, and nothing may depend on Windows or macOS
+  behaviour.
+
 ## Parts and owners
 
 Each part has one owner who builds it, measures it, demos it and writes its report section.
