@@ -140,17 +140,22 @@ People decide; agents ask, recommend and write it down. This holds for every cha
    measured and the event field names, dependencies, tests, and choices *not* to do something.
 3. **Challenge, don't work around.** If the task conflicts with a logged decision, an
    architecture rule or another part's interface, the agent raises it as a question.
-4. **"You choose" is still a decision.** The agent states what it picks and why, and records it as
+4. **Settle open decisions when you touch them.** Many entries in the design log are `Open`,
+   mostly conflicts between the Phase 1 architecture document and the code (see the list under its
+   index). They stay open until someone implements the related code. When a task touches one, the
+   agent asks the person to settle it first, with the options and recommendation from the entry,
+   and updates the entry in the same PR. It never builds on one side of an open conflict silently.
+5. **"You choose" is still a decision.** The agent states what it picks and why, and records it as
    decided by the person on the agent's recommendation.
-5. **Record everything, verbosely.** Each decision becomes a design-log entry: date, part, status,
+6. **Record everything, verbosely.** Each decision becomes a design-log entry: date, part, status,
    who decided, context, options considered, decision, why, consequences, where in the code, how
    we check it, and notes for the report. Changed decisions get a new entry; the old one is marked
    `Amended` or `Superseded`, never rewritten. Open questions are logged as `Open` with options and
    a recommendation.
-6. **Keep the diagrams true.** Every PR that changes a component, message, timer, flow or decision
+7. **Keep the diagrams true.** Every PR that changes a component, message, timer, flow or decision
    updates the matching section and Mermaid diagram in `docs/architecture.md`, including its
    built/template/planned label, and `docs/protocol.md` when messages or timers change.
-7. **Cite decisions in the PR.** The PR description lists the design-log IDs it adds or changes.
+8. **Cite decisions in the PR.** The PR description lists the design-log IDs it adds or changes.
 
 ## Git workflow
 

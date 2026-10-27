@@ -70,7 +70,7 @@ table below in sync.
 | D1  | Raft leader election for the cloud coordinator                  | A    | Implemented (via D14) |
 | D2  | Load-based bidding election per request                         | B    | Accepted          |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
-| D4  | Implement Raft ourselves                                        | A    | Open (conflicts with D14) |
+| D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
 | D5  | PreVote in Raft                                                 | A, D | Open              |
 | D6  | Client sends every request to all three nodes over UDP          | F    | Amended by D17    |
 | D7  | TCP between cloud nodes                                         | C    | Implemented       |
@@ -80,7 +80,7 @@ table below in sync.
 | D11 | Single-owner tasks and channels; planner on a thread pool       | all  | Amended by D47    |
 | D12 | The Raft leader runs the fault schedule                         | C    | Accepted          |
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
-| D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Pending approval  |
+| D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
 | D16 | Wire format: length-delimited frames with bincode               | all  | Implemented       |
 | D17 | Clients use TCP on a dedicated client port                      | C, F | Implemented (confirm) |
@@ -138,8 +138,12 @@ table below in sync.
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 
-**Open decisions that need the team now** (before the 31 Oct feature freeze): D4 with D14, D5,
-D17, D39, D42, D43, D44, D52, D63. Each lists the options and a recommendation.
+**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
+D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
+open until someone implements the related code: whoever works on it settles the decision first.
+During "grill with docs" the agent finds the open entries the task touches, asks the person to
+decide with the options and recommendation listed in the entry, and updates the entry (status,
+decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ---
 
@@ -217,26 +221,21 @@ D17, D39, D42, D43, D44, D52, D63. Each lists the options and a recommendation.
 
 ### D4 · Implement Raft ourselves
 
-- **Date:** Phase 1 architecture · **Part:** A · **Status:** **Open: conflicts with D14** ·
-  **Decided by:** team (Phase 1 document); D14 was taken in code on 20 Oct
-- **Context.** The Phase 1 architecture document (D4) says the team writes Raft itself because the
-  course assesses election, replication and recovery, and a library would hide exactly those. The
-  code on `main` uses openraft 0.9.25 (D14), recorded as "pending the instructor's approval". Both
-  documents are current, so the team must settle which one holds.
-- **Options considered.**
-  1. *Keep openraft* (D14): working replication now, tested (openraft's storage conformance suite
-     passes, failover and catch-up tests pass). Our own work is the storage, network adapter,
-     state machine, forwarding and everything around Raft. Risk: the instructor rejects it.
-  2. *Write Raft ourselves now*: matches the Phase 1 document and the course's intent. Costs weeks
-     before the 4 Nov deadline (feature freeze 31 Oct), and every other part waits on it.
-  3. *Ship openraft for Phase 1, write our own Raft behind the same trait afterwards*: the
-     `Consensus` trait (D14) is the swap point; `node/` would not change.
-- **Recommendation.** Option 3. Ask the instructor this week with a one-paragraph explanation of
-  what openraft does and what we wrote. If the answer is "no library", start our own Raft behind
-  `Consensus` immediately and keep openraft as the fallback for the demo.
-- **Where.** `src/raft/mod.rs::Consensus`.
-- **Report notes.** Whatever is decided, the report must separate library code from ours (AGENTS.md
-  coordination rule 6).
+- **Date:** Phase 1 architecture · **Part:** A · **Status:** Superseded by D14 (2026-10-27) ·
+  **Decided by:** team (Phase 1 document); superseded by the team
+- **Context.** The Phase 1 architecture document (D4) said the team writes Raft itself because the
+  course assesses election, replication and recovery, and a library would hide exactly those.
+- **Options that were considered.**
+  1. *openraft* (D14): working, tested replication at once; our own work is everything around Raft.
+  2. *Write Raft ourselves*: matches the course's intent; costs weeks before the 4 Nov deadline
+     (feature freeze 31 Oct), and every other part waits on it.
+  3. *openraft now, our own Raft later behind the same trait.*
+- **Outcome.** The team uses openraft (D14). This entry stays so the report can explain the change
+  from the submitted Phase 1 design.
+- **Report notes.** Explain the change and separate library code from ours (AGENTS.md coordination
+  rule 6, D68): openraft provides election and log replication; storage, the network adapter, the
+  state machine, proposal forwarding, transport, fault injection, bidding, rejoin and everything else
+  are ours.
 
 ### D5 · PreVote in Raft
 
@@ -255,7 +254,7 @@ D17, D39, D42, D43, D44, D52, D63. Each lists the options and a recommendation.
   2. *Gate in our code*: while a node is not serving (D46), it does not start elections. openraft
      has a runtime switch to stop a node from electing itself (`Raft::runtime_config().elect(false)`
      in 0.9; to be confirmed against the docs).
-  3. *Our own Raft with PreVote* (ties into D4).
+  3. *Our own Raft with PreVote*: rejected by D14 (we use openraft).
 - **Recommendation.** Option 1, with option 2 ready as the fix, owned by D with A reviewing. Record
   the FT-6 numbers here either way.
 - **Where.** `src/node/rejoin.rs`, `src/raft/mod.rs`.
@@ -263,13 +262,16 @@ D17, D39, D42, D43, D44, D52, D63. Each lists the options and a recommendation.
 
 ### D14 · openraft 0.9.25 behind a `Consensus` trait
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Pending approval (see D4) · **Decided by:** A
+- **Date:** 2026-10-20, confirmed 2026-10-27 · **Part:** A · **Status:** Implemented; supersedes D4
+  · **Decided by:** A, confirmed by the team
 - **Context.** Every other part depends on a working replicated log. Writing Raft first would block
-  the team for weeks.
+  the team for weeks. The Phase 1 document had chosen to write Raft ourselves (D4); the team
+  replaced that with openraft.
 - **Options considered.**
   1. *openraft*: mature, async, tokio-based, pluggable storage and network.
   2. *raft-rs* (TiKV): solid, but synchronous and brings its own protobuf types; more glue.
-  3. *Our own Raft* (D4).
+  3. *Our own Raft* (D4): rejected: weeks of work before anything else can be tested, and every
+     other part blocked on it.
 - **Decision.** openraft `=0.9.25` (pinned exactly) with features `serde`, `storage-v2` and
   `single-term-leader`. Node code reaches Raft only through the `raft::Consensus` trait:
   `propose`, `propose_local`, `handle_rpc`, `status`, `shutdown`.

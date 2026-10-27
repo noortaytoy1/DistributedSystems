@@ -44,6 +44,11 @@ Interview the user until every decision the task needs is settled. Rules:
   architecture rule (determinism, commit-then-reply, idempotent commands, integers in replicated
   data, the fault gate, the serving gate) or another part's interface, raise it as a question
   instead of working around it.
+- **Settle the open decisions the task touches, first.** Check the "Open decisions" list under the
+  design-log index and the `Open` entries. Most are conflicts between the Phase 1 architecture
+  document and the code, left open on purpose for whoever implements the related code. If the task
+  touches one, ask the user to decide it before anything else, using the options and recommendation
+  in the entry, and update that entry (status, decided by, decision, why) in the same PR.
 - **Ask about everything a teammate or the report could ask "why?" about:** messages and fields,
   timer values and defaults, config keys, data structures in replicated state, failure handling,
   retries and timeouts, what gets measured and the event field names, new dependencies, test

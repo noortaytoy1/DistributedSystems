@@ -964,7 +964,7 @@ The report should say what changed between the submitted design and the built sy
 
 | Phase 1 document said                                  | The system now                                                | Decision |
 |--------------------------------------------------------|---------------------------------------------------------------|----------|
-| We implement Raft ourselves (D4)                       | openraft 0.9.25 behind `Consensus`, pending approval          | D14 (open with D4) |
+| We implement Raft ourselves (D4)                       | openraft 0.9.25 behind `Consensus`                            | D14 (supersedes D4) |
 | PreVote stops returning nodes from forcing elections (D5) | Not available in openraft 0.9.25; to be measured (FT-6)    | D5 (open) |
 | Clients use UDP (D6)                                   | Clients use TCP; still send to all three nodes                | D17 |
 | Three ports: UDP 7000, TCP 7100, TCP 7200              | Two TCP ports: 7001 peers, 8001 clients and `ctl`             | D18 |
@@ -999,6 +999,7 @@ The report should say what changed between the submitted design and the built sy
 
 ## 14. Open questions
 
-All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D4/D14
-(own Raft or openraft), D5 (PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover
-trigger), D43 (bid window start), D44 (claims), D52 (client retry budget), D63 (repetitions).
+All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D5
+(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D43 (bid window
+start), D44 (claims), D52 (client retry budget), D63 (repetitions). Each stays open until someone
+implements the related code; that person settles it first, during "grill with docs".
