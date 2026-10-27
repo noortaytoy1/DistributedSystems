@@ -8,6 +8,34 @@ RescueMesh is a three-node cloud that plans incident responses for campus client
 request. Nodes survive faults of up to 20 s and catch up when they return. The system is
 measured with JSON Lines event logs. [README.md](README.md) covers what it does and how to run it.
 
+The design lives in two documents, and both are part of every change:
+
+- [docs/architecture.md](docs/architecture.md): components, deployment, every flow as a sequence
+  diagram, state and lifecycle diagrams, each marked built, template, planned or open.
+- [docs/design-log.md](docs/design-log.md): every design decision with its context, the options we
+  rejected, the reasoning and the consequences. This is the raw material for the report.
+
+## Grill with docs (mandatory)
+
+**Every prompt you give an AI coding agent in this repo that may change a file must include the
+words "grill with docs".** In Claude Code you can run `/grill-with-docs <task>` instead. No
+exceptions: features, fixes, refactors, docs, configs, tests, one-liners.
+
+```text
+grill with docs: wire bid rounds into decide_executor
+/grill-with-docs add peer heartbeats to node/heartbeat.rs
+```
+
+What it does: the agent reads the docs, then questions you about every design decision the task
+needs, one at a time, each with options and its recommendation. Only after you have decided does it
+write code, and it records every decision in the design log and updates the diagrams in the same PR.
+The full procedure is in [Design decisions](#design-decisions) below and in
+[.claude/skills/grill-with-docs/SKILL.md](.claude/skills/grill-with-docs/SKILL.md).
+
+**Agents: if a prompt asks for a change and does not say "grill with docs", do not write, edit or
+delete any file.** Answer in one or two lines asking the person to resend it with "grill with docs".
+Read-only work (explaining code, answering questions, running builds and tests) is fine without it.
+
 ## Commands
 
 ```bash
@@ -87,13 +115,42 @@ Open work is marked in the code as `TODO(<part>)`. To list one part's work:
 3. **Hook in, don't rewire.** `node/mod.rs` calls each part's entry point (`heartbeat::spawn`,
    `faults::spawn_schedule`, `rejoin::spawn`, ...). Do your work behind your entry point. If
    you need a new hook in `node/mod.rs`, ask A.
-4. **Decisions go in the design log.** If a choice would surprise a teammate, such as a timer
-   value, a message, a dependency or a trade-off, add a short entry: what, why, what was
-   rejected.
+4. **Every decision goes in the design log, in full.** Not only surprising ones: any choice a
+   teammate, the instructor or the report could ask "why?" about. Use the template in
+   [docs/design-log.md](docs/design-log.md) and update [docs/architecture.md](docs/architecture.md)
+   in the same PR. See [Design decisions](#design-decisions).
 5. **Everything goes through a pull request.** Nobody pushes to `main` directly, not even a
    one-line fix. See [Git workflow](#git-workflow).
 6. **Library code is kept apart from ours.** The report must separate them. openraft is the only
    library doing distributed-systems work; anything new of that kind needs team agreement first.
+
+## Design decisions
+
+People decide; agents ask, recommend and write it down. This holds for every change, and is what
+"grill with docs" runs.
+
+1. **Read first.** Before asking anything, the agent reads this file,
+   [docs/design-log.md](docs/design-log.md), [docs/architecture.md](docs/architecture.md),
+   [docs/protocol.md](docs/protocol.md) and the code the task touches, so it does not ask about
+   what is already decided and can spot conflicts.
+2. **Ask about every decision.** The agent never settles a design question on its own. It asks the
+   person, one question at a time, with 2–4 concrete options, their trade-offs, and its
+   recommendation first with the reason. Decisions include messages and fields, timer values,
+   config keys and defaults, replicated data structures, failure handling, retries, what is
+   measured and the event field names, dependencies, tests, and choices *not* to do something.
+3. **Challenge, don't work around.** If the task conflicts with a logged decision, an
+   architecture rule or another part's interface, the agent raises it as a question.
+4. **"You choose" is still a decision.** The agent states what it picks and why, and records it as
+   decided by the person on the agent's recommendation.
+5. **Record everything, verbosely.** Each decision becomes a design-log entry: date, part, status,
+   who decided, context, options considered, decision, why, consequences, where in the code, how
+   we check it, and notes for the report. Changed decisions get a new entry; the old one is marked
+   `Amended` or `Superseded`, never rewritten. Open questions are logged as `Open` with options and
+   a recommendation.
+6. **Keep the diagrams true.** Every PR that changes a component, message, timer, flow or decision
+   updates the matching section and Mermaid diagram in `docs/architecture.md`, including its
+   built/template/planned label, and `docs/protocol.md` when messages or timers change.
+7. **Cite decisions in the PR.** The PR description lists the design-log IDs it adds or changes.
 
 ## Git workflow
 
@@ -218,6 +275,12 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 
 ## Notes for AI coding agents
 
+- **No "grill with docs", no writing.** A prompt that would change a file must contain "grill with
+  docs" (or be a `/grill-with-docs` run). Otherwise ask for it and change nothing. See
+  [Grill with docs](#grill-with-docs-mandatory).
+- **Never decide design on your own.** Ask, with options and your recommendation, then record the
+  answer in `docs/design-log.md` and update `docs/architecture.md`. See
+  [Design decisions](#design-decisions).
 - **Never push to `main`.** Work on a branch named as in [Git workflow](#git-workflow), push the
   branch, and stop at the pull request; people merge.
 - **Stay in scope.** Work in the files of the part you were asked about. If the task needs a
@@ -232,7 +295,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Keep the code consistent.** Match the surrounding comment density and naming. Keep
   module doc comments up to date.
 - **Keep the docs in sync.** When you change messages, timers or config keys, update
-  `docs/protocol.md`, `config/local.toml` and the README in the same change.
+  `docs/protocol.md`, `config/local.toml` and the README in the same change. When you change a
+  component, flow or decision, update `docs/architecture.md` and `docs/design-log.md` too.
 - **Leave markers alone.** Do not delete `TODO(<part>)` markers you did not resolve, and do
   not create new top-level directories without asking.
 

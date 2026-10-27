@@ -2,7 +2,9 @@
 
 Messages, encodings and timers. The source of truth is [src/proto.rs](../src/proto.rs) and
 [src/config.rs](../src/config.rs); this page explains them. Change both in the same PR, with a
-design-log entry (see AGENTS.md).
+design-log entry (see AGENTS.md). Sequence diagrams for every flow that uses these messages are in
+[architecture.md](architecture.md), and the reasons behind each choice are in
+[design-log.md](design-log.md).
 
 ## Connections and framing
 
