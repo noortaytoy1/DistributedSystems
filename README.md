@@ -162,8 +162,23 @@ config/           cluster configs
 scripts/          run and stop a local cluster
 experiments/      experiment run configs
 analysis/         analysis of event logs
-docs/             protocol and design log
+docs/             architecture (with diagrams), protocol, design log
 ```
+
+## Design documents
+
+- [docs/architecture.md](docs/architecture.md): deployment, components, every flow as a sequence
+  diagram, state and lifecycle diagrams, each marked built, template, planned or open.
+- [docs/design-log.md](docs/design-log.md): every design decision with its options, reasoning and
+  consequences, including the open ones that still need the team.
+- [docs/protocol.md](docs/protocol.md): messages, encodings and timers as they are in the code.
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) first. Every change goes through a pull request. When you work with an
+AI coding agent, every prompt that may change a file must say **"grill with docs"** (or run
+`/grill-with-docs` in Claude Code): the agent asks you about each design decision with its
+recommendation, and records the answers in the design log before it writes code.
 
 ## Libraries
 
