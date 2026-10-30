@@ -114,7 +114,7 @@ table below in sync.
 | D45 | Load score formula and tie-break                                | B    | Proposed          |
 | D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Accepted          |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
-| D48 | Bounded worker pool that sheds load                             | E    | Accepted          |
+| D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Accepted          |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
 | D51 | Request IDs and per-machine client IDs                          | F    | Implemented       |
@@ -137,9 +137,12 @@ table below in sync.
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
+| D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
+| D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
+| D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented |
 
-**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
-D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
+**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D49
+and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
 decide with the options and recommendation listed in the entry, and updates the entry (status,
@@ -879,17 +882,96 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D48 · Bounded worker pool that sheds load
 
-- **Date:** 2026-10-20 · **Part:** E · **Status:** Accepted (template uses tokio's blocking pool,
-  unbounded; `TODO(E)`) · **Decided by:** team (Phase 1 §10.1), shaped in the scaffold
+- **Date:** 2026-10-20 · **Part:** E · **Status:** Implemented (2026-10-30, branch
+  `part-e-worker-pool`; how in D71–D73) · **Decided by:** team (Phase 1 §10.1), shaped in the
+  scaffold; open part settled by Yahia Kilany on the agent's recommendation (2026-10-30)
 - **Decision.** At most `workers.threads` (default 4) planning jobs run at once and at most
   `workers.queue_capacity` (default 64) wait. When full, `run` returns `Overloaded` at once, the
   node does not reply (D36), and the client's retry goes elsewhere. Queue length and running jobs
   feed the load score (D45).
 - **Why.** CPU work off the runtime keeps 50 ms heartbeats on time when the planner is saturated
   (Phase 1 D11). A bounded queue turns overload into latency and retries instead of memory growth.
-- **Open part.** Phase 1 said `W = CPU cores − 1`; the default is a fixed 4. Recommendation: set it
-  per machine in the lab config once we know the core count, and record it in every run's config.
+- **Open part (settled 2026-10-30).** Phase 1 said `threads = CPU cores − 1`; the code uses a
+  fixed 4.
+  - Options: keep 4 and set the real value in the lab config; compute `cores − 1` at startup; or
+    let `threads = 0` mean "cores − 1".
+  - **Decided:** keep 4 as the default. Set `[workers] threads` in the lab config once we know
+    the lab machines' core counts, and keep it in each run's saved config.
+  - **Why:** the same number on every machine keeps results comparable. The other two options
+    need changes in Part A's files.
+  - **Consequence:** whoever writes the lab config checks `nproc` and picks at most `cores − 1`.
 - **Where.** `node/workers.rs`, `[workers]` in the config.
+- **How we check it.** Unit tests in `node/workers.rs` (D71–D72); E2 and LB-2 under load.
+
+### D71 · Worker pool mechanism: admission counter plus a fair semaphore
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany, on
+  the agent's recommendation
+- **Context.** D48 sets the limits but not how to enforce them. The template started every job
+  at once with no limit.
+- **Options considered.**
+  1. A counter plus a semaphore, running jobs on tokio's blocking threads. Little code, no new
+     dependency. Jobs wait in arrival order.
+  2. Our own fixed threads reading from a bounded channel. Dedicated threads, but more code. A
+     job already in the channel can't be taken back if its request is cancelled.
+- **Decision.** Option 1.
+  - A counter tracks the jobs in the pool (waiting plus running). If it is already
+    `threads + queue_capacity`, `run` returns `Overloaded` at once.
+  - Otherwise the job waits for one of `threads` semaphore permits, then runs on a blocking
+    thread while holding it.
+  - `queue_capacity = 0` is allowed: up to `threads` jobs run and nothing waits.
+- **Why.** It meets D48's limits with the least code, and cancelling a waiting job is free.
+- **Consequences.** At most `threads` planner jobs run at once, but on tokio's shared blocking
+  threads rather than threads of our own.
+- **Where.** `src/node/workers.rs`: `WorkerPool`, `Slot`, `Running`.
+- **How we check it.** Tests `limits_hold_and_a_full_pool_sheds_at_once` and
+  `zero_queue_capacity_runs_only_the_threads`. Under load: E2, LB-2.
+- **Report notes.** This is the node's parallelization model: async tasks for network work, a
+  bounded pool for planning, and refusing work when full instead of building a backlog.
+
+### D72 · Worker pool: cancelled and panicking jobs
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany, on
+  the agent's recommendation
+- **Context.** A request task can disappear while its job is in the pool (for example at
+  shutdown). A running job can't be stopped halfway. A planner bug can also make a job crash
+  (panic).
+- **Options considered.**
+  - Cancelled job: (a) a waiting job leaves at once, and a running job keeps its slot until it
+    finishes; or (b) free the slot as soon as the task disappears.
+  - Panic: (c) free the slot and pass the crash on to the request task; or (d) report it as
+    `Overloaded`.
+- **Decision.** (a) and (c).
+- **Why.** With (a), `load()` always shows the CPU really in use, which bidding needs. With (b),
+  more than `threads` jobs could run at once. With (c), bugs stay visible. (d) would hide them and
+  inflate E2's overload numbers.
+- **Consequences.** A cancelled job that is already running still uses CPU until it ends, and its
+  result is thrown away. A crashing planner ends only that request, without a reply, and the
+  client retries.
+- **Where.** `src/node/workers.rs`: `Slot`, `Running`, `WorkerPool::run`.
+- **How we check it.** Tests
+  `a_dropped_waiter_leaves_the_queue_but_a_running_job_keeps_its_slot` and
+  `a_panicking_job_frees_its_slot_and_panics_in_the_caller`.
+
+### D73 · Worker pool load report: queued and running only; no overload event yet
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Context.** `load()` always returned zero, so bidding couldn't see a busy node.
+- **Options considered.**
+  - What `load()` reports: (1) `queued` and `running` only; (2) also a count of refused jobs; or
+    (3) also the average planning time.
+  - Logging a refused job: (a) keep the existing debug line in `node/mod.rs`; or (b) add a
+    `warn!` in the pool.
+- **Decision.** (1) and (a). `PoolLoad` keeps its fields: `queued`, `running`, `threads`.
+- **Why.** (1) is what bidding needs now. How to average the planning time is Part B's choice
+  (D45). (b) would print thousands of lines a second under load.
+- **Consequences.**
+  - **Before E2 runs**, `metrics.rs` (shared) needs an `overloaded` event, or E2 can't count
+    refused jobs from the logs.
+  - Part B has to get the average planning time for the load score from somewhere else.
+  - `queued` and `running` are read one after the other, so one reading can be off by one job.
+- **Where.** `src/node/workers.rs`: `WorkerPool::load`, `PoolLoad`.
+- **How we check it.** Every worker-pool test checks the exact `queued` and `running` values.
 
 ---
 
