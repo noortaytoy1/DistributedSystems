@@ -115,7 +115,7 @@ table below in sync.
 | D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Accepted          |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Accepted          |
-| D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Accepted          |
+| D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
 | D51 | Request IDs and per-machine client IDs                          | F    | Implemented       |
 | D52 | Client retry budget                                             | F    | Open              |
@@ -137,9 +137,17 @@ table below in sync.
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
+| D74 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Implemented       |
+| D75 | Severe incidents fall back to any capability                    | E    | Implemented       |
+| D76 | Incident age in the planner needs a time from the node          | A, E | Open              |
+| D77 | CPU knob: fixed hash rounds, no built-in base work              | E    | Implemented       |
+| D78 | Campus layout: zone grid, even round-robin, seeded positions    | E    | Implemented       |
+| D79 | Campus RNG: our own SplitMix64                                  | E    | Implemented       |
+| D80 | Random incidents are uniform                                    | E, F | Implemented       |
+| D81 | Planner and campus tests                                        | E    | Implemented       |
 
-**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
-D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
+**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, D76, plus the open parts of D36, D45,
+D48 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
 decide with the options and recommendation listed in the entry, and updates the entry (status,
@@ -512,7 +520,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D38 · Responders seeded once through Raft by the leader
 
-- **Date:** 2026-10-20 · **Part:** A, E · **Status:** Implemented (campus generation is `TODO(E)`)
+- **Date:** 2026-10-20 · **Part:** A, E · **Status:** Implemented (campus generation: D78)
   · **Decided by:** A
 - **Context.** Responders are part of the replicated state, so they must enter it through the log.
 - **Decision.** The campus is a pure function of `[campus]` in the config (`seed`, `zones`,
@@ -897,8 +905,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D49 · Planner: deterministic, integer cost, CPU knob
 
-- **Date:** 2026-10-20 · **Part:** E · **Status:** Accepted (template: `planner.rs`, `TODO(E)`)
-  · **Decided by:** E to confirm the formula
+- **Date:** 2026-10-20 · **Part:** E · **Status:** Implemented (open part settled 2026-10-30)
+  · **Decided by:** Yahia Kilany (formula and open part)
 - **Decision.** `planner::plan(incident, free, knob)` chooses a responder from the free ones using
   severity, age, distance, availability and capability (project spec p. 3), breaks ties
   deterministically, and returns an integer `cost` (unit defined in `planner.rs`).
@@ -907,12 +915,20 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Why.** Deterministic so any node plans the same thing from the same state. The knob makes
   planning CPU-bound on demand, which E2 and LB-2 need: Phase 1 planned an external busy-loop
   process for LB-2; the knob gives a repeatable imbalance without one.
-- **Open part.** Phase 1 §13.3: weighted scoring or a matching problem per request? Decide with E2's
-  CPU needs.
+- **Open part (settled 2026-10-30, Yahia Kilany).** Phase 1 §13.3: weighted scoring or a
+  matching problem per request?
+  - Options: weighted scoring per request; matching many incidents to many responders (Hungarian
+    method); scoring plus route search on a campus map.
+  - Decision: weighted scoring with straight-line (Manhattan) distance, for now. Rules: D74, D75.
+  - Why: the planner sees one incident at a time, so matching would need other open incidents
+    (`node/mod.rs`, `state.rs`). Route search was chosen first, then dropped: without obstacles it
+    gives the same answer as straight-line distance, and the CPU knob (D77) already gives E2 its
+    load.
+  - Not used yet: age (D76).
 
 ### D50 · Domain model: integer campus, four capabilities, severity 1–5
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented (generation is `TODO(E)`)
+- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented (generation: D78, D80)
 - **Decision.** `Point { x, y }` in metres as `i32`, Manhattan distance. `Capability` is one of
   `Medical`, `Fire`, `Security`, `Rescue`. `Incident { zone, location, severity (1..=5), needs,
   reported_at_ms }`, where `reported_at_ms` is the client clock. `Responder { id, zone, location,
@@ -920,6 +936,147 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   responders, seed 42.
 - **Why.** Integers keep replicated state deterministic (D30). Four capabilities cover the project's
   incident examples (fire, medical, security) plus search and rescue.
+
+### D74 · Planner pick rule: exact capability, nearest, cost in metres
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Context.** D49 settled on weighted scoring. We need the exact rule and the unit of `cost`.
+- **Options considered.**
+  1. Exact capability match, nearest wins; ties go to the incident's zone, then the lowest ID.
+  2. Same, plus a fixed penalty (e.g. +200 m) for a responder in another zone.
+  3. Exact match, ties by lowest ID only (zone ignored).
+  4. Soft match: any capability, +1000 m for the wrong one.
+- **Decision.** Option 1. `cost` = Manhattan distance in metres from the chosen responder to the
+  incident.
+- **Why.** The spec treats capability as "required" (p. 3). Distance is the clearest score and is
+  easy to explain. The zone tie-break uses the zone field without adding a weight to justify.
+  Responder IDs are unique, so the result never depends on the order of the free list.
+- **Consequences.** Severity and age do not change who is nearest; see D75 and D76.
+- **Where.** `planner.rs::plan`, `planner.rs::nearest`.
+- **How we check it.** `planner::tests` (D81).
+- **Report notes.** One line per factor from spec p. 3: capability (filter), distance (score),
+  availability (only free responders are passed in), severity (D75), age (D76).
+
+### D75 · Severe incidents fall back to any capability
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Context.** The spec wants severity in the decision. With one incident at a time, severity
+  cannot change who is nearest. It can change what happens when no match is free.
+- **Options considered.**
+  1. Severity 4–5 with no free match: send the nearest free responder of any capability.
+     Severity 1–3: no responder.
+  2. Severity weights the cost (distance × (6 − severity)): the pick never changes, and cost
+     stops being metres.
+  3. Severity not used; log it as a gap.
+- **Decision.** Option 1, with the same tie-breaks as D74. With nobody to send, the plan is
+  `responder: None, cost: 0` (`planner::SEVERE = 4`).
+- **Why.** Severity then really changes the outcome, and `cost` keeps one meaning.
+- **Consequences.** A severe incident can get the wrong kind of help, on purpose: some help beats
+  none.
+- **Where.** `planner.rs::plan`, `planner::SEVERE`.
+- **How we check it.** `planner::tests::no_match_for_a_severe_incident_sends_the_nearest_of_any_capability`,
+  `no_match_for_a_minor_incident_gives_no_responder`.
+
+### D76 · Incident age in the planner needs a time from the node
+
+- **Date:** 2026-10-30 · **Part:** A, E · **Status:** **Open** · **Decided by:** nobody yet
+  (Yahia Kilany chose to leave age out for now)
+- **Context.** The spec wants age in the decision. The planner has no clock (D30) and gets only
+  `(incident, free, knob)`. `incident.reported_at_ms` is on the client clock. The node notes the
+  arrival time (`started` in `handle_request`) only to measure latency.
+- **Options considered.**
+  1. Leave age out now; A adds a time argument to `plan()` in `node/mod.rs` later.
+  2. Pause Part E until the signature changes.
+  3. A one-line change to `node/mod.rs` in the planner branch, reviewed by A.
+  4. Age is not a planner factor: it only orders the queue.
+- **Decision so far.** Option 1. Which time to pass is still open:
+  - Time since this node received the request (`Instant`, one clock; misses network and retry
+    time). Recommended.
+  - `now − reported_at_ms` (true age, but mixes two machines' clocks).
+- **Recommendation for using it.** An old incident gets the same any-capability fallback as a
+  severe one (D75).
+- **Where.** `node/mod.rs::execute` (A), `planner.rs::plan` (E).
+
+### D77 · CPU knob: fixed hash rounds, no built-in base work
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Context.** E2 and LB-2 need planning to cost a known, tunable amount of CPU on one node.
+- **Options considered.**
+  1. One unit = 1,000 rounds of an integer mixing function (about 1 µs).
+  2. One unit = one extra scoring pass over the free responders.
+  3. One unit = 1 µs of busy-waiting on the clock.
+  - Base work at knob 0: none; a fixed base in `planner.rs`; or a higher config default.
+- **Decision.** Option 1, using the SplitMix64 finaliser behind `std::hint::black_box`
+  (`planner::ROUNDS_PER_UNIT = 1_000`). No base work: `plan_work = 0` is the regular planning
+  only, and anything above 0 adds simulated load. Set it with `[workers] plan_work` or at run time
+  with `ctl skew --node N --work W`.
+- **Why.** A fixed cost per unit does not change with campus size or with how many responders
+  are held, so E2 is easy to calibrate. Option 2's load drifts during a run. Option 3 reads the
+  clock. Keeping all simulated load in one setting keeps it visible and tunable (spec p. 8).
+- **Consequences.** The knob never changes the plan. Calibrate units to milliseconds on the lab
+  machines before E2.
+- **Where.** `planner.rs::burn`, `CostKnob`, `config.rs::WorkerConfig::plan_work`.
+- **How we check it.** `planner::tests::the_knob_adds_work_but_never_changes_the_plan`.
+
+### D78 · Campus layout: zone grid, even round-robin, seeded positions
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Context.** Every node must build the same responders from `[campus]` (`seed`, `zones`,
+  `responders`) (D38).
+- **Options considered.**
+  1. Zones as 500 m squares in a near-square grid; responders spread round-robin over zones and
+     capabilities; position inside the zone from the seed.
+  2. Zones in one row (6 zones: 3000 m × 500 m).
+  3. Zone, capability and position all random.
+- **Decision.** Option 1. Columns = smallest `c` with `c × c ≥ zones` (6 → 3 × 2), filled row by
+  row from (0, 0). Responder `i` (0-based) has ID `i + 1`, zone `i mod zones` and capability
+  `i mod 4`.
+- **Why.** Every zone and capability is covered evenly (counts differ by at most 1), so no seed
+  leaves a zone without, say, a Medical responder. A grid keeps zones close enough for the
+  fallback in D75 to matter.
+- **Consequences.** Only positions depend on the seed. `responders = 0` gives an empty campus,
+  and seeding then registers nothing.
+- **Where.** `campus.rs::responders`, `ZONE_SIZE_M`.
+- **How we check it.** `campus::tests` (D81).
+
+### D79 · Campus RNG: our own SplitMix64
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Options considered.**
+  1. Our own SplitMix64 (about 10 lines).
+  2. rand's `StdRng`: may change between rand versions; safe only while `Cargo.lock` pins it.
+  3. `rand_chacha::ChaCha8Rng`: stable, but a new dependency.
+- **Decision.** Option 1, seeded with `campus.seed`.
+- **Why.** Its output is fixed by our code, so the campus never changes under us. No new
+  dependency.
+- **Where.** `campus.rs::SplitMix64`.
+
+### D80 · Random incidents are uniform
+
+- **Date:** 2026-10-30 · **Part:** E, F · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Options considered.**
+  1. Everything uniform.
+  2. Skewed severity (e.g. 35/25/20/12/8 %).
+  3. A hot zone that gets half of all incidents.
+- **Decision.** Option 1. Zone, position inside it, severity 1–5 and needed capability are all
+  uniform, drawn from the RNG the caller passes in (the load generator seeds it).
+- **Why.** Easy to explain. 40 % of incidents are severity 4–5, so the fallback in D75 gets
+  used. A hot zone fits better as a later load-generator option.
+- **Where.** `campus.rs::random_incident`.
+
+### D81 · Planner and campus tests
+
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Decision.** Unit tests at the bottom of each file:
+  - Planner: capability match; nearest wins with cost in metres; tie → own zone → lowest ID; no
+    match at severity 1–3 → none; at 4–5 → nearest of any capability; a match still beats a
+    nearer non-match; no free responders; same input → same plan in any order; knob work count.
+  - Campus: same seed → same campus; different seed → different positions only; IDs 1..=N;
+    the 3 × 2 grid; every responder inside its zone; even spread; empty and single-zone campuses;
+    incidents in range and covering every value; same RNG seed → same incidents.
+- **Why the knob test counts rounds.** `cost` is metres and the knob never changes the plan, so
+  the test checks rounds = knob × 1,000 and an unchanged plan. Timing tests can be flaky.
+- **How we check it.** `cargo test --lib planner:: campus::`, 10 runs in a row.
 
 ---
 
