@@ -140,8 +140,8 @@ flowchart TB
     end
     subgraph CS["Compute and state layer"]
         direction LR
-        C3["C3 Load inputs<br/>WorkerPool::load + bidding::LoadInputs<br/>template"]
-        C6["C6 Worker pool + planner<br/>node/workers.rs, planner.rs, campus.rs<br/>template"]
+        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: template"]
+        C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs: template"]
         C8["C8 Replicated state machine<br/>state.rs CloudState<br/>built"]
         C7["C7 Raft log and vote<br/>raft/store.rs, in memory<br/>built"]
     end
@@ -158,10 +158,10 @@ flowchart TB
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
 | C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
-| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | template | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
+| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), template (`LoadInputs`) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), template (bidding) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
-| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | template | Plans off the async runtime with a bounded queue (D48); deterministic planner (D49). |
+| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built (worker pool), template (planner, campus) | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner (D49). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | template | Holds a returning node until it is current (D46). |
@@ -886,14 +886,18 @@ flowchart TB
         FLT["fault schedule (template)"]
         RJ["rejoin watcher (template)"]
     end
-    subgraph POOL["worker threads (blocking)"]
-        W["planner jobs: at most workers.threads running,<br/>workers.queue_capacity waiting (template: unbounded)"]
+    subgraph POOL["worker pool: node/workers.rs (built)"]
+        ADM{"fewer than threads + queue_capacity jobs in the pool?"}
+        Q["queue: waits for a semaphore permit, FIFO"]
+        W["planner jobs on blocking threads: at most workers.threads running"]
+        ADM -->|yes| Q --> W
     end
     subgraph LOGT["event-log writer thread"]
         EL["JSONL writer, flush every 200 ms"]
     end
     CTX[("Arc NodeContext<br/>StateReader (RwLock, with closures)<br/>atomics: serving, plan_work, gate")]
-    CRQ -->|"workers.run(plan)"| W
+    CRQ -->|"workers.run(plan)"| ADM
+    ADM -->|"no: Overloaded, no reply"| CRQ
     CRQ -->|propose| ORC
     PRQ -->|"handle_rpc / propose_local"| ORC
     ORC -->|apply committed entries| CTX
@@ -902,7 +906,7 @@ flowchart TB
     RT -->|"log(Event) via channel"| EL
 ```
 
-Rules that keep this safe (AGENTS.md, D47, D48): no blocking calls on the runtime, no lock guard
+Rules that keep this safe (AGENTS.md, D47, D48, D71): no blocking calls on the runtime, no lock guard
 across `.await` (clippy denies it), `StateReader::with` closures stay short because applying
 committed entries waits for them, and every spawned task is owned by `NodeHandle` or ends when its
 connection closes.
@@ -982,7 +986,7 @@ The report should say what changed between the submitted design and the built sy
 | Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |
-| Worker threads = cores − 1                             | `workers.threads`, default 4                                  | D48 |
+| Worker threads = cores − 1                             | `workers.threads`, default 4, set per machine in the lab config | D48 |
 | External busy loop for LB-2                            | Planner CPU knob, `ctl skew`                                  | D49 |
 | ≥ 10 repetitions                                       | ≥ 5 in AGENTS.md; open                                        | D63 |
 
