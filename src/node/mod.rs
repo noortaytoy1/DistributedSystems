@@ -9,6 +9,8 @@
 //!
 //! Owner: A (Raft and replication).
 
+pub mod bids;
+pub mod cpu;
 pub mod faults;
 pub mod heartbeat;
 pub mod rejoin;
@@ -37,6 +39,7 @@ use crate::proto::{
 };
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
+use bids::BidState;
 use heartbeat::Suspicion;
 use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
 use workers::{Overloaded, WorkerPool};
@@ -63,6 +66,8 @@ pub struct NodeContext {
     /// False while a returning node catches up (rejoin.rs); a node that is not serving does not
     /// bid, plan or reply.
     pub serving: AtomicBool,
+    /// Bid rounds and the load figures bids are made from (bids.rs).
+    pub bids: BidState,
     /// Extra planner work per request, set by `ctl skew`.
     pub plan_work: AtomicU32,
 }
@@ -140,9 +145,6 @@ pub async fn start_with(
     let log = EventLog::open(config.metrics.dir.as_deref(), &format!("node-{id}"))?;
     let gate = FaultGate::default();
     let peers = Arc::new(PeerSet::new(id, &config.cluster, &gate, log.msgs()));
-    if config.policy.assignment == AssignmentPolicy::Bidding {
-        tracing::warn!("bidding is not implemented yet; falling back to leader dispatch");
-    }
 
     // The peer port must be serving before Raft starts, or the first elections time out.
     let (raft_tx, raft_rx) = tokio::sync::oneshot::channel::<Arc<NodeContext>>();
@@ -191,6 +193,7 @@ pub async fn start_with(
             config.timers.takeover_missed_heartbeats,
         )),
         serving: AtomicBool::new(true),
+        bids: BidState::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
         config: Arc::new(config),
     });
@@ -215,6 +218,7 @@ pub async fn start_with(
     tasks.extend(heartbeat::spawn(&ctx));
     tasks.extend(faults::spawn_schedule(&ctx));
     tasks.extend(rejoin::spawn(&ctx));
+    tasks.extend(bids::spawn(&ctx));
 
     Ok(NodeHandle {
         ctx,
@@ -248,8 +252,11 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
             lock(&ctx.suspicion).heard_from(from, Instant::now());
             PeerReply::Ack
         }
-        // TODO(B): feed the bid into the request's bid round.
-        PeerBody::Bid(_) | PeerBody::Raft(_) => PeerReply::Ack,
+        PeerBody::Bid(bid) => {
+            bids::on_bid(&ctx, from, &bid);
+            PeerReply::Ack
+        }
+        PeerBody::Raft(_) => PeerReply::Ack,
     }
 }
 
@@ -300,12 +307,16 @@ enum Decision {
 }
 
 /// Pick the node that plans this request.
-async fn decide_executor(ctx: &NodeContext, _req: &ClientRequest) -> Decision {
+async fn decide_executor(ctx: &NodeContext, req: &ClientRequest) -> Decision {
     match ctx.config.policy.assignment {
         AssignmentPolicy::LeaderDispatch => leader_dispatch(ctx),
-        // TODO(B): run a bid round (bidding.rs) and execute only if this node wins. Until then
-        // requests are still answered through leader dispatch.
-        AssignmentPolicy::Bidding => leader_dispatch(ctx),
+        AssignmentPolicy::Bidding => {
+            if bids::run_round(ctx, req).await {
+                Decision::Execute
+            } else {
+                Decision::Standby
+            }
+        }
     }
 }
 
@@ -337,10 +348,15 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
         let knob = CostKnob {
             extra_work: ctx.plan_work.load(Ordering::Relaxed),
         };
-        let plan = ctx
+        // Timed inside the job: queue wait is already counted by `queued`.
+        let (plan, planning) = ctx
             .workers
-            .run(move || planner::plan(&incident, &free, knob))
+            .run(move || {
+                let started = std::time::Instant::now();
+                (planner::plan(&incident, &free, knob), started.elapsed())
+            })
             .await?;
+        ctx.bids.record_service(planning);
         let proposal = ResultProposal {
             request: req.id,
             incident: req.incident.clone(),

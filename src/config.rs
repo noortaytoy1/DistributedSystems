@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::bidding::{JustWonMode, ScoreVariant};
+
 use crate::proto::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,10 +114,52 @@ pub enum AssignmentPolicy {
     LeaderDispatch,
 }
 
+/// Which load score nodes bid with; experiment E6 compares them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScoreName {
+    #[default]
+    ExpectedWait,
+    ExpectedWaitCpu,
+    QueueOnly,
+    CpuOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
     pub assignment: AssignmentPolicy,
+    pub score: ScoreName,
+    /// Score added per permille of CPU, under `expected-wait-cpu` only.
+    pub cpu_weight: u64,
+    pub just_won: JustWonMode,
+    /// Planning time a node assumes until its first job finishes.
+    pub initial_service_us: u64,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            assignment: AssignmentPolicy::default(),
+            score: ScoreName::default(),
+            cpu_weight: 10,
+            just_won: JustWonMode::default(),
+            initial_service_us: 1000,
+        }
+    }
+}
+
+impl Policy {
+    pub fn score_variant(&self) -> ScoreVariant {
+        match self.score {
+            ScoreName::ExpectedWait => ScoreVariant::ExpectedWait,
+            ScoreName::ExpectedWaitCpu => ScoreVariant::ExpectedWaitCpu {
+                cpu_weight: self.cpu_weight,
+            },
+            ScoreName::QueueOnly => ScoreVariant::QueueOnly,
+            ScoreName::CpuOnly => ScoreVariant::CpuOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +306,9 @@ impl Config {
                 }
             }
         }
+        if self.policy.initial_service_us == 0 {
+            return invalid("policy: initial_service_us must be above 0".into());
+        }
         let t = &self.timers;
         if t.raft_heartbeat_ms == 0 || t.raft_heartbeat_ms >= t.election_timeout_min_ms {
             return invalid("timers: need 0 < raft_heartbeat_ms < election_timeout_min_ms".into());
@@ -321,6 +368,31 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_keys_parse_and_default() {
+        let policy: Policy = toml::from_str(
+            "score = \"expected-wait-cpu\"\ncpu_weight = 7\njust_won = \"wins-only\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            policy.score_variant(),
+            ScoreVariant::ExpectedWaitCpu { cpu_weight: 7 }
+        );
+        assert_eq!(policy.just_won, JustWonMode::WinsOnly);
+        assert_eq!(policy.initial_service_us, 1000);
+        assert_eq!(
+            Policy::default().score_variant(),
+            ScoreVariant::ExpectedWait
+        );
+        assert_eq!(Policy::default().just_won, JustWonMode::WonAndLeading);
+    }
+
+    #[test]
+    fn unknown_policy_values_are_rejected() {
+        assert!(toml::from_str::<Policy>("just_won = \"maybe\"\n").is_err());
+        assert!(toml::from_str::<Policy>("score = \"guess\"\n").is_err());
+    }
 
     #[test]
     fn shipped_configs_are_valid() {

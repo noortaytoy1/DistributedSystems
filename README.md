@@ -131,7 +131,7 @@ Every process reads one TOML file. Unknown keys are rejected, so a typo fails at
 |------------|-----------------------------------------------------------------------------|
 | `cluster`  | Node IDs, peer addresses (Raft, bids, heartbeats), client addresses          |
 | `timers`   | Raft heartbeat and election timeouts, bid window, client retry, timeouts     |
-| `policy`   | `assignment = "bidding"` or `"leader-dispatch"`                              |
+| `policy`   | `assignment` (`"bidding"` or `"leader-dispatch"`), `score`, `cpu_weight`, `just_won`, `initial_service_us` |
 | `workers`  | Planner threads, queue capacity, planner cost knob                           |
 | `campus`   | Seed, zones and responders of the synthetic campus                           |
 | `metrics`  | Directory for event logs; leave it out to disable                            |

@@ -63,7 +63,7 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)` |
 | `FaultOrder { ms }`          | leader, to the victim      | `FaultOrder(Result<(), String>)`: obeyed, or why not (disabled, already silenced, recovering). The `Ok` is sent although the gate has just closed (D78) |
 | `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: commit index confirmed by a majority, or `NotLeader { leader }` (D76) |
-| `Bid(Bid)`                   | every serving node         | `Ack`                              |
+| `Bid(Bid { request, attempt, score })` | every serving node, not waited for (D90) | `Ack`. Each request and attempt has its own round (D84) |
 | `Heartbeat`                  | every node, every peer     | `Ack`                              |
 
 **Term rule.** A receiver drops a non-Raft message whose `term` is lower than its own and

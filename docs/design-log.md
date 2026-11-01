@@ -68,7 +68,7 @@ table below in sync.
 | ID  | Decision                                                        | Part | Status            |
 |-----|-----------------------------------------------------------------|------|-------------------|
 | D1  | Raft leader election for the cloud coordinator                  | A    | Implemented (via D14) |
-| D2  | Load-based bidding election per request                         | B    | Accepted          |
+| D2  | Load-based bidding election per request                         | B    | Implemented (off by default, D34) |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
 | D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
 | D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D75) |
@@ -100,7 +100,7 @@ table below in sync.
 | D31 | State digest: an FNV-1a hash chain over the applied log         | A    | Implemented       |
 | D32 | Retry an unreachable peer after two heartbeats                  | A    | Implemented       |
 | D33 | No leader, no executor (leader dispatch)                        | A    | Implemented       |
-| D34 | Leader dispatch is the default until bidding lands              | B    | Implemented       |
+| D34 | Leader dispatch is the default until bidding lands              | B    | Implemented, amended by D89 |
 | D35 | Re-plan a stale plan at most three times                        | A, E | Implemented       |
 | D36 | A node that cannot answer stays quiet                           | A, F | Implemented (confirm) |
 | D37 | Any serving node answers a retry from its own state             | A    | Implemented       |
@@ -109,9 +109,9 @@ table below in sync.
 | D40 | Timer defaults and validation                                   | all  | Implemented       |
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Accepted (confirm) |
 | D42 | Takeover trigger                                                | B, C | Open              |
-| D43 | When the bid window starts                                      | B    | Accepted          |
-| D44 | No `Claim` message; `just_won` in the load score                | B    | Accepted, amended by D85 |
-| D45 | Load score formula and tie-break                                | B    | Accepted          |
+| D43 | When the bid window starts                                      | B    | Implemented |
+| D44 | No `Claim` message; `just_won` in the load score                | B    | Implemented, amended by D85 |
+| D45 | Load score formula and tie-break                                | B    | Implemented |
 | D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D75 |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
@@ -145,13 +145,18 @@ table below in sync.
 | D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
 | D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 | D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented       |
-| D82 | CPU usage read from /proc/stat                                  | B    | Accepted          |
+| D82 | CPU usage read from /proc/stat                                  | B    | Implemented |
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
-| D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Accepted          |
-| D85 | `just_won` also counts open rounds a node is leading            | B    | Accepted          |
-| D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Accepted          |
-| D87 | The four load score variants                                    | B    | Accepted          |
-| D88 | Bid rounds as pure state in `bidding.rs`; takeover helper left out | B | Accepted          |
+| D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Implemented |
+| D85 | `just_won` also counts open rounds a node is leading            | B    | Implemented |
+| D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Implemented |
+| D87 | The four load score variants                                    | B    | Implemented |
+| D88 | Bid rounds as pure state in `bidding.rs`; takeover helper left out | B | Implemented, amended by D89 and D93 |
+| D89 | Each request's task runs its own round, in `node/bids.rs`        | B, A | Implemented       |
+| D90 | Bids go out in the background; no waiting and no retry          | B    | Implemented       |
+| D91 | `[policy]` keys for scores, `just_won` and the starting planning time | B, A | Implemented |
+| D92 | Events `bid_sent` and `bid_round_closed`                        | B    | Implemented       |
+| D93 | Planning time, CPU reading and hooks for takeover               | B, C | Implemented       |
 
 **Open decisions:** D17, D39, D42, D52, D63, plus the open parts of D36, D49 and D62. Most
 are conflicts between the Phase 1 architecture document and the code. They stay
@@ -194,8 +199,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D2 · Load-based bidding election per request
 
-- **Date:** Phase 1 architecture · **Part:** B · **Status:** Accepted (template: `bidding.rs`,
-  `TODO(B)`) · **Decided by:** team
+- **Date:** Phase 1 architecture · **Part:** B · **Status:** Implemented (off by default, D34) ·
+  **Decided by:** team
 - **Context.** The project asks for an election that picks which node handles each request, based
   on measured load. The coordinator could assign everything, but then assignment stops during an
   election and the leader is a bottleneck.
@@ -1062,9 +1067,10 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D34 · Leader dispatch is the default until bidding lands
 
-- **Date:** 2026-10-20 · **Part:** B · **Status:** Implemented · **Decided by:** A, B
+- **Date:** 2026-10-20 · **Part:** B · **Status:** Implemented, amended by D89 · **Decided by:** A, B
 - **Decision.** `policy.assignment` defaults to `leader-dispatch`. Setting `bidding` today logs a
-  warning and falls back to leader dispatch.
+  warning and falls back to leader dispatch. *(Amended by D89: setting `bidding` now runs bid rounds.
+  The default stays until E1 has run.)*
 - **Why.** It works as soon as Raft does, so the other parts can test end to end. Switch the default
   to `bidding` once bid rounds work (`TODO(B)` in `config.rs`).
 
@@ -1105,7 +1111,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D43 · When the bid window starts
 
-- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted (P-2 confirms or
+- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Implemented (P-2 confirms or
   overturns it) · **Decided by:** Ahmed Abdeen
 - **Context.** Phase 1 §6.3: the bid window closes "20 ms after the first bid seen". `bidding.rs`
   and `protocol.md`: "bid round closes `bid_window_ms` after the request arrives".
@@ -1130,7 +1136,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D44 · No `Claim` message; `just_won` in the load score
 
-- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted, amended by D85
+- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Implemented, amended by D85
   (burst test in D83 confirms or overturns it) · **Decided by:** Ahmed Abdeen
 - **Context.** Phase 1 had a `Claim` message ("I am working on this") so peers add the request to
   the winner's load at once. `proto.rs` has no `Claim`.
@@ -1158,7 +1164,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D45 · Load score formula and tie-break
 
-- **Date:** 2026-10-20, settled 2026-10-30 · **Part:** B · **Status:** Accepted (starting value;
+- **Date:** 2026-10-20, settled 2026-10-30 · **Part:** B · **Status:** Implemented (starting value;
   E6 decides the CPU part) · **Decided by:** Ahmed Abdeen
 - **Research.**
   - Indices based on queue length predicted performance better than utilisation indices such as
@@ -1189,7 +1195,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D82 · CPU usage read from /proc/stat
 
-- **Date:** 2026-10-30, read method settled 2026-11-01 · **Part:** B · **Status:** Accepted ·
+- **Date:** 2026-10-30, read method settled 2026-11-01 · **Part:** B · **Status:** Implemented ·
   **Decided by:** Ahmed Abdeen
 - **Context.** E6 compares score variants with and without a CPU part, so the node needs
   `cpu_permille`. The repo has no library for it.
@@ -1236,7 +1242,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D84 · One bid round per request and attempt; `attempt` added to `Bid`
 
-- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on
   the agent's recommendation
 - **Context.** `Bid { request, score }` has no attempt number. When a client retries a request, for
   example because the winner went silent, the nodes need a fresh round in which the silent node does
@@ -1259,7 +1265,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D85 · `just_won` also counts open rounds a node is leading
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted (burst test in D83 confirms or overturns
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented (burst test in D83 confirms or overturns
   it) · **Decided by:** Ahmed Abdeen, on the agent's recommendation. Amends D44.
 - **Context.** A win only exists once a round closes, 20 ms after it opens. In a burst, every round
   opens inside that window, so counting only wins not yet queued (D44) leaves the node looking idle:
@@ -1288,7 +1294,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D86 · Planning time: running average with gain 1/8, starts at 1000 µs
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on the
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
   agent's recommendation
 - **Context.** The score needs `recent_service_us`, and `node/workers.rs` does not provide it (D73).
   Single jobs vary, and one slow job should not make a node look slow from then on. A node that has
@@ -1319,7 +1325,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D87 · The four load score variants
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted (E6 compares them) · **Decided by:** Ahmed
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented (E6 compares them) · **Decided by:** Ahmed
   Abdeen, on the agent's recommendation
 - **Context.** D45 and D83 name four scores for E6, but "queue only" and "CPU only" were not defined
   precisely, and the 21 October draft of `bidding.rs` had a fixed CPU weight of 10.
@@ -1341,7 +1347,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D88 · Bid rounds as pure state in `bidding.rs`; takeover helper left out
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on the
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented, amended by D89 and D93 · **Decided by:** Ahmed Abdeen, on the
   agent's recommendation
 - **Context.** Branch `part-b-bidding` (21 October) already had the score, the ranking, a `BidRound`
   and about 20 tests, written before D43–D45 were settled. It had no collection of rounds, could not
@@ -1361,6 +1367,128 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   until the wiring PR.
 - **Where.** `bidding.rs::BidRounds`.
 - **How we check it.** Unit tests at the bottom of `bidding.rs`.
+
+### D89 · Each request's task runs its own round, in `node/bids.rs`
+
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on
+  the agent's recommendation. Amends D34 and D88.
+- **Context.** After `bid_window_ms` a node must close the round and learn who won. The code needs a
+  home: `node/mod.rs` is Part A's file, and `bidding.rs` must stay free of the network and the clock.
+- **Options considered.**
+  1. *Each request's own task waits, then closes its own round; code in a new `node/bids.rs`*: no new
+     timer system, since each request already has a task, and only hook lines in `node/mod.rs`.
+  2. *One timer task closes all due rounds and tells each waiting request*: matches the `close_due`
+     written earlier, but adds a channel per request and a task that could stall every round at once.
+  3. *Own task, with the code inside `node/mod.rs`*: no new file, but about 100 lines in Part A's file
+     and more conflicts with other parts' PRs.
+- **Decision.** Option 1. `bids::run_round` opens the round, reads `just_won`, bids, sends, sleeps until
+  the deadline and closes. `BidRounds::close(key, now)` replaces `close_due` and `next_deadline`. Closed
+  rounds are kept for `timers.client_retry_ms` (2 s, the reason to keep them at all), with no new config
+  key; a task clears them every second. Setting `policy.assignment = "bidding"` now really runs rounds;
+  the default stays `leader-dispatch` until E1 has run (D34). A winner that finds a result already
+  committed does not plan.
+- **Why.** It is the least new machinery, and it keeps one owner per file (AGENTS.md, "Hook in, don't
+  rewire").
+- **Consequences.**
+  - **`wins-only` behaves almost like `off`.** A winner's job goes to the worker pool right after the
+    round closes, so a win is counted for only microseconds before `queued` takes over. The count of
+    open rounds being led does the real work (D85). The burst test still compares all three settings;
+    expect those two to look alike.
+  - **Fast planning can keep work on one idle node.** See D86: a node that has planned keeps its real
+    average, while one that has not keeps `initial_service_us`. If real planning is faster than the
+    starting value and requests arrive one at a time, the first winner keeps winning, because idle
+    scores decide and the others never plan. On the template planner, which takes almost no time, node
+    1 won all 30 sequential requests in a trial run. Under load `queued` and `running` should spread
+    work, but that is untested. **Check this once the real planner is on `main`.**
+- **Where.** `node/bids.rs`, `bidding.rs::BidRounds::close`, hooks in `node/mod.rs` (A to review).
+- **How we check it.** Multi-node tests in `tests/bidding.rs` (next PR).
+
+### D90 · Bids go out in the background; no waiting and no retry
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** A node must send its bid to two peers without letting a slow peer delay a 20 ms window.
+- **Options considered.**
+  1. *One short task per peer, not waited for, no retry*: a dead peer delays nothing. A lost bid can
+     cause a split decision, which P-2 measures.
+  2. *Send to both, then wait for acknowledgements*: fewer tasks, but one dead peer delays the request
+     by up to `peer_rpc_timeout_ms` (500 ms).
+  3. *Background, with one retry*: a retry nearly always lands after the window has closed, so it does
+     nothing useful and adds traffic during faults.
+- **Decision.** Option 1, with `PeerClient::call` and `peer_rpc_timeout_ms`. Errors are logged at `debug`
+  and otherwise ignored. A silenced node's gate already drops the sends.
+- **Why.** The window is decided by the clock, not by acknowledgements. A lost bid costs at most
+  duplicate work, because the first commit wins (D27).
+- **Consequences.** Each task ends within the timeout, so it is not stored (AGENTS.md, "Tasks").
+- **Where.** `node/bids.rs::send_bid`.
+- **How we check it.** `bids_seen` in `bid_round_closed`; split-decision rate in P-2.
+
+### D91 · `[policy]` keys for scores, `just_won` and the starting planning time
+
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** E6 and the burst test must switch behaviour without a rebuild.
+- **Options considered (`cpu_weight` default).**
+  1. *10*: full CPU adds 10 ms to the score, so the CPU part always has an effect. From the 21 October
+     draft; not measured.
+  2. *0*: an experiment that forgot to set it would compare the main score with itself without anyone
+     noticing.
+- **Options considered (keeping closed rounds).** A new key, or reuse `client_retry_ms`. Reused: no test
+  plans to vary it.
+- **Decision.** `score` (`expected-wait`, `expected-wait-cpu`, `queue-only`, `cpu-only`; default
+  `expected-wait`), `cpu_weight` (default 10), `just_won` (`off`, `wins-only`, `won-and-leading`; default
+  `won-and-leading`), `initial_service_us` (default 1000; 0 is rejected at startup, see D86).
+- **Why.** The defaults are the behaviour already decided. `cpu_weight` cannot affect the main score.
+- **Consequences.** **10 is a placeholder.** How much it matters depends on planning time, which is not
+  measured yet: with CPU at 50 % it adds 5000 to the score, against an idle score of 250 at 1 ms planning
+  (CPU almost decides alone), 10,000 at 40 ms (both matter) and 50,000 at 200 ms (CPU barely matters).
+  **Before E6, measure planning time from `bid_sent.service_us` and set the weight to match.** The report
+  must not present 10 as a tested value.
+- **Where.** `config.rs::Policy`, `config/local.toml`, `config/lab.example.toml`, README.
+- **How we check it.** Unit tests in `config.rs`; E6.
+
+### D92 · Events `bid_sent` and `bid_round_closed`
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** P-2, E6 and the burst test read their results from the event log, and field names become
+  the analysis contract.
+- **Options considered.**
+  1. *Both events*: two more lines per node per request; shows what made up each score.
+  2. *Only `bid_round_closed`*: half the lines, but no view of the score's parts, and no planning time to
+     set `cpu_weight` from.
+- **Decision.** Option 1. `bid_sent`: `request`, `attempt`, `score`, `queued`, `running`, `just_won`,
+  `service_us`, `cpu_permille`. `bid_round_closed`: `request`, `attempt`, `winner`, `i_won`, `bids_seen`,
+  `my_score`, `window_us`. The `takeover` event comes with takeover; the `overloaded` event remains Part
+  E's (D73).
+- **Why.** Two nodes logging `i_won = true` for one request and attempt is a split decision, so it can be
+  counted across machines with no shared clock.
+- **Consequences.** `window_us` is measured on one node with `Instant` (D56). It runs a little over
+  `bid_window_ms`, because timers wake late: 20.4 to 22.9 ms in a local trial.
+- **Where.** `metrics.rs::Event`, `node/bids.rs`.
+- **How we check it.** P-2, E6 and burst test analysis.
+
+### D93 · Planning time, CPU reading and hooks for takeover
+
+- **Date:** 2026-11-01 · **Part:** B, C · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation. Amends D88.
+- **Context.** `recent_service_us` and `cpu_permille` need real inputs. Takeover needs the ranking after a
+  round closes. Part C has offered to build takeover on Part C's detector; the trigger (D42) is still open.
+- **Decision.**
+  - Each job times itself inside the worker closure in `node/mod.rs::execute`, from when it starts running
+    to when it finishes. Queue wait is left out, because `queued` already counts it.
+  - The CPU sampler (`node/cpu.rs`) runs whenever the policy is `bidding`, whichever score is in use, so
+    every `bid_sent` shows the reading. It does not run under leader dispatch. Where `/proc/stat` cannot be
+    read, the reading stays 0 with one warning and the sampler stops (D82).
+  - For takeover, `bidding::executor` returns (removed in D88), and `BidRounds::ranked_bids` gives a closed
+    round's bids in ranking order, so the winner's bid is available too. `BidState::with_rounds` reads them
+    from `node/`. **This adds no takeover behaviour and does not settle D42.**
+- **Why.** Timing inside the job measures planning alone. Keeping these hooks in `bidding.rs` means Part C
+  does not need to edit Part B's file.
+- **Consequences.** Until takeover is built, a silent winner is covered by the client's retry after
+  `client_retry_ms`.
+- **Where.** `node/mod.rs::execute`, `node/cpu.rs`, `node/bids.rs`, `bidding.rs`.
+- **How we check it.** Unit tests in `node/cpu.rs` and `bidding.rs`.
 
 ---
 

@@ -19,6 +19,16 @@ client_addr = "10.0.0.13:8001"
 
 [policy]
 assignment = "leader-dispatch"
+# Used under "bidding" only.
+# "expected-wait", "expected-wait-cpu", "queue-only" or "cpu-only"
+score = "expected-wait"
+# Score added per permille of CPU, under "expected-wait-cpu" only. A placeholder: set it from
+# measured planning time before experiment E6.
+cpu_weight = 10
+# "off", "wins-only" or "won-and-leading"
+just_won = "won-and-leading"
+# Planning time a node assumes until its first job finishes.
+initial_service_us = 1000
 
 [metrics]
 dir = "runs/lab"
