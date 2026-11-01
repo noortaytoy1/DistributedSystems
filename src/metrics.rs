@@ -102,6 +102,17 @@ pub enum Event {
         victim: NodeId,
         reason: String,
     },
+    /// Nothing heard from `peer` for `silent_ms` (peer heartbeats, D79). E3 detection time is
+    /// the victim's `silenced` to this.
+    PeerSuspected {
+        peer: NodeId,
+        silent_ms: u64,
+    },
+    /// `peer` was heard from again after `suspected_ms` under suspicion.
+    PeerTrusted {
+        peer: NodeId,
+        suspected_ms: u64,
+    },
     /// A connect to `peer` failed; logged once per outage (D92).
     PeerUnreachable {
         peer: NodeId,

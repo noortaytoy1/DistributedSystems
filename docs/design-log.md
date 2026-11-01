@@ -107,7 +107,7 @@ table below in sync.
 | D38 | Responders seeded once through Raft by the leader               | A, E | Implemented       |
 | D39 | Responders are never released                                   | A, E | Open              |
 | D40 | Timer defaults and validation                                   | all  | Implemented       |
-| D41 | Peer heartbeats as a failure detector for takeover              | C    | Accepted (confirm) |
+| D41 | Peer heartbeats as a failure detector for takeover              | C    | Implemented, amended by D79 |
 | D42 | Takeover trigger                                                | B, C | Open              |
 | D43 | When the bid window starts                                      | B    | Accepted          |
 | D44 | No `Claim` message; `just_won` in the load score                | B    | Accepted, amended by D85 |
@@ -145,6 +145,7 @@ table below in sync.
 | D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
 | D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 | D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented       |
+| D79 | Peer heartbeat detector: heard-from, pause while silent, events | C    | Implemented       |
 | D82 | CPU usage read from /proc/stat                                  | B    | Accepted          |
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
 | D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Accepted          |
@@ -864,8 +865,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D41 · Peer heartbeats as a failure detector for takeover
 
-- **Date:** 2026-10-20 · **Part:** C · **Status:** Accepted in the template; **team to confirm**
-  because it changes Phase 1 §9.3 · **Decided by:** A in the scaffold
+- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented, amended by D79 (confirmed 2026-11-01;
+  what counts as heard, pausing while silenced, events) · **Decided by:** A in the scaffold
 - **Context.** The Phase 1 document said "no separate failure detector: Raft heartbeats do the job".
   But Raft heartbeats only flow from leader to followers, so a follower cannot tell that another
   follower (for example a bidding winner) went silent.
@@ -1183,6 +1184,57 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   the load generator.
 - **Report notes.** Team-built entirely (no library). The "last word" bug is a good example for
   the report of why every message needs an explicit reply and of testing the test.
+
+### D79 · Peer heartbeat detector: what counts as heard, pausing while silenced, events
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
+  agent's recommendation (also confirms D41)
+- **Context.** D41 put a peer-to-peer heartbeat failure detector in the template, waiting for the
+  team to confirm it. Building it needed a few more choices: the cadence, what proves a peer is
+  alive, what a silenced node's own detector does, what is logged, and what Part B gets to use.
+- **Options considered.**
+  1. *Build it or rely on Raft only.* Raft heartbeats only go from the leader to followers, so
+     takeover of a silent non-leader winner could then only use a service-time timer (D42
+     option 2). Built.
+  2. *Cadence:* keep D40 (50 ms × 3 = 150 ms), versus 200 ms × 3 = 600 ms. Planning runs on the
+     worker pool, off the async runtime, so heartbeats should not starve under load. E3 measures
+     false suspicions; the values stay tunable in `[timers]`.
+  3. *Heard from:* an incoming heartbeat *or* any answer to ours (`Ack` or `StaleTerm`), versus
+     incoming heartbeats only. The term rule drops heartbeats from a node with an old term (a node
+     just back from silence), so "incoming only" would keep it suspected longer than it is down.
+  4. *Own silence:* pause evaluation while this node is silenced and start every peer's clock fresh
+     on restore, versus evaluating anyway (each fault would log two bogus suspicions from the
+     silent node's point of view).
+  5. *Events:* `peer_suspected` and `peer_trusted` on changes, versus `peer_suspected` only.
+  6. *For Part B:* `is_suspected(peer)` and `suspected()` on `ctx.suspicion`, versus also adding the
+     list to `ctl status` (a `NodeStatus` change in `proto.rs`). No contract change now.
+- **Decision.** Every `peer_heartbeat_ms` each node sends `PeerBody::Heartbeat` to every peer at
+  once, each call capped at one interval, and records every peer that answered with anything.
+  Incoming heartbeats are still recorded by `node/mod.rs`. `Suspicion::update(now)` then marks a
+  peer suspected once nothing was heard for `takeover_missed_heartbeats × peer_heartbeat_ms`, and
+  trusted again once it is heard. Suspicions change only in `update`, once per interval, and each
+  change logs `peer_suspected { peer, silent_ms }` or `peer_trusted { peer, suspected_ms }`. While
+  the node's own gate is closed, the loop skips everything; on restore it resets every peer's clock
+  to now. A peer never heard of is never suspected; all peers are reset at start. `is_suspected`
+  and `suspected` read the state of the last update.
+- **Why.** Takeover needs every node to see every other node, and E3 needs a detection time
+  (`silenced` on the victim to `peer_suspected` on the others). Counting replies makes each node
+  learn from both directions, so one lost message does not cause a suspicion. A node that is cut
+  off cannot judge others, so it does not try.
+- **Consequences.** 6 heartbeats and 6 replies per 50 ms on three nodes (about 240 messages a
+  second), counted as `peer_heartbeat` in E5. Like every timeout detector it can suspect a slow
+  node wrongly; that costs at most duplicate work in takeover (D27), never two results. Takeover
+  itself (D42) stays open for B and C. `Suspicion`'s API changed from the template:
+  `is_suspected(peer, now)` became `is_suspected(peer)` plus `update(now)`, `reset` and
+  `suspected()`; nothing called the old one.
+- **Where.** `node/heartbeat.rs::{Suspicion, Change, spawn}`, `metrics.rs::Event::{PeerSuspected,
+  PeerTrusted}`.
+- **How we check it.** `heartbeat::tests` (unknown peer, threshold, trust, clock never moves back,
+  reset); `tests/heartbeat.rs`: a healthy cluster suspects nobody for 1 s; a silenced node is
+  suspected by both others after at least 150 ms, suspects nobody itself, and is trusted again
+  after restore. 30 runs in a row green. E3 (detection time, false suspicions), E5 (overhead).
+- **Report notes.** Team-built; cite failure detectors (Chandra and Toueg): it is eventually
+  accurate at best, which is why safety never depends on it.
 
 ---
 
