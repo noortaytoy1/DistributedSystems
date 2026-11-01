@@ -375,6 +375,8 @@ pub enum PeerReply {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bid {
     pub request: RequestId,
+    /// The client's attempt number; each attempt has its own bid round.
+    pub attempt: u32,
     /// Load score in bidding.rs units (lower is less loaded).
     pub score: u64,
 }
