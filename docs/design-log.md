@@ -149,14 +149,16 @@ table below in sync.
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
 | D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Implemented |
 | D85 | `just_won` also counts open rounds a node is leading            | B    | Implemented |
-| D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Implemented |
+| D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Implemented, amended by D94 |
 | D87 | The four load score variants                                    | B    | Implemented |
 | D88 | Bid rounds as pure state in `bidding.rs`; takeover helper left out | B | Implemented, amended by D89 and D93 |
-| D89 | Each request's task runs its own round, in `node/bids.rs`        | B, A | Implemented       |
+| D89 | Each request's task runs its own round, in `node/bids.rs`        | B, A | Implemented, amended by D94 |
 | D90 | Bids go out in the background; no waiting and no retry          | B    | Implemented       |
-| D91 | `[policy]` keys for scores, `just_won` and the starting planning time | B, A | Implemented |
+| D91 | `[policy]` keys for scores, `just_won` and the starting planning time | B, A | Implemented, amended by D94 |
 | D92 | Events `bid_sent` and `bid_round_closed`                        | B    | Implemented       |
 | D93 | Planning time, CPU reading and hooks for takeover               | B, C | Implemented       |
+| D94 | Planning time: 1 µs minimum, and a 1 µs starting value           | B    | Implemented       |
+| D95 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
 
 **Open decisions:** D17, D39, D42, D52, D63, plus the open parts of D36, D49 and D62. Most
 are conflicts between the Phase 1 architecture document and the code. They stay
@@ -1294,7 +1296,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D86 · Planning time: running average with gain 1/8, starts at 1000 µs
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented, amended by D94 (starting value) · **Decided by:** Ahmed Abdeen, on the
   agent's recommendation
 - **Context.** The score needs `recent_service_us`, and `node/workers.rs` does not provide it (D73).
   Single jobs vary, and one slow job should not make a node look slow from then on. A node that has
@@ -1370,7 +1372,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D89 · Each request's task runs its own round, in `node/bids.rs`
 
-- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented, amended by D94 · **Decided by:** Ahmed Abdeen, on
   the agent's recommendation. Amends D34 and D88.
 - **Context.** After `bid_window_ms` a node must close the round and learn who won. The code needs a
   home: `node/mod.rs` is Part A's file, and `bidding.rs` must stay free of the network and the clock.
@@ -1425,7 +1427,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D91 · `[policy]` keys for scores, `just_won` and the starting planning time
 
-- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented, amended by D94 (default) · **Decided by:** Ahmed Abdeen, on the
   agent's recommendation
 - **Context.** E6 and the burst test must switch behaviour without a rebuild.
 - **Options considered (`cpu_weight` default).**
@@ -1489,6 +1491,71 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   `client_retry_ms`.
 - **Where.** `node/mod.rs::execute`, `node/cpu.rs`, `node/bids.rs`, `bidding.rs`.
 - **How we check it.** Unit tests in `node/cpu.rs` and `bidding.rs`.
+
+### D94 · Planning time: 1 µs minimum, and a 1 µs starting value
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation. Amends D86, D89 and D91; D86 had chosen a 1000 µs start.
+- **Context.** In a three-node trial with the template planner, node 1 won all 30 requests sent one at a
+  time. The event logs showed two separate causes.
+  1. A plan under 1 µs rounds down to 0 µs. The score multiplies by planning time, so node 1 scored 0
+     however long its queue was.
+  2. With a minimum of 1 µs alone, a full node still won. With 2 workers and 6 jobs, node 1 scores
+     `(6 + 1) × 1 ÷ 2 = 3`, while an untried idle node scores `1 × 1000 ÷ 2 = 500`. The full node's queue
+     refuses the job, the client's retry goes the same way, and the untried node never plans, so its 1000
+     µs is never replaced. Any plan shorter than about 1 ms gives this, on the real planner too.
+- **Options considered (rounding to 0).**
+  1. *Count any shorter time as 1 µs*: one line, and the formula is unchanged.
+  2. *Change nothing until the real planner is measured*: leaves the bug in place for a demo at
+     `plan_work = 0`.
+- **Options considered (starting value).**
+  1. *1 µs*: an untried node looks fast, so it gets tried and its real time replaces the guess.
+  2. *Keep 1000 µs, set 1 in the tests only*: the default settings keep the bug.
+  3. *Keep 1000 µs, and a node with a full queue does not bid*: stops the refused-job loop, but a fast node
+     still takes all the work until its queue fills.
+- **Decision.** `ServiceTime` counts any time under 1 µs as 1 µs, and the default of
+  `policy.initial_service_us` becomes 1.
+- **Why.** Trying each node once gives every node a real measurement. With 10 ms plans and 4 workers: all
+  score 0 and node 1 wins; then node 1 scores 2500, so node 2 wins; then node 3; after that real load and
+  real times decide.
+- **Consequences.**
+  - The first few requests in a burst may go to untried nodes, even if those turn out slower. This should
+    last only until each node has planned once.
+  - With whole numbers this small, a node with very fast plans scores 0 until it has 3 jobs in progress (at
+    4 workers), so the lowest node ID wins until then. At very low load and `plan_work = 0`, node 1 still
+    does most of the work. With longer plans this rounding hardly matters.
+  - None of this has been measured with the real planner yet (D89's check still stands).
+- **Where.** `bidding.rs::ServiceTime`, `config.rs::Policy`, `config/local.toml`, `config/lab.example.toml`.
+- **How we check it.** Unit tests in `bidding.rs`; `a_busy_node_loses_after_planning_very_fast` in
+  `tests/bidding.rs`.
+- **Report notes.** A good example of a measurement overturning a starting value: the trial's logs showed
+  the problem, and working through the numbers showed that the first fix was not enough.
+
+### D95 · Multi-node bidding tests: what they cover and how
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** Bidding needs tests with real nodes. The load-shift test in the plan uses `ctl skew`, but the
+  template planner on `main` ignores `plan_work`, so skew does nothing until Part E's planner merges.
+- **Options considered (making a node busy).**
+  1. *Fill its workers and queue with jobs the test holds open*: works today, needs no timing luck, and
+     tests the queue part of the score directly. Does not test `ctl skew`.
+  2. *Use `ctl skew` and wait for the planner*: closest to the real experiment, but this PR would wait on
+     Part E's.
+- **Decision.** Option 1. Five tests in `tests/bidding.rs`: one result per request; a busy node loses; a node
+  that is not serving stays out; a silent winner is covered by the client's retry; leader dispatch is
+  unchanged. The silent-winner test uses a 500 ms window and waits on `BidRounds::bids_seen`, so it can
+  silence the winner while the round is open without a fixed sleep (AGENTS.md).
+- **Why.** These are the safety properties of bidding, and none depends on the real planner.
+- **Consequences.** Three gaps remain. A `ctl skew` version waits for the planner. No test checks an even
+  spread of work, because with plans this fast the lowest node ID does most of it (D94). The silent-winner
+  test covers retry only; takeover is not built, and that PR will need to update it.
+  Separately, a cluster sometimes fails to elect a leader at startup, before any bidding runs (all three
+  nodes stay candidates while the term rises; 6 of 30 fresh starts on one Mac, with no bidding involved).
+  This also fails other test files, and it is Part A's area, so these tests are not yet 10 green in a row
+  there.
+- **Where.** `tests/bidding.rs`.
+- **How we check it.** 10 green runs in a row (AGENTS.md).
 
 ---
 

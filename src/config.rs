@@ -144,7 +144,7 @@ impl Default for Policy {
             score: ScoreName::default(),
             cpu_weight: 10,
             just_won: JustWonMode::default(),
-            initial_service_us: 1000,
+            initial_service_us: 1,
         }
     }
 }
@@ -380,7 +380,7 @@ mod tests {
             ScoreVariant::ExpectedWaitCpu { cpu_weight: 7 }
         );
         assert_eq!(policy.just_won, JustWonMode::WinsOnly);
-        assert_eq!(policy.initial_service_us, 1000);
+        assert_eq!(policy.initial_service_us, 1);
         assert_eq!(
             Policy::default().score_variant(),
             ScoreVariant::ExpectedWait

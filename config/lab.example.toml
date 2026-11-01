@@ -27,8 +27,8 @@ score = "expected-wait"
 cpu_weight = 10
 # "off", "wins-only" or "won-and-leading"
 just_won = "won-and-leading"
-# Planning time a node assumes until its first job finishes.
-initial_service_us = 1000
+# Planning time a node assumes until its first job finishes. Low, so an untried node gets tried.
+initial_service_us = 1
 
 [metrics]
 dir = "runs/lab"

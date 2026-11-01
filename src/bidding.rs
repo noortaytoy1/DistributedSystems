@@ -100,6 +100,10 @@ pub fn executor(ranking: &[NodeId], mut suspected: impl FnMut(NodeId) -> bool) -
     ranking.iter().copied().find(|&node| !suspected(node))
 }
 
+/// Shortest planning time a node reports. A shorter plan rounds down to 0 µs, and a score multiplied
+/// by 0 stays 0 however long the queue gets.
+const MIN_SERVICE_US: u64 = 1;
+
 /// Recent planning time: a running average that moves 1/8 of the way towards each new job, the
 /// gain of TCP's round-trip estimator (Jacobson 1988). Shifting truncates, so the average settles
 /// within 7 µs of a steady input.
@@ -110,8 +114,8 @@ pub struct ServiceTime {
 }
 
 impl ServiceTime {
-    /// Starts at `initial_us`, so a node that has not planned yet still scores above zero and its
-    /// queue length still counts.
+    /// Starts at `initial_us`. Set low, a node that has not planned yet looks fast, so it gets tried
+    /// and its real time replaces the guess.
     pub fn new(initial_us: u64) -> Self {
         Self {
             average_us: initial_us,
@@ -121,6 +125,7 @@ impl ServiceTime {
 
     /// Adds one job's planning time. The first job replaces the starting value.
     pub fn record(&mut self, sample_us: u64) {
+        let sample_us = sample_us.max(MIN_SERVICE_US);
         if !self.has_sample {
             self.has_sample = true;
             self.average_us = sample_us;
@@ -373,6 +378,11 @@ impl BidRounds {
         });
     }
 
+    /// Bids this node holds for a round, in any phase.
+    pub fn bids_seen(&self, key: RoundKey) -> usize {
+        self.rounds.get(&key).map_or(0, |round| round.bids.len())
+    }
+
     /// Rounds being tracked, in any phase.
     pub fn len(&self) -> usize {
         self.rounds.len()
@@ -603,6 +613,32 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_too_short_to_measure_counts_as_the_minimum() {
+        let mut service = ServiceTime::new(1000);
+        service.record(0);
+        assert_eq!(service.average_us(), 1);
+        service.record(0);
+        assert_eq!(service.average_us(), 1);
+    }
+
+    #[test]
+    fn a_full_queue_raises_the_score_even_after_very_fast_plans() {
+        let mut fast = ServiceTime::new(1);
+        fast.record(0);
+        let untried = ServiceTime::new(1);
+        let score = |jobs, service: ServiceTime| {
+            let i = LoadInputs {
+                queued: jobs,
+                recent_service_us: service.average_us(),
+                workers: 2,
+                ..LoadInputs::default()
+            };
+            load_score(&i, ScoreVariant::ExpectedWait)
+        };
+        assert!(score(6, fast) > score(0, untried));
+    }
+
+    #[test]
     fn extreme_samples_do_not_overflow() {
         let mut service = ServiceTime::new(0);
         service.record(u64::MAX);
@@ -673,6 +709,16 @@ mod tests {
                 my_score: Some(30),
             }]
         );
+    }
+
+    #[test]
+    fn bids_seen_counts_a_rounds_bids() {
+        let t0 = Instant::now();
+        let mut r = rounds();
+        assert_eq!(r.bids_seen(key(1)), 0);
+        r.add_bid(key(1), 2, 10, t0);
+        r.add_bid(key(1), 3, 10, t0);
+        assert_eq!(r.bids_seen(key(1)), 2);
     }
 
     #[test]
