@@ -113,6 +113,16 @@ pub enum Event {
         peer: NodeId,
         suspected_ms: u64,
     },
+    /// A connect to `peer` failed; logged once per outage (D92).
+    PeerUnreachable {
+        peer: NodeId,
+        error: String,
+    },
+    /// A connect to `peer` succeeded after an outage that lasted `down_ms` on this node's clock.
+    PeerReconnected {
+        peer: NodeId,
+        down_ms: u64,
+    },
 
     // --- rejoin (D)
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).

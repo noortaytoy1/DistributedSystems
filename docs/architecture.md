@@ -134,13 +134,13 @@ flowchart TB
     subgraph PR["Protocol layer"]
         direction LR
         C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
-        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: template"]
+        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: logic written, not wired"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
     end
     subgraph CS["Compute and state layer"]
         direction LR
-        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: template"]
+        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: logic written, not wired"]
         C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs: template"]
         C8["C8 Replicated state machine<br/>state.rs CloudState<br/>built"]
         C7["C7 Raft log and vote<br/>raft/store.rs, in memory<br/>built"]
@@ -156,10 +156,10 @@ flowchart TB
 
 | #   | Component                 | Module(s)                                   | Owner | Status   | Responsibility |
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
-| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19), peer and client servers, `TCP_NODELAY` (D20). |
+| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
-| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), template (`LoadInputs`) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
-| C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), template (bidding) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
+| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), planned (`LoadInputs` and `ServiceTime` are written and unit-tested but not wired, D86; `/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
+| C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), planned (bidding: rounds and scores written and unit-tested, not wired, D85, D87, D88) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built (worker pool), template (planner, campus) | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner (D49). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
@@ -273,12 +273,12 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
-| `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2)                          | template | `Bid` |
+| `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2); `attempt` to be added with the wiring (D84) | template | `Bid` |
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D79) | built | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
 | `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D78) | built | `FaultOrder` |
-| Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | open     | `Claim` |
+| Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | —        | `Claim` |
 | PreVote                         | —                      | not available in openraft 0.9.25 (D5)                | open     | `PreVote` |
 
 ### 5.3 Multiplexed peer calls
@@ -330,6 +330,26 @@ flowchart TD
     HB --> REPLY
     BID --> REPLY
     STALE --> REPLY
+```
+
+### 5.5 Reconnecting to a peer that is down (built, D89–D92)
+
+If a connect to a peer fails (refused, or still pending when the call's deadline passes), calls to
+that peer fail at once with `TransportError::Backoff` for `2 × raft_heartbeat_ms` (100 ms). The
+first call after the window tries again. openraft maps `Backoff` to `Unreachable` and backs off by
+the same amount (D32), so all traffic to a downed peer behaves alike. A *silenced* peer never
+enters this state: its listener stays up and connects succeed (D22).
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoConnection
+    NoConnection --> Connected: "connect succeeds"
+    Connected --> NoConnection: "connection closed"
+    NoConnection --> Cooldown: "connect refused or timed out, log peer_unreachable"
+    Cooldown --> Cooldown: "call fails fast with Backoff"
+    Cooldown --> Retry: "window of 2 x raft_heartbeat_ms ends"
+    Retry --> Cooldown: "connect fails again, window restarts"
+    Retry --> Connected: "connect succeeds, log peer_reconnected with down_ms"
 ```
 
 ---
@@ -477,7 +497,10 @@ sequenceDiagram
 ### 6.6 Normal request under bidding (template, D2, D43–D45)
 
 What the bidding path will look like once B wires it in. Every serving node computes the same
-winner from the same bids; there is no separate "you won" message.
+winner from the same bids; there is no separate "you won" message. Each node times the window from
+when the request reaches it (D43), so windows are slightly offset; two nodes that saw different
+bids can both plan, and the first commit wins (D27). The score starts as expected wait with no CPU
+part (D45). Rounds are per request and attempt, so a retry bids afresh (D84).
 
 ```mermaid
 sequenceDiagram
@@ -501,8 +524,8 @@ sequenceDiagram
         N3->>N2: Bid(k1-42, score 520)
     end
     Note over N1,N3: window closes: ranking = [2, 3, 1], winner 2, takeover order 3 then 1
-    Note over N1,N3: every node adds the win to node 2's just_won
-    N2->>N2: plan on the worker pool
+    Note over N2: node 2 counted this round in its own just_won while leading, and still does as a win, others count nothing
+    N2->>N2: job enters the worker pool, just_won back down by 1, then plan
     N2->>N1: Propose(CommitResult k1-42) (forwarded, N1 leads)
     N1->>N2: AppendEntries [CommitResult]
     N1->>N3: AppendEntries [CommitResult]
@@ -946,7 +969,7 @@ connection closes.
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>silenced, restored"]
+        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>silenced, restored, peer_unreachable,<br/>peer_reconnected"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_sent, client_done, client_gave_up"]
@@ -970,6 +993,10 @@ flowchart LR
 | E4   | silence length × load   | time to pass the rejoin check, entries replayed     | D     | FT-4, FT-5, FT-6 |
 | E5   | faults on or off        | elections, messages by type, commit latency (local vs forwarded) | A | — |
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
+| Burst | `just_won` on or off, requests in bursts | longest winning streak, largest queue difference, p99 | B | — |
+
+Part B runs its tests in a fixed order, each with its rule written first (D83): P-2, E6, burst, E1,
+then LB-2.
 
 | Phase 1 test | Scenario                                     | Pass when                                       | Status |
 |--------------|----------------------------------------------|-------------------------------------------------|--------|
@@ -1006,14 +1033,15 @@ The report should say what changed between the submitted design and the built sy
 | Recompute once, then tell the client "retry"           | Re-plan up to 3 times, then stay quiet                        | D35, D36 |
 | No separate failure detector                           | Peer heartbeats so followers see each other                   | D41 |
 | Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms); open                       | D42 |
-| Bid window from the first bid seen                     | From request arrival; open                                    | D43 |
-| `Claim` message                                        | Local `just_won` count; open                                  | D44 |
+| Bid window from the first bid seen                     | From request arrival; P-2 confirms or overturns it            | D43 |
+| `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
+| Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
 | `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D78 |
 | Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |
 | Worker threads = cores − 1                             | `workers.threads`, default 4, set per machine in the lab config | D48 |
-| External busy loop for LB-2                            | Planner CPU knob, `ctl skew`                                  | D49 |
+| External busy loop for LB-2                            | Planner CPU knob, `ctl skew`; E6 case (b) still uses an outside busy loop | D49, D83 |
 | ≥ 10 repetitions                                       | ≥ 5 in AGENTS.md; open                                        | D63 |
 
 ---
@@ -1030,6 +1058,6 @@ The report should say what changed between the submitted design and the built sy
 ## 14. Open questions
 
 All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D5
-(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D43 (bid window
-start), D44 (claims), D52 (client retry budget), D63 (repetitions). Each stays open until someone
+(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D52 (client retry
+budget), D63 (repetitions). Each stays open until someone
 implements the related code; that person settles it first, during "grill with docs".

@@ -164,6 +164,7 @@ fn rpc_error<E: std::error::Error>(e: TransportError) -> RPCError<NodeId, BasicN
     match e {
         TransportError::Silenced
         | TransportError::Connect { .. }
+        | TransportError::Backoff { .. }
         | TransportError::UnknownPeer(_) => RPCError::Unreachable(Unreachable::new(&e)),
         _ => RPCError::Network(NetworkError::new(&e)),
     }
