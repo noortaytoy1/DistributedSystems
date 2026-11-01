@@ -258,7 +258,7 @@ flowchart LR
 | Client → every node       | TCP to `client_addr`                        | `ClientFrame::Request`, the same frame to all three | built (node), template (client) | D6, D17 |
 | Node → client             | same connection                             | `ServerFrame::Reply`, matched by request ID       | built  | D8, D37 |
 | `ctl` → one node          | TCP to `client_addr`                        | `ClientFrame::Control` / `ServerFrame::Control`, bypasses the fault gate | built | D18, D23 |
-| Node ↔ node               | one TCP connection per peer pair direction, multiplexed | `PeerFrame { seq, envelope }` / `PeerReplyFrame { seq, reply }` | built | D7, D19 |
+| Node ↔ node               | one TCP connection per peer pair direction, multiplexed | tarpc calls to `proto::PeerRpc` | built | D7, D119 |
 
 Every frame: a 4-byte big-endian length, then a bincode body (varint integers, at most 16 MiB,
 no trailing bytes). A malformed frame closes the connection (D16).
@@ -285,8 +285,8 @@ no trailing bytes). A malformed frame closes the connection (D16).
 
 ### 5.3 Multiplexed peer calls
 
-One connection per peer carries many requests at once. Replies may come back in any order; the
-client side matches them by `seq`. A slow forwarded proposal never delays a heartbeat (D19).
+One connection per peer carries many tarpc calls at once. Replies may come back in any order, and
+tarpc matches them to calls. A slow forwarded proposal never delays a heartbeat (D119).
 
 ```mermaid
 sequenceDiagram
@@ -296,18 +296,16 @@ sequenceDiagram
     participant S as peer server on node 2
     participant H as handler tasks on node 2
     R->>PC: call(AppendEntries, ttl)
-    PC->>S: PeerFrame seq=41 (append entries)
-    Note over PC: pending[41] = waiter
+    PC->>S: tarpc append_entries(from, term, rpc), with a deadline
     R->>PC: call(Propose cmd, 500 ms)
-    PC->>S: PeerFrame seq=42 (forwarded proposal)
-    Note over PC: pending[42] = waiter
-    S->>H: spawn task for seq 41
-    S->>H: spawn task for seq 42
-    Note over H: seq 42 waits for a commit, seq 41 is fast
-    H-->>PC: PeerReplyFrame seq=41
-    PC-->>R: reply for 41
-    H-->>PC: PeerReplyFrame seq=42
-    PC-->>R: reply for 42
+    PC->>S: tarpc propose(from, term, command), with a deadline
+    S->>H: spawn a task for append_entries
+    S->>H: spawn a task for propose
+    Note over H: propose waits for a commit, append_entries is fast
+    H-->>PC: PeerReply for append_entries
+    PC-->>R: reply
+    H-->>PC: PeerReply for propose
+    PC-->>R: reply
 ```
 
 ### 5.4 How a node handles an incoming peer message
