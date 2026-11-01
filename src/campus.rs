@@ -9,8 +9,9 @@
 //! same campus from the same config. They use our own SplitMix64 generator (D98), whose output
 //! no library upgrade can change.
 //!
-//! Incidents (D99) are drawn uniformly from the caller's RNG: zone, position inside it,
-//! severity 1–5 and needed capability.
+//! Incidents (D99) are drawn uniformly: zone, position inside it, severity 1–5 and needed
+//! capability. [`random_incident`] draws from the caller's RNG, so a seeded run can be repeated.
+//! [`unseeded_incident`] draws from OS randomness, so every run differs (D102).
 //!
 //! Owner: E (planner and concurrency).
 
@@ -54,6 +55,12 @@ pub fn random_incident(rng: &mut impl Rng, cfg: &CampusConfig, now_ms: u64) -> I
         needs: Capability::ALL[rng.gen_range(0..Capability::ALL.len())],
         reported_at_ms: now_ms,
     }
+}
+
+/// A random incident drawn from OS randomness: no seed, so no two runs see the same incidents
+/// (D102). Clients only; the deterministic core never calls this.
+pub fn unseeded_incident(cfg: &CampusConfig, now_ms: u64) -> Incident {
+    random_incident(&mut rand::thread_rng(), cfg, now_ms)
 }
 
 /// Columns of the zone grid: the smallest `c` with `c × c ≥ zones`.
@@ -236,5 +243,29 @@ mod tests {
         };
         assert_eq!(draw(5), draw(5));
         assert_ne!(draw(5), draw(6));
+    }
+
+    #[test]
+    fn unseeded_incidents_stay_in_range() {
+        let c = CampusConfig::default();
+        for i in 0..500 {
+            let inc = unseeded_incident(&c, i);
+            assert_eq!(inc.reported_at_ms, i);
+            assert!(inc.zone < c.zones, "{inc:?}");
+            assert!(inside_zone(c.zones, inc.zone, inc.location), "{inc:?}");
+            assert!((1..=5).contains(&inc.severity), "{inc:?}");
+        }
+    }
+
+    #[test]
+    fn unseeded_batches_differ() {
+        // 50 incidents drawn twice from OS randomness match with negligible probability.
+        let c = CampusConfig::default();
+        let draw = || {
+            (0..50)
+                .map(|i| unseeded_incident(&c, i))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(draw(), draw());
     }
 }

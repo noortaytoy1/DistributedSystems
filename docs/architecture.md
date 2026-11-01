@@ -161,7 +161,7 @@ flowchart TB
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), planned (`LoadInputs` and `ServiceTime` are written and unit-tested but not wired, D86; `/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), planned (bidding: rounds and scores written and unit-tested, not wired, D85, D87, D88) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
-| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, severe incidents fall back to any capability, CPU knob (D49, D93, D94, D96); seeded campus (D97, D98). |
+| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, severe incidents fall back to any capability, CPU knob (D49, D93, D94, D96, D101); seeded campus (D97, D98). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D75, D5). |
@@ -169,7 +169,7 @@ flowchart TB
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
-| K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built (`random_incident`), template (loadgen) | Seeded random incidents, all uniform (D99). |
+| K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built (`random_incident`, `unseeded_incident`), template (loadgen) | Uniform random incidents, seeded or from OS randomness (D99, D102). |
 | K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | template | Users, duration, think time, seed (D54). |
 | K4  | Client metrics            | `metrics.rs` client events                  | F     | built (events), template (use) | `client_sent`, `client_done`, `client_gave_up`. |
 | —   | Operator tool             | `bin/ctl.rs`, `client::control`             | C     | built    | Status, silence, skew (D62). |
@@ -697,7 +697,7 @@ flowchart TD
     POL -->|bidding| BID["Bid round (template):<br/>currently falls back to leader dispatch"]
     BID --> LEAD
     LEAD -->|no| QUIET2["Standby, no reply"]
-    LEAD -->|yes| PLAN["Plan on the worker pool:<br/>nearest free responder with the needed capability,<br/>any capability if severity 4 or 5 (D93, D94)"]
+    LEAD -->|yes| PLAN["Plan on the worker pool:<br/>nearest free responder with the needed capability,<br/>+200 m for another zone,<br/>any capability if severity 4 or 5 (D93, D94, D101)"]
     PLAN -->|Overloaded| QUIET3["No reply, client retries"]
     PLAN --> PROP["Propose CommitResult through Raft"]
     PROP -->|Committed or Duplicate| REPLY2["Reply Done(winner)"]
@@ -1041,7 +1041,7 @@ The report should say what changed between the submitted design and the built sy
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |
 | Worker threads = cores − 1                             | `workers.threads`, default 4, set per machine in the lab config | D48 |
 | External busy loop for LB-2                            | Planner CPU knob, `ctl skew`; E6 case (b) still uses an outside busy loop | D49, D83 |
-| Planner: weighted scoring or matching (§13.3, open)    | Nearest matching responder; severe falls back; age not yet    | D49, D93–D95 |
+| Planner: weighted scoring or matching (§13.3, open)    | Nearest matching responder, own zone preferred; severe falls back; age not yet | D49, D93–D95, D101 |
 | ≥ 10 repetitions                                       | ≥ 5 in AGENTS.md; open                                        | D63 |
 
 ---

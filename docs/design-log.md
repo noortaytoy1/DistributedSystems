@@ -156,14 +156,16 @@ table below in sync.
 | D90 | Reconnect cooldown = 2 × `raft_heartbeat_ms`, no new config key | C    | Implemented       |
 | D91 | `TransportError::Backoff`, treated as Unreachable by openraft    | A, C | Implemented       |
 | D92 | Peer outage events: `peer_unreachable`, `peer_reconnected`      | C    | Implemented       |
-| D93 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Implemented       |
-| D94 | Severe incidents fall back to any capability                    | E    | Implemented       |
+| D93 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Amended by D101   |
+| D94 | Severe incidents fall back to any capability                    | E    | Amended by D101   |
 | D95 | Incident age in the planner needs a time from the node          | A, E | Open              |
 | D96 | CPU knob: fixed hash rounds, no built-in base work              | E    | Implemented       |
 | D97 | Campus layout: zone grid, even round-robin, seeded positions    | E    | Implemented       |
 | D98 | Campus RNG: our own SplitMix64                                  | E    | Implemented       |
-| D99 | Random incidents are uniform                                    | E, F | Implemented       |
+| D99 | Random incidents are uniform                                    | E, F | Amended by D102    |
 | D100 | Planner and campus tests                                        | E    | Implemented       |
+| D101 | Planner zone penalty: +200 m for another zone                   | E    | Implemented       |
+| D102 | Unseeded random incidents from OS randomness                    | E, F | Implemented       |
 
 **Open decisions:** D17, D39, D42, D52, D63, D95, plus the open parts of D36 and D62. Most
 are conflicts between the Phase 1 architecture document and the code. They stay
@@ -1668,7 +1670,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D93 · Planner pick rule: exact capability, nearest, cost in metres
 
-- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101 · **Decided by:** Yahia Kilany
 - **Context.** D49 settled on weighted scoring. We need the exact rule and the unit of `cost`.
 - **Options considered.**
   1. Exact capability match, nearest wins; ties go to the incident's zone, then the lowest ID.
@@ -1688,7 +1690,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D94 · Severe incidents fall back to any capability
 
-- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101 · **Decided by:** Yahia Kilany
 - **Context.** The spec wants severity in the decision. With one incident at a time, severity
   cannot change who is nearest. It can change what happens when no match is free.
 - **Options considered.**
@@ -1782,7 +1784,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D99 · Random incidents are uniform
 
-- **Date:** 2026-10-30 · **Part:** E, F · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E, F · **Status:** Amended by D102 · **Decided by:** Yahia Kilany
 - **Options considered.**
   1. Everything uniform.
   2. Skewed severity (e.g. 35/25/20/12/8 %).
@@ -1806,6 +1808,60 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Why the knob test counts rounds.** `cost` is metres and the knob never changes the plan, so
   the test checks rounds = knob × 1,000 and an unchanged plan. Timing tests can be flaky.
 - **How we check it.** `cargo test --lib planner:: campus::`, 10 runs in a row.
+
+### D101 · Planner zone penalty: +200 m for another zone
+
+- **Date:** 2026-11-01 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany,
+  agreed with the team in the PR review
+- **Context.** The PR review chose D93 option 2: prefer responders in the incident's own zone.
+- **Options considered.**
+  - Penalty size: +200 m; +500 m (one zone width); a config key (needs A's `config.rs`).
+  - Severe fallback (D94): same score; distance only.
+  - `Plan::cost`: metres only; score including the penalty.
+  - Ties: own zone, then lowest ID; lowest ID only.
+- **Decision.**
+  - Score = Manhattan distance + 200 m for a responder in another zone
+    (`planner::ZONE_PENALTY_M = 200`). The lowest score wins.
+  - Ties go to the incident's zone, then the lowest ID.
+  - The severe fallback uses the same score.
+  - `cost` stays the true distance in metres, without the penalty.
+- **Why.**
+  - 200 m is under half a zone, so a much closer neighbour can still win.
+  - One scoring rule for both picks is easier to explain and test.
+  - `cost` keeps one meaning in logs and the report.
+  - A constant needs no change in A's files.
+- **Consequences.**
+  - A responder in another zone wins only if it is more than 200 m closer. An exact 200 m gap
+    goes to the own zone.
+  - Changing the penalty means a code change, not a config change.
+- **Where.** `planner.rs::score`, `planner.rs::nearest`, `planner::ZONE_PENALTY_M`.
+- **How we check it.** `planner::tests::the_own_zone_wins_unless_another_zone_is_more_than_the_penalty_closer`,
+  `cost_is_metres_without_the_penalty`, `the_severe_fallback_uses_the_zone_penalty_too`,
+  `a_tie_goes_to_the_incident_zone_then_the_lowest_id`.
+
+### D102 · Unseeded random incidents from OS randomness
+
+- **Date:** 2026-11-01 · **Part:** E, F · **Status:** Implemented · **Decided by:** Yahia Kilany,
+  agreed with the team in the PR review
+- **Context.** The PR review asked for completely random incidents. D99 already draws every
+  field uniformly, but from a seeded RNG, so a run repeats.
+- **Options considered.**
+  1. Add an unseeded helper; keep the seeded one for tests and repeatable runs.
+  2. Replace the seeded one; tests can only check ranges.
+  3. Pick the point anywhere on campus and derive the zone (same spread on a full grid).
+  4. Keep as is.
+- **Decision.** Option 1. `campus::unseeded_incident(cfg, now_ms)` draws from
+  `rand::thread_rng()` (OS-seeded). `random_incident(rng, ..)` stays.
+- **Why.** Every run sees new incidents, and seeded runs are still there when a result must be
+  repeated. `rand` is already a dependency.
+- **Consequences.**
+  - Unseeded runs cannot be replayed. Keep the raw logs of each run.
+  - The load generator (F, `bin/loadgen.rs`) still has to choose which one to call. Not changed
+    here.
+  - Only clients call it. The deterministic core (`state.rs`, `bidding.rs`, `planner.rs`) never
+    does, and responders stay seeded (D97).
+- **Where.** `campus.rs::unseeded_incident`.
+- **How we check it.** `campus::tests::unseeded_incidents_stay_in_range`, `unseeded_batches_differ`.
 
 ---
 

@@ -1,14 +1,15 @@
 //! Deterministic incident planner with a cost knob.
 //!
-//! Given an incident and the responders that are free, choose one (D49, D93, D94):
+//! Given an incident and the responders that are free, choose one (D49, D93, D94, D101):
 //!
-//! - Only responders with the capability the incident needs count. The nearest one wins
-//!   (Manhattan distance in metres); a tie goes to a responder in the incident's zone, then to the
-//!   lowest responder ID.
-//! - If none of them is free and the incident is severe (severity 4 or 5), the nearest free
-//!   responder of any capability is sent instead, with the same tie-breaks. Otherwise the plan
-//!   has no responder and cost 0.
-//! - `Plan::cost` is the distance in metres from the chosen responder to the incident.
+//! - Only responders with the capability the incident needs count. Each gets a score: Manhattan
+//!   distance in metres, plus [`ZONE_PENALTY_M`] if it is in another zone than the incident. The
+//!   lowest score wins; a tie goes to a responder in the incident's zone, then to the lowest ID.
+//! - If none of them is free and the incident is severe (severity 4 or 5), the free responder of
+//!   any capability with the lowest score is sent instead, with the same tie-breaks. Otherwise
+//!   the plan has no responder and cost 0.
+//! - `Plan::cost` is the distance in metres from the chosen responder to the incident, without the
+//!   penalty.
 //!
 //! Age is not used yet: the planner has no clock, and the node does not pass a time in (D95).
 //!
@@ -27,6 +28,9 @@ pub const ROUNDS_PER_UNIT: u64 = 1_000;
 
 /// Lowest severity at which a responder of another capability is sent when no match is free.
 pub const SEVERE: u8 = 4;
+
+/// Metres added to the score of a responder outside the incident's zone (D101).
+pub const ZONE_PENALTY_M: u64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CostKnob {
@@ -60,19 +64,26 @@ pub fn plan(incident: &Incident, free: &[Responder], knob: CostKnob) -> Plan {
     }
 }
 
-/// The nearest candidate; ties go to the incident's zone, then to the lowest ID. Responder IDs
-/// are unique, so the order of `candidates` never matters.
+/// The candidate with the lowest score; ties go to the incident's zone, then to the lowest ID.
+/// Responder IDs are unique, so the order of `candidates` never matters.
 fn nearest<'a>(
     incident: &Incident,
     candidates: impl Iterator<Item = &'a Responder>,
 ) -> Option<&'a Responder> {
     candidates.min_by_key(|r| {
-        (
-            incident.location.manhattan(r.location),
-            r.zone != incident.zone,
-            r.id,
-        )
+        let other_zone = r.zone != incident.zone;
+        (score(incident, r), other_zone, r.id)
     })
+}
+
+/// Distance in metres, plus [`ZONE_PENALTY_M`] for a responder in another zone.
+fn score(incident: &Incident, r: &Responder) -> u64 {
+    let distance = incident.location.manhattan(r.location);
+    if r.zone == incident.zone {
+        distance
+    } else {
+        distance.saturating_add(ZONE_PENALTY_M)
+    }
 }
 
 /// Simulated CPU load: `units × ROUNDS_PER_UNIT` rounds of the SplitMix64 finaliser. Returns the
@@ -162,14 +173,61 @@ mod tests {
     #[test]
     fn a_tie_goes_to_the_incident_zone_then_the_lowest_id() {
         let inc = incident(1, 500, 0, 1, Capability::Fire);
-        // All 100 m away.
+        // All score 300: 100 m away plus the penalty, or 300 m away in the incident's zone.
         let other_zone = responder(1, 0, 400, 0, Capability::Fire);
-        let own_zone_high = responder(9, 1, 600, 0, Capability::Fire);
-        let own_zone_low = responder(5, 1, 500, 100, Capability::Fire);
+        let own_zone_high = responder(9, 1, 800, 0, Capability::Fire);
+        let own_zone_low = responder(5, 1, 500, 300, Capability::Fire);
         let p = plan0(&inc, &[other_zone.clone(), own_zone_high.clone()]);
         assert_eq!(p.responder, Some(9), "own zone beats a lower ID");
         let p = plan0(&inc, &[own_zone_high, own_zone_low, other_zone]);
         assert_eq!(p.responder, Some(5), "then the lowest ID");
+    }
+
+    #[test]
+    fn the_own_zone_wins_unless_another_zone_is_more_than_the_penalty_closer() {
+        let inc = incident(1, 500, 0, 2, Capability::Rescue);
+        let own = responder(1, 1, 500, 300, Capability::Rescue); // 300 m
+        let gap = |closer_by: u64| {
+            let d = 300 - i32::try_from(closer_by).expect("small");
+            responder(2, 0, 500 - d, 0, Capability::Rescue)
+        };
+        for closer_by in [0, 1, 150, ZONE_PENALTY_M - 1, ZONE_PENALTY_M] {
+            let p = plan0(&inc, &[gap(closer_by), own.clone()]);
+            assert_eq!(p.responder, Some(1), "other zone only {closer_by} m closer");
+        }
+        for closer_by in [ZONE_PENALTY_M + 1, 250] {
+            let p = plan0(&inc, &[gap(closer_by), own.clone()]);
+            assert_eq!(p.responder, Some(2), "other zone {closer_by} m closer");
+        }
+    }
+
+    #[test]
+    fn cost_is_metres_without_the_penalty() {
+        let inc = incident(1, 500, 0, 2, Capability::Medical);
+        let p = plan0(&inc, &[responder(4, 0, 450, 0, Capability::Medical)]);
+        assert_eq!(
+            p,
+            Plan {
+                responder: Some(4),
+                cost: 50
+            }
+        );
+    }
+
+    #[test]
+    fn the_severe_fallback_uses_the_zone_penalty_too() {
+        let inc = incident(1, 500, 0, 5, Capability::Medical);
+        let free = [
+            responder(1, 0, 400, 0, Capability::Fire), // 100 m, other zone: score 300
+            responder(2, 1, 750, 0, Capability::Security), // 250 m, own zone: score 250
+        ];
+        assert_eq!(
+            plan0(&inc, &free),
+            Plan {
+                responder: Some(2),
+                cost: 250
+            }
+        );
     }
 
     #[test]
