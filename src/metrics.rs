@@ -86,6 +86,30 @@ pub enum Event {
         latency_us: u64,
     },
 
+    // --- bidding (B)
+    /// This node's bid and what made up its score (E6).
+    BidSent {
+        request: RequestId,
+        attempt: u32,
+        score: u64,
+        queued: usize,
+        running: usize,
+        just_won: usize,
+        service_us: u64,
+        cpu_permille: u32,
+    },
+    /// This node's view of a closed round. Two nodes with `i_won` true for one request is a split
+    /// decision (P-2).
+    BidRoundClosed {
+        request: RequestId,
+        attempt: u32,
+        winner: Option<NodeId>,
+        i_won: bool,
+        bids_seen: usize,
+        my_score: Option<u64>,
+        window_us: u64,
+    },
+
     // --- faults (C)
     Silenced {
         ms: u64,

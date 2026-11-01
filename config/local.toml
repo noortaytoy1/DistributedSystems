@@ -31,6 +31,16 @@ peer_rpc_timeout_ms = 500
 [policy]
 # "bidding" or "leader-dispatch"
 assignment = "leader-dispatch"
+# Used under "bidding" only.
+# "expected-wait", "expected-wait-cpu", "queue-only" or "cpu-only"
+score = "expected-wait"
+# Score added per permille of CPU, under "expected-wait-cpu" only. A placeholder: set it from
+# measured planning time before experiment E6.
+cpu_weight = 10
+# "off", "wins-only" or "won-and-leading"
+just_won = "won-and-leading"
+# Planning time a node assumes until its first job finishes. Low, so an untried node gets tried.
+initial_service_us = 1
 
 [workers]
 threads = 4

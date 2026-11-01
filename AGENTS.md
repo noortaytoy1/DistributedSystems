@@ -89,7 +89,7 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 | Part | Mechanism                | Files                                                                | Measures              | Owner |
 |------|--------------------------|----------------------------------------------------------------------|-----------------------|-------|
 | A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `config.rs`                      | E5, commit latency    |       |
-| B    | Bidding election         | `bidding.rs`                                                         | E1 policies, E6       |       |
+| B    | Bidding election         | `bidding.rs`, `node/bids.rs`, `node/cpu.rs`                          | E1 policies, E6       |       |
 | C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `bin/ctl.rs` | E3                |       |
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
 | E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`                         | E2, CPU and queues    |       |

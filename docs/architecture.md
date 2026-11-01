@@ -134,13 +134,13 @@ flowchart TB
     subgraph PR["Protocol layer"]
         direction LR
         C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
-        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: logic written, not wired"]
+        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding, node/bids.rs: built, off by default"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
     end
     subgraph CS["Compute and state layer"]
         direction LR
-        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: logic written, not wired"]
+        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs, node/cpu.rs: built"]
         C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs: built"]
         C8["C8 Replicated state machine<br/>state.rs CloudState<br/>built"]
         C7["C7 Raft log and vote<br/>raft/store.rs, in memory<br/>built"]
@@ -158,8 +158,8 @@ flowchart TB
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
 | C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
-| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), planned (`LoadInputs` and `ServiceTime` are written and unit-tested but not wired, D86; `/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
-| C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), planned (bidding: rounds and scores written and unit-tested, not wired, D85, D87, D88) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
+| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
+| C4  | Assignment                | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (leader dispatch, the default; bidding, set by config, D34, D103) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, severe incidents fall back to any capability, CPU knob (D49, D93, D94, D96, D101); seeded campus (D97, D98). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
@@ -194,7 +194,8 @@ flowchart TD
     NODE --> REJOIN["node/rejoin.rs"]
     NODE --> PLANNER["planner.rs"]
     NODE --> CAMPUS
-    NODE --> BIDDING["bidding.rs"]
+    NODE --> BIDS["node/bids.rs, node/cpu.rs"]
+    BIDS --> BIDDING["bidding.rs"]
     RAFT --> NETWORK["raft/network.rs"]
     RAFT --> STORE["raft/store.rs"]
     NETWORK --> TRANSPORT
@@ -223,7 +224,7 @@ flowchart LR
         A1["raft/"] --- A2["state.rs"] --- A3["node/mod.rs"] --- A4["config.rs"]
     end
     subgraph B["Part B: Bidding election"]
-        B1["bidding.rs"]
+        B1["bidding.rs"] --- B2["node/bids.rs"] --- B3["node/cpu.rs"]
     end
     subgraph C["Part C: Faults and failover"]
         C1["node/faults.rs"] --- C2["node/heartbeat.rs"] --- C3["node/transport.rs"] --- C4["bin/ctl.rs"]
@@ -273,7 +274,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
-| `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2); `attempt` to be added with the wiring (D84) | template | `Bid` |
+| `PeerBody::Bid(Bid { request, attempt, score })` | serving node → peers | per-request, per-attempt bid (D2, D84); not waited for (D104) | built | `Bid` |
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D79) | built | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
@@ -324,7 +325,7 @@ flowchart TD
     TERM -->|no| KIND{"Body"}
     KIND -->|Propose| PL["propose_local: commit if leader,<br/>else NotLeader with a hint"]
     KIND -->|Heartbeat| HB["suspicion.heard_from(peer, now)<br/>reply Ack"]
-    KIND -->|Bid| BID["Ack (TODO B: feed the bid round)"]
+    KIND -->|Bid| BID["Add to the round for this request and attempt<br/>reply Ack"]
     OR --> REPLY["Reply, unless the gate closed meanwhile"]
     PL --> REPLY
     HB --> REPLY
@@ -494,9 +495,9 @@ sequenceDiagram
     Note over X2: after 3 stale attempts it stops without replying, the client retries
 ```
 
-### 6.6 Normal request under bidding (template, D2, D43–D45)
+### 6.6 Normal request under bidding (built, off by default, D2, D43–D45, D103)
 
-What the bidding path will look like once B wires it in. Every serving node computes the same
+The bidding path, used when `policy.assignment = "bidding"`. Every serving node computes the same
 winner from the same bids; there is no separate "you won" message. Each node times the window from
 when the request reaches it (D43), so windows are slightly offset; two nodes that saw different
 bids can both plan, and the first commit wins (D27). The score starts as expected wait with no CPU
@@ -681,7 +682,7 @@ it takes over, and validation requires `interval_min_ms >= silence_max_ms`, so i
 comes after the old silence has ended (D78). The RNG is seeded per term from `faults.seed`, so a
 run can be repeated.
 
-### 6.12 What a node does with a client request (built, with the bidding branch as template)
+### 6.12 What a node does with a client request (built)
 
 ```mermaid
 flowchart TD
@@ -694,10 +695,12 @@ flowchart TD
     DONE -->|yes| REPLY1["Reply Done(result) (D37)"]
     DONE -->|no| POL{"policy.assignment"}
     POL -->|leader-dispatch| LEAD{"I am the leader?"}
-    POL -->|bidding| BID["Bid round (template):<br/>currently falls back to leader dispatch"]
-    BID --> LEAD
-    LEAD -->|no| QUIET2["Standby, no reply"]
-    LEAD -->|yes| PLAN["Plan on the worker pool:<br/>nearest free responder with the needed capability,<br/>+200 m for another zone,<br/>any capability if severity 4 or 5 (D93, D94, D101)"]
+    POL -->|bidding| BID["Open the round, bid, send to peers,<br/>wait bid_window_ms, close the round"]
+    BID --> WON{"I won and nothing is committed yet?"}
+    WON -->|no| QUIET2["Standby, no reply"]
+    WON -->|yes| PLAN["Plan on the worker pool:<br/>nearest free responder with the needed capability,<br/>+200 m for another zone,<br/>any capability if severity 4 or 5 (D93, D94, D101)"]
+    LEAD -->|no| QUIET2
+    LEAD -->|yes| PLAN
     PLAN -->|Overloaded| QUIET3["No reply, client retries"]
     PLAN --> PROP["Propose CommitResult through Raft"]
     PROP -->|Committed or Duplicate| REPLY2["Reply Done(winner)"]
@@ -718,7 +721,7 @@ flowchart TD
 | Counters (committed, duplicates, stale, released) | `CloudState::counters`     | yes        | same |
 | Digest and last applied index           | `CloudState::digest`, `last_index`   | yes (derived) | equal on nodes at equal index |
 | Raft log, vote, commit index            | `LogStore` (memory)                  | per node   | Raft rules |
-| Load inputs, bid rounds, suspicion      | `NodeContext`, `bidding.rs`          | no         | soft state, rebuilt within one bid window |
+| Load inputs, bid rounds, suspicion      | `NodeContext`, `node/bids.rs`, `bidding.rs` | no         | soft state, rebuilt within one bid window |
 | `serving`, `plan_work`, fault gate      | `NodeContext` atomics                | no         | per node |
 | Fault schedule                          | leader only                          | no         | a new leader starts a new schedule, seeded with its term |
 
@@ -969,7 +972,7 @@ connection closes.
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>silenced, restored, peer_unreachable,<br/>peer_reconnected"]
+        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>bid_sent, bid_round_closed, silenced, restored, peer_unreachable,<br/>peer_reconnected"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_sent, client_done, client_gave_up"]

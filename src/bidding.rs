@@ -6,10 +6,12 @@
 //! Pure logic: no network, no clock. `node/` drives rounds by feeding in bids and timer events,
 //! and passes in every time.
 //!
-//! Owner: B (bidding election). Not wired into `node/` yet.
+//! Owner: B (bidding election). `node/bids.rs` drives it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
 
 use crate::proto::{NodeId, RequestId};
 
@@ -91,6 +93,17 @@ pub fn ranking(bids: &[(NodeId, u64)]) -> Vec<NodeId> {
         .collect()
 }
 
+/// The node that should plan the request now: the best-ranked bidder not suspected of being
+/// silent. Takeover is this with the silent winner suspected; the caller only moves the request
+/// while nothing is committed for it. `None` if every bidder is suspected.
+pub fn executor(ranking: &[NodeId], mut suspected: impl FnMut(NodeId) -> bool) -> Option<NodeId> {
+    ranking.iter().copied().find(|&node| !suspected(node))
+}
+
+/// Shortest planning time a node reports. A shorter plan rounds down to 0 µs, and a score multiplied
+/// by 0 stays 0 however long the queue gets.
+const MIN_SERVICE_US: u64 = 1;
+
 /// Recent planning time: a running average that moves 1/8 of the way towards each new job, the
 /// gain of TCP's round-trip estimator (Jacobson 1988). Shifting truncates, so the average settles
 /// within 7 µs of a steady input.
@@ -101,8 +114,8 @@ pub struct ServiceTime {
 }
 
 impl ServiceTime {
-    /// Starts at `initial_us`, so a node that has not planned yet still scores above zero and its
-    /// queue length still counts.
+    /// Starts at `initial_us`. Set low, a node that has not planned yet looks fast, so it gets tried
+    /// and its real time replaces the guess.
     pub fn new(initial_us: u64) -> Self {
         Self {
             average_us: initial_us,
@@ -112,6 +125,7 @@ impl ServiceTime {
 
     /// Adds one job's planning time. The first job replaces the starting value.
     pub fn record(&mut self, sample_us: u64) {
+        let sample_us = sample_us.max(MIN_SERVICE_US);
         if !self.has_sample {
             self.has_sample = true;
             self.average_us = sample_us;
@@ -132,14 +146,16 @@ impl ServiceTime {
 pub type RoundKey = (RequestId, u32);
 
 /// What a node's own `just_won` count includes. The burst test compares the three.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum JustWonMode {
     /// Always zero.
     Off,
     /// Rounds this node won whose jobs have not reached the worker pool.
-    WonOnly,
-    /// `WonOnly` plus open rounds this node is leading. In a burst, rounds overlap: without these
+    WinsOnly,
+    /// `WinsOnly` plus open rounds this node is leading. In a burst, rounds overlap: without these
     /// a node would look idle to every round that opens before its first win closes.
+    #[default]
     WonAndLeading,
 }
 
@@ -207,8 +223,8 @@ pub struct BidRounds {
     me: NodeId,
     bid_window: Duration,
     rounds: BTreeMap<RoundKey, Round>,
-    /// The rounds with a running window, so the per-bid and per-timer work stays small however
-    /// many closed rounds are being kept.
+    /// The rounds with a running window, so counting leading rounds stays cheap however many
+    /// closed rounds are being kept.
     open: BTreeSet<RoundKey>,
     /// Rounds this node won whose jobs have not reached the worker pool. A set, not a counter, so
     /// settling the same round twice cannot undercount.
@@ -268,35 +284,40 @@ impl BidRounds {
         BidStatus::Accepted
     }
 
-    /// Closes every round whose window has ended and reports them, counting this node's wins.
-    pub fn close_due(&mut self, now: Instant) -> Vec<ClosedRound> {
-        let mut closed = Vec::new();
-        let open = std::mem::take(&mut self.open);
-        for key in open {
-            let Some(round) = self.rounds.get_mut(&key) else {
-                continue;
-            };
-            let due = matches!(round.phase, Phase::Open { deadline } if now >= deadline);
-            if !due {
-                self.open.insert(key);
-                continue;
-            }
-            round.phase = Phase::Closed { at: now };
-            let bids: Vec<(NodeId, u64)> = round.bids.iter().map(|(&n, &s)| (n, s)).collect();
-            let order = ranking(&bids);
-            let i_won = order.first() == Some(&self.me);
-            if i_won {
-                self.won.insert(key);
-            }
-            closed.push(ClosedRound {
-                key,
-                ranking: order,
-                i_won,
-                bids_seen: bids.len(),
-                my_score: round.bids.get(&self.me).copied(),
-            });
+    /// Closes one round whose window has ended and reports it, counting this node's win. `None`
+    /// if the round is unknown, already closed, or its window is still running.
+    pub fn close(&mut self, key: RoundKey, now: Instant) -> Option<ClosedRound> {
+        let round = self.rounds.get_mut(&key)?;
+        if !matches!(round.phase, Phase::Open { deadline } if now >= deadline) {
+            return None;
         }
-        closed
+        round.phase = Phase::Closed { at: now };
+        self.open.remove(&key);
+        let bids: Vec<(NodeId, u64)> = round.bids.iter().map(|(&n, &s)| (n, s)).collect();
+        let order = ranking(&bids);
+        let i_won = order.first() == Some(&self.me);
+        if i_won {
+            self.won.insert(key);
+        }
+        Some(ClosedRound {
+            key,
+            ranking: order,
+            i_won,
+            bids_seen: bids.len(),
+            my_score: round.bids.get(&self.me).copied(),
+        })
+    }
+
+    /// A closed round's bids in ranking order: the winner and its bid first, then the takeover
+    /// order. `None` unless the round has closed and has not been forgotten.
+    pub fn ranked_bids(&self, key: RoundKey) -> Option<Vec<(NodeId, u64)>> {
+        let round = self.rounds.get(&key)?;
+        if !matches!(round.phase, Phase::Closed { .. }) {
+            return None;
+        }
+        let mut bids: Vec<(NodeId, u64)> = round.bids.iter().map(|(&n, &s)| (n, s)).collect();
+        bids.sort_unstable_by_key(|&(node, score)| (score, node));
+        Some(bids)
     }
 
     /// The winner's job reached the worker pool (or was refused), where the pool's own load
@@ -325,7 +346,7 @@ impl BidRounds {
     pub fn just_won(&self, mode: JustWonMode) -> usize {
         match mode {
             JustWonMode::Off => 0,
-            JustWonMode::WonOnly => self.won.len(),
+            JustWonMode::WinsOnly => self.won.len(),
             JustWonMode::WonAndLeading => self.won.len() + self.leading(),
         }
     }
@@ -336,17 +357,6 @@ impl BidRounds {
             .filter_map(|key| self.rounds.get(key))
             .filter(|round| round.led_by(self.me))
             .count()
-    }
-
-    /// The earliest running deadline, for the caller's timer.
-    pub fn next_deadline(&self) -> Option<Instant> {
-        self.open
-            .iter()
-            .filter_map(|key| match self.rounds.get(key)?.phase {
-                Phase::Open { deadline } => Some(deadline),
-                _ => None,
-            })
-            .min()
     }
 
     /// Drops rounds closed at least `grace` ago, and rounds whose request has not arrived that
@@ -368,6 +378,11 @@ impl BidRounds {
         });
     }
 
+    /// Bids this node holds for a round, in any phase.
+    pub fn bids_seen(&self, key: RoundKey) -> usize {
+        self.rounds.get(&key).map_or(0, |round| round.bids.len())
+    }
+
     /// Rounds being tracked, in any phase.
     pub fn len(&self) -> usize {
         self.rounds.len()
@@ -380,7 +395,6 @@ impl BidRounds {
 
 // TODO(B): takeover: the next bidder in `ranking` takes over after
 // `timers.takeover_missed_heartbeats` missed heartbeats with nothing committed for the request.
-// TODO(B): wire `AssignmentPolicy::Bidding` into `node::decide_executor` (ask A to review).
 
 #[cfg(test)]
 mod tests {
@@ -407,6 +421,12 @@ mod tests {
 
     fn rounds() -> BidRounds {
         BidRounds::new(ME, WINDOW)
+    }
+
+    /// Closes every round that is due, as each request's own task would.
+    fn close_all(r: &mut BidRounds, now: Instant) -> Vec<ClosedRound> {
+        let keys: Vec<RoundKey> = r.rounds.keys().copied().collect();
+        keys.into_iter().filter_map(|k| r.close(k, now)).collect()
     }
 
     // --- load_score ---
@@ -544,6 +564,18 @@ mod tests {
         assert_eq!(pick_winner(&a), pick_winner(&b));
     }
 
+    #[test]
+    fn executor_is_the_winner_when_nobody_is_suspected() {
+        assert_eq!(executor(&[2, 1, 3], |_| false), Some(2));
+    }
+
+    #[test]
+    fn executor_skips_suspected_nodes() {
+        assert_eq!(executor(&[2, 1, 3], |n| n == 2), Some(1));
+        assert_eq!(executor(&[2, 1, 3], |n| n != 3), Some(3));
+        assert_eq!(executor(&[2, 1, 3], |_| true), None);
+    }
+
     // --- ServiceTime ---
 
     #[test]
@@ -581,6 +613,32 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_too_short_to_measure_counts_as_the_minimum() {
+        let mut service = ServiceTime::new(1000);
+        service.record(0);
+        assert_eq!(service.average_us(), 1);
+        service.record(0);
+        assert_eq!(service.average_us(), 1);
+    }
+
+    #[test]
+    fn a_full_queue_raises_the_score_even_after_very_fast_plans() {
+        let mut fast = ServiceTime::new(1);
+        fast.record(0);
+        let untried = ServiceTime::new(1);
+        let score = |jobs, service: ServiceTime| {
+            let i = LoadInputs {
+                queued: jobs,
+                recent_service_us: service.average_us(),
+                workers: 2,
+                ..LoadInputs::default()
+            };
+            load_score(&i, ScoreVariant::ExpectedWait)
+        };
+        assert!(score(6, fast) > score(0, untried));
+    }
+
+    #[test]
     fn extreme_samples_do_not_overflow() {
         let mut service = ServiceTime::new(0);
         service.record(u64::MAX);
@@ -596,13 +654,40 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         assert_eq!(r.open(key(1), t0), Some(t0 + WINDOW));
-        assert_eq!(r.next_deadline(), Some(t0 + WINDOW));
-        assert!(
-            r.close_due(t0 + WINDOW - Duration::from_micros(1))
-                .is_empty()
+        assert!(close_all(&mut r, t0 + WINDOW - Duration::from_micros(1)).is_empty());
+        assert_eq!(close_all(&mut r, t0 + WINDOW).len(), 1);
+        assert!(r.open.is_empty());
+    }
+
+    #[test]
+    fn closing_needs_a_running_window_that_has_ended() {
+        let t0 = Instant::now();
+        let mut r = rounds();
+        assert_eq!(r.close(key(1), t0), None);
+        r.add_bid(key(1), 2, 10, t0);
+        assert_eq!(r.close(key(1), t0 + WINDOW), None);
+        r.open(key(1), t0);
+        assert_eq!(
+            r.close(key(1), t0 + WINDOW - Duration::from_micros(1)),
+            None
         );
-        assert_eq!(r.close_due(t0 + WINDOW).len(), 1);
-        assert_eq!(r.next_deadline(), None);
+        assert!(r.close(key(1), t0 + WINDOW).is_some());
+        assert_eq!(r.close(key(1), t0 + WINDOW), None);
+    }
+
+    #[test]
+    fn ranked_bids_are_readable_only_after_closing() {
+        let t0 = Instant::now();
+        let mut r = rounds();
+        r.open(key(1), t0);
+        r.add_bid(key(1), 1, 30, t0);
+        r.add_bid(key(1), 2, 10, t0);
+        r.add_bid(key(1), 3, 10, t0);
+        assert_eq!(r.ranked_bids(key(1)), None);
+        r.close(key(1), t0 + WINDOW);
+        assert_eq!(r.ranked_bids(key(1)), Some(vec![(2, 10), (3, 10), (1, 30)]));
+        r.forget_older_than(t0 + WINDOW + GRACE, GRACE);
+        assert_eq!(r.ranked_bids(key(1)), None);
     }
 
     #[test]
@@ -613,7 +698,7 @@ mod tests {
         r.add_bid(key(1), 1, 30, t0);
         r.add_bid(key(1), 2, 10, t0);
         r.add_bid(key(1), 3, 20, t0);
-        let closed = r.close_due(t0 + WINDOW);
+        let closed = close_all(&mut r, t0 + WINDOW);
         assert_eq!(
             closed,
             vec![ClosedRound {
@@ -627,11 +712,21 @@ mod tests {
     }
 
     #[test]
+    fn bids_seen_counts_a_rounds_bids() {
+        let t0 = Instant::now();
+        let mut r = rounds();
+        assert_eq!(r.bids_seen(key(1)), 0);
+        r.add_bid(key(1), 2, 10, t0);
+        r.add_bid(key(1), 3, 10, t0);
+        assert_eq!(r.bids_seen(key(1)), 2);
+    }
+
+    #[test]
     fn a_round_nobody_bid_in_has_no_winner() {
         let t0 = Instant::now();
         let mut r = rounds();
         r.open(key(1), t0);
-        let closed = r.close_due(t0 + WINDOW);
+        let closed = close_all(&mut r, t0 + WINDOW);
         assert!(closed[0].ranking.is_empty());
         assert!(!closed[0].i_won);
         assert_eq!(closed[0].my_score, None);
@@ -643,10 +738,10 @@ mod tests {
         let t1 = t0 + Duration::from_millis(5);
         let mut r = rounds();
         assert_eq!(r.add_bid(key(1), 2, 10, t0), BidStatus::Accepted);
-        assert_eq!(r.next_deadline(), None);
-        assert!(r.close_due(t0 + WINDOW + WINDOW).is_empty());
+        assert!(r.open.is_empty());
+        assert!(close_all(&mut r, t0 + WINDOW + WINDOW).is_empty());
         assert_eq!(r.open(key(1), t1), Some(t1 + WINDOW));
-        let closed = r.close_due(t1 + WINDOW);
+        let closed = close_all(&mut r, t1 + WINDOW);
         assert_eq!(closed[0].ranking, vec![2]);
     }
 
@@ -661,7 +756,7 @@ mod tests {
         );
         // Late by the clock, before the timer has closed the round.
         assert_eq!(r.add_bid(key(1), 3, 0, t0 + WINDOW), BidStatus::Late);
-        let closed = r.close_due(t0 + WINDOW);
+        let closed = close_all(&mut r, t0 + WINDOW);
         assert_eq!(closed[0].ranking, vec![2]);
         // Late after closing.
         assert_eq!(r.add_bid(key(1), 3, 0, t0 + WINDOW), BidStatus::Late);
@@ -675,7 +770,7 @@ mod tests {
         assert_eq!(r.add_bid(key(1), 3, 50, t0), BidStatus::Accepted);
         assert_eq!(r.add_bid(key(1), 3, 5, t0), BidStatus::Duplicate);
         assert_eq!(r.add_bid(key(1), 2, 20, t0), BidStatus::Accepted);
-        assert_eq!(r.close_due(t0 + WINDOW)[0].ranking, vec![2, 3]);
+        assert_eq!(close_all(&mut r, t0 + WINDOW)[0].ranking, vec![2, 3]);
     }
 
     #[test]
@@ -687,7 +782,7 @@ mod tests {
             r.open(key(1), t0 + Duration::from_millis(5)),
             Some(t0 + WINDOW)
         );
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         assert_eq!(r.open(key(1), t0 + WINDOW), None);
     }
 
@@ -699,14 +794,14 @@ mod tests {
         let mut r = rounds();
         r.open(first, t0);
         r.add_bid(first, 2, 10, t0);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
 
         let t1 = t0 + Duration::from_secs(2);
         assert_eq!(r.open(retry, t1), Some(t1 + WINDOW));
         r.add_bid(retry, 3, 40, t1);
         // A straggler from the first attempt stays in the first attempt.
         assert_eq!(r.add_bid(first, 1, 0, t1), BidStatus::Late);
-        assert_eq!(r.close_due(t1 + WINDOW)[0].ranking, vec![3]);
+        assert_eq!(close_all(&mut r, t1 + WINDOW)[0].ranking, vec![3]);
     }
 
     #[test]
@@ -714,7 +809,7 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         r.open(key(1), t0);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         let closed_at = t0 + WINDOW;
 
         r.forget_older_than(closed_at + GRACE - Duration::from_micros(1), GRACE);
@@ -725,7 +820,7 @@ mod tests {
         r.open(key(2), closed_at + GRACE);
         r.forget_older_than(closed_at + GRACE, GRACE);
         assert_eq!(r.len(), 1);
-        assert!(r.next_deadline().is_some());
+        assert!(!r.open.is_empty());
     }
 
     #[test]
@@ -751,7 +846,7 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         win(&mut r, key(1), t0);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         win(&mut r, key(2), t0 + WINDOW);
         assert_eq!(r.just_won(JustWonMode::Off), 0);
     }
@@ -761,11 +856,11 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         win(&mut r, key(1), t0);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 0);
-        assert!(r.close_due(t0 + WINDOW)[0].i_won);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 1);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 0);
+        assert!(close_all(&mut r, t0 + WINDOW)[0].i_won);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 1);
         r.job_queued(key(1));
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 0);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 0);
     }
 
     #[test]
@@ -774,12 +869,12 @@ mod tests {
         let mut r = rounds();
         win(&mut r, key(1), t0);
         win(&mut r, key(2), t0);
-        r.close_due(t0 + WINDOW);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 2);
+        close_all(&mut r, t0 + WINDOW);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 2);
         r.job_queued(key(1));
         r.job_queued(key(1));
         r.request_decided(key(1).0, t0 + WINDOW);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 1);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 1);
     }
 
     #[test]
@@ -789,7 +884,7 @@ mod tests {
         r.open(key(1), t0);
         r.add_bid(key(1), ME, 30, t0);
         r.add_bid(key(1), 2, 20, t0);
-        assert!(!r.close_due(t0 + WINDOW)[0].i_won);
+        assert!(!close_all(&mut r, t0 + WINDOW)[0].i_won);
         assert_eq!(r.just_won(JustWonMode::WonAndLeading), 0);
     }
 
@@ -801,9 +896,9 @@ mod tests {
         win(&mut r, (request, 1), t0);
         win(&mut r, (request, 2), t0);
         win(&mut r, key(2), t0);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         r.request_decided(request, t0 + WINDOW);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 1);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 1);
     }
 
     #[test]
@@ -813,9 +908,9 @@ mod tests {
         win(&mut r, key(1), t0);
         r.request_decided(key(1).0, t0);
         assert_eq!(r.just_won(JustWonMode::WonAndLeading), 0);
-        assert_eq!(r.next_deadline(), None);
-        assert!(r.close_due(t0 + WINDOW).is_empty());
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 0);
+        assert!(r.open.is_empty());
+        assert!(close_all(&mut r, t0 + WINDOW).is_empty());
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 0);
     }
 
     #[test]
@@ -823,7 +918,7 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         win(&mut r, key(1), t0);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 0);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 0);
         assert_eq!(r.just_won(JustWonMode::WonAndLeading), 1);
     }
 
@@ -862,7 +957,7 @@ mod tests {
         let mut r = rounds();
         win(&mut r, key(1), t0);
         assert_eq!(r.just_won(JustWonMode::WonAndLeading), 1);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         assert_eq!(r.just_won(JustWonMode::WonAndLeading), 1);
     }
 
@@ -888,8 +983,8 @@ mod tests {
         let t0 = Instant::now();
         let mut r = rounds();
         win(&mut r, key(1), t0);
-        r.close_due(t0 + WINDOW);
+        close_all(&mut r, t0 + WINDOW);
         r.forget_older_than(t0 + WINDOW + GRACE, GRACE);
-        assert_eq!(r.just_won(JustWonMode::WonOnly), 0);
+        assert_eq!(r.just_won(JustWonMode::WinsOnly), 0);
     }
 }
