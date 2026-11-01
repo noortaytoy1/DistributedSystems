@@ -59,7 +59,9 @@ pub struct Timers {
     pub peer_heartbeat_ms: u64,
     pub bid_window_ms: u64,
     pub takeover_missed_heartbeats: u32,
+    /// First wait for a reply; each later wait doubles, up to `client_retry_max_ms` (D52).
     pub client_retry_ms: u64,
+    pub client_retry_max_ms: u64,
     pub client_max_retries: u32,
     /// How long a node keeps trying to commit one proposal (including leader changes).
     pub propose_timeout_ms: u64,
@@ -77,7 +79,8 @@ impl Default for Timers {
             bid_window_ms: 20,
             takeover_missed_heartbeats: 3,
             client_retry_ms: 2000,
-            client_max_retries: 3,
+            client_retry_max_ms: 6000,
+            client_max_retries: 5,
             propose_timeout_ms: 3000,
             peer_rpc_timeout_ms: 500,
         }
@@ -93,6 +96,9 @@ impl Timers {
     }
     pub fn client_retry(&self) -> Duration {
         Duration::from_millis(self.client_retry_ms)
+    }
+    pub fn client_retry_max(&self) -> Duration {
+        Duration::from_millis(self.client_retry_max_ms)
     }
     pub fn propose_timeout(&self) -> Duration {
         Duration::from_millis(self.propose_timeout_ms)
@@ -190,6 +196,8 @@ pub struct CampusConfig {
     pub seed: u64,
     pub zones: u16,
     pub responders: u32,
+    /// Simulated time on scene: a responder is held this long per point of severity (D111).
+    pub service_ms_per_severity: u64,
 }
 
 impl Default for CampusConfig {
@@ -198,6 +206,7 @@ impl Default for CampusConfig {
             seed: 42,
             zones: 6,
             responders: 30,
+            service_ms_per_severity: 200,
         }
     }
 }
@@ -318,10 +327,17 @@ impl Config {
                 "timers: need election_timeout_min_ms < election_timeout_max_ms".into(),
             );
         }
+        if t.client_retry_ms > t.client_retry_max_ms {
+            return invalid("timers: need client_retry_ms <= client_retry_max_ms".into());
+        }
+        if self.campus.service_ms_per_severity == 0 {
+            return invalid("campus: service_ms_per_severity must be > 0".into());
+        }
         for (name, v) in [
             ("peer_heartbeat_ms", t.peer_heartbeat_ms),
             ("bid_window_ms", t.bid_window_ms),
             ("client_retry_ms", t.client_retry_ms),
+            ("client_retry_max_ms", t.client_retry_max_ms),
             ("propose_timeout_ms", t.propose_timeout_ms),
             ("peer_rpc_timeout_ms", t.peer_rpc_timeout_ms),
         ] {

@@ -14,6 +14,7 @@ pub mod cpu;
 pub mod faults;
 pub mod heartbeat;
 pub mod rejoin;
+pub mod release;
 pub mod takeover;
 pub mod transport;
 pub mod workers;
@@ -228,6 +229,7 @@ pub async fn start_with(
     tasks.extend(faults::spawn_schedule(&ctx));
     tasks.extend(rejoin::spawn(&ctx));
     tasks.extend(bids::spawn(&ctx));
+    tasks.push(release::spawn(&ctx));
 
     Ok(NodeHandle {
         ctx,
@@ -355,6 +357,8 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
     for _ in 0..MAX_PLAN_ATTEMPTS {
         let free = ctx.state.with(|s| s.free_responders());
         let incident = req.incident.clone();
+        // Two machines' clocks: NTP error is negligible against the planner's threshold (D95).
+        let age_ms = (crate::metrics::now_us() / 1_000).saturating_sub(incident.reported_at_ms);
         let knob = CostKnob {
             extra_work: ctx.plan_work.load(Ordering::Relaxed),
         };
@@ -363,7 +367,10 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             .workers
             .run(move || {
                 let started = std::time::Instant::now();
-                (planner::plan(&incident, &free, knob), started.elapsed())
+                (
+                    planner::plan(&incident, &free, age_ms, knob),
+                    started.elapsed(),
+                )
             })
             .await?;
         ctx.bids.record_service(planning);

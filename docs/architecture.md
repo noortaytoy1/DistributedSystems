@@ -818,8 +818,8 @@ stateDiagram-v2
     Held --> Free: ReleaseResponder by the holding request
     Held --> Held: ReleaseResponder by another request (no-op)
     note right of Held
-        Nothing sends ReleaseResponder yet (D39, open):
-        responders stay held for the rest of the run.
+        The executor releases after service_ms_per_severity x severity,
+        any other serving node after twice that (D39, D111).
     end note
 ```
 
@@ -866,13 +866,13 @@ stateDiagram-v2
     end note
 ```
 
-### 8.3 A request, seen by the client (template, D52, D53)
+### 8.3 A request, seen by the client (D52, D53)
 
 ```mermaid
 stateDiagram-v2
     [*] --> Sent: assign RequestId, attempt 0, send to all 3 nodes, log client_sent
     Sent --> Done: first Reply Done(result) with this ID
-    Sent --> Retrying: no reply within client_retry_ms
+    Sent --> Retrying: no reply within the wait (2, 4, 6, 6, 6, 6 s with jitter)
     Retrying --> Sent: resend, same ID, attempt + 1
     Retrying --> GaveUp: attempts exhausted (client_max_retries)
     Done --> [*]: log client_done (latency on the client clock)

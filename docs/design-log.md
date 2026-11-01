@@ -102,10 +102,10 @@ table below in sync.
 | D33 | No leader, no executor (leader dispatch)                        | A    | Implemented       |
 | D34 | Leader dispatch is the default until bidding lands              | B    | Implemented, amended by D103 |
 | D35 | Re-plan a stale plan at most three times                        | A, E | Implemented       |
-| D36 | A node that cannot answer stays quiet                           | A, F | Implemented (confirm) |
+| D36 | A node that cannot answer stays quiet | A, F | Implemented |
 | D37 | Any serving node answers a retry from its own state             | A    | Implemented       |
 | D38 | Responders seeded once through Raft by the leader               | A, E | Implemented       |
-| D39 | Responders are never released                                   | A, E | Open              |
+| D39 | Responders released by the executor, peers as backup | A, E | Implemented |
 | D40 | Timer defaults and validation                                   | all  | Implemented       |
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Implemented, amended by D79 |
 | D42 | Takeover trigger: suspicion first, backstop max(200 ms, 3 × bid) | B, C | Implemented by D110 |
@@ -118,7 +118,7 @@ table below in sync.
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
 | D51 | Request IDs and per-machine client IDs                          | F    | Implemented       |
-| D52 | Client retry budget                                             | F    | Open              |
+| D52 | Client retry budget | F | Accepted |
 | D53 | One client process, one connection per node, shared by users    | F    | Accepted          |
 | D54 | Load generator: closed loop first, open loop as a mode          | F    | Accepted          |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
@@ -128,7 +128,7 @@ table below in sync.
 | D59 | One strict TOML config shared by every process                  | A    | Implemented       |
 | D60 | Deployment target: six Ubuntu machines on one LAN               | all  | Implemented       |
 | D61 | Peer port serves before Raft starts                             | A    | Implemented       |
-| D62 | `ctl` is the operator tool; no separate experiment runner yet   | C    | Implemented (confirm) |
+| D62 | `ctl` is the operator tool; no separate experiment runner yet | C | Accepted |
 | D63 | Experiment method: repetitions, warm-up, run length             | all  | Open              |
 | D64 | Analysis in Python                                              | all  | Pending approval  |
 | D65 | Testing strategy                                                | all  | Implemented       |
@@ -159,7 +159,7 @@ table below in sync.
 | D92 | Peer outage events: `peer_unreachable`, `peer_reconnected`      | C    | Implemented       |
 | D93 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Amended by D101   |
 | D94 | Severe incidents fall back to any capability                    | E    | Amended by D101   |
-| D95 | Incident age in the planner needs a time from the node          | A, E | Open              |
+| D95 | Incident age in the planner needs a time from the node | A, E | Implemented |
 | D96 | CPU knob: fixed hash rounds, no built-in base work              | E    | Implemented       |
 | D97 | Campus layout: zone grid, even round-robin, seeded positions    | E    | Implemented       |
 | D98 | Campus RNG: our own SplitMix64                                  | E    | Implemented       |
@@ -175,6 +175,7 @@ table below in sync.
 | D108 | Planning time: 1 µs minimum, and a 1 µs starting value           | B    | Implemented       |
 | D109 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
 | D110 | Takeover: stand by after a lost round, plan if the winner is silent | C, B | Implemented       |
+| D111 | Responder service time: 200 ms × severity | E, A | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -565,7 +566,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D39 · Responders are never released
 
-- **Date:** 2026-10-27 · **Part:** A, E · **Status:** **Open** · **Decided by:** nobody yet
+- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** A, E · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** `ReleaseResponder` exists and is tested, but nothing sends it. With 30 responders
   (the default) the first 30 committed plans hold all of them, and every later request is
   answered with `responder: None`. Load experiments would then measure a planner that has nothing
@@ -582,6 +583,19 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   owned by E with A reviewing (it adds a timer to `node/`, A's file). It needs a decision on the
   service-time model and a config key.
 - **Where.** `proto.rs::Command::ReleaseResponder`, `node/mod.rs`, `planner.rs`.
+- **Code check (2026-11-01).** Confirmed: only `state.rs` and `proto.rs` mentioned `ReleaseResponder`.
+- **Decision.** A variant of option 1 that survives a silent executor. Every serving node watches
+  the holds in its replicated state. The executor proposes `ReleaseResponder` after the service time
+  (D111), every other node after twice that.
+- **Why not the alternatives.** The log's first recommendation, executor only, leaks a responder
+  for good when the executor goes silent, which E3 and the demo cause. The agent's next suggestion, a
+  sweep by the leader, cannot leak but gives the leader a coordinator's job, which Dr Amr's notes
+  (Sept 13, Oct 28) rule out.
+- **Consequences.** One extra log entry per assigned request, more with backups, so E5's commit and
+  message counts include releases. A backup release can overlap the executor's; it is a no-op.
+- **Where.** `node/release.rs`, `state.rs::holds`, `metrics.rs::Event::ReleaseProposed`.
+- **How we check it.** `node::release::tests`; `tests/cluster.rs`: held responders return to free,
+  and a silent executor's responder is released by a peer.
 
 ---
 
@@ -1335,8 +1349,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D36 · A node that cannot answer stays quiet
 
-- **Date:** 2026-10-20 · **Part:** A, F · **Status:** Implemented; **team to confirm** ·
-  **Decided by:** A
+- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** A, F · **Status:** Implemented, confirmed · **Decided by:** A; confirmed by omar.leithym, on the agent's recommendation
 - **Context.** `ReplyBody::Rejected(reason)` exists in the protocol but no node sends it.
 - **Decision.** A node that is not serving, is not the executor, finds its worker pool full, cannot
   commit before the propose timeout, or gives up on stale plans sends **nothing**. The client's
@@ -1345,6 +1358,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   two. Silence keeps the client logic to "first `Done` wins".
 - **Open part.** Whether `Rejected` should be used for "all nodes overloaded" so the client can back
   off. Recommendation: leave it unused until F's load tests show retry storms.
+- **Confirmed (2026-11-01).** `Rejected` stays unused. Revisit only if load tests show retry storms.
 
 ### D37 · Any serving node answers a retry from its own state
 
@@ -2004,8 +2018,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D95 · Incident age in the planner needs a time from the node
 
-- **Date:** 2026-10-30 · **Part:** A, E · **Status:** **Open** · **Decided by:** nobody yet
-  (Yahia Kilany chose to leave age out for now)
+- **Date:** 2026-10-30, settled 2026-11-01 · **Part:** A, E · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** The spec wants age in the decision. The planner has no clock (D30) and gets only
   `(incident, free, knob)`. `incident.reported_at_ms` is on the client clock. The node notes the
   arrival time (`started` in `handle_request`) only to measure latency.
@@ -2021,6 +2034,16 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Recommendation for using it.** An old incident gets the same any-capability fallback as a
   severe one (D94).
 - **Where.** `node/mod.rs::execute` (A), `planner.rs::plan` (E).
+- **Decision.** The node computes `age_ms = now − reported_at_ms` (saturating at 0) and passes it to
+  `plan()`, so the planner stays clock-free. At `OLD_AGE_MS = 5000` or more, an incident gets the same
+  any-capability fallback as a severe one (D94).
+- **Why.** The log's recommended option, time since this node received the request, restarts on
+  every retry and would stay near zero, so the fallback would almost never fire. True age survives
+  retries. It mixes two machines' clocks, but NTP error of milliseconds is negligible against 5 s.
+  D56 restricts *measured durations*; this is a coarse input to a decision. The plan is committed
+  through Raft, so nodes cannot diverge even if their clocks differ. The spec requires age.
+- **Consequences.** A client clock wrong by seconds changes when the fallback fires, not safety.
+- **Where.** `node/mod.rs::execute`, `planner.rs`. **How we check it.** `planner::tests`.
 
 ### D96 · CPU knob: fixed hash rounds, no built-in base work
 
@@ -2174,7 +2197,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D52 · Client retry budget
 
-- **Date:** 2026-10-27 · **Part:** F · **Status:** **Open**
+- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** F · **Status:** Accepted, config in this PR, client in `part-f-client` · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §6.3: reply timeout 2 s, up to **5** retries with exponential backoff and
   random jitter, a total budget of about 30 s, "longer than the longest silence (20 s) plus an
   election". The config defaults are `client_retry_ms = 2000` and `client_max_retries = 3`, a fixed
@@ -2186,6 +2209,17 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
      failover at 3,000 users (Kleppmann ch. 8).
 - **Recommendation.** Option 2 for the client (F), and update `config.rs` defaults (A) and
   `protocol.md` in the same PR. Lost requests (FT-1, FT-8) must be 0 either way.
+- **Decision.** Option 2. 5 retries, so 6 sends. The waits are 2, 4, 6, 6, 6, 6 s: the wait doubles
+  from `client_retry_ms = 2000` up to the new `client_retry_max_ms = 6000`, each with ±20% random
+  jitter. Total about 30 s. When the budget runs out `submit` returns an error.
+- **Why.** Exactly Phase 1's budget, longer than a 20 s silence plus an election. Jitter avoids a
+  synchronised retry burst after a failover. Dr Amr's class notes (Sept 13) also ask for "5 retries
+  then if still no response then send error".
+- **Consequences.** A failed request takes about 30 s to report. Takeover's `stand_by` and the bid
+  round's grace still use the first wait, `client_retry_ms`, as "when the next round starts", which
+  is now a lower bound; a stand-by that ends before a later, longer wait simply leaves that attempt
+  to the following retry.
+- **Where.** `config.rs::Timers`, `client.rs`. **How we check it.** `tests/client.rs`, FT-1, FT-8.
 
 ### D53 · One client process, one connection per node, shared by users
 
@@ -2272,14 +2306,14 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D62 · `ctl` is the operator tool; no separate experiment runner yet
 
-- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented; **team to confirm** whether a
-  runner is still planned
+- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** C · **Status:** Accepted · **Decided by:** omar.leithym, on the agent's recommendation
 - **Decision.** `ctl status` shows role, term, leader, log index, applied index, digest, result
   count, `serving` and `silenced` for every node. `ctl silence --node N --ms M` and
   `ctl skew --node N --work W` inject faults and imbalance. The Phase 1 "experiment runner" (start
   everything, set load, collect logs) does not exist yet; `scripts/run-local.sh` covers one machine.
 - **Recommendation.** A bash runner in `scripts/` that SSHes to the six machines, starts nodes and
   load generators with a run's config, and copies the logs back.
+- **Confirmed (2026-11-01).** `ctl` stays the operator tool. The runner is bash over SSH and rsync, in `scripts/`, driven by a hosts file (`shared-experiments` PR).
 
 ---
 
@@ -2413,3 +2447,29 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   to explain their part; a decision they were asked about is one they can explain.
 - **Consequences.** Slower prompts; more questions per task. Worth it for a graded design.
 - **Where.** AGENTS.md "Design decisions", `.claude/skills/grill-with-docs/SKILL.md`.
+
+---
+
+## 15. Finishing Phase 1 (November 2026)
+
+Dr Amr's class notes and the project description were reviewed on 2026-11-01. Several entries below
+exist because of them.
+
+### D111 · Responder service time: 200 ms × severity
+
+- **Date:** 2026-11-01 · **Part:** E, A · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** Releasing a responder (D39) needs a simulated time on scene. It sets capacity: with
+  30 responders, holds averaging S seconds allow about 30/S assignments per second. Beyond that,
+  plans correctly return `responder: None`.
+- **Options considered.**
+  1. *200 ms × severity*: holds of 200–1000 ms, average 600 ms, about 50 assignments per second.
+  2. *Fixed 500 ms*: about 60 per second; severity has no effect on the simulation.
+  3. *1 s × severity*: average 3 s, about 10 per second; most requests under load get no responder.
+- **Decision.** Option 1, with new key `campus.service_ms_per_severity = 200`.
+- **Why.** Severe incidents hold responders longer, capacity does not depend on run length, and the
+  load experiments still exercise the planner's normal path.
+- **Consequences.** It is a labelled simulation parameter, not a measurement. Analysis must report
+  the share of `responder: None` plans next to latency, because they are cheaper than real
+  assignments.
+- **Where.** `config.rs::CampusConfig`, `node/release.rs`.
+- **How we check it.** `node::release::tests`, `tests/cluster.rs`.
