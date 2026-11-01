@@ -45,6 +45,10 @@ client                          every node
   Every `Done` reply for one ID carries the same committed result, whichever node sends it.
 - A node that already has a committed result for an ID answers a retry straight from its state.
 
+**Connections (D112).** A client keeps one connection per node and pings on it with
+`Control(Status)` every 1 s. Nothing received for 3 s replaces the connection. A silenced node still
+answers, so it keeps its connection.
+
 ## Control protocol (`ctl`)
 
 Sent on the client port as `ClientFrame::Control`, answered with `ServerFrame::Control`. Control

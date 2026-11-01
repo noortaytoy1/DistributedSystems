@@ -197,6 +197,15 @@ pub enum Event {
         request: RequestId,
         attempts: u32,
     },
+    /// A client connection to `node` was opened (D112).
+    ClientLinkUp {
+        node: NodeId,
+    },
+    /// A client connection to `node` closed or stopped answering pings (D112).
+    ClientLinkDown {
+        node: NodeId,
+        reason: String,
+    },
 }
 
 #[derive(Serialize)]
