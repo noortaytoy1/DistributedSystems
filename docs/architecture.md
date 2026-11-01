@@ -158,7 +158,7 @@ flowchart TB
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
 | C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
-| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), template (`LoadInputs`) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
+| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), template (`LoadInputs`), planned (`/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), template (bidding) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built (worker pool), template (planner, campus) | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner (D49). |
@@ -278,7 +278,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
 | `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D78) | built | `FaultOrder` |
-| Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | open     | `Claim` |
+| Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | —        | `Claim` |
 | PreVote                         | —                      | not available in openraft 0.9.25 (D5)                | open     | `PreVote` |
 
 ### 5.3 Multiplexed peer calls
@@ -477,7 +477,10 @@ sequenceDiagram
 ### 6.6 Normal request under bidding (template, D2, D43–D45)
 
 What the bidding path will look like once B wires it in. Every serving node computes the same
-winner from the same bids; there is no separate "you won" message.
+winner from the same bids; there is no separate "you won" message. Each node times the window from
+when the request reaches it (D43), so windows are slightly offset; two nodes that saw different
+bids can both plan, and the first commit wins (D27). The score starts as expected wait with no CPU
+part (D45).
 
 ```mermaid
 sequenceDiagram
@@ -501,8 +504,8 @@ sequenceDiagram
         N3->>N2: Bid(k1-42, score 520)
     end
     Note over N1,N3: window closes: ranking = [2, 3, 1], winner 2, takeover order 3 then 1
-    Note over N1,N3: every node adds the win to node 2's just_won
-    N2->>N2: plan on the worker pool
+    Note over N2: node 2 adds 1 to its own just_won, others count nothing
+    N2->>N2: job enters the worker pool, just_won back down by 1, then plan
     N2->>N1: Propose(CommitResult k1-42) (forwarded, N1 leads)
     N1->>N2: AppendEntries [CommitResult]
     N1->>N3: AppendEntries [CommitResult]
@@ -969,6 +972,10 @@ flowchart LR
 | E4   | silence length × load   | time to pass the rejoin check, entries replayed     | D     | FT-4, FT-5, FT-6 |
 | E5   | faults on or off        | elections, messages by type, commit latency (local vs forwarded) | A | — |
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
+| Burst | `just_won` on or off, requests in bursts | longest winning streak, largest queue difference, p99 | B | — |
+
+Part B runs its tests in a fixed order, each with its rule written first (D83): P-2, E6, burst, E1,
+then LB-2.
 
 | Phase 1 test | Scenario                                     | Pass when                                       | Status |
 |--------------|----------------------------------------------|-------------------------------------------------|--------|
@@ -1005,14 +1012,15 @@ The report should say what changed between the submitted design and the built sy
 | Recompute once, then tell the client "retry"           | Re-plan up to 3 times, then stay quiet                        | D35, D36 |
 | No separate failure detector                           | Peer heartbeats so followers see each other                   | D41 |
 | Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms); open                       | D42 |
-| Bid window from the first bid seen                     | From request arrival; open                                    | D43 |
-| `Claim` message                                        | Local `just_won` count; open                                  | D44 |
+| Bid window from the first bid seen                     | From request arrival; P-2 confirms or overturns it            | D43 |
+| `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
+| Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
 | `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D78 |
 | Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |
 | Worker threads = cores − 1                             | `workers.threads`, default 4, set per machine in the lab config | D48 |
-| External busy loop for LB-2                            | Planner CPU knob, `ctl skew`                                  | D49 |
+| External busy loop for LB-2                            | Planner CPU knob, `ctl skew`; E6 case (b) still uses an outside busy loop | D49, D83 |
 | ≥ 10 repetitions                                       | ≥ 5 in AGENTS.md; open                                        | D63 |
 
 ---
@@ -1029,6 +1037,6 @@ The report should say what changed between the submitted design and the built sy
 ## 14. Open questions
 
 All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D5
-(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D43 (bid window
-start), D44 (claims), D52 (client retry budget), D63 (repetitions). Each stays open until someone
+(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D52 (client retry
+budget), D63 (repetitions). Each stays open until someone
 implements the related code; that person settles it first, during "grill with docs".
