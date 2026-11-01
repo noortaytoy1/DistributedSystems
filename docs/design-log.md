@@ -109,9 +109,9 @@ table below in sync.
 | D40 | Timer defaults and validation                                   | all  | Implemented       |
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Accepted (confirm) |
 | D42 | Takeover trigger                                                | B, C | Open              |
-| D43 | When the bid window starts                                      | B    | Open              |
-| D44 | No `Claim` message; `just_won` in the load score                | B    | Open              |
-| D45 | Load score formula and tie-break                                | B    | Proposed          |
+| D43 | When the bid window starts                                      | B    | Accepted          |
+| D44 | No `Claim` message; `just_won` in the load score                | B    | Accepted          |
+| D45 | Load score formula and tie-break                                | B    | Accepted          |
 | D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Accepted          |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
@@ -140,9 +140,11 @@ table below in sync.
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
 | D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented |
+| D82 | CPU usage read from /proc/stat                                  | B    | Accepted          |
+| D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
 
-**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D49
-and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
+**Open decisions:** D5, D17, D39, D42, D52, D63, plus the open parts of D36, D49 and D62. Most
+are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
 decide with the options and recommendation listed in the entry, and updates the entry (status,
@@ -205,8 +207,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   first-commit-wins (D27) makes that harmless, at the cost of duplicate work, which we measure.
 - **Where.** `src/bidding.rs`, `PeerBody::Bid`, `node::decide_executor`, `policy.assignment`.
 - **How we check it.** E1 (policies), E6 (score variants), LB-1, LB-2, LB-3.
-- **Report notes.** Open sub-decisions: D42 (takeover), D43 (bid window start), D44 (claims), D45
-  (score formula).
+- **Report notes.** Open sub-decision: D42 (takeover). Settled sub-decisions: D43 (bid window
+  start), D44 (claims), D45 (score formula).
 
 ### D3 · Leader dispatch kept as a measured baseline
 
@@ -816,41 +818,134 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D43 · When the bid window starts
 
-- **Date:** 2026-10-27 · **Part:** B · **Status:** **Open**
+- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted (P-2 confirms or
+  overturns it) · **Decided by:** Ahmed Abdeen
 - **Context.** Phase 1 §6.3: the bid window closes "20 ms after the first bid seen". `bidding.rs`
   and `protocol.md`: "bid round closes `bid_window_ms` after the request arrives".
 - **Options considered.**
   1. *From request arrival*: simple and local, but nodes receive the request at slightly different
      times, so their windows are offset.
-  2. *From the first bid seen*: windows line up better across nodes; a lost first bid shifts it.
-- **Recommendation.** Option 1 for the first version (less state), measure the wrong-winner rate
-  in P-2's window sweep (5, 10, 20, 50 ms), switch if it is high.
+  2. *From the first bid seen*: windows line up better across nodes; more state, and a lost first
+     bid shifts the window.
+- **Decision.** Option 1. Each node opens the round when the client request arrives and closes it
+  `bid_window_ms` later, by its own monotonic clock. A bid that arrives before the request opens
+  the round early and is kept.
+- **Why.** No cross-node timing and less state. The only cost of offset windows is a *split
+  decision*: two nodes each think they won because they saw different bids. That is harmless
+  because the first commit wins (D27); it only wastes planning work, and we measure how often it
+  happens.
+- **Consequences.** Split decisions are possible and are counted. The window length is set by
+  P-2 (D83).
+- **Where.** `bidding.rs::BidRound`, `node/mod.rs` (hooks, A to review).
+- **How we check it.** P-2 (D83): split-decision rate per window length. **Rule fixed before the
+  test:** if the split-decision rate is above 1 % at every window up to 20 ms, switch to option 2
+  and log it as a new entry.
 
 ### D44 · No `Claim` message; `just_won` in the load score
 
-- **Date:** 2026-10-27 · **Part:** B · **Status:** **Open**
+- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted (burst test in
+  D83 confirms or overturns it) · **Decided by:** Ahmed Abdeen
 - **Context.** Phase 1 had a `Claim` message ("I am working on this") so peers add the request to
-  the winner's load at once. `proto.rs` has no `Claim`; instead `LoadInputs::just_won` counts rounds
-  a node won whose jobs have not reached its queue yet.
+  the winner's load at once. `proto.rs` has no `Claim`.
+- **Research.** Sending work to the node that *looked* least loaded makes many requests pile onto
+  it before its load updates (Mitzenmacher, "How Useful Is Old Information?", IEEE TPDS 2000;
+  Dahlin, "Interpreting Stale Load Information", IEEE TPDS 2000). Something must count work
+  that has been won but not yet started.
 - **Options considered.**
-  1. *Claim message*: peers know immediately; 2 more messages per request; a proto change.
-  2. *Local `just_won`*: every node computes the same winner from the same bids, so every node can
-     add the win to the winner's count itself; no extra message.
-- **Recommendation.** Option 2: bidding is deterministic given the bids, so a claim tells peers
-  nothing new. Revisit if E6 shows herding (one node winning many rounds in a burst).
+  1. *Claim message*: peers learn of the win for certain, even if they saw different bids; 2 more
+     messages per request; a `proto.rs` change every owner must review.
+  2. *Local `just_won`*: a node that wins a round counts the win itself, so its next bids already
+     include it; no extra message.
+- **Decision.** Option 2. A node increases its own `just_won` when it wins a round and decreases it
+  when that job enters the worker pool (or the round's request is decided elsewhere). Only a node's
+  own `just_won` goes into its own bid; nodes do not keep a count for their peers.
+- **Why.** Bidding is deterministic given the bids, so a claim usually tells peers nothing new.
+  It only adds information after a split decision, which D43 keeps rare.
+- **Consequences.** After a split decision, two nodes count the same request in their own
+  `just_won`; it clears when the job starts or the request commits elsewhere.
+- **Where.** `bidding.rs::LoadInputs::just_won`, `BidRound`.
+- **How we check it.** Burst test in D83. **Rule fixed before the test:** keep option 2 if turning
+  `just_won` on lowers the longest winning streak or the largest queue difference between nodes
+  under bursts. Add a `Claim` message (new entry, `proto.rs` change) only if pile-ups remain with
+  `just_won` on.
 
 ### D45 · Load score formula and tie-break
 
-- **Date:** 2026-10-20 · **Part:** B · **Status:** Proposed (in the `bidding.rs` template) ·
-  **Decided by:** B to confirm
-- **Decision (proposed).** `score = (queued + running + just_won + 1) × recent_service_us ÷ workers
-  + w × cpu_permille`, integers only. Lowest wins; ties go to the lower node ID. The ranking is
-  also the takeover order.
-- **Why.** The first term estimates how long a new job would wait on this node (Eager, Lazowska and
-  Zahorjan; queue length is the best simple load index). CPU covers load from outside our process
-  (LB-2's busy loop). The `+1` makes an idle node with a slow planner lose to an idle node with a
-  fast one.
-- **Open part.** The CPU weight `w`, chosen with E6. Phase 1 started with equal weights.
+- **Date:** 2026-10-20, settled 2026-10-30 · **Part:** B · **Status:** Accepted (starting value;
+  E6 decides the CPU part) · **Decided by:** Ahmed Abdeen
+- **Research.**
+  - Indices based on queue length predicted performance better than utilisation indices such as
+    CPU %, and a smoothed queue length beat an instantaneous one (Ferrari and Zhou, UC Berkeley
+    UCB/CSD-87-353, 1987).
+  - Of six single load descriptors, run-queue length was best; combining it with another
+    descriptor did not improve on it (Kunz, IEEE TSE 17(7), 1991).
+  - Simple policies using little state get most of the benefit (Eager, Lazowska and Zahorjan,
+    IEEE TSE 1986).
+- **Options considered.** Expected wait without CPU; expected wait plus `w × cpu_permille`;
+  queue length only; CPU only.
+- **Decision.** Starting formula, integers only:
+  `score = (queued + running + just_won + 1) × recent_service_us ÷ workers`, that is, `w = 0`.
+  Lowest wins; ties go to the lower node ID. The ranking is also the takeover order.
+- **Why.**
+  - The score estimates how long a new job would wait on this node: research's best index
+    (queue length) turned into time.
+  - Outside CPU load (LB-2's busy loop, `ctl skew`) makes planning slower, so
+    `recent_service_us`, and with it the score, already rises without a CPU term.
+  - The `+1` makes an idle node with a slow planner lose to an idle node with a fast one.
+- **Known gap.** A node with no recent jobs keeps an old `recent_service_us`, so outside load on an
+  *idle* node is invisible until it plans again. This is the one case a CPU term could fix, and E6
+  tests it on purpose.
+- **Where.** `bidding.rs::load_score`, `pick_winner`, `ranking`.
+- **How we check it.** E6 (D83).
+- **Report notes.** Phase 1 started with equal weights for the queue and CPU parts; this entry
+  starts with no CPU part and lets E6 decide whether to add one.
+
+### D82 · CPU usage read from /proc/stat
+
+- **Date:** 2026-10-30, read method settled 2026-11-01 · **Part:** B · **Status:** Accepted ·
+  **Decided by:** Ahmed Abdeen
+- **Context.** E6 compares score variants with and without a CPU part, so the node needs
+  `cpu_permille`. The repo has no library for it.
+- **Options considered.**
+  1. Read `/proc/stat` ourselves: about 20 lines, no new dependency; Linux only.
+  2. Add the `sysinfo` crate: less code, any OS; a new dependency needs team agreement.
+- **Decision.** Option 1. Sample the `cpu` line every 100 ms and compute busy permille from the
+  difference between samples. On a system without `/proc/stat`, report 0 and log one warning.
+  Every read runs on a helper thread (`spawn_blocking`), never directly on the async runtime.
+- **Why.** The deployment target is Ubuntu only (AGENTS.md), and it adds no dependency. A first
+  draft also allowed a short direct read; that was removed because AGENTS.md forbids blocking file
+  I/O in async code, and a stalled runtime thread could disturb the 20 ms bid window.
+- **Consequences.** The sampler is I/O, so it lives in `node/`, never in `bidding.rs`, which stays
+  pure.
+- **Where.** A small sampler in `node/` (A to review); the value is passed into
+  `bidding::LoadInputs::cpu_permille`.
+
+### D83 · Part B tests: variants, order and decision rules
+
+- **Date:** 2026-10-30, run count settled 2026-11-01 · **Part:** B · **Status:** Accepted ·
+  **Decided by:** Ahmed Abdeen
+- **Context.** Every Part B choice must be backed by research and by a test whose rule is written
+  before the run, so results cannot be picked afterwards.
+- **Order.** Each test fixes a value the next one uses; every other setting stays at its current
+  value while one is tested.
+
+| Order | Test | Varies | Measures | Rule fixed before the test |
+|---|---|---|---|---|
+| 1 | P-2 | `bid_window_ms` = 5, 10, 20, 50 (after measuring LAN RTT) | split-decision rate, p99 latency | Smallest window with split decisions under 1 % |
+| 2 | E6 | score: expected wait (w = 0); expected wait + CPU (w > 0); queue only; CPU only. Two skew cases: (a) `ctl skew` on one busy node, (b) outside busy loop on one node at low load | p50/p99 latency, share per node, fairness index | Lowest p99 at high load; if 95 % confidence intervals overlap, the variant with fewer parts wins. A CPU part is adopted only if it wins case (b) without losing case (a) |
+| 3 | Burst | `just_won` on / off, requests in bursts | longest winning streak, largest queue difference, p99 | Rule in D44 |
+| 4 | E1 | users × policy (bidding, leader dispatch) | latency percentiles, throughput, fairness, client gap during a leader failure | Keep bidding if p99 is not worse at normal load and the client gap during a leader failure is smaller |
+| 5 | LB-2 | one overloaded node, final settings | share per node | Overloaded node's share falls below one third |
+
+- **Method.** At least 5 runs per cell for every test above for now, 30 s warm-up dropped
+  (AGENTS.md). Tuning runs (P-2, E6, burst) run at a medium and a high load level. Final settings
+  are measured on the lab machines.
+- **Run count.** Five is Part B's choice for its own tests, not a team rule: the team-wide count
+  stays open in D63. E1 is shared with F, so F reviews this. If D63 settles on more, E1 and LB-2
+  follow it.
+- **Recording.** Each result, including losing variants, is added to the matching entry as
+  **Result:** with the numbers, and whether the research expectation held. A result that overturns
+  a starting value gets a new entry; the old one is marked `Superseded`.
 
 ---
 
@@ -1106,6 +1201,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   AGENTS.md and `experiments/README.md`: at least **5** repetitions, drop a 30 s warm-up.
 - **Recommendation.** 10 repetitions as submitted, with 5 as the floor if lab time runs out, and say
   which in the report. Keep each run's config and git commit hash next to its logs.
+- **Part B note (2026-11-01).** Part B runs its own tests 5 times for now (D83). That does not
+  settle this entry, which stays open for the team.
 
 ### D64 · Analysis in Python
 
