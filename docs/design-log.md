@@ -110,7 +110,7 @@ table below in sync.
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Accepted (confirm) |
 | D42 | Takeover trigger                                                | B, C | Open              |
 | D43 | When the bid window starts                                      | B    | Accepted          |
-| D44 | No `Claim` message; `just_won` in the load score                | B    | Accepted          |
+| D44 | No `Claim` message; `just_won` in the load score                | B    | Accepted, amended by D85 |
 | D45 | Load score formula and tie-break                                | B    | Accepted          |
 | D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Accepted          |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
@@ -142,6 +142,11 @@ table below in sync.
 | D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented |
 | D82 | CPU usage read from /proc/stat                                  | B    | Accepted          |
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
+| D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Accepted          |
+| D85 | `just_won` also counts open rounds a node is leading            | B    | Accepted          |
+| D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Accepted          |
+| D87 | The four load score variants                                    | B    | Accepted          |
+| D88 | Bid rounds as pure state in `bidding.rs`; takeover helper left out | B | Accepted          |
 
 **Open decisions:** D5, D17, D39, D42, D52, D63, plus the open parts of D36, D49 and D62. Most
 are conflicts between the Phase 1 architecture document and the code. They stay
@@ -843,8 +848,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D44 · No `Claim` message; `just_won` in the load score
 
-- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted (burst test in
-  D83 confirms or overturns it) · **Decided by:** Ahmed Abdeen
+- **Date:** 2026-10-27, settled 2026-10-30 · **Part:** B · **Status:** Accepted, amended by D85
+  (burst test in D83 confirms or overturns it) · **Decided by:** Ahmed Abdeen
 - **Context.** Phase 1 had a `Claim` message ("I am working on this") so peers add the request to
   the winner's load at once. `proto.rs` has no `Claim`.
 - **Research.** Sending work to the node that *looked* least loaded makes many requests pile onto
@@ -946,6 +951,134 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Recording.** Each result, including losing variants, is added to the matching entry as
   **Result:** with the numbers, and whether the research expectation held. A result that overturns
   a starting value gets a new entry; the old one is marked `Superseded`.
+
+### D84 · One bid round per request and attempt; `attempt` added to `Bid`
+
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on
+  the agent's recommendation
+- **Context.** `Bid { request, score }` has no attempt number. When a client retries a request, for
+  example because the winner went silent, the nodes need a fresh round in which the silent node does
+  not bid. A round keyed only by `RequestId` would mix the bids of the old and new attempts.
+  `ClientRequest` already carries `attempt`.
+- **Options considered.**
+  1. *Add `attempt: u32` to `Bid` and key rounds by `(request, attempt)`*: exact and small; a
+     `proto.rs` change with the reviews that needs.
+  2. *Key by `RequestId` only*: a bid arriving more than 10 × `bid_window_ms` after the old round
+     closed starts a new round. No message change, but it relies on a timing guess, so a slow network
+     or heavy load could mix attempts.
+- **Decision.** Option 1. `bidding::RoundKey` is `(RequestId, u32)`. A straggler from an old attempt
+  stays in that attempt's closed round and does nothing.
+- **Why.** It is exact, and the cost is one integer in one message.
+- **Consequences.** `proto.rs`, `docs/protocol.md` and the reviews from the owners who send or receive
+  `Bid` come with the wiring PR, so the message and the code that sends it change together. Until
+  then only `bidding.rs` knows about attempts.
+- **Where.** `bidding.rs::RoundKey`, `BidRounds`; `proto.rs::Bid` in the wiring PR.
+- **How we check it.** Unit test `attempts_of_one_request_never_mix`; multi-node silenced-winner test.
+
+### D85 · `just_won` also counts open rounds a node is leading
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted (burst test in D83 confirms or overturns
+  it) · **Decided by:** Ahmed Abdeen, on the agent's recommendation. Amends D44.
+- **Context.** A win only exists once a round closes, 20 ms after it opens. In a burst, every round
+  opens inside that window, so counting only wins not yet queued (D44) leaves the node looking idle:
+  it bids the same low score in all of them and wins them all. This is the herding of Mitzenmacher
+  (2000) and Dahlin (2000).
+- **Options considered.**
+  1. *Wins not yet queued, plus open rounds this node is leading on the bids received so far*: uses
+     what the node already knows, no new message. A little more logic. It helps only once the other
+     bids have arrived, usually within a millisecond on a LAN, so requests arriving at the same
+     instant can still pile up.
+  2. *Wins not yet queued only*: simplest, but a burst inside one window can all land on one node.
+  3. *Break near-ties with a per-request hash* (rendezvous hashing; Thaler and Ravishankar 1998):
+     spreads a burst, but changes the tie-break settled in D45 and needs a definition of "near".
+- **Decision.** Option 1. A node is leading a round if it has bid and its (score, ID) is the best so
+  far. A leading round stops counting when it closes, and becomes a win if the node still leads. The
+  count is read before the node adds its own bid, so a round never counts itself. A win stops counting
+  when the job reaches the worker pool or is refused, when the request is decided elsewhere, or when
+  the round is forgotten, so the count cannot stay raised by a job nobody reported.
+- **Why.** It closes the gap the burst test is about, without a new message.
+- **Consequences.** `bidding::JustWonMode` has three settings (off, wins only, wins and leading),
+  which the burst test compares. D83 said on/off; the middle setting is added so the test can show
+  whether counting leading rounds earns its extra code.
+- **Where.** `bidding.rs::BidRounds::just_won`, `JustWonMode`.
+- **How we check it.** Unit test `counting_leading_rounds_raises_each_bid_in_a_burst`; burst test in
+  D83, under the rule in D44.
+
+### D86 · Planning time: running average with gain 1/8, starts at 1000 µs
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** The score needs `recent_service_us`, and `node/workers.rs` does not provide it (D73).
+  Single jobs vary, and one slow job should not make a node look slow from then on. A node that has
+  planned nothing has no value yet.
+- **Options considered (averaging).**
+  1. *Running average*: each job moves the average 1/8 of the way towards it. One stored number,
+     whole-number arithmetic.
+  2. *Mean of the last N jobs*: easy to explain, but stores N times and needs a choice of N.
+  3. *Last job only*: simplest, but one slow job makes the node look slow until its next job.
+- **Options considered (starting value).**
+  1. *Config key, 1000 µs, replaced by the first real job*: all nodes start equal.
+  2. *The same value as a constant*: one less key, but changing it needs a rebuild.
+  3. *Zero*: no key, but the score multiplies by planning time, so a node with no finished job scores
+     0 however long its queue, and a burst at startup can all land on it.
+- **Decision.** Running average with gain 1/8 and option 1 for the start:
+  `policy.initial_service_us = 1000`. The first job replaces the starting value. Shifting truncates,
+  so the average settles within 7 µs of a steady input.
+- **Why.** Research favours a smoothed load index (Ferrari and Zhou 1987). A larger divisor is steadier
+  but slower to notice a real slowdown: from 10 ms, one 50 ms job moves the average to 30 ms at 1/2, 15
+  ms at 1/8 and 11 ms at 1/32, while getting within 10 % of a lasting 50 ms takes about 4, 18 and 74
+  jobs. 1/8 is the gain of TCP's round-trip estimator (Jacobson 1988).
+- **Consequences.** 1/8 is a borrowed starting point, not a value measured for this system, and no
+  planned test varies it. 1000 µs is a placeholder that stops mattering after one job. The config key
+  and the timing of each job come with the wiring PR.
+- **Where.** `bidding.rs::ServiceTime`; `config.rs` in the wiring PR.
+- **How we check it.** Unit tests on `ServiceTime`.
+- **Report notes.** Say "we started from TCP's well-tested value", not "1/8 is best".
+
+### D87 · The four load score variants
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted (E6 compares them) · **Decided by:** Ahmed
+  Abdeen, on the agent's recommendation
+- **Context.** D45 and D83 name four scores for E6, but "queue only" and "CPU only" were not defined
+  precisely, and the 21 October draft of `bidding.rs` had a fixed CPU weight of 10.
+- **Options considered.**
+  1. *Simple versions*: queue only is `queued + running + just_won`; CPU only is `cpu_permille`. Each
+     tests one idea. CPU only will often tie, and ties go to the lower node ID, which is part of what
+     the test should show.
+  2. *Queue only without `just_won`*: the queue length of the papers, but it ignores recent wins, so
+     bursts would blur the comparison with the main formula.
+- **Decision.** Option 1. `bidding::ScoreVariant` has `ExpectedWait` (D45's formula, the starting
+  choice), `ExpectedWaitCpu { cpu_weight }` (that plus `cpu_weight × cpu_permille`), `QueueOnly` and
+  `CpuOnly`. The fixed weight is gone: the weight is passed in, and its value is set with the config
+  keys in the wiring PR.
+- **Why.** E6 compares different ideas, so each variant should be easy to explain and to tell apart.
+- **Consequences.** All scores saturate instead of overflowing. Scores from different variants are in
+  different units, so every node in a run must use the same variant.
+- **Where.** `bidding.rs::ScoreVariant`, `load_score`.
+- **How we check it.** Hand-computed unit tests for each variant; E6.
+
+### D88 · Bid rounds as pure state in `bidding.rs`; takeover helper left out
+
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Accepted · **Decided by:** Ahmed Abdeen, on the
+  agent's recommendation
+- **Context.** Branch `part-b-bidding` (21 October) already had the score, the ranking, a `BidRound`
+  and about 20 tests, written before D43–D45 were settled. It had no collection of rounds, could not
+  keep a bid that arrived before the request, and included an `executor` helper for takeover.
+- **Options considered.**
+  1. *Reuse that code and change what no longer fits*: faster, and working tests carry over.
+  2. *Start from scratch*: matches the decisions exactly, but redoes tests that already work.
+- **Decision.** Option 1. `bidding::BidRounds` holds every round and the node's wins, as pure state
+  with every time passed in. A round waits for its request, runs its window, then closes. A bid for a
+  round whose request never reaches this node stays waiting until it is forgotten, and never starts a
+  window. A bid exactly at the deadline is late even if the timer has not closed the round yet, so the
+  result does not depend on when the timer task runs. The grace period is an argument; its value comes
+  with the wiring PR. The `executor` helper is removed until the takeover decision (D42) is made;
+  `ranking` stays, because it is also the takeover order.
+- **Why.** Pure state can be tested without a network or a clock (AGENTS.md, deterministic core).
+- **Consequences.** Nothing calls this code yet; `decide_executor` still falls back to leader dispatch
+  until the wiring PR.
+- **Where.** `bidding.rs::BidRounds`.
+- **How we check it.** Unit tests at the bottom of `bidding.rs`.
 
 ---
 
