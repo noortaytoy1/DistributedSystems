@@ -46,7 +46,7 @@ injected failures of up to 20 s, rejoin with state recovery, and stress tests wi
 | An election picks the coordinator                          | Raft leader election (openraft)                                         | built    | D1, D14   |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | template (bidding), built (baseline) | D2, D3, D45 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built (Raft failover), template (takeover) | D12, D13, D41, D42 |
-| The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D72 |
+| The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
 | One answer per report, even with retries and duplicates   | Unique request IDs, first commit wins, reply after commit               | built    | D8, D9, D27 |
 | Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E6                    | built (logging), planned (runs) | D55, D56, D63 |
 
@@ -164,10 +164,10 @@ flowchart TB
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | template | Plans off the async runtime with a bounded queue (D48); deterministic planner (D49). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
-| C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D72, D5). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults from the leader, never overlapping (D12, D75); all of it switchable off with `faults.enabled` / `--faults off` (D74). |
+| C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D75, D5). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); scheduled faults from the leader, never overlapping (D12, D78); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
-| —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D76). New since Phase 1. |
+| —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
 | K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | template | Seeded random incidents. |
 | K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | template | Users, duration, think time, seed (D54). |
@@ -268,16 +268,16 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `ClientFrame::Request(ClientRequest { id, attempt, incident })` | client → all nodes | ask for a plan | built | `IncidentRequest` |
 | `ServerFrame::Reply(ClientReply { id, from, body: Done(result) })` | node → client | the committed result | built | `ResponsePlan` |
 | `ReplyBody::Rejected(reason)`   | node → client          | defined, never sent (D36)                            | unused   | — |
-| `ClientFrame::Control(Status / Silence / SkewLoad)` | ctl → node | inspect and inject faults            | built (`Silence` rejects overlaps and durations outside 1 ms to 20 s, D71) | experiment runner port |
+| `ClientFrame::Control(Status / Silence / SkewLoad)` | ctl → node | inspect and inject faults            | built (`Silence` rejects overlaps and durations outside 1 ms to 20 s, D74) | experiment runner port |
 | `PeerBody::Raft(AppendEntries)` | leader → follower      | replicate; empty = Raft heartbeat                    | built    | `AppendEntries` |
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
 | `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2)                          | template | `Bid` |
-| `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D76) | built | — (new) |
-| `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D73) | built | — (new) |
+| `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D79) | built | — (new) |
+| `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
-| `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D75) | built | `FaultOrder` |
+| `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D78) | built | `FaultOrder` |
 | Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | open     | `Claim` |
 | PreVote                         | —                      | not available in openraft 0.9.25 (D5)                | open     | `PreVote` |
 
@@ -570,7 +570,7 @@ sequenceDiagram
     Note over N1: proposals it had in flight: forwarded attempts time out, retried with the new leader
 ```
 
-### 6.9 A node rejoins and catches up (built, D46, D72)
+### 6.9 A node rejoins and catches up (built, D46, D75)
 
 The returning node copies only what it missed by log replay (D24, D32), then the rejoin gate lets
 it serve again (D46).
@@ -591,7 +591,7 @@ sequenceDiagram
     R-->>L: success, matched 140
     Note over R: apply 96 to 140: same results, same digest as the others
     Note over R: first accepted AppendEntries: a current leader exists, term is current
-    R->>L: ReadIndex (D73)
+    R->>L: ReadIndex (D76)
     L->>N2: heartbeat to confirm it still leads
     N2-->>L: ok (majority with L)
     L-->>R: ReadIndex(commit 140)
@@ -603,10 +603,10 @@ sequenceDiagram
 If the returning node is still the leader (a silence shorter than an election timeout), no other
 leader sends it AppendEntries. It then asks itself: openraft's `get_read_log_id` succeeds only
 once a majority confirms it still leads; a stale leader's check fails and it waits for the new
-leader's AppendEntries instead (D72, D73). A node that hears from no current leader stays
+leader's AppendEntries instead (D75, D76). A node that hears from no current leader stays
 not serving and warns every 5 s.
 
-### 6.10 Manual fault through `ctl` (built, D71)
+### 6.10 Manual fault through `ctl` (built, D74)
 
 ```mermaid
 sequenceDiagram
@@ -629,7 +629,7 @@ sequenceDiagram
     Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
 ```
 
-### 6.11 Scheduled fault injection (built, D12, D75)
+### 6.11 Scheduled fault injection (built, D12, D78)
 
 ```mermaid
 sequenceDiagram
@@ -655,7 +655,7 @@ sequenceDiagram
 
 A leader that silences itself cannot tell its successor. The successor starts its own wait when
 it takes over, and validation requires `interval_min_ms >= silence_max_ms`, so its first order
-comes after the old silence has ended (D75). The RNG is seeded per term from `faults.seed`, so a
+comes after the old silence has ended (D78). The RNG is seeded per term from `faults.seed`, so a
 run can be repeated.
 
 ### 6.12 What a node does with a client request (built, with the bidding branch as template)
@@ -821,7 +821,7 @@ stateDiagram-v2
 ```
 
 `Serving` goes false as soon as the gate closes, so `ctl status` shows `serving = false` for the
-whole silence and catch-up (D72). Elections stay off from Silenced until Serving.
+whole silence and catch-up (D75). Elections stay off from Silenced until Serving.
 
 ### 8.2 Raft role on one node (openraft)
 
@@ -869,7 +869,7 @@ stateDiagram-v2
 |----------------------|-----------------|---------------------------------------------------------|-----------------------|--------|
 | The leader           | Followers       | No `AppendEntries` within the election timeout           | 150–300 ms            | built |
 | A follower           | The leader      | Append-entries calls fail; openraft retries every 100 ms (D32) | next heartbeat  | built |
-| Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D76) | 150–200 ms | built |
+| Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D79) | 150–200 ms | built |
 | A bidding winner     | Other bidders   | The peer detector above, with no commit for the request (takeover) | 150 ms (D42 open) | template |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, role, term, digest per node      | on demand             | built |
 
@@ -976,7 +976,7 @@ flowchart LR
 | FT-5 | Rejoin under load                             | recovery completes at every load                | needs D, F |
 | FT-6 | Returning node with a stale term              | 0 elections caused by the return                | open (D5) |
 | FT-7 | Client retry after commit                     | cached reply, 1 execution                       | tested in `tests/cluster.rs` |
-| FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | schedule built (D75); needs the load generator |
+| FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | schedule built (D78); needs the load generator |
 | FT-9 | Crash and restart                             | —                                               | dropped for Phase 1 (D24) |
 
 Method (D56, D63): latency on the client clock, durations with a monotonic clock on one machine,
@@ -1004,7 +1004,7 @@ The report should say what changed between the submitted design and the built sy
 | Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms); open                       | D42 |
 | Bid window from the first bid seen                     | From request arrival; open                                    | D43 |
 | `Claim` message                                        | Local `just_won` count; open                                  | D44 |
-| `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D75 |
+| `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D78 |
 | Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |

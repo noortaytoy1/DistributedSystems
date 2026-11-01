@@ -3,7 +3,7 @@
 //! Raft heartbeats only flow from the leader to followers, so a follower cannot tell when
 //! another follower (for example a bidding winner) goes silent. Every node sends
 //! `PeerBody::Heartbeat` to every peer each `timers.peer_heartbeat_ms` and suspects a peer after
-//! `timers.takeover_missed_heartbeats` intervals with nothing heard from it (D41, D76).
+//! `timers.takeover_missed_heartbeats` intervals with nothing heard from it (D41, D79).
 //!
 //! "Heard from" means its heartbeat arrived, or it answered ours with anything: a `StaleTerm`
 //! answer still proves the peer is up. Suspicions change once per interval, in [`Suspicion::update`],

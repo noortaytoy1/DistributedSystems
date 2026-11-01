@@ -171,10 +171,10 @@ pub struct MetricsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FaultConfig {
     /// False turns off every injected fault: the schedule never starts and `ctl silence` is
-    /// refused (D74).
+    /// refused (D77).
     pub enabled: bool,
     /// The leader waits a random time in this range after a silence ends (or after it becomes
-    /// leader) before it orders the next fault (D12, D75).
+    /// leader) before it orders the next fault (D12, D78).
     pub interval_min_ms: u64,
     pub interval_max_ms: u64,
     /// Each scheduled silence lasts a random time in this range, at most 20 s.
@@ -302,7 +302,7 @@ impl Config {
             ));
         }
         // A leader that silences itself cannot tell its successor; the successor's first wait
-        // must outlast any silence already running, or two faults overlap (D75).
+        // must outlast any silence already running, or two faults overlap (D78).
         if f.interval_min_ms < f.silence_max_ms {
             return invalid("faults: need interval_min_ms >= silence_max_ms".into());
         }

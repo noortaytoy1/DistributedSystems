@@ -1,4 +1,4 @@
-//! Part C: peer heartbeats and failure suspicion on three real nodes (D41, D76).
+//! Part C: peer heartbeats and failure suspicion on three real nodes (D41, D79).
 #![allow(clippy::unwrap_used)]
 
 mod common;

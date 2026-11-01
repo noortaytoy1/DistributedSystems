@@ -102,7 +102,7 @@ pub enum Event {
         victim: NodeId,
         reason: String,
     },
-    /// Nothing heard from `peer` for `silent_ms` (peer heartbeats, D76). E3 detection time is
+    /// Nothing heard from `peer` for `silent_ms` (peer heartbeats, D79). E3 detection time is
     /// the victim's `silenced` to this.
     PeerSuspected {
         peer: NodeId,
@@ -299,9 +299,9 @@ pub enum MsgKind {
     RaftVote,
     RaftSnapshot,
     Propose,
-    /// A returning node asks the leader for its commit index (D73).
+    /// A returning node asks the leader for its commit index (D76).
     ReadIndex,
-    /// The leader's scheduled fault order (D75).
+    /// The leader's scheduled fault order (D78).
     FaultOrder,
     Bid,
     PeerHeartbeat,
