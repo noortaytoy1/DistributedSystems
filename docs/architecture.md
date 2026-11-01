@@ -129,7 +129,7 @@ flowchart TB
         direction LR
         C1["C1 Network endpoint<br/>node/transport.rs<br/>framing, PeerClient, servers<br/>built"]
         C10["C10 Fault gate + injector<br/>FaultGate, silence_for, schedule: built"]
-        HB["Peer heartbeats<br/>node/heartbeat.rs<br/>template"]
+        HB["Peer heartbeats<br/>node/heartbeat.rs<br/>built"]
     end
     subgraph PR["Protocol layer"]
         direction LR
@@ -167,7 +167,7 @@ flowchart TB
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D72, D5). |
 | C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults from the leader, never overlapping (D12, D75); all of it switchable off with `faults.enabled` / `--faults off` (D74). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
-| —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
+| —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D76). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
 | K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | template | Seeded random incidents. |
 | K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | template | Users, duration, think time, seed (D54). |
@@ -274,7 +274,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
 | `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2)                          | template | `Bid` |
-| `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover (D41)                 | template | — (new) |
+| `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D76) | built | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D73) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
 | `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D75) | built | `FaultOrder` |
@@ -869,7 +869,8 @@ stateDiagram-v2
 |----------------------|-----------------|---------------------------------------------------------|-----------------------|--------|
 | The leader           | Followers       | No `AppendEntries` within the election timeout           | 150–300 ms            | built |
 | A follower           | The leader      | Append-entries calls fail; openraft retries every 100 ms (D32) | next heartbeat  | built |
-| A bidding winner     | Other bidders   | `takeover_missed_heartbeats` × `peer_heartbeat_ms` with no commit for the request | 150 ms (D42 open) | template |
+| Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D76) | 150–200 ms | built |
+| A bidding winner     | Other bidders   | The peer detector above, with no commit for the request (takeover) | 150 ms (D42 open) | template |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, role, term, digest per node      | on demand             | built |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
@@ -907,7 +908,7 @@ flowchart TB
         HBS["heartbeat summary: 1 s"]
         REP["reporter: messages and state_digest, 1 s"]
         SEED["campus seeding: 200 ms until done"]
-        HBT["peer heartbeats (template)"]
+        HBT["peer heartbeats"]
         FLT["fault schedule"]
         RJ["rejoin watcher"]
     end
