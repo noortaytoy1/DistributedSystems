@@ -178,6 +178,7 @@ table below in sync.
 | D111 | Responder service time: 200 ms × severity | E, A | Implemented |
 | D112 | Client connections: ping through the gate, bounded send queues | F | Implemented |
 | D113 | Required client IDs; sequence numbers start at the clock | F | Implemented |
+| D115 | A different election timeout range per node | A | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2520,3 +2521,32 @@ exist because of them.
 - **Consequences.** IDs are large numbers in the logs. Two processes must not share a client ID.
 - **Where.** `client.rs::MeshClient::new`, `bin/loadgen.rs`.
 - **How we check it.** `tests/client.rs`; the runbook gives each machine its ID.
+
+### D115 · A different election timeout range per node
+
+- **Date:** 2026-11-01 · **Part:** A · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A client test with the leader silenced failed about 1 run in 16: 10 elections in a row
+  with no winner, about 305 ms apart. openraft 0.9 draws one election timeout per process
+  (`EngineConfig::new`) and checks it on a tick of 1.5 heartbeats (75 ms). In a 150–300 ms range, two
+  nodes often get the same number of ticks. If their ticks also line up, each votes for itself in
+  every term. Fresh random timeouts per election, Raft's defence (Ongaro and Ousterhout, §5.2), are
+  not what this version does. Ticks align less on separate machines, but an alignment lasts for the
+  whole outage.
+- **Options considered.**
+  1. *A range per node, by place in the config.*
+  2. *Our own watcher that triggers elections after a fresh random delay*: closest to the paper, but it
+     works around openraft's timer, and interacts with the rejoin gate's `elect(false)` (D75).
+  3. *Document it and rely on client retries*: the demo could show a long failover.
+- **Decision.** Option 1. The range starts at `election_timeout_min_ms + place × 2 ticks`, and is one
+  tick wide or the configured width if smaller. Defaults: node 1 150–225 ms, node 2 300–375 ms, node 3
+  450–525 ms. No new config key.
+- **Why.** Two nodes can no longer fire on the same tick, so one reaches the others first and wins.
+  Small, and easy to explain.
+- **Consequences.** Failover can take up to about 225 ms longer than the old 300 ms bound when only
+  high-ID nodes remain, and lower IDs tend to win elections. `election_timeout_max_ms` now only limits
+  the width. E3 measures the real figure.
+- **Where.** `raft/mod.rs::election_range`.
+- **How we check it.** `raft::tests`; `tests/client.rs::bidding_serves_a_client_with_a_node_silenced`
+  over repeated runs; E3.
+- **Report notes.** A good "found by testing" story: a library detail broke an assumption from the
+  paper, and the repeated-run rule (AGENTS.md) caught it.
