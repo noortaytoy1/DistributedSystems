@@ -139,7 +139,15 @@ pub async fn start_with(
     let client_addr = client_listener.local_addr()?;
     let log = EventLog::open(config.metrics.dir.as_deref(), &format!("node-{id}"))?;
     let gate = FaultGate::default();
-    let peers = Arc::new(PeerSet::new(id, &config.cluster, &gate, log.msgs()));
+    // Same cooldown as openraft's retry of an unreachable peer (D32, D90).
+    let reconnect_backoff = Duration::from_millis(2 * config.timers.raft_heartbeat_ms);
+    let peers = Arc::new(PeerSet::new(
+        id,
+        &config.cluster,
+        &gate,
+        &log,
+        reconnect_backoff,
+    ));
     if config.policy.assignment == AssignmentPolicy::Bidding {
         tracing::warn!("bidding is not implemented yet; falling back to leader dispatch");
     }
