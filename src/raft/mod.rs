@@ -157,11 +157,12 @@ impl RaftNode {
         log: EventLog,
     ) -> anyhow::Result<(Arc<Self>, StateReader)> {
         let t = &config.timers;
+        let (election_min, election_max) = election_range(id, config);
         let raft_config = openraft::Config {
             cluster_name: "rescuemesh".into(),
             heartbeat_interval: t.raft_heartbeat_ms,
-            election_timeout_min: t.election_timeout_min_ms,
-            election_timeout_max: t.election_timeout_max_ms,
+            election_timeout_min: election_min,
+            election_timeout_max: election_max,
             snapshot_policy: SnapshotPolicy::Never,
             ..Default::default()
         }
@@ -486,6 +487,23 @@ fn heartbeat_summary(
     line
 }
 
+/// This node's election timeout range. openraft draws one timeout per process and checks it on a
+/// tick of 1.5 heartbeats, so two nodes can land on the same effective timeout and split the vote
+/// in every term. Ranges two ticks apart, by the node's place in the config, rule that out (D115).
+fn election_range(id: NodeId, config: &Config) -> (u64, u64) {
+    let t = &config.timers;
+    let tick = t.raft_heartbeat_ms * 3 / 2;
+    let width = tick.min(t.election_timeout_max_ms - t.election_timeout_min_ms);
+    let place = config
+        .cluster
+        .nodes
+        .iter()
+        .position(|n| n.id == id)
+        .unwrap_or(0) as u64;
+    let min = t.election_timeout_min_ms + place * 2 * tick;
+    (min, min + width)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,5 +546,29 @@ mod tests {
             heartbeat_summary(&status(2, Role::Candidate, None), &[1, 3], &none),
             "candidate, term 5, no leader | no heartbeats"
         );
+    }
+
+    #[test]
+    fn election_ranges_of_two_nodes_are_at_least_a_tick_apart() {
+        let config = crate::config::Config::from_toml(
+            r#"
+            [[cluster.nodes]]
+            id = 1
+            peer_addr = "a:1"
+            client_addr = "a:2"
+            [[cluster.nodes]]
+            id = 2
+            peer_addr = "b:1"
+            client_addr = "b:2"
+            [[cluster.nodes]]
+            id = 3
+            peer_addr = "c:1"
+            client_addr = "c:2"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(election_range(1, &config), (150, 225));
+        assert_eq!(election_range(2, &config), (300, 375));
+        assert_eq!(election_range(3, &config), (450, 525));
     }
 }
