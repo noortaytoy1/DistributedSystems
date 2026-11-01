@@ -91,6 +91,17 @@ pub enum Event {
         ms: u64,
     },
     Restored,
+    /// The leader's schedule ordered `victim` silent for `ms` (E3, FT-8).
+    FaultOrdered {
+        victim: NodeId,
+        ms: u64,
+        term: u64,
+    },
+    /// The order was not carried out: the victim refused it, had a newer term, or was unreachable.
+    FaultRefused {
+        victim: NodeId,
+        reason: String,
+    },
 
     // --- rejoin (D)
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).
@@ -279,6 +290,8 @@ pub enum MsgKind {
     Propose,
     /// A returning node asks the leader for its commit index (D76).
     ReadIndex,
+    /// The leader's scheduled fault order (D78).
+    FaultOrder,
     Bid,
     PeerHeartbeat,
     ClientRequest,
@@ -286,13 +299,14 @@ pub enum MsgKind {
 }
 
 impl MsgKind {
-    pub const ALL: [MsgKind; 10] = [
+    pub const ALL: [MsgKind; 11] = [
         MsgKind::RaftAppend,
         MsgKind::RaftHeartbeat,
         MsgKind::RaftVote,
         MsgKind::RaftSnapshot,
         MsgKind::Propose,
         MsgKind::ReadIndex,
+        MsgKind::FaultOrder,
         MsgKind::Bid,
         MsgKind::PeerHeartbeat,
         MsgKind::ClientRequest,
@@ -307,6 +321,7 @@ impl MsgKind {
             MsgKind::RaftSnapshot => "raft_snapshot",
             MsgKind::Propose => "propose",
             MsgKind::ReadIndex => "read_index",
+            MsgKind::FaultOrder => "fault_order",
             MsgKind::Bid => "bid",
             MsgKind::PeerHeartbeat => "peer_heartbeat",
             MsgKind::ClientRequest => "client_request",
@@ -324,6 +339,7 @@ impl MsgKind {
             PeerBody::Raft(RaftRpc::InstallSnapshot(_)) => MsgKind::RaftSnapshot,
             PeerBody::Propose(_) => MsgKind::Propose,
             PeerBody::ReadIndex => MsgKind::ReadIndex,
+            PeerBody::FaultOrder { .. } => MsgKind::FaultOrder,
             PeerBody::Bid(_) => MsgKind::Bid,
             PeerBody::Heartbeat => MsgKind::PeerHeartbeat,
         }

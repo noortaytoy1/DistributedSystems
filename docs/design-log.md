@@ -78,7 +78,7 @@ table below in sync.
 | D9  | Request ID plus a replicated table of results                   | A    | Implemented, amended by D27 |
 | D10 | Optimistic check at commit instead of locks                     | A, E | Implemented, amended by D28 |
 | D11 | Single-owner tasks and channels; planner on a thread pool       | all  | Amended by D47    |
-| D12 | The Raft leader runs the fault schedule                         | C    | Accepted          |
+| D12 | The Raft leader runs the fault schedule                         | C    | Implemented, amended by D78 |
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
 | D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
@@ -88,7 +88,7 @@ table below in sync.
 | D19 | One multiplexed connection per peer                             | C    | Implemented       |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
-| D22 | Fault gate semantics                                            | C    | Implemented       |
+| D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
 | D23 | Control frames bypass the fault gate                            | C    | Implemented       |
 | D24 | In-memory Raft storage, no snapshots                            | A    | Implemented       |
 | D25 | Static membership; every node calls `initialize`                | A    | Implemented       |
@@ -144,6 +144,7 @@ table below in sync.
 | D75 | Rejoin gate: serving off and elections off until current        | D, A | Implemented       |
 | D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
 | D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
+| D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented       |
 
 **Open decisions:** D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D49
 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -667,8 +668,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D12 · The Raft leader runs the fault schedule
 
-- **Date:** Phase 1 architecture · **Part:** C · **Status:** Accepted (template:
-  `faults::spawn_schedule`, `TODO(C)`) · **Decided by:** team
+- **Date:** Phase 1 architecture · **Part:** C · **Status:** Implemented, amended by D78 (message,
+  timings, seeding, overlap rule) · **Decided by:** team
 - **Context.** The project requires random failures of up to 20 s, one node at a time.
 - **Options considered.** A separate election for each fault round; the leader decides.
 - **Decision.** Every 30–60 s (random), the Raft leader picks a victim uniformly from all three nodes,
@@ -697,7 +698,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D22 · Fault gate semantics
 
-- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented · **Decided by:** A, C
+- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented, amended by D78 (the `FaultOrder(Ok)`
+  reply leaves a node that has just been silenced) · **Decided by:** A, C
 - **Decision.** While silenced, a node:
   - reads and discards every incoming peer and client frame without replying, so callers see a
     timeout, as with a pulled cable;
@@ -963,6 +965,80 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   `tests/cluster.rs::ctl_silence_is_refused_when_fault_injection_is_disabled`.
 - **Report notes.** Mention it in the experiment method: baseline cells run with
   `faults.enabled = false`.
+
+### D78 · The fault schedule: `FaultOrder`, timings, seeding, one fault at a time
+
+- **Date:** 2026-11-01 · **Part:** C (contract change; config keys in A's `config.rs`) ·
+  **Status:** Implemented · **Decided by:** Aabed, on the agent's recommendation
+- **Context.** D12 says the Raft leader runs the fault schedule: every 30–60 s it picks a victim
+  uniformly from all three nodes, itself included, and orders it silent for 1–20 s, tagging the
+  order with its term. It left the message, the timings' home, the randomness, what a recovering
+  victim does, and how to keep faults from overlapping undecided.
+- **Options considered.**
+  1. *Message:* `PeerBody::FaultOrder { ms }` answered by `PeerReply::FaultOrder(Result<(),
+     String>)`, versus answering with plain `Ack`. `Ack` hides refusals, so E3 could not tell an
+     obeyed order from a refused one.
+  2. *Timings:* config keys under `[faults]`, versus constants in `faults.rs`. Constants make a
+     test take minutes and cannot be tuned per experiment.
+  3. *Randomness:* `StdRng` seeded from `faults.seed` mixed with the leader's term (random seed,
+     logged, if unset), versus an unseeded `thread_rng` whose failing runs cannot be repeated.
+  4. *Recovering victim:* refuse, versus accept. Accepting stacks a fault on an unfinished recovery
+     (two overlapping failures, which the design does not handle) and spoils E4's numbers.
+  5. *Interval start:* from the end of the previous silence (and from becoming leader), versus a
+     fixed period that lets a 20 s silence run into the next fault.
+  6. *Events:* `fault_ordered` and `fault_refused`, versus `fault_ordered` only.
+  7. *How the victim's "ok" reaches the leader* (found while testing, see below): let that one
+     reply through the closed gate; close the gate a moment after replying (needs a delay, racy);
+     or treat a timeout as obeyed (an unreachable victim and an obedient one look the same).
+     Chose the first.
+- **Decision.**
+  - `[faults]` gains `interval_min_ms = 30000`, `interval_max_ms = 60000`, `silence_min_ms =
+    1000`, `silence_max_ms = 20000` and an optional `seed`. Validation requires
+    `0 < min <= max` for both ranges, `silence_max_ms <= 20000`, and
+    **`interval_min_ms >= silence_max_ms`**.
+  - Every node runs `faults::spawn_schedule` (unless `faults.enabled = false`, D77); it acts only
+    while it is the serving Raft leader. Per term it seeds `StdRng` from `seed XOR term × golden
+    ratio constant`, then repeats: wait a random interval (checking leadership every Raft
+    heartbeat; losing it ends the term's rounds), draw a victim uniformly from all node IDs and a
+    random silence, log `fault_ordered { victim, ms, term }`, deliver the order, and on success
+    sleep the silence out before the next wait. A refusal logs `fault_refused { victim, reason }`
+    and starts the next wait at once.
+  - Delivery: to itself through `faults::on_order`, to a peer as `PeerBody::FaultOrder { ms }` in
+    an envelope with the leader's term. A victim with a newer term answers `StaleTerm` (term rule,
+    D21). `on_order` refuses with "recovering" while the victim is not serving, and otherwise
+    calls `silence_for`, which applies D74 and D77.
+  - The `FaultOrder(Ok)` reply is sent even though obeying it has just closed the victim's gate
+    (`transport.rs`, amends D22): the victim's last word.
+- **Why.** Faults must be random, one at a time, at most 20 s, and must also hit the leader
+  (FT-2, FT-8). One leader means one schedule and no extra election. A seed makes a failing run
+  repeatable. The overlap rule: a leader that silences itself cannot tell its successor, and the
+  successor starts its own wait when it takes over; requiring the shortest wait to be at least the
+  longest silence means the successor's first order always comes after the old silence has ended.
+  The defaults (30 s against 20 s) meet it with room to spare.
+- **Found while testing.** The first version dropped the victim's "ok": the victim closed its
+  gate inside the handler and the transport then dropped the reply like any other. Every obeyed
+  remote order was logged as `fault_refused ... unreachable` after a 500 ms timeout, and the leader
+  skipped waiting the silence out. The 500 ms timeout happened to keep faults apart, which is why
+  a first mutation test (removing the wait-out) did not fail. Fixed by option 7; covered by
+  `an_obeyed_order_is_acknowledged`.
+- **Consequences.** `proto.rs`, `node/mod.rs`, `raft/network.rs`, `metrics.rs` and `config.rs`
+  change, so A, the transport owner and the metrics owners review. No faults while there is no
+  leader (one election, a few hundred ms). A faster schedule for experiments must keep
+  `interval_min_ms >= silence_max_ms`. The doctor asked for peers with no coordinator; here the
+  Raft leader picks the victims, which the team should be ready to justify (one schedule means one
+  fault at a time without a second election) or change.
+- **Where.** `node/faults.rs::{spawn_schedule, run_schedule, draw, order, on_order}`,
+  `proto.rs::{PeerBody::FaultOrder, PeerReply::FaultOrder}`, `node/mod.rs::on_peer_message`,
+  `node/transport.rs::peer_connection`, `config.rs::FaultConfig`, `metrics.rs::{Event::FaultOrdered,
+  Event::FaultRefused, MsgKind::FaultOrder}`, `config/*.toml`.
+- **How we check it.** `faults::tests` (ranges, every node drawn, same seed gives the same
+  schedule); `config::tests::rejects_bad_configs`; `tests/faults.rs`: faults happen and never two
+  nodes at once, an old-term order is dropped, an obeyed order is acknowledged, no faults when
+  disabled. Sensitivity check: with the wait-out and the validation rule both removed and
+  overlapping timings, the one-at-a-time test failed 3 of 5 runs. FT-8 (long run under load) needs
+  the load generator.
+- **Report notes.** Team-built entirely (no library). The "last word" bug is a good example for
+  the report of why every message needs an explicit reply and of testing the test.
 
 ---
 

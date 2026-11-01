@@ -45,6 +45,7 @@ fn reply_name(reply: &PeerReply) -> &'static str {
         PeerReply::InstallSnapshot(_) => "InstallSnapshot",
         PeerReply::Proposed(_) => "Proposed",
         PeerReply::ReadIndex(_) => "ReadIndex",
+        PeerReply::FaultOrder(_) => "FaultOrder",
     }
 }
 

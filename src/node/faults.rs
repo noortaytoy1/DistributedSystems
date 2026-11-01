@@ -10,15 +10,28 @@
 //! `faults.enabled = false` in the config (or `node --faults off`) turns all of this off: the
 //! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D77).
 //!
-//! Owner: C (faults and failover). Built: `silence_for`. Template: `spawn_schedule`.
+//! The schedule (D12, D78) runs on every node but acts only while the node is the serving Raft
+//! leader. It waits a random `faults.interval_*`, picks a victim uniformly from all nodes (itself
+//! included, which exercises leader failover), orders it silent for a random `faults.silence_*`,
+//! and waits the silence out before the next round, so faults never overlap. The order travels
+//! as `PeerBody::FaultOrder` in an envelope carrying the leader's term: a victim with a newer
+//! term drops it by the term rule (D21). A victim that is still recovering refuses it.
+//!
+//! Owner: C (faults and failover).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
+use crate::config::FaultConfig;
 use crate::metrics::Event;
 use crate::node::NodeContext;
+use crate::proto::{NodeId, PeerBody, PeerEnvelope, PeerReply, Term};
 
 /// Longest fault the system must tolerate transparently.
 pub const MAX_FAULT: Duration = Duration::from_secs(20);
@@ -63,15 +76,138 @@ fn check_duration(duration: Duration) -> Result<(), String> {
     Ok(())
 }
 
+/// A fault order from the leader's schedule (`PeerBody::FaultOrder`, or the leader to itself).
+/// The term rule has already been applied; a node still catching up refuses (D78).
+pub fn on_order(ctx: &Arc<NodeContext>, duration: Duration) -> Result<(), String> {
+    if !ctx.serving.load(Ordering::SeqCst) {
+        return Err("recovering: not serving yet".into());
+    }
+    silence_for(ctx, duration)
+}
+
+/// One round of the schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Round {
+    /// How long to wait before ordering the fault.
+    pub wait: Duration,
+    pub victim: NodeId,
+    pub silence: Duration,
+}
+
+/// Draw the next round. Pure, so a seed gives the same sequence everywhere.
+pub fn draw(rng: &mut impl Rng, nodes: &[NodeId], cfg: &FaultConfig) -> Round {
+    Round {
+        wait: between(rng, cfg.interval()),
+        victim: nodes[rng.gen_range(0..nodes.len())],
+        silence: between(rng, cfg.silence()),
+    }
+}
+
+fn between(rng: &mut impl Rng, (lo, hi): (Duration, Duration)) -> Duration {
+    Duration::from_millis(rng.gen_range(lo.as_millis() as u64..=hi.as_millis() as u64))
+}
+
 /// Start the scheduled fault injector.
 pub fn spawn_schedule(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
     if !ctx.config.faults.enabled {
         return None;
     }
-    // TODO(C): periodically the Raft leader picks one victim (it may pick itself, which
-    // exercises coordinator failover) and orders it silent for up to `MAX_FAULT`. Tag the order
-    // with the leader's term so a stale leader's order is dropped.
-    None
+    let seed = ctx.config.faults.seed.unwrap_or_else(rand::random);
+    tracing::info!(node = ctx.id, seed, "fault schedule armed");
+    Some(tokio::spawn(run_schedule(ctx.clone(), seed)))
+}
+
+async fn run_schedule(ctx: Arc<NodeContext>, seed: u64) {
+    let nodes: Vec<NodeId> = ctx.config.node_ids().collect();
+    let poll = Duration::from_millis(ctx.config.timers.raft_heartbeat_ms);
+    loop {
+        let term = loop {
+            let s = ctx.consensus.status();
+            if leads(&ctx, s.term) {
+                break s.term;
+            }
+            tokio::time::sleep(poll).await;
+        };
+        // Mixing in the term means a new leader does not replay its predecessor's sequence.
+        let mut rng = StdRng::seed_from_u64(seed ^ term.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        while leads(&ctx, term) {
+            let round = draw(&mut rng, &nodes, &ctx.config.faults);
+            if !wait_while_leading(&ctx, term, round.wait, poll).await {
+                break;
+            }
+            let ms = round.silence.as_millis() as u64;
+            ctx.log.log(Event::FaultOrdered {
+                victim: round.victim,
+                ms,
+                term,
+            });
+            match order(&ctx, round.victim, term, round.silence).await {
+                // Wait the silence out even if we were the victim, so faults never overlap.
+                Ok(()) => tokio::time::sleep(round.silence).await,
+                Err(reason) => {
+                    tracing::warn!(node = ctx.id, victim = round.victim, %reason, "fault refused");
+                    ctx.log.log(Event::FaultRefused {
+                        victim: round.victim,
+                        reason,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// This node is the serving leader of `term`.
+fn leads(ctx: &NodeContext, term: Term) -> bool {
+    let s = ctx.consensus.status();
+    s.leader == Some(ctx.id) && s.term == term && ctx.serving.load(Ordering::SeqCst)
+}
+
+/// Sleep `wait`, checking leadership every `poll`. False if leadership was lost first.
+async fn wait_while_leading(ctx: &NodeContext, term: Term, wait: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if !leads(ctx, term) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        tokio::time::sleep(poll.min(deadline - now)).await;
+    }
+}
+
+/// Deliver one order: to ourselves directly, to a peer as `PeerBody::FaultOrder`.
+async fn order(
+    ctx: &Arc<NodeContext>,
+    victim: NodeId,
+    term: Term,
+    silence: Duration,
+) -> Result<(), String> {
+    if victim == ctx.id {
+        return on_order(ctx, silence);
+    }
+    let Some(peer) = ctx.peers.get(victim) else {
+        return Err(format!("node {victim} is not a peer"));
+    };
+    let envelope = PeerEnvelope {
+        from: ctx.id,
+        term,
+        body: PeerBody::FaultOrder {
+            ms: silence.as_millis() as u64,
+        },
+    };
+    match peer
+        .call(envelope, ctx.config.timers.peer_rpc_timeout())
+        .await
+    {
+        Ok(PeerReply::FaultOrder(result)) => result,
+        Ok(PeerReply::StaleTerm { current }) => {
+            Err(format!("stale term: victim is at term {current}"))
+        }
+        Ok(_) => Err("unexpected reply".into()),
+        Err(e) => Err(format!("unreachable: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -90,6 +226,35 @@ mod tests {
     fn zero_and_over_the_limit_are_rejected() {
         assert!(check_duration(Duration::ZERO).is_err());
         assert!(check_duration(MAX_FAULT + Duration::from_millis(1)).is_err());
+    }
+
+    #[test]
+    fn rounds_stay_inside_the_configured_ranges_and_cover_every_node() {
+        let cfg = FaultConfig::default();
+        let nodes = [1, 2, 3];
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut victims = std::collections::BTreeSet::new();
+        for _ in 0..1_000 {
+            let r = draw(&mut rng, &nodes, &cfg);
+            assert!((cfg.interval().0..=cfg.interval().1).contains(&r.wait));
+            assert!((cfg.silence().0..=cfg.silence().1).contains(&r.silence));
+            assert!(r.silence <= MAX_FAULT);
+            victims.insert(r.victim);
+        }
+        assert_eq!(victims.into_iter().collect::<Vec<_>>(), nodes);
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_schedule() {
+        let cfg = FaultConfig::default();
+        let run = |seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            (0..20)
+                .map(|_| draw(&mut rng, &[1, 2, 3], &cfg))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(42), run(42));
+        assert_ne!(run(42), run(43));
     }
 
     #[test]

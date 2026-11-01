@@ -241,6 +241,9 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     match body {
         PeerBody::Propose(cmd) => PeerReply::Proposed(ctx.consensus.propose_local(cmd).await),
         PeerBody::ReadIndex => PeerReply::ReadIndex(ctx.consensus.read_index_local().await),
+        PeerBody::FaultOrder { ms } => {
+            PeerReply::FaultOrder(faults::on_order(&ctx, Duration::from_millis(ms)))
+        }
         PeerBody::Heartbeat => {
             lock(&ctx.suspicion).heard_from(from, Instant::now());
             PeerReply::Ack

@@ -61,6 +61,7 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 | `Raft(Vote)`                 | candidate                  | `Vote(Result<..>)`                 |
 | `Raft(InstallSnapshot)`      | leader                     | `InstallSnapshot(Result<..>)`      |
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)` |
+| `FaultOrder { ms }`          | leader, to the victim      | `FaultOrder(Result<(), String>)`: obeyed, or why not (disabled, already silenced, recovering). The `Ok` is sent although the gate has just closed (D78) |
 | `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: commit index confirmed by a majority, or `NotLeader { leader }` (D76) |
 | `Bid(Bid)`                   | every serving node         | `Ack`                              |
 | `Heartbeat`                  | every node, every peer     | `Ack`                              |
@@ -114,3 +115,7 @@ Defaults from `config.rs`, tuned for a LAN:
 | `client_max_retries`          | 3            | resends before the client gives up                        |
 | `propose_timeout_ms`          | 3000         | a node stops trying to commit one proposal after this     |
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, forwarded proposal) |
+| `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |
+| `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`) |
+| `faults.silence_min_ms`       | 1000         | shortest scheduled silence                                 |
+| `faults.silence_max_ms`       | 20000        | longest scheduled silence (at most 20000)                  |
