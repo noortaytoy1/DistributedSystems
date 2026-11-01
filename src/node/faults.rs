@@ -7,6 +7,9 @@
 //! rejected, never merged or restarted (D71). Durations of zero or above `MAX_FAULT` are
 //! rejected too, so every `silenced`/`restored` pair in the logs is a real, in-spec fault.
 //!
+//! `faults.enabled = false` in the config (or `node --faults off`) turns all of this off: the
+//! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D74).
+//!
 //! Owner: C (faults and failover). Built: `silence_for`. Template: `spawn_schedule`.
 
 use std::sync::Arc;
@@ -22,6 +25,9 @@ pub const MAX_FAULT: Duration = Duration::from_secs(20);
 
 /// Silence this node now and restore it after `duration` (`ctl silence`).
 pub fn silence_for(ctx: &Arc<NodeContext>, duration: Duration) -> Result<(), String> {
+    if !ctx.config.faults.enabled {
+        return Err("fault injection is disabled on this node (faults.enabled = false)".into());
+    }
     check_duration(duration)?;
     if !ctx.gate.try_silence() {
         return Err("already silenced; wait for the current fault to end".into());
@@ -58,7 +64,10 @@ fn check_duration(duration: Duration) -> Result<(), String> {
 }
 
 /// Start the scheduled fault injector.
-pub fn spawn_schedule(_ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
+pub fn spawn_schedule(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
+    if !ctx.config.faults.enabled {
+        return None;
+    }
     // TODO(C): periodically the Raft leader picks one victim (it may pick itself, which
     // exercises coordinator failover) and orders it silent for up to `MAX_FAULT`. Tag the order
     // with the leader's term so a stale leader's order is dropped.

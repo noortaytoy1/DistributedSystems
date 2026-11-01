@@ -165,7 +165,7 @@ flowchart TB
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D72, D5). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate, manual faults), template (schedule) | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults (D12). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate, manual faults), template (schedule) | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults (D12); all of it switchable off with `faults.enabled` / `--faults off` (D74). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
@@ -616,7 +616,7 @@ sequenceDiagram
     participant P as Peers and clients
     OP->>N: Control(Silence { ms: 10000 }) on the client port
     Note over N: control frames bypass the gate (D23)
-    alt ms is 0 or above 20000, or the node is already silenced
+    alt faults disabled, ms is 0 or above 20000, or the node is already silenced
         N-->>OP: Control(Error) and the gate stays as it is
     else
         N->>N: faults::silence_for: gate.try_silence(), log silenced
