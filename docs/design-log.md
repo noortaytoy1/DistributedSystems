@@ -140,6 +140,8 @@ table below in sync.
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
 | D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented |
+| D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 
 **Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D49
 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -757,6 +759,82 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Consequences.** Recovery time (E4) is silence end → `serving` again.
 - **Where.** `node/rejoin.rs`, `NodeContext::serving`, `handle_request` (already checks it).
 - **How we check it.** FT-4, FT-5, E4; digests equal after rejoin.
+
+### D74 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
+  agent's recommendation
+- **Context.** `faults::silence_for` (behind `ctl silence`, and later behind the fault schedule,
+  D12) was a stub. Its TODO said overlapping faults must not cut each other short. Three questions
+  were open: what a second silence order does while the node is already silenced, what happens to
+  durations outside the spec, and how the restore side reaches the rejoin gate (D46).
+- **Options considered.**
+  1. *Overlap: reject the second order.* One `silenced`/`restored` pair per fault; matches the
+     fault model's one victim at a time. The operator must wait for the fault to end.
+  2. *Overlap: extend to the later end time.* Never shortens a fault, but one silence then has two
+     `silenced` events and one `restored`, so E3 cannot read a fault's length from its event pair.
+  3. *Overlap: restart the timer.* Can cut a fault short or stretch it past 20 s. Rejected.
+  4. *Over 20 s: clamp to 20 s.* Quietly changes what the operator asked for; an experiment could
+     run on a duration nobody chose. Rejected in favour of an error.
+  5. *0 ms: accept as a no-op.* Hides typos and logs a meaningless fault. Rejected.
+  6. *Restore hook: a `tokio::sync::watch` in `FaultGate` now.* Unused until the rejoin gate is
+     built; deferred to that PR so this one stays small.
+- **Decision.** `silence_for` rejects `ms = 0` and `ms > 20000` (`MAX_FAULT`) with an error, and
+  rejects an order while the gate is closed ("already silenced"). Otherwise it closes the gate,
+  logs `silenced { ms }`, and a spawned task sleeps `ms`, reopens the gate and logs `restored`. The
+  check-and-close is one atomic step (`FaultGate::try_silence`, a compare-and-swap), so two orders
+  arriving together cannot both start a fault. `ctl` prints the error. The restore notification
+  for the rejoin gate is added with the rejoin work (D46).
+- **Why.** Every `silenced`/`restored` pair in the logs is then exactly one in-spec fault, which
+  keeps E3 and E4 analysis simple and honest. The project allows faults of at most 20 s, so a
+  longer one is an operator mistake, not a test. The scheduled injector (D12) will only ever have
+  one victim at a time anyway, so rejecting overlaps costs nothing there.
+- **Consequences.** There is no way to end a fault early from `ctl`; that would need a new control
+  message (`proto.rs` change). A node that shuts down while silenced drops the restore task with
+  the runtime. The leader-side schedule must treat "already silenced" as a skipped round.
+- **Where.** `node/faults.rs::{silence_for, check_duration, MAX_FAULT}`,
+  `node/transport.rs::FaultGate::try_silence`, `bin/ctl.rs` (unchanged; prints the error).
+- **How we check it.** `faults::tests` (duration limits, atomic re-silence),
+  `tests/cluster.rs::ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself`; E3 and FT-n
+  runs use these events.
+- **Report notes.** Team-built mechanism (no library). Worth one sentence: faults are injected at
+  our own network endpoint and are strictly one at a time, so the measured recovery of each fault
+  is not mixed with another.
+
+### D77 · Fault injection on/off: `faults.enabled`, `--faults` override
+
+- **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented ·
+  **Decided by:** Aabed, on the agent's recommendation, at the team's request ("enable or disable
+  the fault injection through a flag" before launch)
+- **Context.** Experiments need a no-fault baseline, and teammates want to run the cluster
+  without any chance of injected faults. Until now nothing could switch fault injection off.
+- **Options considered.**
+  1. *Where:* a config key only (always the same on all six machines, but editing the file on
+     every machine to change it); a node CLI flag only (quick, but three nodes can be started
+     differently by mistake); or both, the CLI overriding the config for one run.
+  2. *What "off" covers:* the schedule and `ctl silence` both, or the schedule only (manual faults
+     kept for demos).
+  3. *Default:* on (today's behaviour) or off (safer if forgotten, but every fault run and test
+     must turn it on).
+- **Decision.** Both: `[faults] enabled = true|false` in the shared TOML (`FaultConfig`, default
+  `true`), and `node --faults on|off` overriding it for that process. Off means no faults at all:
+  `faults::spawn_schedule` returns without starting, and `faults::silence_for` answers
+  `Error("fault injection is disabled ...")`, so `ctl silence` prints that error and the gate stays
+  open. The node logs "fault injection on/off" at startup.
+- **Why.** The config key keeps the six machines consistent by default (AGENTS.md: one config file
+  everywhere); the CLI override covers a quick one-off run without editing files. "Disable fault
+  injection" plainly means no faults, which is what a clean baseline needs. Default on keeps every
+  existing test, script and demo unchanged.
+- **Consequences.** A node started with `--faults off` in a cluster that otherwise has faults on
+  refuses orders aimed at it; once the schedule exists (D12), it treats the refusal as a skipped
+  round. The setting is per node, not replicated, so it is checked on the victim, never trusted
+  from the order.
+- **Where.** `config.rs::FaultConfig`, `bin/node.rs` (`--faults`), `node/faults.rs::{silence_for,
+  spawn_schedule}`, `config/local.toml`, `config/lab.example.toml`, README.
+- **How we check it.** `config::tests::{defaults_fill_missing_sections, faults_can_be_switched_off}`,
+  `tests/cluster.rs::ctl_silence_is_refused_when_fault_injection_is_disabled`.
+- **Report notes.** Mention it in the experiment method: baseline cells run with
+  `faults.enabled = false`.
 
 ---
 

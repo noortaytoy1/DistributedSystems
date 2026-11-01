@@ -83,3 +83,56 @@ async fn every_node_answers_status() {
     }
     cluster.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself() {
+    let cluster = TestCluster::start(3).await;
+    let addr = cluster.config.node(2).unwrap().client_addr.clone();
+    let silence = |ms| {
+        control(
+            &addr,
+            ControlRequest::Silence { ms },
+            Duration::from_secs(2),
+        )
+    };
+
+    // Out-of-range durations never close the gate.
+    assert!(matches!(silence(0).await.unwrap(), ControlReply::Error(_)));
+    assert!(matches!(
+        silence(20_001).await.unwrap(),
+        ControlReply::Error(_)
+    ));
+    assert!(!cluster.node(2).ctx.gate.is_silenced());
+
+    assert_eq!(silence(1_000).await.unwrap(), ControlReply::Done);
+    assert!(cluster.node(2).ctx.gate.is_silenced());
+    // Control still reaches a silenced node (D23), and a second fault is refused (D74).
+    assert!(matches!(
+        silence(5_000).await.unwrap(),
+        ControlReply::Error(_)
+    ));
+
+    wait_until(Duration::from_secs(5), "node 2 restored", || {
+        !cluster.node(2).ctx.gate.is_silenced()
+    })
+    .await;
+    // Once restored it can be silenced again.
+    assert_eq!(silence(100).await.unwrap(), ControlReply::Done);
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ctl_silence_is_refused_when_fault_injection_is_disabled() {
+    let cluster = TestCluster::start_with(3, |c| c.faults.enabled = false).await;
+    let addr = cluster.config.node(2).unwrap().client_addr.clone();
+    let reply = control(
+        &addr,
+        ControlRequest::Silence { ms: 1_000 },
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(reply, ControlReply::Error(_)));
+    assert!(!cluster.node(2).ctx.gate.is_silenced());
+    cluster.shutdown().await;
+}

@@ -128,7 +128,7 @@ flowchart TB
     subgraph TR["Transport layer"]
         direction LR
         C1["C1 Network endpoint<br/>node/transport.rs<br/>framing, PeerClient, servers<br/>built"]
-        C10["C10 Fault gate + injector<br/>FaultGate: built<br/>faults.rs: template"]
+        C10["C10 Fault gate + injector<br/>FaultGate: built<br/>silence_for: built<br/>schedule: template"]
         HB["Peer heartbeats<br/>node/heartbeat.rs<br/>template"]
     end
     subgraph PR["Protocol layer"]
@@ -165,7 +165,7 @@ flowchart TB
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | template | Holds a returning node until it is current (D46). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate), template (injector) | Drops all traffic but control (D13, D22, D23); manual and scheduled faults (D12). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate, manual faults), template (schedule) | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); scheduled faults (D12); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
@@ -268,7 +268,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `ClientFrame::Request(ClientRequest { id, attempt, incident })` | client → all nodes | ask for a plan | built | `IncidentRequest` |
 | `ServerFrame::Reply(ClientReply { id, from, body: Done(result) })` | node → client | the committed result | built | `ResponsePlan` |
 | `ReplyBody::Rejected(reason)`   | node → client          | defined, never sent (D36)                            | unused   | — |
-| `ClientFrame::Control(Status / Silence / SkewLoad)` | ctl → node | inspect and inject faults            | built (`Silence` returns an error until C implements it) | experiment runner port |
+| `ClientFrame::Control(Status / Silence / SkewLoad)` | ctl → node | inspect and inject faults            | built (`Silence` rejects overlaps and durations outside 1 ms to 20 s, D74) | experiment runner port |
 | `PeerBody::Raft(AppendEntries)` | leader → follower      | replicate; empty = Raft heartbeat                    | built    | `AppendEntries` |
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
@@ -593,7 +593,7 @@ sequenceDiagram
     Note over R,N2: R bids, plans and replies again
 ```
 
-### 6.10 Manual fault through `ctl` (gate built; `silence_for` template)
+### 6.10 Manual fault through `ctl` (built, D74)
 
 ```mermaid
 sequenceDiagram
@@ -603,13 +603,17 @@ sequenceDiagram
     participant P as Peers and clients
     OP->>N: Control(Silence { ms: 10000 }) on the client port
     Note over N: control frames bypass the gate (D23)
-    N->>N: faults::silence_for: gate.silence(), log silenced
-    N-->>OP: Control(Done)
+    alt faults disabled, ms is 0 or above 20000, or the node is already silenced
+        N-->>OP: Control(Error) and the gate stays as it is
+    else
+        N->>N: faults::silence_for: gate.try_silence(), log silenced
+        N-->>OP: Control(Done)
+    end
     P-xN: peer and client frames: read and discarded
     N-xP: outgoing calls fail at once (Silenced)
     OP->>N: Control(Status)
     N-->>OP: Status(silenced = true, serving = ...)
-    Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
+    Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9, template)
 ```
 
 ### 6.11 Scheduled fault injection (planned, D12)
