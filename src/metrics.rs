@@ -147,6 +147,17 @@ pub enum Event {
         peer: NodeId,
         down_ms: u64,
     },
+    /// This node lost the round and plans the request instead of `winner` (D110). `rank` is its
+    /// place in the round's ranking (1 = runner-up); `reason` is `suspected` or `backstop`.
+    /// `waited_us` runs from the round closing to here: E3 takeover time.
+    TakeoverStarted {
+        request: RequestId,
+        attempt: u32,
+        winner: NodeId,
+        rank: usize,
+        reason: String,
+        waited_us: u64,
+    },
 
     // --- rejoin (D)
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).

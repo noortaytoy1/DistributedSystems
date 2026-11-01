@@ -1,5 +1,5 @@
 //! Bidding election with real nodes: one result per request, load moves work, a node that is not
-//! serving stays out, a silent winner is covered by the client's retry.
+//! serving stays out. A silent winner is covered by takeover (tests/takeover.rs).
 //!
 //! Owner: B (bidding election).
 
@@ -191,47 +191,6 @@ async fn a_node_that_is_not_serving_stays_out() {
         .await;
     }
     drop(held);
-    cluster.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_silent_winner_is_covered_by_the_clients_retry() {
-    // A long window, so the winner can be silenced while its round is still open.
-    let cluster = bidding_cluster(|c| c.timers.bid_window_ms = 500).await;
-    let req = request(1, 0);
-    let key = (req.id, req.attempt);
-
-    let config = cluster.config.clone();
-    let first =
-        tokio::spawn(async move { first_reply(&config, req, Duration::from_millis(1500)).await });
-    wait_until(
-        Duration::from_secs(5),
-        "nodes 2 and 3 to hold every bid",
-        || (2..=3).all(|id| cluster.node(id).ctx.bids.with_rounds(|r| r.bids_seen(key)) == 3),
-    )
-    .await;
-    // Every score ties, so nodes 2 and 3 both expect node 1 to plan.
-    cluster.node(1).ctx.gate.silence();
-
-    assert!(
-        first.await.unwrap().is_none(),
-        "nobody should answer: the winner is silent and the others stand by"
-    );
-    assert_eq!(cluster.node(2).ctx.state.with(|s| s.result_count()), 0);
-
-    // The retry is a fresh round, without the silent node's bid.
-    wait_for_leader(&cluster, &[2, 3]).await;
-    let result = done(&cluster, request(1, 1)).await;
-    assert_ne!(result.executor, 1);
-    let retry_key = (result.request, 1);
-    let bids = cluster
-        .node(result.executor)
-        .ctx
-        .bids
-        .with_rounds(|r| r.bids_seen(retry_key));
-    assert_eq!(bids, 2);
-
-    cluster.node(1).ctx.gate.restore();
     cluster.shutdown().await;
 }
 

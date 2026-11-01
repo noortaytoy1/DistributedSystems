@@ -108,7 +108,7 @@ table below in sync.
 | D39 | Responders are never released                                   | A, E | Open              |
 | D40 | Timer defaults and validation                                   | all  | Implemented       |
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Implemented, amended by D79 |
-| D42 | Takeover trigger                                                | B, C | Open              |
+| D42 | Takeover trigger: suspicion first, backstop max(200 ms, 3 × bid) | B, C | Implemented by D110 |
 | D43 | When the bid window starts                                      | B    | Implemented |
 | D44 | No `Claim` message; `just_won` in the load score                | B    | Implemented, amended by D85 |
 | D45 | Load score formula and tie-break                                | B    | Implemented |
@@ -174,6 +174,7 @@ table below in sync.
 | D107 | Planning time, CPU reading and hooks for takeover               | B, C | Implemented       |
 | D108 | Planning time: 1 µs minimum, and a 1 µs starting value           | B    | Implemented       |
 | D109 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
+| D110 | Takeover: stand by after a lost round, plan if the winner is silent | C, B | Implemented       |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -897,7 +898,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D42 · Takeover trigger
 
-- **Date:** 2026-10-27 · **Part:** B, C · **Status:** **Open**
+- **Date:** 2026-10-27 · **Part:** B, C · **Status:** Accepted 2026-11-01, implemented by D110 ·
+  **Decided by:** Ahmed Abdeen and Aabed, on the agent's recommendation.
 - **Context.** Two rules are on paper. Phase 1 §6.3: takeover after `3 × the winner's recent average
   service time, at least 200 ms`, with no committed plan. Code (`bidding.rs` TODO): takeover after
   `takeover_missed_heartbeats` missed peer heartbeats (150 ms by default) with nothing committed.
@@ -910,6 +912,12 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
      service-time bound.
 - **Recommendation.** Option 3, with the heartbeat rule as the main trigger and the service-time
   bound (≥ 200 ms) as a backstop. Measure the wrong-takeover rate in E3.
+- **Decision.** Option 3. Main trigger: the winner is suspected (150 ms by default). Backstop:
+  no commit within `max(200 ms, 3 × the winner's bid)`. Bids carry only the score, and service
+  time leaves out queue wait, so the expected-wait bid stands in for the winner's service time
+  (Ahmed's amendment); queue-only and CPU-only scores are not times and get 200 ms. If time runs
+  short, the backstop is dropped first.
+- **Where.** D110.
 
 ### D46 · Rejoin gate: `serving` flag, current at the leader's commit
 
@@ -1250,6 +1258,46 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   after restore. 30 runs in a row green. E3 (detection time, false suspicions), E5 (overhead).
 - **Report notes.** Team-built; cite failure detectors (Chandra and Toueg): it is eventually
   accurate at best, which is why safety never depends on it.
+
+### D110 · Takeover: stand by after a lost round, then plan if the winner is silent
+
+- **Date:** 2026-11-01 · **Part:** C, B · **Status:** Implemented · **Decided by:** Aabed, on the
+  agent's recommendation, with Ahmed Abdeen (Part B) on the trigger (D42).
+- **Context.** With bidding, a winner that goes silent after its round closes left the request to
+  the client's retry (`client_retry_ms`, 2 s). Part B's hooks (D107) give each closed round's
+  ranking and the winner's bid; Part C's detector (D79) says who is silent.
+- **Options considered.**
+  1. *Where it runs:* a `stand_by` step after a lost round, in the same request task, versus a
+     separate task that scans all rounds. Standing by in the request task keeps the client's reply
+     channel, so the node that takes over can answer without a retry.
+  2. *Stagger:* `peer_heartbeat_ms × (rank − 1)` (the runner-up acts at once, the next one heartbeat
+     later), versus Ahmed's `50 ms × rank`. Both keep the same 50 ms gap between ranks; the first
+     takes over 50 ms sooner.
+  3. *How long to stand by:* until `client_retry_ms`, when the client's retry opens a new round,
+     versus until the round is forgotten.
+- **Decision.** A node that lost the round reads `ranked_bids`, then every
+  `peer_heartbeat_ms / 5` checks: stop if a result is committed or `client_retry_ms` has passed;
+  do nothing while not serving; otherwise compute `bidding::executor` over the ranking, counting
+  suspected nodes and (after the backstop) the winner as out. If the answer is this node for
+  `peer_heartbeat_ms × (rank − 1)`, it logs `takeover_started { request, attempt, winner, rank,
+  reason, waited_us }` and plans as an executor would. The backstop is `max(200 ms, 3 × the
+  winner's bid)` for the expected-wait scores and 200 ms for queue-only and CPU-only scores (D42).
+  The hook is one line in `node/mod.rs::decide_executor`; `bidding.rs` is unchanged.
+- **Why.** Takeover moves the request in about 150 ms instead of 2 s, with no message change. The
+  ranking is the same on every node that saw the same bids, so usually exactly one node acts.
+- **Consequences.** A slow but alive winner past the backstop, or a wrong suspicion, makes two
+  nodes plan; the first commit wins and the other gets `Duplicate` (D27), so the cost is work, never
+  two results. Under leader dispatch nothing changes. `tests/bidding.rs`' test that a silent
+  winner is covered by the client's retry is replaced by `tests/takeover.rs`.
+- **Where.** `node/takeover.rs::stand_by`, `node/mod.rs::decide_executor`,
+  `metrics.rs::Event::TakeoverStarted`.
+- **How we check it.** `takeover::tests` (backstop per score); `tests/takeover.rs`: a winner
+  silenced after the bids are in is taken over by the runner-up with no client retry; a winner
+  whose only worker is held is taken over by the backstop while still trusted; 20 requests on a
+  healthy cluster are all planned by their round's winner. E3 (takeover time = `waited_us`, wrong
+  takeovers), FT-1.
+- **Report notes.** Team-built. The wrong-takeover rate against the backstop is the E3 trade-off
+  to report.
 
 ---
 
