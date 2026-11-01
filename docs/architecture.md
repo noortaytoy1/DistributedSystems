@@ -134,13 +134,13 @@ flowchart TB
     subgraph PR["Protocol layer"]
         direction LR
         C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
-        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: template"]
+        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: logic written, not wired"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
     end
     subgraph CS["Compute and state layer"]
         direction LR
-        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: template"]
+        C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs: logic written, not wired"]
         C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs: template"]
         C8["C8 Replicated state machine<br/>state.rs CloudState<br/>built"]
         C7["C7 Raft log and vote<br/>raft/store.rs, in memory<br/>built"]
@@ -158,8 +158,8 @@ flowchart TB
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
 | C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
-| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), template (`LoadInputs`), planned (`/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
-| C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), template (bidding) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
+| C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), planned (`LoadInputs` and `ServiceTime` are written and unit-tested but not wired, D86; `/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
+| C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), planned (bidding: rounds and scores written and unit-tested, not wired, D85, D87, D88) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built (worker pool), template (planner, campus) | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner (D49). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
@@ -273,7 +273,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
-| `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2)                          | template | `Bid` |
+| `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2); `attempt` to be added with the wiring (D84) | template | `Bid` |
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover (D41)                 | template | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
@@ -480,7 +480,7 @@ What the bidding path will look like once B wires it in. Every serving node comp
 winner from the same bids; there is no separate "you won" message. Each node times the window from
 when the request reaches it (D43), so windows are slightly offset; two nodes that saw different
 bids can both plan, and the first commit wins (D27). The score starts as expected wait with no CPU
-part (D45).
+part (D45). Rounds are per request and attempt, so a retry bids afresh (D84).
 
 ```mermaid
 sequenceDiagram
@@ -504,7 +504,7 @@ sequenceDiagram
         N3->>N2: Bid(k1-42, score 520)
     end
     Note over N1,N3: window closes: ranking = [2, 3, 1], winner 2, takeover order 3 then 1
-    Note over N2: node 2 adds 1 to its own just_won, others count nothing
+    Note over N2: node 2 counted this round in its own just_won while leading, and still does as a win, others count nothing
     N2->>N2: job enters the worker pool, just_won back down by 1, then plan
     N2->>N1: Propose(CommitResult k1-42) (forwarded, N1 leads)
     N1->>N2: AppendEntries [CommitResult]
