@@ -14,6 +14,7 @@ pub mod cpu;
 pub mod faults;
 pub mod heartbeat;
 pub mod rejoin;
+pub mod takeover;
 pub mod transport;
 pub mod workers;
 
@@ -319,7 +320,8 @@ async fn decide_executor(ctx: &NodeContext, req: &ClientRequest) -> Decision {
     match ctx.config.policy.assignment {
         AssignmentPolicy::LeaderDispatch => leader_dispatch(ctx),
         AssignmentPolicy::Bidding => {
-            if bids::run_round(ctx, req).await {
+            // A node that lost the round stands by to take over from a silent winner (D110).
+            if bids::run_round(ctx, req).await || takeover::stand_by(ctx, req).await {
                 Decision::Execute
             } else {
                 Decision::Standby

@@ -45,7 +45,7 @@ injected failures of up to 20 s, rejoin with state recovery, and stress tests wi
 | Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built (node side), template (client) | D6, D17, D53 |
 | An election picks the coordinator                          | Raft leader election (openraft)                                         | built    | D1, D14   |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | template (bidding), built (baseline) | D2, D3, D45 |
-| A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built (Raft failover), template (takeover) | D12, D13, D41, D42 |
+| A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built    | D12, D13, D41, D42, D110 |
 | The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
 | One answer per report, even with retries and duplicates   | Unique request IDs, first commit wins, reply after commit               | built    | D8, D9, D27 |
 | Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E6                    | built (logging), planned (runs) | D55, D56, D63 |
@@ -168,6 +168,7 @@ flowchart TB
 | C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); scheduled faults from the leader, never overlapping (D12, D78); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
+| —   | Takeover                  | `node/takeover.rs`                          | C     | built    | A node that lost a round plans the request if the winner is suspected, or nothing commits within max(200 ms, 3 × the winner's bid) (D42, D110). |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
 | K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built (`random_incident`, `unseeded_incident`), template (loadgen) | Uniform random incidents, seeded or from OS randomness (D99, D102). |
 | K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | template | Users, duration, think time, seed (D54). |
@@ -896,7 +897,7 @@ stateDiagram-v2
 | The leader           | Followers       | No `AppendEntries` within the election timeout           | 150–300 ms            | built |
 | A follower           | The leader      | Append-entries calls fail; openraft retries every 100 ms (D32) | next heartbeat  | built |
 | Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D79) | 150–200 ms | built |
-| A bidding winner     | Other bidders   | The peer detector above, with no commit for the request (takeover) | 150 ms (D42 open) | template |
+| A bidding winner     | Other bidders   | The peer detector above, or the backstop, with no commit for the request (takeover) | 150 ms; backstop ≥ 200 ms (D42, D110) | built |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, role, term, digest per node      | on demand             | built |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
@@ -906,7 +907,7 @@ extra election, never two committed results or two leaders in one term.
 
 | Victim                          | Effect                                               | How the request still completes | Status |
 |---------------------------------|------------------------------------------------------|---------------------------------|--------|
-| The executor, while planning    | Its result never reaches the leader                  | Takeover by the next bidder (6.7); a late proposal from the victim is a `Duplicate` | template |
+| The executor, while planning    | Its result never reaches the leader                  | Takeover by the next bidder (6.7, D110); a late proposal from the victim is a `Duplicate` | built |
 | The leader                      | Proposals to it are lost; uncommitted entries may be lost | New leader in one election; forwarded proposals retry (D26); the client retries with the same ID (6.4) | built |
 | An idle follower                | Nothing visible to clients                           | The other two are a majority    | built |
 | Executor under leader dispatch = leader | as "the leader"                              | The client's retry reaches the new leader | built |
@@ -972,7 +973,7 @@ connection closes.
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>bid_sent, bid_round_closed, silenced, restored, peer_unreachable,<br/>peer_reconnected"]
+        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>bid_sent, bid_round_closed, silenced, restored, peer_unreachable,<br/>peer_reconnected, takeover_started"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_sent, client_done, client_gave_up"]
@@ -1003,7 +1004,7 @@ then LB-2.
 
 | Phase 1 test | Scenario                                     | Pass when                                       | Status |
 |--------------|----------------------------------------------|-------------------------------------------------|--------|
-| FT-1 | Silence the node computing a request          | 0 lost, 0 duplicate commits                     | needs takeover (C, B) |
+| FT-1 | Silence the node computing a request          | 0 lost, 0 duplicate commits                     | single request in `tests/takeover.rs`; needs load |
 | FT-2 | Silence the leader under load                 | 0 lost; failover within 600 ms                  | Raft part tested in `tests/replication.rs`; needs load |
 | FT-3 | Silence an idle follower                      | no latency change beyond noise                  | needs `silence_for` (C) |
 | FT-4 | Rejoin after 1–5 s and 15–20 s                | node serving again; digest equals the leader's  | replay tested; gate needs D |
@@ -1035,7 +1036,7 @@ The report should say what changed between the submitted design and the built sy
 | Request table trimmed by TTL (D9)                      | Never trimmed during a run                                    | D9 |
 | Recompute once, then tell the client "retry"           | Re-plan up to 3 times, then stay quiet                        | D35, D36 |
 | No separate failure detector                           | Peer heartbeats so followers see each other                   | D41 |
-| Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms); open                       | D42 |
+| Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms), backstop max(200 ms, 3 × bid) | D42, D110 |
 | Bid window from the first bid seen                     | From request arrival; P-2 confirms or overturns it            | D43 |
 | `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
 | Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
@@ -1062,7 +1063,7 @@ The report should say what changed between the submitted design and the built sy
 ## 14. Open questions
 
 All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D5
-(PreVote), D17 (confirm TCP), D39 (releasing responders), D42 (takeover trigger), D52 (client retry
+(PreVote), D17 (confirm TCP), D39 (releasing responders), D52 (client retry
 budget), D63 (repetitions), D95 (incident age in the
 planner). Each stays open until someone
 implements the related code; that person settles it first, during "grill with docs".
