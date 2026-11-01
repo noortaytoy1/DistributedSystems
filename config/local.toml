@@ -44,3 +44,8 @@ responders = 30
 
 [metrics]
 dir = "runs/local"
+
+[faults]
+# false: no injected faults at all (no schedule, ctl silence refused). Baseline runs.
+# Override for one node with: node --faults on|off
+enabled = true

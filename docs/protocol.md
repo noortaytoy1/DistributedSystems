@@ -45,7 +45,7 @@ frames bypass the fault gate.
 | Request                    | Effect                                             | Reply             |
 |----------------------------|----------------------------------------------------|-------------------|
 | `Status`                   | none                                               | `Status(NodeStatus)` |
-| `Silence { ms }`           | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range or the node is already silenced (D71) |
+| `Silence { ms }`           | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range, the node is already silenced (D71), or fault injection is disabled (D74) |
 | `SkewLoad { extra_work }`  | add planner work per request on this node          | `Done`            |
 
 ## Peer protocol

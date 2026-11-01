@@ -44,6 +44,7 @@ impl TestCluster {
             workers: Default::default(),
             campus: Default::default(),
             metrics: Default::default(),
+            faults: Default::default(),
         };
         tweak(&mut config);
         config.validate().unwrap();

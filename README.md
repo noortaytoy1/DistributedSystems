@@ -103,6 +103,10 @@ cargo run --release --bin ctl -- skew --node 2 --work 200000   # node 2 does ext
 A silenced node keeps its state but sends and receives nothing, as if its network cable were
 pulled. `ctl` itself still gets through, so you can watch the node recover.
 
+Fault injection can be switched off for no-fault baseline runs: `enabled = false` under
+`[faults]` in the config, or `--faults off` when starting a node (D74). `ctl silence` is then
+refused.
+
 ## Run on several machines
 
 Copy `config/lab.example.toml` to `config/lab.toml`, fill in each machine's address, and make sure

@@ -138,6 +138,7 @@ table below in sync.
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 | D71 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D74 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 
 **Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
 D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -796,6 +797,41 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Report notes.** Team-built mechanism (no library). Worth one sentence: faults are injected at
   our own network endpoint and are strictly one at a time, so the measured recovery of each fault
   is not mixed with another.
+
+### D74 · Fault injection on/off: `faults.enabled`, `--faults` override
+
+- **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented ·
+  **Decided by:** Aabed, on the agent's recommendation, at the team's request ("enable or disable
+  the fault injection through a flag" before launch)
+- **Context.** Experiments need a no-fault baseline, and teammates want to run the cluster
+  without any chance of injected faults. Until now nothing could switch fault injection off.
+- **Options considered.**
+  1. *Where:* a config key only (always the same on all six machines, but editing the file on
+     every machine to change it); a node CLI flag only (quick, but three nodes can be started
+     differently by mistake); or both, the CLI overriding the config for one run.
+  2. *What "off" covers:* the schedule and `ctl silence` both, or the schedule only (manual faults
+     kept for demos).
+  3. *Default:* on (today's behaviour) or off (safer if forgotten, but every fault run and test
+     must turn it on).
+- **Decision.** Both: `[faults] enabled = true|false` in the shared TOML (`FaultConfig`, default
+  `true`), and `node --faults on|off` overriding it for that process. Off means no faults at all:
+  `faults::spawn_schedule` returns without starting, and `faults::silence_for` answers
+  `Error("fault injection is disabled ...")`, so `ctl silence` prints that error and the gate stays
+  open. The node logs "fault injection on/off" at startup.
+- **Why.** The config key keeps the six machines consistent by default (AGENTS.md: one config file
+  everywhere); the CLI override covers a quick one-off run without editing files. "Disable fault
+  injection" plainly means no faults, which is what a clean baseline needs. Default on keeps every
+  existing test, script and demo unchanged.
+- **Consequences.** A node started with `--faults off` in a cluster that otherwise has faults on
+  refuses orders aimed at it; once the schedule exists (D12), it treats the refusal as a skipped
+  round. The setting is per node, not replicated, so it is checked on the victim, never trusted
+  from the order.
+- **Where.** `config.rs::FaultConfig`, `bin/node.rs` (`--faults`), `node/faults.rs::{silence_for,
+  spawn_schedule}`, `config/local.toml`, `config/lab.example.toml`, README.
+- **How we check it.** `config::tests::{defaults_fill_missing_sections, faults_can_be_switched_off}`,
+  `tests/cluster.rs::ctl_silence_is_refused_when_fault_injection_is_disabled`.
+- **Report notes.** Mention it in the experiment method: baseline cells run with
+  `faults.enabled = false`.
 
 ---
 

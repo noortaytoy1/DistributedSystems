@@ -27,6 +27,8 @@ pub struct Config {
     pub campus: CampusConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub faults: FaultConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +166,21 @@ pub struct MetricsConfig {
     pub dir: Option<PathBuf>,
 }
 
+/// Fault injection (faults.rs). `bin/node.rs --faults on|off` overrides `enabled` for one run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FaultConfig {
+    /// False turns off every injected fault: the schedule never starts and `ctl silence` is
+    /// refused (D74).
+    pub enabled: bool,
+}
+
+impl Default for FaultConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("cannot read {path}: {source}")]
@@ -280,6 +297,24 @@ mod tests {
         .unwrap();
         assert_eq!(c.timers, Timers::default());
         assert_eq!(c.policy.assignment, AssignmentPolicy::LeaderDispatch);
+        assert!(c.faults.enabled);
+    }
+
+    #[test]
+    fn faults_can_be_switched_off() {
+        let c = Config::from_toml(
+            r#"
+            [[cluster.nodes]]
+            id = 1
+            peer_addr = "127.0.0.1:7001"
+            client_addr = "127.0.0.1:8001"
+
+            [faults]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        assert!(!c.faults.enabled);
     }
 
     #[test]

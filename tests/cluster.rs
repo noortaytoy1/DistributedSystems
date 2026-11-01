@@ -120,3 +120,19 @@ async fn ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself() {
     assert_eq!(silence(100).await.unwrap(), ControlReply::Done);
     cluster.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ctl_silence_is_refused_when_fault_injection_is_disabled() {
+    let cluster = TestCluster::start_with(3, |c| c.faults.enabled = false).await;
+    let addr = cluster.config.node(2).unwrap().client_addr.clone();
+    let reply = control(
+        &addr,
+        ControlRequest::Silence { ms: 1_000 },
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(reply, ControlReply::Error(_)));
+    assert!(!cluster.node(2).ctx.gate.is_silenced());
+    cluster.shutdown().await;
+}
