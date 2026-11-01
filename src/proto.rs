@@ -333,7 +333,7 @@ pub enum PeerBody {
     /// A follower asks the leader to commit a command on its behalf.
     Propose(Command),
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
-    /// ReadIndex, D73). Answered with [`PeerReply::ReadIndex`].
+    /// ReadIndex, D76). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
     Bid(Bid),
     Heartbeat,

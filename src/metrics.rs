@@ -277,7 +277,7 @@ pub enum MsgKind {
     RaftVote,
     RaftSnapshot,
     Propose,
-    /// A returning node asks the leader for its commit index (D73).
+    /// A returning node asks the leader for its commit index (D76).
     ReadIndex,
     Bid,
     PeerHeartbeat,

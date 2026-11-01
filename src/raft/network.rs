@@ -247,7 +247,7 @@ impl RaftNetwork<TypeConfig> for PeerLink {
 ///
 /// The `leader_commit` of every AppendEntries openraft accepts is published on `leader_commit`.
 /// A `HigherVote` answer means the sender is a stale leader, so its commit index is ignored
-/// (D72).
+/// (D75).
 pub async fn serve(
     raft: &Raft,
     heartbeats: &HeartbeatStats,

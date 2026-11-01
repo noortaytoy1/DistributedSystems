@@ -4,14 +4,14 @@
 //! the copying) and serves nothing until it is current: no elections, no bids, no replies.
 //! `NodeContext::serving` is the switch other parts check.
 //!
-//! The gate follows the fault gate (D72):
+//! The gate follows the fault gate (D75):
 //!
 //! - silence starts: `serving` goes false and elections are switched off, so the silent node
 //!   does not raise its term and depose a healthy leader when it returns (D5);
 //! - silence ends: log `rejoin_started`, wait for an AppendEntries from a current leader (which
 //!   brings this node's term up to date), then ask that leader for its commit index with
 //!   `PeerBody::ReadIndex`: the leader confirms with a majority that it still leads before it
-//!   answers, so the target is never stale (D73). A node that still believes it leads (a short
+//!   answers, so the target is never stale (D76). A node that still believes it leads (a short
 //!   silence may not have cost it leadership) asks itself the same way;
 //! - once the applied index reaches the target: `serving` true, elections back on, log
 //!   `rejoined` with the recovery time (E4).
@@ -108,7 +108,7 @@ async fn catch_up(ctx: &NodeContext, gate: &mut watch::Receiver<bool>) {
     tracing::info!(node = ctx.id, ?target, recovery_us, "serving again");
 }
 
-/// The leader's commit index, confirmed by a majority (ReadIndex, D73).
+/// The leader's commit index, confirmed by a majority (ReadIndex, D76).
 ///
 /// A returning follower first waits for an AppendEntries from a current leader: until then its
 /// term is old and the leader would drop its query (term rule, D21). A node that still believes

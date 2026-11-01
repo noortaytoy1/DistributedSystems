@@ -45,7 +45,7 @@ frames bypass the fault gate.
 | Request                    | Effect                                             | Reply             |
 |----------------------------|----------------------------------------------------|-------------------|
 | `Status`                   | none                                               | `Status(NodeStatus)` |
-| `Silence { ms }`           | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range, the node is already silenced (D71), or fault injection is disabled (D74) |
+| `Silence { ms }`           | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range, the node is already silenced (D74), or fault injection is disabled (D77) |
 | `SkewLoad { extra_work }`  | add planner work per request on this node          | `Done`            |
 
 ## Peer protocol
@@ -61,7 +61,7 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 | `Raft(Vote)`                 | candidate                  | `Vote(Result<..>)`                 |
 | `Raft(InstallSnapshot)`      | leader                     | `InstallSnapshot(Result<..>)`      |
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)` |
-| `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: commit index confirmed by a majority, or `NotLeader { leader }` (D73) |
+| `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: commit index confirmed by a majority, or `NotLeader { leader }` (D76) |
 | `Bid(Bid)`                   | every serving node         | `Ack`                              |
 | `Heartbeat`                  | every node, every peer     | `Ack`                              |
 

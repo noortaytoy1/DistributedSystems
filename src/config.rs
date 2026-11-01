@@ -171,7 +171,7 @@ pub struct MetricsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct FaultConfig {
     /// False turns off every injected fault: the schedule never starts and `ctl silence` is
-    /// refused (D74).
+    /// refused (D77).
     pub enabled: bool,
 }
 

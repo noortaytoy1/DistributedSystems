@@ -71,7 +71,7 @@ table below in sync.
 | D2  | Load-based bidding election per request                         | B    | Accepted          |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
 | D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
-| D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D72) |
+| D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D75) |
 | D6  | Client sends every request to all three nodes over UDP          | F    | Amended by D17    |
 | D7  | TCP between cloud nodes                                         | C    | Implemented       |
 | D8  | Reply only after commit                                         | A    | Implemented       |
@@ -112,7 +112,7 @@ table below in sync.
 | D43 | When the bid window starts                                      | B    | Open              |
 | D44 | No `Claim` message; `just_won` in the load score                | B    | Open              |
 | D45 | Load score formula and tie-break                                | B    | Proposed          |
-| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D72 |
+| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D75 |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Accepted          |
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Accepted          |
@@ -137,10 +137,10 @@ table below in sync.
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
-| D71 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
-| D72 | Rejoin gate: serving off and elections off until current        | D, A | Implemented       |
-| D73 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
-| D74 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
+| D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D75 | Rejoin gate: serving off and elections off until current        | D, A | Implemented       |
+| D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
+| D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 
 **Open decisions:** D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
 D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -244,7 +244,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 ### D5 · PreVote in Raft
 
 - **Date:** Phase 1 architecture · **Part:** A, D · **Status:** Implemented as option 2 (2026-11-01,
-  D72) · **Decided by:** team (Phase 1 document); option 2 chosen by Aabed on the agent's
+  D75) · **Decided by:** team (Phase 1 document); option 2 chosen by Aabed on the agent's
   recommendation, because the Nov 4 deadline leaves no time to measure first and fix after
 - **Context.** While a node is silent, its election timer keeps firing. In plain Raft it raises its
   term each time; when it comes back, its high term can force the healthy leader to step down and
@@ -748,7 +748,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D46 · Rejoin gate: `serving` flag, current at the leader's commit
 
-- **Date:** 2026-10-20 · **Part:** D · **Status:** Implemented, amended by D72 (how the target is
+- **Date:** 2026-10-20 · **Part:** D · **Status:** Implemented, amended by D75 (how the target is
   learned, when `serving` goes false) · **Decided by:** team (Phase 1 §9.6), shaped in the scaffold
 - **Context.** A returning node's state is stale. If it bids or replies, it could plan against old
   state or answer with old information.
@@ -764,7 +764,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Where.** `node/rejoin.rs`, `NodeContext::serving`, `handle_request` (already checks it).
 - **How we check it.** FT-4, FT-5, E4; digests equal after rejoin.
 
-### D71 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
+### D74 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
 
 - **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
   agent's recommendation
@@ -805,7 +805,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   our own network endpoint and are strictly one at a time, so the measured recovery of each fault
   is not mixed with another.
 
-### D72 · Rejoin gate: serving off and elections off until current
+### D75 · Rejoin gate: serving off and elections off until current
 
 - **Date:** 2026-11-01 · **Part:** D (with A for the Raft hooks) · **Status:** Implemented ·
   **Decided by:** Aabed, on the agent's recommendation; Raft hooks need Part A's review
@@ -837,14 +837,14 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   - When the fault gate closes: `serving = false`, `set_elect(false)`.
   - When it opens: log `rejoin_started { applied }`. Wait for the first AppendEntries openraft
     accepts after the restore (anything but `HigherVote`): it means a current leader exists and
-    this node now has its term. Then take the target from `Consensus::read_index` (D73), retried
+    this node now has its term. Then take the target from `Consensus::read_index` (D76), retried
     every Raft heartbeat with a `peer_rpc_timeout_ms` cap. A node that believes it still leads
     asks itself without waiting for an AppendEntries. Wait with openraft's
     `applied_index_at_least` (no polling).
   - Superseded within this PR: the first version took the target straight from that
     AppendEntries' `leader_commit`. openraft fills that field from the replication task's own
     copy of the commit index (`replication/mod.rs:443`), which can lag, so it is only a lower
-    bound. See D73.
+    bound. See D76.
   - Then `set_elect(true)`, `serving = true`, log `rejoined { leader_commit, applied,
     recovery_us }`. `recovery_us` runs from the restore to here on this node's `Instant` clock.
   - No target yet, or still applying: keep waiting, `warn!` every 5 s. Silenced again while
@@ -880,18 +880,18 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   target, the election switch timing and the recovery measurement. The FT-6 mutation result (3/3
   elections without the switch, 0 with it) is a good figure for the report.
 
-### D73 · `ReadIndex` peer message: the catch-up target from the leader
+### D76 · `ReadIndex` peer message: the catch-up target from the leader
 
 - **Date:** 2026-11-01 · **Part:** D, A (contract change) · **Status:** Implemented ·
   **Decided by:** Aabed, on the agent's recommendation; needs Part A's review (`proto.rs`,
   `raft/`, `node/mod.rs`)
-- **Context.** The rejoin gate (D72) needs the leader's commit index as a target. The first
+- **Context.** The rejoin gate (D75) needs the leader's commit index as a target. The first
   version read it from the `leader_commit` of the first AppendEntries after the silence. openraft
   0.9.25 fills that field from the replication task's own copy of the commit index
   (`replication/mod.rs:443`), which is updated by messages and can lag behind the leader's real
   commit index, so it is only a lower bound. A target that is too low lets a node serve before it
   is current. (While testing, a returning node served with 9 of 10 results. That failure turned
-  out to be a test race, see D72, but the lag is real in openraft's code, so the fix stands.)
+  out to be a test race, see D75, but the lag is real in openraft's code, so the fix stands.)
 - **Options considered.**
   1. *Ask the leader (Raft ReadIndex, Ongaro thesis §6.4).* A new peer message; the leader runs
      openraft's `get_read_log_id`, which confirms with a majority that it still leads before it
@@ -926,7 +926,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Report notes.** Library-provided: the majority check (`get_read_log_id`). Team-built: the
   message, its forwarding, and using it as the recovery target. Cite the ReadIndex section of
   Ongaro's thesis.
-### D74 · Fault injection on/off: `faults.enabled`, `--faults` override
+### D77 · Fault injection on/off: `faults.enabled`, `--faults` override
 
 - **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented ·
   **Decided by:** Aabed, on the agent's recommendation, at the team's request ("enable or disable

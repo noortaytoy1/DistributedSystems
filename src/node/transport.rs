@@ -38,7 +38,7 @@ use crate::proto::{
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
 ///
 /// The atomic is what every frame checks. The watch channel carries the same value to tasks that
-/// must react when a fault starts or ends (the rejoin gate, D72).
+/// must react when a fault starts or ends (the rejoin gate, D75).
 // TODO(C): richer faults if experiments need them (one direction only, added delay, loss).
 #[derive(Debug, Clone)]
 pub struct FaultGate {
@@ -66,7 +66,7 @@ impl FaultGate {
     }
 
     /// Close the gate only if it is open. False if the node is already silenced, so two faults
-    /// that race each other cannot both start (D71).
+    /// that race each other cannot both start (D74).
     pub fn try_silence(&self) -> bool {
         let closed = self
             .silenced
