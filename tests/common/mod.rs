@@ -45,6 +45,7 @@ impl TestCluster {
             campus: Default::default(),
             metrics: Default::default(),
             faults: Default::default(),
+            storage: Default::default(),
         };
         // Most tests are written against the simple baseline; the bidding tests set their own.
         config.policy.assignment = AssignmentPolicy::LeaderDispatch;

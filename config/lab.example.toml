@@ -33,6 +33,10 @@ initial_service_us = 1
 [metrics]
 dir = "runs/lab"
 
+[storage]
+# Raft log and vote on disk, so a node survives losing power (D118). Wipe it between experiment runs.
+dir = "data/raft"
+
 [faults]
 # false: no injected faults at all (no schedule, ctl silence refused). Baseline runs.
 # Override for one node with: node --faults on|off

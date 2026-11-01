@@ -90,7 +90,7 @@ table below in sync.
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
 | D23 | Control frames bypass the fault gate                            | C    | Implemented       |
-| D24 | In-memory Raft storage, no snapshots                            | A    | Implemented       |
+| D24 | In-memory Raft storage, no snapshots | A | Superseded by D118 |
 | D25 | Static membership; every node calls `initialize`                | A    | Implemented       |
 | D26 | Any node proposes; followers forward to the leader              | A    | Implemented       |
 | D27 | First commit wins; the outcome tells the proposer what happened | A    | Implemented       |
@@ -182,6 +182,7 @@ table below in sync.
 | D114 | Bidding is the default; the leader only sequences the log | B, A | Implemented |
 | D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented |
 | D117 | Richer faults are not built | C | Accepted |
+| D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -351,7 +352,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D24 · In-memory Raft storage, no snapshots
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Superseded by D118 · **Decided by:** A
 - **Context.** The Phase 1 document planned a durable log on disk (component C7) and a snapshot
   every 1,000 entries (§8.3), plus a crash-restart test (FT-9). The faults we must inject are
   network silences: the process keeps running and keeps its memory.
@@ -2607,3 +2608,39 @@ exist because of them.
 - **Decision.** No one-way faults, added delay or loss. E1–E6 and the demo use silence, physical
   power-off and one-plus-one failures only. The `TODO(C)` marker stays for anyone who needs it later.
 - **Why.** Unused by any experiment, and it adds risk to the gate everything relies on.
+
+### D118 · Raft log and vote on disk, for physical power-off
+
+- **Date:** 2026-11-01 · **Part:** A, D · **Status:** Implemented, supersedes D24 · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** D24 kept the log and vote in memory because the only faults were network silences. Dr
+  Amr's notes (Oct 28) say he wants to see a machine physically turned off. That wipes memory: the node
+  forgets its vote, which Raft forbids, and committed entries could be lost if a wiped node helps
+  elect a node missing them.
+- **Options considered.**
+  1. *Log and vote on disk, with a sync.* Phase 1's original plan (C7), and FT-9 comes back.
+  2. *Disk without a sync*: latency near today's; a process kill is safe, but a real power cut, the
+     exact case he asked for, can lose recent writes.
+  3. *Stay in memory, restart behind the rejoin gate*: small, and usually looks fine in a demo, but
+     breaks Raft's safety, and the report would have to admit it.
+  4. *Keep silences only and ask him to accept that*: fails the stated demo.
+- **Decision.** Option 1. `storage.dir` set: each node appends vote and log changes to
+  `<dir>/node-<id>.wal` (`raft/wal.rs`), syncing before it acknowledges, off the async runtime. Records
+  carry a length and an FNV-1a checksum; a damaged tail is cut off on open. `committed` is written
+  unsynced: it only saves replay work. The state machine is rebuilt by replaying the log. A node
+  with a file from an earlier run starts with `serving` false and elections off, and catches up
+  through the same rejoin path (D46, D75, D76). After 3 s with no leader it allows elections,
+  because the whole cluster may have restarted. Event `restarted`. `storage.dir` unset keeps memory only,
+  for ordinary tests. No new dependency, and still no snapshots.
+- **Why.** Raft's safety rests on a durable vote and log, and this is the smallest thing that gives
+  them. Reusing rejoin means one recovery path to explain.
+- **Consequences.** A disk sync per append raises commit latency, which now measures the disk as well
+  as the protocol, and the report must say so. It depends on each machine's disk, so compare
+  like with like. The runner must wipe `storage.dir` between runs, or the state carries over. Log files
+  grow for the length of a run. Stopping a server now closes its connections (`JoinSet` in
+  `serve_peers` and `serve_clients`), which the restart tests need.
+- **Where.** `raft/wal.rs`, `raft/store.rs::LogStore`, `raft/mod.rs::RaftNode::start`,
+  `node/rejoin.rs::after_restart`, `config.rs::StorageConfig`.
+- **How we check it.** `raft::wal::tests`; `tests/durable.rs` (a restarted follower catches up before
+  serving, with no election; the whole cluster restarts with every result). `kill -9` on the leader
+  under load was tried by hand on one machine. **Only the lab can test real power-off.**
+- **Report notes.** Crash recovery is now in scope. FT-9 returns.

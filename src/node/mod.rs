@@ -178,7 +178,7 @@ pub async fn start_with(
     ))];
 
     let started = RaftNode::start(id, &config, peers.clone(), log.clone()).await;
-    let (raft, state) = match started {
+    let (raft, state, restarted) = match started {
         Ok(ok) => ok,
         Err(e) => {
             for t in &tasks {
@@ -202,7 +202,8 @@ pub async fn start_with(
             config.timers.peer_heartbeat(),
             config.timers.takeover_missed_heartbeats,
         )),
-        serving: AtomicBool::new(true),
+        // A node with a Raft log from an earlier run may be behind (D118).
+        serving: AtomicBool::new(!restarted),
         bids: BidState::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
         config: Arc::new(config),
@@ -227,7 +228,7 @@ pub async fn start_with(
     tasks.push(spawn_reporter(ctx.clone()));
     tasks.extend(heartbeat::spawn(&ctx));
     tasks.extend(faults::spawn_schedule(&ctx));
-    tasks.extend(rejoin::spawn(&ctx));
+    tasks.extend(rejoin::spawn(&ctx, restarted));
     tasks.extend(bids::spawn(&ctx));
     tasks.push(release::spawn(&ctx));
 

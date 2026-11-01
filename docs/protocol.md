@@ -85,6 +85,12 @@ leaders itself and must reply so they step down.
 **Silence.** A silenced node reads and discards every incoming frame without replying, and
 fails every outgoing call at once. The caller sees a timeout.
 
+## Raft log file
+
+With `storage.dir` set, each node writes `node-<id>.wal` before it acknowledges anything to openraft
+(D118). A record is a 4-byte big-endian length, an 8-byte FNV-1a checksum and a body encoded with
+`proto::encode`: `Vote`, `Committed`, `Append`, `Truncate` or `Purge`. Only `Committed` is unsynced.
+
 ## Raft log
 
 The log entry payload is `Command`. Applying it yields an `Outcome`, which is the response
