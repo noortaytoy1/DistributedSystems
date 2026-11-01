@@ -107,6 +107,10 @@ Fault injection can be switched off for no-fault baseline runs: `enabled = false
 `[faults]` in the config, or `--faults off` when starting a node (D74). `ctl silence` is then
 refused.
 
+With fault injection on, the Raft leader also injects faults by itself: every 30 to 60 s it
+silences a random node (possibly itself) for 1 to 20 s, one fault at a time. The `[faults]`
+section sets the ranges and an optional `seed` to repeat a run (D75).
+
 ## Run on several machines
 
 Copy `config/lab.example.toml` to `config/lab.toml`, fill in each machine's address, and make sure

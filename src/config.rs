@@ -173,11 +173,42 @@ pub struct FaultConfig {
     /// False turns off every injected fault: the schedule never starts and `ctl silence` is
     /// refused (D74).
     pub enabled: bool,
+    /// The leader waits a random time in this range after a silence ends (or after it becomes
+    /// leader) before it orders the next fault (D12, D75).
+    pub interval_min_ms: u64,
+    pub interval_max_ms: u64,
+    /// Each scheduled silence lasts a random time in this range, at most 20 s.
+    pub silence_min_ms: u64,
+    pub silence_max_ms: u64,
+    /// Seed for the schedule; mixed with the leader's term. Unset: a random seed, logged at start.
+    pub seed: Option<u64>,
 }
 
 impl Default for FaultConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            interval_min_ms: 30_000,
+            interval_max_ms: 60_000,
+            silence_min_ms: 1_000,
+            silence_max_ms: 20_000,
+            seed: None,
+        }
+    }
+}
+
+impl FaultConfig {
+    pub fn interval(&self) -> (Duration, Duration) {
+        (
+            Duration::from_millis(self.interval_min_ms),
+            Duration::from_millis(self.interval_max_ms),
+        )
+    }
+    pub fn silence(&self) -> (Duration, Duration) {
+        (
+            Duration::from_millis(self.silence_min_ms),
+            Duration::from_millis(self.silence_max_ms),
+        )
     }
 }
 
@@ -257,6 +288,24 @@ impl Config {
         if self.campus.zones == 0 {
             return invalid("campus.zones must be > 0".into());
         }
+        let f = &self.faults;
+        if f.interval_min_ms == 0 || f.interval_min_ms > f.interval_max_ms {
+            return invalid("faults: need 0 < interval_min_ms <= interval_max_ms".into());
+        }
+        let max_fault = crate::node::faults::MAX_FAULT.as_millis() as u64;
+        if f.silence_min_ms == 0
+            || f.silence_min_ms > f.silence_max_ms
+            || f.silence_max_ms > max_fault
+        {
+            return invalid(format!(
+                "faults: need 0 < silence_min_ms <= silence_max_ms <= {max_fault}"
+            ));
+        }
+        // A leader that silences itself cannot tell its successor; the successor's first wait
+        // must outlast any silence already running, or two faults overlap (D75).
+        if f.interval_min_ms < f.silence_max_ms {
+            return invalid("faults: need interval_min_ms >= silence_max_ms".into());
+        }
         Ok(())
     }
 
@@ -333,5 +382,17 @@ mod tests {
         assert!(Config::from_toml(&typo).is_err());
         let slow_heartbeat = format!("{}[timers]\nraft_heartbeat_ms = 200\n", node(1, 7001));
         assert!(Config::from_toml(&slow_heartbeat).is_err());
+        let long_fault = format!("{}[faults]\nsilence_max_ms = 20001\n", node(1, 7001));
+        assert!(Config::from_toml(&long_fault).is_err());
+        let backwards = format!(
+            "{}[faults]\ninterval_min_ms = 500\ninterval_max_ms = 100\n",
+            node(1, 7001)
+        );
+        assert!(Config::from_toml(&backwards).is_err());
+        let overlapping = format!(
+            "{}[faults]\ninterval_min_ms = 5000\nsilence_max_ms = 10000\n",
+            node(1, 7001)
+        );
+        assert!(Config::from_toml(&overlapping).is_err());
     }
 }

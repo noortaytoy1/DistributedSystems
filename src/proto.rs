@@ -335,6 +335,12 @@ pub enum PeerBody {
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
     /// ReadIndex, D73). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
+    /// The leader orders the receiver silent for `ms` (scheduled fault injection, D12, D75). The
+    /// envelope's term makes a stale leader's order fail the term rule. Answered with
+    /// [`PeerReply::FaultOrder`].
+    FaultOrder {
+        ms: u64,
+    },
     Bid(Bid),
     Heartbeat,
 }
@@ -361,6 +367,8 @@ pub enum PeerReply {
     Proposed(Result<Outcome, ProposeError>),
     /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
     ReadIndex(Result<Option<u64>, ProposeError>),
+    /// The victim obeyed, or why it refused (disabled, already silenced, recovering).
+    FaultOrder(Result<(), String>),
 }
 
 /// One node's bid to execute a request. Lowest score wins; ties go to the lower node ID.

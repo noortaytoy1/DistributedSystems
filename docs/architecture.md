@@ -128,7 +128,7 @@ flowchart TB
     subgraph TR["Transport layer"]
         direction LR
         C1["C1 Network endpoint<br/>node/transport.rs<br/>framing, PeerClient, servers<br/>built"]
-        C10["C10 Fault gate + injector<br/>FaultGate: built<br/>silence_for: built<br/>schedule: template"]
+        C10["C10 Fault gate + injector<br/>FaultGate, silence_for, schedule: built"]
         HB["Peer heartbeats<br/>node/heartbeat.rs<br/>template"]
     end
     subgraph PR["Protocol layer"]
@@ -165,7 +165,7 @@ flowchart TB
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D72, D5). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate, manual faults), template (schedule) | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults (D12); all of it switchable off with `faults.enabled` / `--faults off` (D74). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D71); scheduled faults from the leader, never overlapping (D12, D75); all of it switchable off with `faults.enabled` / `--faults off` (D74). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
@@ -277,7 +277,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover (D41)                 | template | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D73) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
-| Fault order                     | leader → victim        | scheduled fault (D12); needs a proto change          | planned  | `FaultOrder` |
+| `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D75) | built | `FaultOrder` |
 | Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | open     | `Claim` |
 | PreVote                         | —                      | not available in openraft 0.9.25 (D5)                | open     | `PreVote` |
 
@@ -542,7 +542,7 @@ sequenceDiagram
     Note over N2: harmless duplicate work, counted in E3
 ```
 
-### 6.8 The leader goes silent (built for Raft and commits; scheduled injection is template)
+### 6.8 The leader goes silent (built)
 
 Tested end to end in `tests/replication.rs::cluster_keeps_committing_when_the_leader_goes_silent_and_it_catches_up_after`.
 
@@ -629,26 +629,34 @@ sequenceDiagram
     Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
 ```
 
-### 6.11 Scheduled fault injection (planned, D12)
-
-Needs a new peer message in `proto.rs` (contract change).
+### 6.11 Scheduled fault injection (built, D12, D75)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant L as Leader (term t)
+    participant L as Leader (term t, serving)
     participant V as Victim (may be the leader itself)
-    loop every 30-60 s (random)
-        L->>L: pick a victim uniformly from nodes 1, 2, 3 and a silence of 1-20 s
-        L->>V: fault order (victim, duration, term t)
+    loop while L leads term t
+        L->>L: wait 30-60 s (faults.interval), checking leadership every heartbeat
+        L->>L: draw a victim uniformly from nodes 1, 2, 3 and a silence of 1-20 s, log fault_ordered
+        L->>V: FaultOrder (ms) in an envelope with term t
         alt V's term is newer than t
-            V-->>L: StaleTerm (order dropped)
+            V-->>L: StaleTerm, L logs fault_refused
+        else V is not serving yet (recovering)
+            V-->>L: FaultOrder(Err recovering), L logs fault_refused
         else
-            V->>V: silence_for(duration)
+            V->>V: silence_for(ms): gate closes, log silenced
+            V-->>L: FaultOrder(Ok), the last word through the closed gate
+            L->>L: sleep the silence out
         end
     end
     Note over L: no leader, no faults (a few hundred ms per election)
 ```
+
+A leader that silences itself cannot tell its successor. The successor starts its own wait when
+it takes over, and validation requires `interval_min_ms >= silence_max_ms`, so its first order
+comes after the old silence has ended (D75). The RNG is seeded per term from `faults.seed`, so a
+run can be repeated.
 
 ### 6.12 What a node does with a client request (built, with the bidding branch as template)
 
@@ -689,7 +697,7 @@ flowchart TD
 | Raft log, vote, commit index            | `LogStore` (memory)                  | per node   | Raft rules |
 | Load inputs, bid rounds, suspicion      | `NodeContext`, `bidding.rs`          | no         | soft state, rebuilt within one bid window |
 | `serving`, `plan_work`, fault gate      | `NodeContext` atomics                | no         | per node |
-| Fault schedule                          | leader only (planned)                | no         | a new leader starts a new schedule |
+| Fault schedule                          | leader only                          | no         | a new leader starts a new schedule, seeded with its term |
 
 ### 7.2 Data model
 
@@ -900,7 +908,7 @@ flowchart TB
         REP["reporter: messages and state_digest, 1 s"]
         SEED["campus seeding: 200 ms until done"]
         HBT["peer heartbeats (template)"]
-        FLT["fault schedule (template)"]
+        FLT["fault schedule"]
         RJ["rejoin watcher"]
     end
     subgraph POOL["worker threads (blocking)"]
@@ -967,7 +975,7 @@ flowchart LR
 | FT-5 | Rejoin under load                             | recovery completes at every load                | needs D, F |
 | FT-6 | Returning node with a stale term              | 0 elections caused by the return                | open (D5) |
 | FT-7 | Client retry after commit                     | cached reply, 1 execution                       | tested in `tests/cluster.rs` |
-| FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | needs D12 |
+| FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | schedule built (D75); needs the load generator |
 | FT-9 | Crash and restart                             | —                                               | dropped for Phase 1 (D24) |
 
 Method (D56, D63): latency on the client clock, durations with a monotonic clock on one machine,
@@ -995,7 +1003,7 @@ The report should say what changed between the submitted design and the built sy
 | Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms); open                       | D42 |
 | Bid window from the first bid seen                     | From request arrival; open                                    | D43 |
 | `Claim` message                                        | Local `just_won` count; open                                  | D44 |
-| `FaultOrder` message                                   | Not in `proto.rs` yet; needed for the schedule                | D12 |
+| `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D75 |
 | Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |

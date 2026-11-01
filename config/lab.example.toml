@@ -27,3 +27,10 @@ dir = "runs/lab"
 # false: no injected faults at all (no schedule, ctl silence refused). Baseline runs.
 # Override for one node with: node --faults on|off
 enabled = true
+# The leader waits interval_min..max ms after a silence, then silences a random node for
+# silence_min..max ms. interval_min_ms must be >= silence_max_ms so faults never overlap.
+interval_min_ms = 30000
+interval_max_ms = 60000
+silence_min_ms = 1000
+silence_max_ms = 20000
+# seed = 1   # fix the schedule; unset picks a random seed and logs it

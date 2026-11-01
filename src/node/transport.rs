@@ -8,7 +8,8 @@
 //! - Client port: one-way frames in both directions; replies are matched by request ID.
 //!
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
-//! frames, so an operator can still query and restore a silenced node.
+//! frames, so an operator can still query and restore a silenced node, and the "ok" answering
+//! the fault order that silenced it (D75).
 //!
 //! Owner: C (faults and failover). The plumbing here was written with Part A because Raft cannot
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
@@ -367,7 +368,10 @@ async fn peer_connection(
         let (handler, gate, tx) = (handler.clone(), gate.clone(), tx.clone());
         tokio::spawn(async move {
             let reply = handler(envelope).await;
-            if gate.is_silenced() {
+            // Obeying a fault order closes the gate; its "ok" is the victim's last word, so the
+            // leader can tell an obeyed order from an unreachable victim (D75).
+            let last_word = matches!(reply, PeerReply::FaultOrder(Ok(())));
+            if gate.is_silenced() && !last_word {
                 return;
             }
             match proto::encode(&PeerReplyFrame { seq, reply }) {
