@@ -27,6 +27,7 @@ use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
@@ -413,10 +414,13 @@ pub async fn serve_peers(
     msgs: Arc<MessageCounters>,
     handler: PeerHandler,
 ) {
+    // Owned here, so stopping the server also closes its connections.
+    let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(peer_connection(
+                while connections.try_join_next().is_some() {}
+                connections.spawn(peer_connection(
                     stream,
                     gate.clone(),
                     msgs.clone(),
@@ -515,10 +519,12 @@ pub async fn serve_clients(
     msgs: Arc<MessageCounters>,
     handler: ClientHandler,
 ) {
+    let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(client_connection(
+                while connections.try_join_next().is_some() {}
+                connections.spawn(client_connection(
                     stream,
                     gate.clone(),
                     msgs.clone(),

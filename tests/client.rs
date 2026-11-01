@@ -156,6 +156,7 @@ fn stub_config(addrs: &[String]) -> Config {
         campus: Default::default(),
         metrics: Default::default(),
         faults: Default::default(),
+        storage: Default::default(),
     };
     fast_retries(&mut config);
     config
