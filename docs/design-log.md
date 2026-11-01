@@ -137,6 +137,7 @@ table below in sync.
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
+| D71 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
 
 **Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
 D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -754,6 +755,47 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Consequences.** Recovery time (E4) is silence end → `serving` again.
 - **Where.** `node/rejoin.rs`, `NodeContext::serving`, `handle_request` (already checks it).
 - **How we check it.** FT-4, FT-5, E4; digests equal after rejoin.
+
+### D71 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
+  agent's recommendation
+- **Context.** `faults::silence_for` (behind `ctl silence`, and later behind the fault schedule,
+  D12) was a stub. Its TODO said overlapping faults must not cut each other short. Three questions
+  were open: what a second silence order does while the node is already silenced, what happens to
+  durations outside the spec, and how the restore side reaches the rejoin gate (D46).
+- **Options considered.**
+  1. *Overlap: reject the second order.* One `silenced`/`restored` pair per fault; matches the
+     fault model's one victim at a time. The operator must wait for the fault to end.
+  2. *Overlap: extend to the later end time.* Never shortens a fault, but one silence then has two
+     `silenced` events and one `restored`, so E3 cannot read a fault's length from its event pair.
+  3. *Overlap: restart the timer.* Can cut a fault short or stretch it past 20 s. Rejected.
+  4. *Over 20 s: clamp to 20 s.* Quietly changes what the operator asked for; an experiment could
+     run on a duration nobody chose. Rejected in favour of an error.
+  5. *0 ms: accept as a no-op.* Hides typos and logs a meaningless fault. Rejected.
+  6. *Restore hook: a `tokio::sync::watch` in `FaultGate` now.* Unused until the rejoin gate is
+     built; deferred to that PR so this one stays small.
+- **Decision.** `silence_for` rejects `ms = 0` and `ms > 20000` (`MAX_FAULT`) with an error, and
+  rejects an order while the gate is closed ("already silenced"). Otherwise it closes the gate,
+  logs `silenced { ms }`, and a spawned task sleeps `ms`, reopens the gate and logs `restored`. The
+  check-and-close is one atomic step (`FaultGate::try_silence`, a compare-and-swap), so two orders
+  arriving together cannot both start a fault. `ctl` prints the error. The restore notification
+  for the rejoin gate is added with the rejoin work (D46).
+- **Why.** Every `silenced`/`restored` pair in the logs is then exactly one in-spec fault, which
+  keeps E3 and E4 analysis simple and honest. The project allows faults of at most 20 s, so a
+  longer one is an operator mistake, not a test. The scheduled injector (D12) will only ever have
+  one victim at a time anyway, so rejecting overlaps costs nothing there.
+- **Consequences.** There is no way to end a fault early from `ctl`; that would need a new control
+  message (`proto.rs` change). A node that shuts down while silenced drops the restore task with
+  the runtime. The leader-side schedule must treat "already silenced" as a skipped round.
+- **Where.** `node/faults.rs::{silence_for, check_duration, MAX_FAULT}`,
+  `node/transport.rs::FaultGate::try_silence`, `bin/ctl.rs` (unchanged; prints the error).
+- **How we check it.** `faults::tests` (duration limits, atomic re-silence),
+  `tests/cluster.rs::ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself`; E3 and FT-n
+  runs use these events.
+- **Report notes.** Team-built mechanism (no library). Worth one sentence: faults are injected at
+  our own network endpoint and are strictly one at a time, so the measured recovery of each fault
+  is not mixed with another.
 
 ---
 
