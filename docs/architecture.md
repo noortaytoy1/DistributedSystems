@@ -496,7 +496,7 @@ sequenceDiagram
     Note over X2: after 3 stale attempts it stops without replying, the client retries
 ```
 
-### 6.6 Normal request under bidding (built, off by default, D2, D43–D45, D103)
+### 6.6 Normal request under bidding (built, the default, D2, D43–D45, D103, D114)
 
 The bidding path, used when `policy.assignment = "bidding"`. Every serving node computes the same
 winner from the same bids; there is no separate "you won" message. Each node times the window from
