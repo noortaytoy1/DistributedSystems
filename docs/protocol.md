@@ -12,12 +12,13 @@ Each node listens on two TCP ports from the config:
 
 | Port          | Who connects       | Pattern                                               |
 |---------------|--------------------|-------------------------------------------------------|
-| `peer_addr`   | other nodes        | request/reply, many in flight, matched by `seq`       |
+| `peer_addr`   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
 | `client_addr` | clients and `ctl`  | one-way frames both ways, replies matched by request ID |
 
 Every frame is a 4-byte big-endian length followed by the body (`tokio_util`
-`LengthDelimitedCodec`). Bodies are encoded with `proto::encode`: bincode with varint integers,
-no trailing bytes, at most 16 MiB (`MAX_FRAME_BYTES`). Malformed frames close the connection.
+`LengthDelimitedCodec`), at most 16 MiB (`MAX_FRAME_BYTES`). Client port bodies are encoded with
+`proto::encode`: bincode with varint integers and no trailing bytes. Peer port bodies are tarpc
+messages in tarpc's bincode format. Malformed frames close the connection.
 
 `TCP_NODELAY` is set on every connection.
 
@@ -62,10 +63,11 @@ frames bypass the fault gate.
 
 ## Peer protocol
 
-Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame` with the same
-`seq`. A connection carries many requests at once, and replies may come back in any order.
-
-`PeerEnvelope { from, term, body }`: `term` is the sender's current Raft term.
+Nodes call each other through the tarpc service `proto::PeerRpc` (D119). A connection carries many
+calls at once, and replies may come back in any order. Each method takes `from` and `term`, the
+sender's current Raft term, and has a deadline. A connection whose calls have gone unanswered for
+1 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
+maps to one method.
 
 | Body                         | Sent by                    | Reply                              |
 |------------------------------|----------------------------|------------------------------------|
@@ -82,8 +84,8 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 answers `StaleTerm { current }`. Raft RPCs are always passed to openraft, which rejects stale
 leaders itself and must reply so they step down.
 
-**Silence.** A silenced node reads and discards every incoming frame without replying, and
-fails every outgoing call at once. The caller sees a timeout.
+**Silence.** A silenced node's methods never return, and it fails every outgoing call at once.
+The caller sees its deadline pass.
 
 ## Raft log file
 
