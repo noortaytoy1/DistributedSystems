@@ -13,6 +13,8 @@ git fetch origin
 git switch part-c-tarpc
 git show origin/shared-handoff:handoff.md > handoff.md
 echo handoff.md >> .git/info/exclude
+git restore --source origin/shared-handoff --worktree -- docs/sources
+echo docs/sources/ >> .git/info/exclude
 curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
 export PATH=$HOME/.cargo/bin:$PATH CARGO_TARGET_DIR=$HOME/.cache/rescuemesh-target
 cargo test
@@ -107,9 +109,13 @@ export PATH=$HOME/.cargo/bin:$PATH CARGO_TARGET_DIR=$HOME/.cache/rescuemesh-targ
   status line or an entry. Rewrite them if useful.
 - **Commit script warning:** the old helper committed without checking test results, and that let a
   flaky commit through once. Read the 10-run results before committing.
-- **Source documents:** the two PDFs stayed on the old device, because this repo is public and the
-  user has not approved publishing them. Ask the user for them if the summary below is not enough.
-  They were `Dr Amr comments about Project during class.pdf` and `RescueMesh_Term_Project_v2.pdf`.
+- **Source documents:** both PDFs are committed on `shared-handoff` only, in `docs/sources/`. Read
+  the originals when a detail matters. To fetch them without switching branch:
+
+  ```bash
+  git restore --source origin/shared-handoff --worktree -- docs/sources
+  echo docs/sources/ >> .git/info/exclude
+  ```
 
 ### What those documents require, in summary
 
