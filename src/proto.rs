@@ -332,6 +332,9 @@ pub enum PeerBody {
     Raft(RaftRpc),
     /// A follower asks the leader to commit a command on its behalf.
     Propose(Command),
+    /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
+    /// ReadIndex, D73). Answered with [`PeerReply::ReadIndex`].
+    ReadIndex,
     Bid(Bid),
     Heartbeat,
 }
@@ -356,6 +359,8 @@ pub enum PeerReply {
         Result<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>>,
     ),
     Proposed(Result<Outcome, ProposeError>),
+    /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
+    ReadIndex(Result<Option<u64>, ProposeError>),
 }
 
 /// One node's bid to execute a request. Lowest score wins; ties go to the lower node ID.

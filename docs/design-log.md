@@ -71,7 +71,7 @@ table below in sync.
 | D2  | Load-based bidding election per request                         | B    | Accepted          |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
 | D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
-| D5  | PreVote in Raft                                                 | A, D | Open              |
+| D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D72) |
 | D6  | Client sends every request to all three nodes over UDP          | F    | Amended by D17    |
 | D7  | TCP between cloud nodes                                         | C    | Implemented       |
 | D8  | Reply only after commit                                         | A    | Implemented       |
@@ -112,7 +112,7 @@ table below in sync.
 | D43 | When the bid window starts                                      | B    | Open              |
 | D44 | No `Claim` message; `just_won` in the load score                | B    | Open              |
 | D45 | Load score formula and tie-break                                | B    | Proposed          |
-| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Accepted          |
+| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D72 |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Accepted          |
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Accepted          |
@@ -138,8 +138,10 @@ table below in sync.
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 | D71 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D72 | Rejoin gate: serving off and elections off until current        | D, A | Implemented       |
+| D73 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
 
-**Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
+**Open decisions:** D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
 D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -240,8 +242,9 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D5 · PreVote in Raft
 
-- **Date:** Phase 1 architecture · **Part:** A, D · **Status:** **Open** · **Decided by:** team
-  (Phase 1 document); not implementable as written on openraft
+- **Date:** Phase 1 architecture · **Part:** A, D · **Status:** Implemented as option 2 (2026-11-01,
+  D72) · **Decided by:** team (Phase 1 document); option 2 chosen by Aabed on the agent's
+  recommendation, because the Nov 4 deadline leaves no time to measure first and fix after
 - **Context.** While a node is silent, its election timer keeps firing. In plain Raft it raises its
   term each time; when it comes back, its high term can force the healthy leader to step down and
   cause a needless election. The Phase 1 document chose Raft's PreVote extension (Ongaro thesis,
@@ -260,6 +263,10 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   the FT-6 numbers here either way.
 - **Where.** `src/node/rejoin.rs`, `src/raft/mod.rs`.
 - **How we check it.** FT-6, E4: elections whose `raft_state` events follow a `restored` event.
+- **Result (2026-11-01).** `tests/rejoin.rs::a_returning_follower_causes_no_election` silences a
+  follower for 1 s. With elections switched off it passes: same term, same leader. With the switch
+  removed it failed 3 runs out of 3: the returning node's term had grown and forced a new election.
+  So option 1's question is answered: returns do cause elections on openraft 0.9 without the gate.
 
 ### D14 · openraft 0.9.25 behind a `Consensus` trait
 
@@ -740,8 +747,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D46 · Rejoin gate: `serving` flag, current at the leader's commit
 
-- **Date:** 2026-10-20 · **Part:** D · **Status:** Accepted (template: `rejoin.rs`, `TODO(D)`) ·
-  **Decided by:** team (Phase 1 §9.6), shaped in the scaffold
+- **Date:** 2026-10-20 · **Part:** D · **Status:** Implemented, amended by D72 (how the target is
+  learned, when `serving` goes false) · **Decided by:** team (Phase 1 §9.6), shaped in the scaffold
 - **Context.** A returning node's state is stale. If it bids or replies, it could plan against old
   state or answer with old information.
 - **Decision.** `NodeContext::serving` is the switch. When a node returns from a fault it clears
@@ -796,6 +803,128 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Report notes.** Team-built mechanism (no library). Worth one sentence: faults are injected at
   our own network endpoint and are strictly one at a time, so the measured recovery of each fault
   is not mixed with another.
+
+### D72 · Rejoin gate: serving off and elections off until current
+
+- **Date:** 2026-11-01 · **Part:** D (with A for the Raft hooks) · **Status:** Implemented ·
+  **Decided by:** Aabed, on the agent's recommendation; Raft hooks need Part A's review
+- **Context.** D46 says a returning node "learns the leader's commit index" and serves only once it
+  has applied that far, but openraft 0.9.25 does not expose the leader's commit index to a follower
+  (its metrics have `last_applied` and `last_log_index`, no `committed`). D5 (PreVote) was open:
+  without PreVote a silent node keeps raising its term and deposes the leader when it returns.
+  D46 also left open when `serving` goes false and what happens if no leader is reachable.
+- **Options considered.**
+  1. *Target: `leader_commit` of the first AppendEntries accepted after the silence*, published by
+     `raft/network.rs::serve` on a `tokio::sync::watch` exposed by `Consensus::leader_commit`. No
+     wire change, follows the Phase 1 design ("note leaderCommit from the first AppendEntries").
+  2. *Target: ask the leader with a new peer message.* A `proto.rs` change reviewed by every owner,
+     and the leader may be unknown right after a silence. Rejected.
+  3. *Target: poll atomics every 10 ms.* Simpler types, but adds up to 10 ms to every measured
+     recovery time. Rejected.
+  4. *Which AppendEntries count:* all that openraft accepts (`Success`, `PartialSuccess`,
+     `Conflict`), versus `Success` only. `HigherVote` means the sender is a stale leader whose
+     commit may be too low, so it never counts. `Success` only would delay the target by a round
+     trip, because a returning node's first AppendEntries is usually a `Conflict`.
+  5. *Elections while not serving:* switch them off with `runtime_config().elect(false)`
+     (`Consensus::set_elect`), versus measure first (D5 option 1).
+  6. *When `serving` goes false:* when the silence starts, versus when it ends.
+  7. *No leader heard from:* keep waiting and warn every 5 s, versus serve anyway after a timeout.
+  8. *The returning node is still the leader* (silence shorter than an election timeout, so nobody
+     sends it AppendEntries): confirm leadership with a majority (`get_read_log_id`, which returns
+     the commit index), versus treating a leader as current at once.
+- **Decision.**
+  - When the fault gate closes: `serving = false`, `set_elect(false)`.
+  - When it opens: log `rejoin_started { applied }`. Wait for the first AppendEntries openraft
+    accepts after the restore (anything but `HigherVote`): it means a current leader exists and
+    this node now has its term. Then take the target from `Consensus::read_index` (D73), retried
+    every Raft heartbeat with a `peer_rpc_timeout_ms` cap. A node that believes it still leads
+    asks itself without waiting for an AppendEntries. Wait with openraft's
+    `applied_index_at_least` (no polling).
+  - Superseded within this PR: the first version took the target straight from that
+    AppendEntries' `leader_commit`. openraft fills that field from the replication task's own
+    copy of the commit index (`replication/mod.rs:443`), which can lag, so it is only a lower
+    bound. See D73.
+  - Then `set_elect(true)`, `serving = true`, log `rejoined { leader_commit, applied,
+    recovery_us }`. `recovery_us` runs from the restore to here on this node's `Instant` clock.
+  - No target yet, or still applying: keep waiting, `warn!` every 5 s. Silenced again while
+    catching up: abandon this catch-up, stay not serving, start over at the next restore.
+  - `FaultGate` gains a `watch` channel (`subscribe`) next to its atomic, so the rejoin task wakes
+    exactly when a fault starts or ends.
+- **Why.** Option 1 is the smallest change that gives an exact target without touching the wire
+  contract. Switching elections off is what PreVote would buy us, with one line on openraft, and
+  the FT-6 result in D5 shows it is needed. Clearing `serving` at silence start keeps the Phase 1
+  states (Normal, Silent, Recovering, Normal) and makes `ctl status` truthful during the demo.
+  Waiting forever without a leader is the only safe choice: a node that has heard from no current
+  leader cannot know it is current, and AGENTS.md forbids serving before that. Confirming an old
+  leader with a majority avoids both a deadlock (nobody sends it AppendEntries) and a stale
+  ex-leader answering from old state.
+- **Consequences.** `Consensus` gains five methods (`leader_commit`, `read_index`,
+  `read_index_local`, `wait_applied`, `set_elect`) and `network::serve` one parameter: Part A
+  files, so Part A reviews. With two nodes down the survivor never serves again until one returns: this is the
+  Phase 1 two-failure gap made visible, not hidden. Votes and log entries are still accepted while
+  not serving, so a silent follower's return never costs the majority.
+- **Where.** `node/rejoin.rs::{spawn, catch_up, learn_target, is_current}`,
+  `raft/mod.rs::Consensus`, `raft/network.rs::serve`, `node/transport.rs::FaultGate::subscribe`,
+  `metrics.rs::Event::{RejoinStarted, Rejoined}`.
+- **How we check it.** `rejoin::tests` (is_current); `tests/rejoin.rs`: FT-4
+  (`a_returning_follower_serves_only_after_catching_up`), FT-6
+  (`a_returning_follower_causes_no_election`, which fails without `set_elect(false)`), a short
+  leader silence, and a replaced leader rejoining as follower. E4 reads `rejoin_started` and
+  `rejoined` events. FT-4 and the replaced-leader test drive the gate by hand
+  (`gate.silence()`/`restore()`) so every commit lands inside the silence: with a timed
+  `silence_for` of 1.5 s, electing a leader plus the commits sometimes took longer on a debug
+  build and the test raced. 60 runs in a row green after that change.
+- **Report notes.** Library-provided: log replay, the AppendEntries consistency check, the
+  `elect` switch and the leadership check (openraft). Team-built: the gate itself, the choice of
+  target, the election switch timing and the recovery measurement. The FT-6 mutation result (3/3
+  elections without the switch, 0 with it) is a good figure for the report.
+
+### D73 · `ReadIndex` peer message: the catch-up target from the leader
+
+- **Date:** 2026-11-01 · **Part:** D, A (contract change) · **Status:** Implemented ·
+  **Decided by:** Aabed, on the agent's recommendation; needs Part A's review (`proto.rs`,
+  `raft/`, `node/mod.rs`)
+- **Context.** The rejoin gate (D72) needs the leader's commit index as a target. The first
+  version read it from the `leader_commit` of the first AppendEntries after the silence. openraft
+  0.9.25 fills that field from the replication task's own copy of the commit index
+  (`replication/mod.rs:443`), which is updated by messages and can lag behind the leader's real
+  commit index, so it is only a lower bound. A target that is too low lets a node serve before it
+  is current. (While testing, a returning node served with 9 of 10 results. That failure turned
+  out to be a test race, see D72, but the lag is real in openraft's code, so the fix stands.)
+- **Options considered.**
+  1. *Ask the leader (Raft ReadIndex, Ongaro thesis §6.4).* A new peer message; the leader runs
+     openraft's `get_read_log_id`, which confirms with a majority that it still leads before it
+     answers. Exact and linearizable. Costs a `proto.rs` change.
+  2. *Settle window.* Keep the AppendEntries rule but take the maximum `leader_commit` over two
+     more heartbeats (~100 ms). No wire change, but a heuristic, and it adds ~100 ms to every
+     recovery time.
+  3. *Accept and document.* Safety still holds through commit-then-reply and first-commit-wins,
+     but it breaks "serves nothing until current" in AGENTS.md. Rejected.
+  4. *Message shape:* `ReadIndex` reusing `ProposeError::NotLeader { leader }`, versus a
+     `CommitQuery` with its own error enum. Reuse keeps the contract small and makes the retry
+     identical to proposal forwarding (D26).
+- **Decision.** `PeerBody::ReadIndex` (no fields; the envelope carries sender and term), answered
+  with `PeerReply::ReadIndex(Result<Option<u64>, ProposeError>)`: the commit index (`None` if
+  nothing is committed yet), `NotLeader { leader }` with a hint, or `Timeout` if the leader could
+  not reach a majority. `Consensus::read_index` asks locally first and forwards once to the
+  hinted leader; `read_index_local` serves incoming queries. The returning node sends it only
+  after an AppendEntries has brought its term up to date, because the leader drops non-Raft
+  messages from an older term (D21). Counted as `read_index` in the message counters (E5).
+- **Why.** It is the textbook way for a node to learn the commit index safely, it is exact, and it
+  is short to explain: "the returning node asks the leader what is committed; the leader checks
+  with a majority that it is still the leader, then answers". The confirmation step is what keeps
+  a stale ex-leader from giving an old answer.
+- **Consequences.** One extra round trip plus one leader heartbeat round per rejoin (a few ms on a
+  LAN), included in `recovery_us`. Every owner whose code sends or receives peer messages must
+  review: A (`raft/mod.rs`, `raft/network.rs`, `node/mod.rs`), and the metrics owners for the new
+  `read_index` counter.
+- **Where.** `proto.rs::{PeerBody::ReadIndex, PeerReply::ReadIndex}`,
+  `raft/mod.rs::{Consensus::read_index, read_index_local, RaftNode::forward_read_index}`,
+  `node/mod.rs::on_peer_message`, `node/rejoin.rs::learn_target`, `metrics.rs::MsgKind::ReadIndex`.
+- **How we check it.** `tests/rejoin.rs` (all four tests take their target through it), E5 counts.
+- **Report notes.** Library-provided: the majority check (`get_read_log_id`). Team-built: the
+  message, its forwarding, and using it as the recovery target. Cite the ReadIndex section of
+  Ongaro's thesis.
 
 ---
 
