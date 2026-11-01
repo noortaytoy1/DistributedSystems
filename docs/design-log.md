@@ -68,7 +68,7 @@ table below in sync.
 | ID  | Decision                                                        | Part | Status            |
 |-----|-----------------------------------------------------------------|------|-------------------|
 | D1  | Raft leader election for the cloud coordinator                  | A    | Implemented (via D14) |
-| D2  | Load-based bidding election per request                         | B    | Implemented (off by default, D34) |
+| D2 | Load-based bidding election per request | B | Implemented (default, D114) |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
 | D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
 | D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D75) |
@@ -100,7 +100,7 @@ table below in sync.
 | D31 | State digest: an FNV-1a hash chain over the applied log         | A    | Implemented       |
 | D32 | Retry an unreachable peer after two heartbeats                  | A    | Implemented       |
 | D33 | No leader, no executor (leader dispatch)                        | A    | Implemented       |
-| D34 | Leader dispatch is the default until bidding lands              | B    | Implemented, amended by D103 |
+| D34 | Leader dispatch is the default until bidding lands | B | Superseded by D114 |
 | D35 | Re-plan a stale plan at most three times                        | A, E | Implemented       |
 | D36 | A node that cannot answer stays quiet | A, F | Implemented |
 | D37 | Any serving node answers a retry from its own state             | A    | Implemented       |
@@ -120,7 +120,7 @@ table below in sync.
 | D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113 |
 | D52 | Client retry budget | F | Accepted |
 | D53 | One client process, one connection per node, shared by users | F | Implemented |
-| D54 | Load generator: closed loop first, open loop as a mode          | F    | Accepted          |
+| D54 | Load generator: closed loop first, open loop as a mode | F | Implemented |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
 | D56 | Durations on one clock; latency on the client                   | all  | Implemented       |
 | D57 | Heartbeat logging: one summary a second, details at debug       | A    | Implemented       |
@@ -179,6 +179,9 @@ table below in sync.
 | D112 | Client connections: ping through the gate, bounded send queues | F | Implemented |
 | D113 | Required client IDs; sequence numbers start at the clock | F | Implemented |
 | D115 | A different election timeout range per node | A | Implemented |
+| D114 | Bidding is the default; the leader only sequences the log | B, A | Implemented |
+| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented |
+| D117 | Richer faults are not built | C | Accepted |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2236,7 +2239,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D54 · Load generator: closed loop first, open loop as a mode
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Accepted (template: `bin/loadgen.rs`)
+- **Date:** 2026-10-20, built 2026-11-01 · **Part:** F · **Status:** Implemented (`bin/loadgen.rs`) · **Decided by:** team; open-loop details by omar.leithym, on the agent's recommendation
 - **Decision.** `loadgen --users N --duration-s S --think-ms T --seed X --client-id C`. Each user is a
   tokio task in a closed loop: send, wait for the reply or give up, think, repeat. An open-loop mode
   at a fixed rate is planned. Phase 1 used P processes × U users per machine; one process with many
@@ -2244,6 +2247,12 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Why.** Closed loop matches "simulated users"; open loop is needed to find saturation without the
   load backing off (coordinated omission). Load is raised by changing `--users`, never the
   application logic.
+- **Open loop as built (2026-11-01).** `--rate R` sends R requests per second at evenly spaced
+  intended times, each in its own task, ignoring `--users`, with at most 20,000 in flight. Latency in
+  the summary counts from the intended time. Rejected: Poisson arrivals (harder to explain, nothing
+  we measure needs them) and latency from the actual send (hides queueing in the generator, the very
+  reason for open loop). `--warmup-s` leaves the start out of the printed figures; raw events are
+  still logged. The summary also counts retried requests and plans with no responder (D111).
 
 ---
 
@@ -2550,3 +2559,51 @@ exist because of them.
   over repeated runs; E3.
 - **Report notes.** A good "found by testing" story: a library detail broke an assumption from the
   paper, and the repeated-run rule (AGENTS.md) caught it.
+
+### D114 · Bidding is the default; the leader only sequences the log
+
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented, supersedes D34 · **Decided by:** omar.leithym
+- **Context.** The plan was to flip the default after a comparison run. That run needs the load
+  generator, on the lab machines. Meanwhile Dr Amr's notes say twice that cloud nodes are peers with
+  no coordinator, and leader dispatch is a coordinator pattern. Takeover (D110) has landed, so bidding
+  now handles a silent winner.
+- **Options considered.**
+  1. *Flip now, keep the baseline in E1.*
+  2. *Keep leader dispatch until E1 has run*: original plan, but the demo could show the pattern he
+     objected to.
+  3. *Change the lab config only*: tests undisturbed, but two different defaults.
+- **Decision.** Option 1, in the owner's words: "we want leader for the state replication and
+  maintenance and the bidding to decide who takes the request". `Bidding` is the code default and is
+  set in both shipped configs. `leader-dispatch` stays as E1's baseline, set explicitly.
+- **Why.** Roles are now clean: bidding picks who plans, Raft's leader only orders the log. See also
+  D116 on what stays with the leader.
+- **Consequences.** The flip came **before** the numbers; if E1 shows bidding much worse, the team
+  must revisit it and say so in the report. The test helper `TestCluster` still defaults to leader
+  dispatch, because most multi-node tests assert on it; the bidding and takeover tests set bidding.
+- **Where.** `config.rs::AssignmentPolicy`, `config/*.toml`, `tests/common/mod.rs`.
+- **How we check it.** E1 policy comparison; `tests/bidding.rs`, `tests/takeover.rs`.
+
+### D116 · Raft and the leader-run fault schedule stay, despite "no coordinator"
+
+- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented · **Decided by:** omar.leithym
+- **Context.** Dr Amr insists on peers with no coordinator (Sept 13, Oct 28). Raft has a leader. D12
+  has that leader run the fault schedule.
+- **Options considered.**
+  1. *Keep Raft, move the schedule to every node, seeded from the config.* The agent's recommendation.
+  2. *Keep Raft and D12*: least change. The spec says servers "elect one machine to ignore
+     communication", and his notes say "mimic failure using election", so a schedule run by the
+     elected node may fit.
+  3. *Replace Raft with a leaderless protocol*: a full rewrite, not possible by Nov 4.
+- **Decision.** Option 2.
+- **Consequences.** The report must argue the point: any node can propose (D26), bidding assigns
+  work (D114), and the leader only sequences the log and picks the fault victim. He may still see this
+  as a coordinator, so **someone should show him the argument before the demo.**
+- **Where.** `raft/`, `node/faults.rs`.
+
+### D117 · Richer faults are not built
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Accepted · **Decided by:** omar.leithym, on the agent's
+  recommendation
+- **Decision.** No one-way faults, added delay or loss. E1–E6 and the demo use silence, physical
+  power-off and one-plus-one failures only. The `TODO(C)` marker stays for anyone who needs it later.
+- **Why.** Unused by any experiment, and it adds risk to the gate everything relies on.

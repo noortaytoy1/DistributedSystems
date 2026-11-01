@@ -31,7 +31,7 @@ peer_rpc_timeout_ms = 500
 
 [policy]
 # "bidding" or "leader-dispatch"
-assignment = "leader-dispatch"
+assignment = "bidding"
 # Used under "bidding" only.
 # "expected-wait", "expected-wait-cpu", "queue-only" or "cpu-only"
 score = "expected-wait"
