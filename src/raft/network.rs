@@ -21,6 +21,7 @@ use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
+use tokio::sync::watch;
 
 use crate::node::transport::{PeerClient, PeerSet, TransportError};
 use crate::proto::{NodeId, PeerBody, PeerEnvelope, PeerReply, RaftRpc, Term};
@@ -43,6 +44,7 @@ fn reply_name(reply: &PeerReply) -> &'static str {
         PeerReply::Vote(_) => "Vote",
         PeerReply::InstallSnapshot(_) => "InstallSnapshot",
         PeerReply::Proposed(_) => "Proposed",
+        PeerReply::ReadIndex(_) => "ReadIndex",
     }
 }
 
@@ -242,9 +244,14 @@ impl RaftNetwork<TypeConfig> for PeerLink {
 }
 
 /// Hand an incoming Raft RPC from `from` to openraft and wrap its answer for the wire.
+///
+/// The `leader_commit` of every AppendEntries openraft accepts is published on `leader_commit`.
+/// A `HigherVote` answer means the sender is a stale leader, so its commit index is ignored
+/// (D75).
 pub async fn serve(
     raft: &Raft,
     heartbeats: &HeartbeatStats,
+    leader_commit: &watch::Sender<Option<u64>>,
     from: NodeId,
     rpc: RaftRpc,
 ) -> PeerReply {
@@ -255,7 +262,12 @@ pub async fn serve(
                 let term = r.vote.leader_id().get_term();
                 tracing::debug!(target: "heartbeat", from, term, "heartbeat received");
             }
-            PeerReply::AppendEntries(raft.append_entries(r).await)
+            let commit = r.leader_commit.map(|l| l.index);
+            let answer = raft.append_entries(r).await;
+            if matches!(&answer, Ok(a) if !matches!(a, AppendEntriesResponse::HigherVote(_))) {
+                leader_commit.send_replace(commit);
+            }
+            PeerReply::AppendEntries(answer)
         }
         RaftRpc::Vote(r) => PeerReply::Vote(raft.vote(r).await),
         RaftRpc::InstallSnapshot(r) => PeerReply::InstallSnapshot(raft.install_snapshot(r).await),

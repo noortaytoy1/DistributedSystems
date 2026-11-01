@@ -92,6 +92,19 @@ pub enum Event {
     },
     Restored,
 
+    // --- rejoin (D)
+    /// The fault gate reopened; the node is catching up and does not serve yet (E4).
+    RejoinStarted {
+        applied: Option<u64>,
+    },
+    /// The node applied the leader's commit index and serves again. `recovery_us` runs from
+    /// `rejoin_started` to here, on this node's clock (E4).
+    Rejoined {
+        leader_commit: Option<u64>,
+        applied: Option<u64>,
+        recovery_us: u64,
+    },
+
     // --- client (F)
     ClientSent {
         request: RequestId,
@@ -264,6 +277,8 @@ pub enum MsgKind {
     RaftVote,
     RaftSnapshot,
     Propose,
+    /// A returning node asks the leader for its commit index (D76).
+    ReadIndex,
     Bid,
     PeerHeartbeat,
     ClientRequest,
@@ -271,12 +286,13 @@ pub enum MsgKind {
 }
 
 impl MsgKind {
-    pub const ALL: [MsgKind; 9] = [
+    pub const ALL: [MsgKind; 10] = [
         MsgKind::RaftAppend,
         MsgKind::RaftHeartbeat,
         MsgKind::RaftVote,
         MsgKind::RaftSnapshot,
         MsgKind::Propose,
+        MsgKind::ReadIndex,
         MsgKind::Bid,
         MsgKind::PeerHeartbeat,
         MsgKind::ClientRequest,
@@ -290,6 +306,7 @@ impl MsgKind {
             MsgKind::RaftVote => "raft_vote",
             MsgKind::RaftSnapshot => "raft_snapshot",
             MsgKind::Propose => "propose",
+            MsgKind::ReadIndex => "read_index",
             MsgKind::Bid => "bid",
             MsgKind::PeerHeartbeat => "peer_heartbeat",
             MsgKind::ClientRequest => "client_request",
@@ -306,6 +323,7 @@ impl MsgKind {
             PeerBody::Raft(RaftRpc::Vote(_)) => MsgKind::RaftVote,
             PeerBody::Raft(RaftRpc::InstallSnapshot(_)) => MsgKind::RaftSnapshot,
             PeerBody::Propose(_) => MsgKind::Propose,
+            PeerBody::ReadIndex => MsgKind::ReadIndex,
             PeerBody::Bid(_) => MsgKind::Bid,
             PeerBody::Heartbeat => MsgKind::PeerHeartbeat,
         }

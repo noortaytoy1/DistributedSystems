@@ -46,7 +46,7 @@ injected failures of up to 20 s, rejoin with state recovery, and stress tests wi
 | An election picks the coordinator                          | Raft leader election (openraft)                                         | built    | D1, D14   |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | template (bidding), built (baseline) | D2, D3, D45 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built (Raft failover), template (takeover) | D12, D13, D41, D42 |
-| The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built (replay), template (gate) | D24, D46 |
+| The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
 | One answer per report, even with retries and duplicates   | Unique request IDs, first commit wins, reply after commit               | built    | D8, D9, D27 |
 | Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E6                    | built (logging), planned (runs) | D55, D56, D63 |
 
@@ -136,7 +136,7 @@ flowchart TB
         C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
         C4["C4 Assignment<br/>leader dispatch: built<br/>bidding.rs: template"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
-        C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>template"]
+        C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
     end
     subgraph CS["Compute and state layer"]
         direction LR
@@ -164,7 +164,7 @@ flowchart TB
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built (worker pool), template (planner, campus) | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner (D49). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`                   | A     | built    | In memory, never purged (D24). Phase 1 planned a disk log. |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). |
-| C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | template | Holds a returning node until it is current (D46). |
+| C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target commit learned after the silence (D46, D75, D5). |
 | C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built (gate, manual faults), template (schedule) | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); scheduled faults (D12); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | template | Failure detector for takeover (D41). New since Phase 1. |
@@ -275,6 +275,7 @@ no trailing bytes). A malformed frame closes the connection (D16).
 | `PeerBody::Propose(Command)`    | follower → leader      | commit on the follower's behalf (D26)                | built    | `ProposePlan` |
 | `PeerBody::Bid(Bid { request, score })` | serving node → peers | per-request bid (D2)                          | template | `Bid` |
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover (D41)                 | template | — (new) |
+| `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | commit index confirmed by a majority, the rejoin target (D76) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
 | Fault order                     | leader → victim        | scheduled fault (D12); needs a proto change          | planned  | `FaultOrder` |
 | Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | open     | `Claim` |
@@ -569,7 +570,7 @@ sequenceDiagram
     Note over N1: proposals it had in flight: forwarded attempts time out, retried with the new leader
 ```
 
-### 6.9 A node rejoins and catches up (Raft replay built; serving gate template)
+### 6.9 A node rejoins and catches up (built, D46, D75)
 
 The returning node copies only what it missed by log replay (D24, D32), then the rejoin gate lets
 it serve again (D46).
@@ -580,7 +581,8 @@ sequenceDiagram
     participant R as Node 1 (returning)
     participant L as Node 3 (leader, term t+1)
     participant N2 as Node 2
-    Note over R: fault gate opens (silence over). rejoin: serving = false
+    Note over R: since the silence started: serving = false, elections off (D5)
+    Note over R: fault gate opens (silence over). log rejoin_started
     L->>R: AppendEntries (term t+1, prev index 120), retried every 100 ms while unreachable
     Note over R: term t+1 is newer: R becomes a follower of node 3
     R-->>L: reject: my log ends at 95
@@ -588,10 +590,21 @@ sequenceDiagram
     L->>R: AppendEntries (entries 96 to 140)
     R-->>L: success, matched 140
     Note over R: apply 96 to 140: same results, same digest as the others
-    Note over R: rejoin learns the leader commit (140). applied index reached 140, so is_current
-    R->>R: serving = true, log the transition (E4 recovery time)
+    Note over R: first accepted AppendEntries: a current leader exists, term is current
+    R->>L: ReadIndex (D76)
+    L->>N2: heartbeat to confirm it still leads
+    N2-->>L: ok (majority with L)
+    L-->>R: ReadIndex(commit 140)
+    Note over R: applied index reached 140, so is_current
+    R->>R: serving = true, elections on, log rejoined with recovery_us (E4)
     Note over R,N2: R bids, plans and replies again
 ```
+
+If the returning node is still the leader (a silence shorter than an election timeout), no other
+leader sends it AppendEntries. It then asks itself: openraft's `get_read_log_id` succeeds only
+once a majority confirms it still leads; a stale leader's check fails and it waits for the new
+leader's AppendEntries instead (D75, D76). A node that hears from no current leader stays
+not serving and warns every 5 s.
 
 ### 6.10 Manual fault through `ctl` (built, D74)
 
@@ -613,7 +626,7 @@ sequenceDiagram
     N-xP: outgoing calls fail at once (Silenced)
     OP->>N: Control(Status)
     N-->>OP: Status(silenced = true, serving = ...)
-    Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9, template)
+    Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
 ```
 
 ### 6.11 Scheduled fault injection (planned, D12)
@@ -799,8 +812,8 @@ stateDiagram-v2
     Stopped: Stopped - a restart is NOT a supported recovery (D24)
 ```
 
-Today a node goes straight back to `Serving` when the gate opens: the `CatchingUp` state is D's
-template (`rejoin::spawn`).
+`Serving` goes false as soon as the gate closes, so `ctl status` shows `serving = false` for the
+whole silence and catch-up (D75). Elections stay off from Silenced until Serving.
 
 ### 8.2 Raft role on one node (openraft)
 
@@ -888,7 +901,7 @@ flowchart TB
         SEED["campus seeding: 200 ms until done"]
         HBT["peer heartbeats (template)"]
         FLT["fault schedule (template)"]
-        RJ["rejoin watcher (template)"]
+        RJ["rejoin watcher"]
     end
     subgraph POOL["worker pool: node/workers.rs (built)"]
         ADM{"fewer than threads + queue_capacity jobs in the pool?"}

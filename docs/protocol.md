@@ -61,6 +61,7 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 | `Raft(Vote)`                 | candidate                  | `Vote(Result<..>)`                 |
 | `Raft(InstallSnapshot)`      | leader                     | `InstallSnapshot(Result<..>)`      |
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)` |
+| `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: commit index confirmed by a majority, or `NotLeader { leader }` (D76) |
 | `Bid(Bid)`                   | every serving node         | `Ack`                              |
 | `Heartbeat`                  | every node, every peer     | `Ack`                              |
 

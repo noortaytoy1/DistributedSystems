@@ -24,8 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use openraft::error::{ClientWriteError, InitializeError, RaftError};
+use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, RaftError};
 use openraft::{BasicNode, ServerState, SnapshotPolicy, TokioRuntime};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -113,6 +114,26 @@ pub trait Consensus: Send + Sync + 'static {
 
     fn status(&self) -> ConsensusStatus;
 
+    /// Changes on every AppendEntries this node accepts from a current leader, carrying its
+    /// `leader_commit`. That value can lag the leader's real commit index, so it is only the sign
+    /// that this node has a current leader and term again; the target comes from `read_index`
+    /// (D75, D76).
+    fn leader_commit(&self) -> watch::Receiver<Option<u64>>;
+
+    /// The leader's commit index, confirmed by a majority (Raft ReadIndex). Asks the leader over
+    /// `PeerBody::ReadIndex` when this node is not the leader (D76).
+    fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
+
+    /// `read_index` only if this node is the leader; used for queries from peers.
+    fn read_index_local(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
+
+    /// Resolve once this node has applied `index`, or with false after `timeout`.
+    fn wait_applied(&self, index: u64, timeout: Duration) -> BoxFuture<'_, bool>;
+
+    /// Allow or forbid this node to start elections. Off while a node is not serving, so a
+    /// returning node does not raise its term and depose a healthy leader (D5, D75).
+    fn set_elect(&self, enabled: bool);
+
     fn shutdown(&self) -> BoxFuture<'_, ()>;
 }
 
@@ -124,6 +145,7 @@ pub struct RaftNode {
     timers: Timers,
     log: EventLog,
     heartbeats: Arc<HeartbeatStats>,
+    leader_commit: watch::Sender<Option<u64>>,
 }
 
 impl RaftNode {
@@ -177,6 +199,7 @@ impl RaftNode {
             timers: t.clone(),
             log,
             heartbeats,
+            leader_commit: watch::channel(None).0,
         });
         Ok((node, state))
     }
@@ -270,6 +293,24 @@ impl RaftNode {
         }
     }
 
+    /// Ask `leader` for its confirmed commit index (`PeerBody::ReadIndex`, D76).
+    async fn forward_read_index(&self, leader: NodeId) -> Result<Option<u64>, ProposeError> {
+        let Some(peer) = self.peers.get(leader) else {
+            return Err(ProposeError::NotLeader { leader: None });
+        };
+        let envelope = PeerEnvelope {
+            from: self.id,
+            term: self.status().term,
+            body: PeerBody::ReadIndex,
+        };
+        match peer.call(envelope, self.timers.peer_rpc_timeout()).await {
+            Ok(PeerReply::ReadIndex(result)) => result,
+            // Our term is behind; retry once Raft has caught us up.
+            Ok(_) => Err(ProposeError::NotLeader { leader: None }),
+            Err(_) => Err(ProposeError::Timeout),
+        }
+    }
+
     /// Returns the outcome and whether the proposal was forwarded to another node.
     async fn propose_with_retry(&self, cmd: Command) -> (Result<Outcome, ProposeError>, bool) {
         let deadline = Instant::now() + self.timers.propose_timeout();
@@ -335,7 +376,13 @@ impl Consensus for RaftNode {
     }
 
     fn handle_rpc(&self, from: NodeId, rpc: RaftRpc) -> BoxFuture<'_, PeerReply> {
-        Box::pin(network::serve(&self.raft, &self.heartbeats, from, rpc))
+        Box::pin(network::serve(
+            &self.raft,
+            &self.heartbeats,
+            &self.leader_commit,
+            from,
+            rpc,
+        ))
     }
 
     fn status(&self) -> ConsensusStatus {
@@ -349,6 +396,52 @@ impl Consensus for RaftNode {
             last_log_index: m.last_log_index,
             last_applied: m.last_applied.map(|l| l.index),
         }
+    }
+
+    fn leader_commit(&self) -> watch::Receiver<Option<u64>> {
+        self.leader_commit.subscribe()
+    }
+
+    fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>> {
+        Box::pin(async move {
+            match self.read_index_local().await {
+                Err(ProposeError::NotLeader {
+                    leader: Some(leader),
+                }) if leader != self.id => self.forward_read_index(leader).await,
+                other => other,
+            }
+        })
+    }
+
+    fn read_index_local(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>> {
+        Box::pin(async move {
+            match self.raft.get_read_log_id().await {
+                Ok((read_log_id, _applied)) => Ok(read_log_id.map(|l| l.index)),
+                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(f))) => {
+                    Err(ProposeError::NotLeader {
+                        leader: f.leader_id,
+                    })
+                }
+                Err(RaftError::APIError(CheckIsLeaderError::QuorumNotEnough(_))) => {
+                    Err(ProposeError::Timeout)
+                }
+                Err(RaftError::Fatal(e)) => Err(ProposeError::Fatal(e.to_string())),
+            }
+        })
+    }
+
+    fn wait_applied(&self, index: u64, timeout: Duration) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            self.raft
+                .wait(Some(timeout))
+                .applied_index_at_least(Some(index), "rejoin catch-up")
+                .await
+                .is_ok()
+        })
+    }
+
+    fn set_elect(&self, enabled: bool) {
+        self.raft.runtime_config().elect(enabled);
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {

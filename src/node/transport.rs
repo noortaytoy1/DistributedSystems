@@ -25,7 +25,7 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
@@ -36,10 +36,23 @@ use crate::proto::{
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
+///
+/// The atomic is what every frame checks. The watch channel carries the same value to tasks that
+/// must react when a fault starts or ends (the rejoin gate, D75).
 // TODO(C): richer faults if experiments need them (one direction only, added delay, loss).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FaultGate {
     silenced: Arc<AtomicBool>,
+    changes: Arc<watch::Sender<bool>>,
+}
+
+impl Default for FaultGate {
+    fn default() -> Self {
+        Self {
+            silenced: Arc::default(),
+            changes: Arc::new(watch::channel(false).0),
+        }
+    }
 }
 
 impl FaultGate {
@@ -49,18 +62,30 @@ impl FaultGate {
 
     pub fn silence(&self) {
         self.silenced.store(true, Ordering::SeqCst);
+        self.changes.send_replace(true);
     }
 
     /// Close the gate only if it is open. False if the node is already silenced, so two faults
     /// that race each other cannot both start (D74).
     pub fn try_silence(&self) -> bool {
-        self.silenced
+        let closed = self
+            .silenced
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+            .is_ok();
+        if closed {
+            self.changes.send_replace(true);
+        }
+        closed
     }
 
     pub fn restore(&self) {
         self.silenced.store(false, Ordering::SeqCst);
+        self.changes.send_replace(false);
+    }
+
+    /// Follow the gate: the value is true while silenced.
+    pub fn subscribe(&self) -> watch::Receiver<bool> {
+        self.changes.subscribe()
     }
 }
 
