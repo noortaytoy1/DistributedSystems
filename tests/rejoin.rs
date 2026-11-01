@@ -1,4 +1,4 @@
-//! Part D: a node returns from silence, catches up, and only then serves again (D46, D72).
+//! Part D: a node returns from silence, catches up, and only then serves again (D46, D75).
 #![allow(clippy::unwrap_used)]
 
 mod common;

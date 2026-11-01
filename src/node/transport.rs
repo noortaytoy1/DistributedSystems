@@ -9,7 +9,7 @@
 //!
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
 //! frames, so an operator can still query and restore a silenced node, and the "ok" answering
-//! the fault order that silenced it (D75).
+//! the fault order that silenced it (D78).
 //!
 //! Owner: C (faults and failover). The plumbing here was written with Part A because Raft cannot
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
@@ -39,7 +39,7 @@ use crate::proto::{
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
 ///
 /// The atomic is what every frame checks. The watch channel carries the same value to tasks that
-/// must react when a fault starts or ends (the rejoin gate, D72).
+/// must react when a fault starts or ends (the rejoin gate, D75).
 // TODO(C): richer faults if experiments need them (one direction only, added delay, loss).
 #[derive(Debug, Clone)]
 pub struct FaultGate {
@@ -67,7 +67,7 @@ impl FaultGate {
     }
 
     /// Close the gate only if it is open. False if the node is already silenced, so two faults
-    /// that race each other cannot both start (D71).
+    /// that race each other cannot both start (D74).
     pub fn try_silence(&self) -> bool {
         let closed = self
             .silenced
@@ -369,7 +369,7 @@ async fn peer_connection(
         tokio::spawn(async move {
             let reply = handler(envelope).await;
             // Obeying a fault order closes the gate; its "ok" is the victim's last word, so the
-            // leader can tell an obeyed order from an unreachable victim (D75).
+            // leader can tell an obeyed order from an unreachable victim (D78).
             let last_word = matches!(reply, PeerReply::FaultOrder(Ok(())));
             if gate.is_silenced() && !last_word {
                 return;

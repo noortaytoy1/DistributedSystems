@@ -117,11 +117,11 @@ pub trait Consensus: Send + Sync + 'static {
     /// Changes on every AppendEntries this node accepts from a current leader, carrying its
     /// `leader_commit`. That value can lag the leader's real commit index, so it is only the sign
     /// that this node has a current leader and term again; the target comes from `read_index`
-    /// (D72, D73).
+    /// (D75, D76).
     fn leader_commit(&self) -> watch::Receiver<Option<u64>>;
 
     /// The leader's commit index, confirmed by a majority (Raft ReadIndex). Asks the leader over
-    /// `PeerBody::ReadIndex` when this node is not the leader (D73).
+    /// `PeerBody::ReadIndex` when this node is not the leader (D76).
     fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
 
     /// `read_index` only if this node is the leader; used for queries from peers.
@@ -131,7 +131,7 @@ pub trait Consensus: Send + Sync + 'static {
     fn wait_applied(&self, index: u64, timeout: Duration) -> BoxFuture<'_, bool>;
 
     /// Allow or forbid this node to start elections. Off while a node is not serving, so a
-    /// returning node does not raise its term and depose a healthy leader (D5, D72).
+    /// returning node does not raise its term and depose a healthy leader (D5, D75).
     fn set_elect(&self, enabled: bool);
 
     fn shutdown(&self) -> BoxFuture<'_, ()>;
@@ -293,7 +293,7 @@ impl RaftNode {
         }
     }
 
-    /// Ask `leader` for its confirmed commit index (`PeerBody::ReadIndex`, D73).
+    /// Ask `leader` for its confirmed commit index (`PeerBody::ReadIndex`, D76).
     async fn forward_read_index(&self, leader: NodeId) -> Result<Option<u64>, ProposeError> {
         let Some(peer) = self.peers.get(leader) else {
             return Err(ProposeError::NotLeader { leader: None });

@@ -1,4 +1,4 @@
-//! Part C: the leader's fault schedule on three real nodes (D12, D75).
+//! Part C: the leader's fault schedule on three real nodes (D12, D78).
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -13,7 +13,7 @@ use tokio::time::Instant;
 const WAIT: Duration = Duration::from_secs(10);
 
 /// Short timings so a test sees several rounds in a few seconds. The shortest wait is no shorter
-/// than the longest silence, as validation requires (D75).
+/// than the longest silence, as validation requires (D78).
 fn fast_faults(c: &mut Config) {
     c.faults.interval_min_ms = 300;
     c.faults.interval_max_ms = 400;
@@ -77,7 +77,7 @@ async fn an_order_from_an_old_term_is_dropped() {
 }
 
 /// Obeying an order closes the victim's gate; its "ok" must still reach the leader, or every
-/// obeyed order looks like an unreachable victim (D75).
+/// obeyed order looks like an unreachable victim (D78).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_obeyed_order_is_acknowledged() {
     let cluster = TestCluster::start(3).await;

@@ -4,13 +4,13 @@
 //! state, like a node cut off by the network. The spec allows failures of up to 20 s.
 //!
 //! One fault at a time per node: a silence order for a node that is already silenced is
-//! rejected, never merged or restarted (D71). Durations of zero or above `MAX_FAULT` are
+//! rejected, never merged or restarted (D74). Durations of zero or above `MAX_FAULT` are
 //! rejected too, so every `silenced`/`restored` pair in the logs is a real, in-spec fault.
 //!
 //! `faults.enabled = false` in the config (or `node --faults off`) turns all of this off: the
-//! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D74).
+//! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D77).
 //!
-//! The schedule (D12, D75) runs on every node but acts only while the node is the serving Raft
+//! The schedule (D12, D78) runs on every node but acts only while the node is the serving Raft
 //! leader. It waits a random `faults.interval_*`, picks a victim uniformly from all nodes (itself
 //! included, which exercises leader failover), orders it silent for a random `faults.silence_*`,
 //! and waits the silence out before the next round, so faults never overlap. The order travels
@@ -77,7 +77,7 @@ fn check_duration(duration: Duration) -> Result<(), String> {
 }
 
 /// A fault order from the leader's schedule (`PeerBody::FaultOrder`, or the leader to itself).
-/// The term rule has already been applied; a node still catching up refuses (D75).
+/// The term rule has already been applied; a node still catching up refuses (D78).
 pub fn on_order(ctx: &Arc<NodeContext>, duration: Duration) -> Result<(), String> {
     if !ctx.serving.load(Ordering::SeqCst) {
         return Err("recovering: not serving yet".into());
