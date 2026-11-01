@@ -52,7 +52,7 @@ impl FaultGate {
     }
 
     /// Close the gate only if it is open. False if the node is already silenced, so two faults
-    /// that race each other cannot both start (D71).
+    /// that race each other cannot both start (D74).
     pub fn try_silence(&self) -> bool {
         self.silenced
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

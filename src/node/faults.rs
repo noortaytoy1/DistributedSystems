@@ -4,11 +4,11 @@
 //! state, like a node cut off by the network. The spec allows failures of up to 20 s.
 //!
 //! One fault at a time per node: a silence order for a node that is already silenced is
-//! rejected, never merged or restarted (D71). Durations of zero or above `MAX_FAULT` are
+//! rejected, never merged or restarted (D74). Durations of zero or above `MAX_FAULT` are
 //! rejected too, so every `silenced`/`restored` pair in the logs is a real, in-spec fault.
 //!
 //! `faults.enabled = false` in the config (or `node --faults off`) turns all of this off: the
-//! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D74).
+//! schedule never starts and `silence_for` refuses every order, for no-fault baseline runs (D77).
 //!
 //! Owner: C (faults and failover). Built: `silence_for`. Template: `spawn_schedule`.
 

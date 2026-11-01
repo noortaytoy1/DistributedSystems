@@ -104,7 +104,7 @@ A silenced node keeps its state but sends and receives nothing, as if its networ
 pulled. `ctl` itself still gets through, so you can watch the node recover.
 
 Fault injection can be switched off for no-fault baseline runs: `enabled = false` under
-`[faults]` in the config, or `--faults off` when starting a node (D74). `ctl silence` is then
+`[faults]` in the config, or `--faults off` when starting a node (D77). `ctl silence` is then
 refused.
 
 ## Run on several machines

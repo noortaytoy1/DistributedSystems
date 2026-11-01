@@ -106,7 +106,7 @@ async fn ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself() {
 
     assert_eq!(silence(1_000).await.unwrap(), ControlReply::Done);
     assert!(cluster.node(2).ctx.gate.is_silenced());
-    // Control still reaches a silenced node (D23), and a second fault is refused (D71).
+    // Control still reaches a silenced node (D23), and a second fault is refused (D74).
     assert!(matches!(
         silence(5_000).await.unwrap(),
         ControlReply::Error(_)

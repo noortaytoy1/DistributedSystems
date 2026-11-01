@@ -137,8 +137,8 @@ table below in sync.
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
 | D69 | Phase 2 hooks                                                   | all  | Proposed          |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
-| D71 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
-| D74 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
+| D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
 
 **Open decisions:** D5, D17, D39, D42, D43, D44, D52, D63, plus the open parts of D36, D45, D48,
 D49 and D62. Most are conflicts between the Phase 1 architecture document and the code. They stay
@@ -757,7 +757,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Where.** `node/rejoin.rs`, `NodeContext::serving`, `handle_request` (already checks it).
 - **How we check it.** FT-4, FT-5, E4; digests equal after rejoin.
 
-### D71 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
+### D74 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
 
 - **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
   agent's recommendation
@@ -798,7 +798,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   our own network endpoint and are strictly one at a time, so the measured recovery of each fault
   is not mixed with another.
 
-### D74 · Fault injection on/off: `faults.enabled`, `--faults` override
+### D77 · Fault injection on/off: `faults.enabled`, `--faults` override
 
 - **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented ·
   **Decided by:** Aabed, on the agent's recommendation, at the team's request ("enable or disable

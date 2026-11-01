@@ -20,7 +20,7 @@ struct Args {
     /// This node's ID in the config.
     #[arg(long)]
     id: u64,
-    /// Override `faults.enabled` from the config for this run (D74).
+    /// Override `faults.enabled` from the config for this run (D77).
     #[arg(long, value_enum)]
     faults: Option<Switch>,
 }
