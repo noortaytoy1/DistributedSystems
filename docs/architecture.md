@@ -156,7 +156,7 @@ flowchart TB
 
 | #   | Component                 | Module(s)                                   | Owner | Status   | Responsibility |
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
-| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19), peer and client servers, `TCP_NODELAY` (D20). |
+| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` (D20). |
 | C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. |
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs` | E, B | built (`PoolLoad`: queued, running), planned (`LoadInputs` and `ServiceTime` are written and unit-tested but not wired, D86; `/proc/stat` CPU sampler in `node/`, D82) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `bidding.rs` | B    | built (leader dispatch), planned (bidding: rounds and scores written and unit-tested, not wired, D85, D87, D88) | Chooses the executor: the leader (D3) or the lowest bidder (D2). |
@@ -330,6 +330,26 @@ flowchart TD
     HB --> REPLY
     BID --> REPLY
     STALE --> REPLY
+```
+
+### 5.5 Reconnecting to a peer that is down (built, D89–D92)
+
+If a connect to a peer fails (refused, or still pending when the call's deadline passes), calls to
+that peer fail at once with `TransportError::Backoff` for `2 × raft_heartbeat_ms` (100 ms). The
+first call after the window tries again. openraft maps `Backoff` to `Unreachable` and backs off by
+the same amount (D32), so all traffic to a downed peer behaves alike. A *silenced* peer never
+enters this state: its listener stays up and connects succeed (D22).
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoConnection
+    NoConnection --> Connected: "connect succeeds"
+    Connected --> NoConnection: "connection closed"
+    NoConnection --> Cooldown: "connect refused or timed out, log peer_unreachable"
+    Cooldown --> Cooldown: "call fails fast with Backoff"
+    Cooldown --> Retry: "window of 2 x raft_heartbeat_ms ends"
+    Retry --> Cooldown: "connect fails again, window restarts"
+    Retry --> Connected: "connect succeeds, log peer_reconnected with down_ms"
 ```
 
 ---
@@ -948,7 +968,7 @@ connection closes.
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>silenced, restored"]
+        NE["Events: started, raft_state, commit, propose_failed,<br/>state_digest, messages, request_received, replied,<br/>silenced, restored, peer_unreachable,<br/>peer_reconnected"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_sent, client_done, client_gave_up"]

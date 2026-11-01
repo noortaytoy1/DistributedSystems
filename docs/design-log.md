@@ -85,7 +85,7 @@ table below in sync.
 | D16 | Wire format: length-delimited frames with bincode               | all  | Implemented       |
 | D17 | Clients use TCP on a dedicated client port                      | C, F | Implemented (confirm) |
 | D18 | Two ports per node; `ctl` shares the client port                | C    | Implemented       |
-| D19 | One multiplexed connection per peer                             | C    | Implemented       |
+| D19 | One multiplexed connection per peer                             | C    | Implemented, amended by D89 |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
@@ -152,6 +152,10 @@ table below in sync.
 | D86 | Planning time: running average with gain 1/8, starts at 1000 µs | B    | Accepted          |
 | D87 | The four load score variants                                    | B    | Accepted          |
 | D88 | Bid rounds as pure state in `bidding.rs`; takeover helper left out | B | Accepted          |
+| D89 | Peer reconnect: fixed cooldown after a failed connect           | C    | Implemented       |
+| D90 | Reconnect cooldown = 2 × `raft_heartbeat_ms`, no new config key | C    | Implemented       |
+| D91 | `TransportError::Backoff`, treated as Unreachable by openraft    | A, C | Implemented       |
+| D92 | Peer outage events: `peer_unreachable`, `peer_reconnected`      | C    | Implemented       |
 
 **Open decisions:** D17, D39, D42, D52, D63, plus the open parts of D36, D49 and D62. Most
 are conflicts between the Phase 1 architecture document and the code. They stay
@@ -656,8 +660,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   own task, so replies can come back in any order.
 - **Why.** A slow request (a forwarded proposal waiting for commit) does not hold up the heartbeats
   behind it.
-- **Consequences.** Reconnects happen on the next call after a failure; there is no reconnect
-  backoff yet (`TODO(C)`).
+- **Consequences.** Reconnects happen on the next call after a failure. **Amended by D89:** after a
+  failed connect, calls fail fast for a short cooldown instead of reconnecting on every call.
 - **Where.** `transport.rs::PeerClient`, `serve_peers`, `raft/network.rs::PeerLink`.
 - **How we check it.** `transport::tests::concurrent_calls_get_their_own_replies`.
 
@@ -668,6 +672,139 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Why.** Small messages dominate; Nagle with delayed ACKs would add up to 40 ms to each, more
   than the whole bid window.
 - **Where.** `transport.rs::framed`.
+
+### D89 · Peer reconnect: fixed cooldown after a failed connect
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Wahiba, on the
+  agent's recommendation; reviewers Aabed (owner of `transport.rs`), Noor (C↔F pair), Omar (A, for
+  the one-line hooks in `node/mod.rs` and `raft/network.rs`)
+- **Context.** D19 left `TODO(C)`: `PeerClient` tried a fresh TCP connect on every call to a peer
+  whose connection was gone. Two cases make that costly. (1) The peer process is not running
+  (startup, crash, Ctrl-C): every heartbeat, bid and forwarded proposal makes a refused connect and
+  logs it. (2) A real network failure on the lab LAN (cable pulled, switch down): the connect
+  *hangs*, so every call to that peer waits its full timeout (`peer_rpc_timeout_ms`, 500 ms), and
+  other calls queue on the connect lock behind it. openraft's own retries already back off (D32);
+  this is about the non-Raft calls. Our fault model does **not** trigger it: `ctl silence` keeps
+  the silenced node's listener open, so connects succeed and frames are just discarded (D22). We
+  built it anyway because the demo and experiments run on six real machines (D60), where (1) and (2)
+  happen, and the project description asks for an explicit retry policy (p. 6).
+- **Options considered.**
+  1. *Fixed cooldown*: after a failed connect, calls fail at once until a fixed window ends; the first
+     call after it tries again. A returning peer is reached within one window.
+  2. *Exponential, capped* (e.g. 50 ms doubling to 1 s, reset on success): fewer attempts at a peer
+     that stays down, but a node back after a 20 s fault may wait up to the cap before heartbeats and
+     bids reach it, which inflates the failover and recovery times we must measure (p. 4).
+  3. *Exponential with jitter*: jitter de-synchronises many clients hitting one server; with two
+     peers it only adds noise to timing tests and measurements.
+  4. *Do nothing* and close the TODO, or *defer* until lab runs show slow calls.
+- **Decision.** Option 1. The cooldown starts when a connect fails, either refused/errored or still
+  pending when the call's deadline passes. While it runs, `PeerClient::call` returns
+  `TransportError::Backoff` (D91) at once, checked before waiting on the connect lock, and again by
+  callers that were queued behind the failing connect. Each new failed connect restarts the window;
+  the first successful connect ends the outage. Timeouts on an *open* connection (a silenced peer)
+  never start a cooldown.
+- **Why.** Recovery and failover times are graded measurements, so the backoff must add a small,
+  bounded delay: at most one window. It matches openraft's fixed backoff (D32), so all peer traffic to
+  a downed node behaves alike. It is the smallest change before the Phase 1 deadline.
+- **Consequences.** A peer that stays down gets one connect attempt per window (10 per second at the
+  default) instead of one per call. A peer that returns is reconnected up to one window later. A
+  silenced peer is unaffected (D22). Calls during the cooldown fail with `Backoff`, not `Timeout`, so
+  callers see the failure up to 500 ms sooner.
+- **Where.** `node/transport.rs`: `PeerClient::{call, connection, check_backoff, connect_failed,
+  connected}`, `Outage`.
+- **How we check it.** `transport::tests::refused_connect_backs_off_then_reconnects` (refused →
+  `Connect`, next call → `Backoff`, peer started → reconnects after the window).
+  `silenced_receiver_times_out_then_recovers` guards the trigger: a timeout on an open connection
+  must not start a cooldown. Both run 10× green. The timed-out-connect path is not unit-tested,
+  because forcing a hanging connect depends on the machine's network; check it on the lab machines by
+  unplugging a node during E3.
+- **Report notes.** A sentence in the retry-policy section: three layers of retry (client resend
+  D52, openraft backoff D32, transport reconnect cooldown D89), all fixed-interval so recovery time
+  stays predictable.
+
+### D90 · Reconnect cooldown = 2 × `raft_heartbeat_ms`, no new config key
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Wahiba, on the
+  agent's recommendation
+- **Context.** D89 needs a window length.
+- **Options considered.**
+  1. *2 × `raft_heartbeat_ms`* (100 ms by default), the value D32 gives openraft.
+  2. *A new key `peer_reconnect_backoff_ms`*: tunable per run, but adds a key to `config.rs` (Part A),
+     validation, `protocol.md`, `local.toml` and `lab.example.toml`.
+  3. *A constant in `transport.rs`*: simplest, but AGENTS.md wants timers in config, and it drifts if
+     the Raft heartbeat is retuned.
+- **Decision.** Option 1. `node/mod.rs::start_with` computes it next to the other per-node setup and
+  passes it to `PeerSet::new` as a `Duration` (D91).
+- **Why.** Raft and non-Raft calls to a downed peer back off alike, so a returning node is reached by
+  everything within the same 100 ms. No new config surface before the deadline.
+- **Consequences.** Retuning `raft_heartbeat_ms` changes both backoffs together. If E3 shows the
+  two need different values, add the key then (new entry amending this one).
+- **Where.** `node/mod.rs::start_with`; compare `raft/mod.rs` (`backoff`, D32).
+- **How we check it.** By construction; the unit tests pass their own window.
+
+### D91 · `TransportError::Backoff`, treated as Unreachable by openraft
+
+- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented · **Decided by:** Wahiba, on the
+  agent's recommendation; Omar (A) to review the `raft/network.rs` and `node/mod.rs` lines
+- **Context.** Calls during the cooldown need an error, and `PeerClient` needs the window and an event
+  log, which `PeerSet::new` did not take.
+- **Options considered.**
+  1. *New variant `Backoff { peer, retry_in }`*, added to the Unreachable arm of
+     `raft/network.rs::rpc_error`.
+  2. *Repeat the last `Connect` error*: no change outside `transport.rs`, but logs would show connect
+     attempts that never happened, which misleads E3 analysis.
+  3. *New variant without the mapping*: openraft would treat it as a network error and retry every
+     tick instead of backing off.
+  For wiring: a `Duration` parameter (chosen), the whole `Timers` struct (couples transport to the
+  config layout), or a `Timers` helper shared with D32 (more Part A files).
+- **Decision.** Option 1, and `PeerSet::new(me, cluster, gate, log: &EventLog, reconnect_backoff:
+  Duration)`. The `log` argument replaces the old `msgs` one; message counters come from
+  `log.msgs()`.
+- **Why.** The error says exactly what happened, and openraft backs off on it like on a refused
+  connect. Passing a plain `Duration` keeps `transport.rs` free of config knowledge and lets tests
+  pick any window.
+- **Consequences.** Callers that match on `TransportError` (heartbeats, bidding) see a new variant;
+  treat it like `Connect`.
+- **Where.** `node/transport.rs::{TransportError::Backoff, PeerSet::new, PeerClient::new}`,
+  `raft/network.rs::rpc_error`, `node/mod.rs::start_with`.
+- **How we check it.** `refused_connect_backs_off_then_reconnects` asserts `Backoff { peer: 2, .. }`.
+
+### D92 · Peer outage events: `peer_unreachable`, `peer_reconnected`
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Wahiba (chose events
+  over the agent's tracing-only recommendation)
+- **Context.** The old `TODO(C)` also asked for connection-level metrics if E3 needs them. An
+  operator on the lab machines also needs to see why calls fail fast.
+- **Options considered.**
+  1. *tracing only*, leaving metrics to E3's owner.
+  2. *Two events, once per outage* (chosen).
+  3. *Also count fast-failed calls* in `peer_reconnected`.
+  4. *One `peer_connect` event per attempt* with `ok` and `latency_us`: ~10 lines a second per down
+     peer, and analysis must pair them up.
+- **Decision.** In `metrics::Event` (faults section): `{"ev":"peer_unreachable","peer":2,"error":"..."}`
+  on the first failed connect of an outage, and `{"ev":"peer_reconnected","peer":2,"down_ms":20140}`
+  on the connect that ends it. `down_ms` runs from the first failed connect to the successful one,
+  measured with `Instant` on the logging node (D56). Matching `tracing` lines: one `warn!` and one
+  `info!` per outage. Nothing is logged per fast-failed call.
+- **Why.** One pair per outage gives E3 a timeline of when each node saw each peer go and return,
+  without flooding the log during a 20 s fault.
+- **Consequences.** New field names are now part of the analysis contract (keep them stable). At
+  cluster start a node may log a short `peer_unreachable`/`peer_reconnected` pair for peers that
+  were not listening yet; analysis should skip outages that start before `started` + a few seconds.
+  A silenced peer produces no events (its listener stays up, D22); its fault shows in `silenced` /
+  `restored` instead. An outage ends only on the next *call* to that peer, so a node that never
+  calls a peer leaves its `peer_unreachable` unmatched. Seen on 2026-11-01: a follower that missed
+  the leader at startup never called it again. Until peer heartbeats (D41) make every node call
+  every peer every 50 ms, analysis must allow unmatched `peer_unreachable` events.
+- **Where.** `metrics.rs::Event::{PeerUnreachable, PeerReconnected}`,
+  `transport.rs::PeerClient::{connect_failed, connected}`.
+- **How we check it.** Run a local cluster (`metrics.dir` is set in `config/local.toml`), kill one
+  node's process and start it again. Done on 2026-11-01: with node 3 down for about 3 s, the leader
+  (node 1) logged one `peer_unreachable` and one `peer_reconnected` with `down_ms: 2536`, measured
+  from its first failed connect. The follower (node 2) logged nothing for node 3 because it does not
+  call node 3 yet (see Consequences).
+- **Report notes.** Useful for the lab-network run of E3: per-node view of peer reachability next to
+  Raft's `raft_state` events.
 
 ---
 

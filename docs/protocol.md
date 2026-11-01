@@ -21,6 +21,13 @@ no trailing bytes, at most 16 MiB (`MAX_FRAME_BYTES`). Malformed frames close th
 
 `TCP_NODELAY` is set on every connection.
 
+**Reconnecting.** A node connects to a peer lazily on the first call and reuses the connection.
+If a connect fails (refused, or not done before the call's deadline), every call to that peer
+fails at once with `TransportError::Backoff` until `2 × raft_heartbeat_ms` has passed; then the
+next call connects again. The node logs `peer_unreachable` once when the outage starts and
+`peer_reconnected { down_ms }` when a connect succeeds (D89–D92). A silenced peer does not
+trigger this: its listener stays up, so connects succeed and calls time out instead.
+
 ## Client protocol
 
 ```
@@ -115,6 +122,7 @@ Defaults from `config.rs`, tuned for a LAN:
 | `client_max_retries`          | 3            | resends before the client gives up                        |
 | `propose_timeout_ms`          | 3000         | a node stops trying to commit one proposal after this     |
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, forwarded proposal) |
+| (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
 | `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |
 | `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`) |
 | `faults.silence_min_ms`       | 1000         | shortest scheduled silence                                 |
