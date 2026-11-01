@@ -257,6 +257,10 @@ async fn run_link(
         };
         log.log(Event::ClientLinkUp { node });
         let reason = serve_link(stream, &mut frames, &waiters).await;
+        // The client is going away; this is no failure of the node.
+        if frames.is_closed() {
+            return;
+        }
         tracing::debug!(node, "client connection lost: {reason}");
         log.log(Event::ClientLinkDown {
             node,
