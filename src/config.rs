@@ -112,11 +112,11 @@ impl Timers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssignmentPolicy {
-    /// Per-request load-based bidding election (bidding.rs).
-    Bidding,
-    /// Baseline: the Raft leader plans every request.
-    // TODO(B): make `Bidding` the default once bid rounds work end to end.
+    /// Per-request load-based bidding election (bidding.rs). The Raft leader orders the log; it
+    /// does not choose who plans (D114).
     #[default]
+    Bidding,
+    /// Baseline for E1: the Raft leader plans every request.
     LeaderDispatch,
 }
 
@@ -433,7 +433,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.timers, Timers::default());
-        assert_eq!(c.policy.assignment, AssignmentPolicy::LeaderDispatch);
+        assert_eq!(c.policy.assignment, AssignmentPolicy::Bidding);
         assert!(c.faults.enabled);
     }
 

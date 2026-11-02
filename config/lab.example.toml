@@ -18,7 +18,7 @@ peer_addr = "10.0.0.13:7001"
 client_addr = "10.0.0.13:8001"
 
 [policy]
-assignment = "leader-dispatch"
+assignment = "bidding"
 # Used under "bidding" only.
 # "expected-wait", "expected-wait-cpu", "queue-only" or "cpu-only"
 score = "expected-wait"
