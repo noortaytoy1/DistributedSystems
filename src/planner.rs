@@ -23,7 +23,8 @@
 
 use crate::proto::{Incident, Plan, Responder};
 
-/// Rounds of busy work per unit of `CostKnob::extra_work`; roughly 1 µs, to be calibrated (D96).
+/// Rounds of busy work per unit of `CostKnob::extra_work`; about 4 µs on the machine it was calibrated
+/// on (D129). The `service_us` field of `bid_sent` shows the real cost on any machine.
 pub const ROUNDS_PER_UNIT: u64 = 1_000;
 
 /// Lowest severity at which a responder of another capability is sent when no match is free.

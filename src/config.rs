@@ -31,6 +31,8 @@ pub struct Config {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub faults: FaultConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +69,8 @@ pub struct Timers {
     pub propose_timeout_ms: u64,
     /// Timeout for one non-Raft peer RPC (bid, heartbeat, forwarded proposal attempt).
     pub peer_rpc_timeout_ms: u64,
+    /// Every peer suspected for this long, and a serving node answers without a commit (D121).
+    pub degraded_after_ms: u64,
 }
 
 impl Default for Timers {
@@ -83,6 +87,7 @@ impl Default for Timers {
             client_max_retries: 5,
             propose_timeout_ms: 3000,
             peer_rpc_timeout_ms: 500,
+            degraded_after_ms: 2000,
         }
     }
 }
@@ -106,17 +111,20 @@ impl Timers {
     pub fn peer_rpc_timeout(&self) -> Duration {
         Duration::from_millis(self.peer_rpc_timeout_ms)
     }
+    pub fn degraded_after(&self) -> Duration {
+        Duration::from_millis(self.degraded_after_ms)
+    }
 }
 
 /// How a request is assigned to the node that plans it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssignmentPolicy {
-    /// Per-request load-based bidding election (bidding.rs).
-    Bidding,
-    /// Baseline: the Raft leader plans every request.
-    // TODO(B): make `Bidding` the default once bid rounds work end to end.
+    /// Per-request load-based bidding election (bidding.rs). The Raft leader orders the log; it
+    /// does not choose who plans (D114).
     #[default]
+    Bidding,
+    /// Baseline for E1: the Raft leader plans every request.
     LeaderDispatch,
 }
 
@@ -216,6 +224,14 @@ impl Default for CampusConfig {
 pub struct MetricsConfig {
     /// Directory for JSONL event logs (`node-<id>.jsonl`, `client-<id>.jsonl`).
     /// Unset means events are not written.
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Directory for each node's Raft log file (`node-<id>.wal`). Unset keeps the log in memory
+    /// only, so a restarted node has forgotten its vote: tests only, never the lab (D118).
     pub dir: Option<PathBuf>,
 }
 
@@ -340,6 +356,7 @@ impl Config {
             ("client_retry_max_ms", t.client_retry_max_ms),
             ("propose_timeout_ms", t.propose_timeout_ms),
             ("peer_rpc_timeout_ms", t.peer_rpc_timeout_ms),
+            ("degraded_after_ms", t.degraded_after_ms),
         ] {
             if v == 0 {
                 return invalid(format!("timers: {name} must be > 0"));
@@ -433,7 +450,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.timers, Timers::default());
-        assert_eq!(c.policy.assignment, AssignmentPolicy::LeaderDispatch);
+        assert_eq!(c.policy.assignment, AssignmentPolicy::Bidding);
         assert!(c.faults.enabled);
     }
 
@@ -477,6 +494,8 @@ mod tests {
             node(1, 7001)
         );
         assert!(Config::from_toml(&backwards).is_err());
+        let never_degraded = format!("{}[timers]\ndegraded_after_ms = 0\n", node(1, 7001));
+        assert!(Config::from_toml(&never_degraded).is_err());
         let overlapping = format!(
             "{}[faults]\ninterval_min_ms = 5000\nsilence_max_ms = 10000\n",
             node(1, 7001)

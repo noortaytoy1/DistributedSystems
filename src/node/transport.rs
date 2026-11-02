@@ -1,13 +1,14 @@
-//! TCP framing and the fault gate.
+//! Connections and the fault gate.
 //!
-//! Every connection carries length-delimited frames (4-byte big-endian length, then a body
-//! encoded with `proto::encode`).
+//! Every connection carries length-delimited frames (4-byte big-endian length, then a body).
 //!
-//! - Peer port: request/reply. [`PeerClient`] keeps one connection per peer and matches replies
-//!   to requests by `seq`, so many calls can be in flight at once. After a failed connect it
-//!   fails calls to that peer fast for a short cooldown instead of reconnecting on every call
-//!   (D89–D92).
-//! - Client port: one-way frames in both directions; replies are matched by request ID.
+//! - Peer port: remote invocation of [`PeerRpc`] through tarpc (D119), which matches replies to
+//!   requests, so many calls can be in flight at once. [`PeerClient`] keeps one connection per
+//!   peer. After a failed connect it fails calls to that peer fast for a short cooldown instead of
+//!   reconnecting on every call (D89–D92). A connection whose calls have gone unanswered for
+//!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close.
+//! - Client port: one-way frames in both directions, encoded with `proto::encode`; replies are
+//!   matched by request ID.
 //!
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
 //! frames, so an operator can still query and restore a silenced node, and the "ok" answering
@@ -17,23 +18,28 @@
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
 //! open sockets.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
+use tarpc::client::RpcError;
+use tarpc::server::{BaseChannel, Channel};
+use tarpc::tokio_serde::formats::Bincode;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog, MessageCounters, MsgKind};
 use crate::proto::{
-    self, ClientFrame, NodeId, PeerEnvelope, PeerFrame, PeerReply, PeerReplyFrame, ServerFrame,
+    self, Bid, ClientFrame, Command, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc,
+    PeerRpcClient, RaftRpc, ServerFrame, Term,
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
@@ -124,12 +130,17 @@ pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
 // Peer client
 // ---------------------------------------------------------------------------------------------
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<PeerReply>>>>;
+/// Calls unanswered this long mean the connection is replaced. A silenced peer loses nothing by
+/// it: its listener stays up, so the connect succeeds (D119).
+const STALE_CONNECTION: Duration = Duration::from_secs(1);
+
+/// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users.
+const MAX_IN_FLIGHT_CALLS: usize = 20_000;
+const CALL_BUFFER: usize = 2_000;
 
 struct Conn {
-    tx: mpsc::UnboundedSender<Bytes>,
-    pending: Pending,
-    closed: Arc<AtomicBool>,
+    client: PeerRpcClient,
+    closed: AtomicBool,
 }
 
 /// A peer whose last connect failed. Cleared by the next successful connect.
@@ -149,7 +160,8 @@ pub struct PeerClient {
     reconnect_backoff: Duration,
     conn: tokio::sync::Mutex<Option<Arc<Conn>>>,
     outage: Mutex<Option<Outage>>,
-    next_seq: AtomicU64,
+    /// When a call on the current connection last got an answer, or the connection opened.
+    last_answer: Mutex<Instant>,
 }
 
 impl std::fmt::Debug for PeerClient {
@@ -177,7 +189,7 @@ impl PeerClient {
             reconnect_backoff,
             conn: tokio::sync::Mutex::new(None),
             outage: Mutex::new(None),
-            next_seq: AtomicU64::new(1),
+            last_answer: Mutex::new(Instant::now()),
         }
     }
 
@@ -201,25 +213,25 @@ impl PeerClient {
         let kind = MsgKind::of(&envelope.body);
         let conn = self.connection(deadline, timeout).await?;
 
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let bytes = Bytes::from(proto::encode(&PeerFrame { seq, envelope })?);
-        let (reply_tx, reply_rx) = oneshot::channel();
-        lock(&conn.pending).insert(seq, reply_tx);
-        if conn.tx.send(bytes).is_err() {
-            lock(&conn.pending).remove(&seq);
-            conn.closed.store(true, Ordering::SeqCst);
-            return Err(TransportError::Closed);
-        }
         self.log.msgs().sent(kind);
-
-        match tokio::time::timeout_at(deadline, reply_rx).await {
+        let result = invoke(&conn.client, envelope, deadline).await;
+        match result {
             // A reply that arrives after the node was silenced is dropped like any other traffic.
-            Ok(Ok(_)) if self.gate.is_silenced() => Err(TransportError::Silenced),
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(_)) => Err(TransportError::Closed),
-            Err(_) => {
-                lock(&conn.pending).remove(&seq);
+            Ok(_) if self.gate.is_silenced() => Err(TransportError::Silenced),
+            Ok(reply) => {
+                *lock(&self.last_answer) = Instant::now();
+                Ok(reply)
+            }
+            Err(RpcError::DeadlineExceeded) => {
+                if lock(&self.last_answer).elapsed() >= STALE_CONNECTION {
+                    conn.closed.store(true, Ordering::SeqCst);
+                }
                 Err(TransportError::Timeout(timeout))
+            }
+            Err(e) => {
+                tracing::debug!(peer = self.peer, "peer call failed: {e}");
+                conn.closed.store(true, Ordering::SeqCst);
+                Err(TransportError::Closed)
             }
         }
     }
@@ -256,7 +268,8 @@ impl PeerClient {
             }
         };
         self.connected();
-        let conn = Arc::new(spawn_conn(stream));
+        *lock(&self.last_answer) = Instant::now();
+        let conn = Arc::new(open_conn(stream));
         *slot = Some(conn.clone());
         Ok(conn)
     }
@@ -309,47 +322,39 @@ impl PeerClient {
     }
 }
 
-fn spawn_conn(stream: TcpStream) -> Conn {
-    let (mut sink, mut stream) = framed(stream).split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-    let pending: Pending = Arc::default();
-    let closed = Arc::new(AtomicBool::new(false));
-
-    let writer_closed = closed.clone();
-    tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            if sink.send(bytes).await.is_err() {
-                break;
-            }
-        }
-        writer_closed.store(true, Ordering::SeqCst);
-    });
-
-    let reader_pending = pending.clone();
-    let reader_closed = closed.clone();
-    tokio::spawn(async move {
-        while let Some(Ok(frame)) = stream.next().await {
-            match proto::decode::<PeerReplyFrame>(&frame) {
-                Ok(PeerReplyFrame { seq, reply }) => {
-                    if let Some(waiter) = lock(&reader_pending).remove(&seq) {
-                        let _ = waiter.send(reply);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("bad peer reply frame: {e}");
-                    break;
-                }
-            }
-        }
-        reader_closed.store(true, Ordering::SeqCst);
-        // Dropping the waiters makes in-flight calls fail fast with `Closed`.
-        lock(&reader_pending).clear();
-    });
-
+fn open_conn(stream: TcpStream) -> Conn {
+    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let mut config = tarpc::client::Config::default();
+    config.max_in_flight_requests = MAX_IN_FLIGHT_CALLS;
+    config.pending_request_buffer = CALL_BUFFER;
     Conn {
-        tx,
-        pending,
-        closed,
+        client: PeerRpcClient::new(config, transport).spawn(),
+        closed: AtomicBool::new(false),
+    }
+}
+
+/// Make the remote call that matches this message.
+async fn invoke(
+    client: &PeerRpcClient,
+    envelope: PeerEnvelope,
+    deadline: Instant,
+) -> Result<PeerReply, RpcError> {
+    let mut ctx = tarpc::context::current();
+    ctx.deadline = deadline.into_std();
+    let PeerEnvelope { from, term, body } = envelope;
+    match body {
+        PeerBody::Raft(RaftRpc::AppendEntries(rpc)) => {
+            client.append_entries(ctx, from, term, rpc).await
+        }
+        PeerBody::Raft(RaftRpc::Vote(rpc)) => client.vote(ctx, from, term, rpc).await,
+        PeerBody::Raft(RaftRpc::InstallSnapshot(rpc)) => {
+            client.install_snapshot(ctx, from, term, rpc).await
+        }
+        PeerBody::Propose(command) => client.propose(ctx, from, term, command).await,
+        PeerBody::ReadIndex => client.read_index(ctx, from, term).await,
+        PeerBody::FaultOrder { ms } => client.fault_order(ctx, from, term, ms).await,
+        PeerBody::Bid(bid) => client.bid(ctx, from, term, bid).await,
+        PeerBody::Heartbeat => client.heartbeat(ctx, from, term).await,
     }
 }
 
@@ -397,6 +402,26 @@ impl PeerSet {
     pub fn iter(&self) -> impl Iterator<Item = &Arc<PeerClient>> {
         self.peers.values()
     }
+
+    /// Group send: one copy of a message to every peer, sent at once, so a slow peer holds up
+    /// nobody else. Best effort, with no ordering across senders: a peer that misses a copy is
+    /// reported here and not retried (D126). Anything that must be agreed goes through Raft.
+    pub async fn broadcast(
+        &self,
+        term: Term,
+        timeout: Duration,
+        body: impl Fn() -> PeerBody,
+    ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
+        let calls = self.peers.values().map(|peer| {
+            let envelope = PeerEnvelope {
+                from: self.me,
+                term,
+                body: body(),
+            };
+            async move { (peer.peer(), peer.call(envelope, timeout).await) }
+        });
+        futures::future::join_all(calls).await
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -413,15 +438,18 @@ pub async fn serve_peers(
     msgs: Arc<MessageCounters>,
     handler: PeerHandler,
 ) {
+    let server = PeerServer {
+        gate,
+        msgs,
+        handler,
+    };
+    // Owned here, so stopping the server also closes its connections.
+    let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(peer_connection(
-                    stream,
-                    gate.clone(),
-                    msgs.clone(),
-                    handler.clone(),
-                ));
+                while connections.try_join_next().is_some() {}
+                connections.spawn(peer_connection(stream, server.clone()));
             }
             Err(e) => {
                 tracing::warn!("peer accept failed: {e}");
@@ -431,50 +459,120 @@ pub async fn serve_peers(
     }
 }
 
-async fn peer_connection(
-    stream: TcpStream,
+async fn peer_connection(stream: TcpStream, server: PeerServer) {
+    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    BaseChannel::with_defaults(transport)
+        .execute(server.serve())
+        .for_each(|call| async {
+            // Ends when the call is answered or its deadline passes.
+            tokio::spawn(call);
+        })
+        .await;
+}
+
+/// The server side of [`PeerRpc`]: each method wraps its arguments as a [`PeerEnvelope`] for the
+/// node's handler.
+#[derive(Clone)]
+struct PeerServer {
     gate: FaultGate,
     msgs: Arc<MessageCounters>,
     handler: PeerHandler,
-) {
-    let (mut sink, mut frames) = framed(stream).split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-    tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            if sink.send(bytes).await.is_err() {
-                break;
-            }
-        }
-    });
+}
 
-    while let Some(Ok(frame)) = frames.next().await {
-        if gate.is_silenced() {
-            continue;
+impl PeerServer {
+    /// A silenced node never answers: the call stays open until the caller's deadline, which is
+    /// what a machine that ignores the network looks like from outside (D22).
+    async fn deliver(self, from: NodeId, term: Term, body: PeerBody) -> PeerReply {
+        if self.gate.is_silenced() {
+            return std::future::pending().await;
         }
-        let PeerFrame { seq, envelope } = match proto::decode(&frame) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!("bad peer frame: {e}");
-                return;
-            }
+        self.msgs.received(MsgKind::of(&body));
+        // In its own task: tarpc drops a call at its deadline, and a Raft RPC must not be cut
+        // off halfway through.
+        let work = (self.handler)(PeerEnvelope { from, term, body });
+        let Ok(reply) = tokio::spawn(work).await else {
+            return std::future::pending().await;
         };
-        msgs.received(MsgKind::of(&envelope.body));
-        let (handler, gate, tx) = (handler.clone(), gate.clone(), tx.clone());
-        tokio::spawn(async move {
-            let reply = handler(envelope).await;
-            // Obeying a fault order closes the gate; its "ok" is the victim's last word, so the
-            // leader can tell an obeyed order from an unreachable victim (D78).
-            let last_word = matches!(reply, PeerReply::FaultOrder(Ok(())));
-            if gate.is_silenced() && !last_word {
-                return;
-            }
-            match proto::encode(&PeerReplyFrame { seq, reply }) {
-                Ok(bytes) => {
-                    let _ = tx.send(Bytes::from(bytes));
-                }
-                Err(e) => tracing::warn!("cannot encode peer reply: {e}"),
-            }
-        });
+        // Obeying a fault order closes the gate; its "ok" is the victim's last word, so the
+        // leader can tell an obeyed order from an unreachable victim (D78).
+        let last_word = matches!(reply, PeerReply::FaultOrder(Ok(())));
+        if self.gate.is_silenced() && !last_word {
+            return std::future::pending().await;
+        }
+        reply
+    }
+}
+
+impl PeerRpc for PeerServer {
+    async fn append_entries(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        rpc: openraft::raft::AppendEntriesRequest<crate::raft::TypeConfig>,
+    ) -> PeerReply {
+        let body = PeerBody::Raft(RaftRpc::AppendEntries(rpc));
+        self.deliver(from, term, body).await
+    }
+
+    async fn vote(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        rpc: openraft::raft::VoteRequest<NodeId>,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Raft(RaftRpc::Vote(rpc)))
+            .await
+    }
+
+    async fn install_snapshot(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        rpc: openraft::raft::InstallSnapshotRequest<crate::raft::TypeConfig>,
+    ) -> PeerReply {
+        let body = PeerBody::Raft(RaftRpc::InstallSnapshot(rpc));
+        self.deliver(from, term, body).await
+    }
+
+    async fn propose(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        command: Command,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Propose(command)).await
+    }
+
+    async fn read_index(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {
+        self.deliver(from, term, PeerBody::ReadIndex).await
+    }
+
+    async fn fault_order(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        ms: u64,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::FaultOrder { ms }).await
+    }
+
+    async fn bid(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        bid: Bid,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Bid(bid)).await
+    }
+
+    async fn heartbeat(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {
+        self.deliver(from, term, PeerBody::Heartbeat).await
     }
 }
 
@@ -515,10 +613,12 @@ pub async fn serve_clients(
     msgs: Arc<MessageCounters>,
     handler: ClientHandler,
 ) {
+    let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(client_connection(
+                while connections.try_join_next().is_some() {}
+                connections.spawn(client_connection(
                     stream,
                     gate.clone(),
                     msgs.clone(),

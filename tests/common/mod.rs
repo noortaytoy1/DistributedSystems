@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use rescuemesh::config::{ClusterConfig, Config, NodeAddr};
+use rescuemesh::config::{AssignmentPolicy, ClusterConfig, Config, NodeAddr};
 use rescuemesh::node::transport::framed;
 use rescuemesh::node::{self, NodeHandle};
 use rescuemesh::proto::{self, ClientFrame, ClientReply, ClientRequest, ServerFrame};
@@ -45,7 +45,10 @@ impl TestCluster {
             campus: Default::default(),
             metrics: Default::default(),
             faults: Default::default(),
+            storage: Default::default(),
         };
+        // Most tests are written against the simple baseline; the bidding tests set their own.
+        config.policy.assignment = AssignmentPolicy::LeaderDispatch;
         tweak(&mut config);
         config.validate().unwrap();
 

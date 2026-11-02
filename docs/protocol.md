@@ -12,12 +12,13 @@ Each node listens on two TCP ports from the config:
 
 | Port          | Who connects       | Pattern                                               |
 |---------------|--------------------|-------------------------------------------------------|
-| `peer_addr`   | other nodes        | request/reply, many in flight, matched by `seq`       |
+| `peer_addr`   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
 | `client_addr` | clients and `ctl`  | one-way frames both ways, replies matched by request ID |
 
 Every frame is a 4-byte big-endian length followed by the body (`tokio_util`
-`LengthDelimitedCodec`). Bodies are encoded with `proto::encode`: bincode with varint integers,
-no trailing bytes, at most 16 MiB (`MAX_FRAME_BYTES`). Malformed frames close the connection.
+`LengthDelimitedCodec`), at most 16 MiB (`MAX_FRAME_BYTES`). Client port bodies are encoded with
+`proto::encode`: bincode with varint integers and no trailing bytes. Peer port bodies are tarpc
+messages in tarpc's bincode format. Malformed frames close the connection.
 
 `TCP_NODELAY` is set on every connection.
 
@@ -41,9 +42,18 @@ client                          every node
   A retry reuses `id` and increments `attempt`.
 - The client resends with the same ID up to `client_max_retries` times. The wait starts at
   `client_retry_ms` and doubles up to `client_retry_max_ms`, with ±20% random jitter (D52).
-- `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)` or `Rejected(reason)`.
-  Every `Done` reply for one ID carries the same committed result, whichever node sends it.
+- `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)`, `Provisional(Plan)` or
+  `Rejected(reason)`. Every `Done` reply for one ID carries the same committed result, whichever node
+  sends it.
+- `Provisional(Plan)` comes only from a node in degraded mode: every peer suspected for
+  `degraded_after_ms` (D120, D121). It is not committed. The client takes it at once if no `Done` came and
+  reports `provisional: true` (D123). A retry gets the same plan. The node replays the result through
+  Raft when a peer returns, and first commit wins, so the record can differ; clients are not told (D122).
 - A node that already has a committed result for an ID answers a retry straight from its state.
+
+**Connections (D112).** A client keeps one connection per node and pings on it with
+`Control(Status)` every 1 s. Nothing received for 3 s replaces the connection. A silenced node still
+answers, so it keeps its connection.
 
 ## Control protocol (`ctl`)
 
@@ -58,10 +68,11 @@ frames bypass the fault gate.
 
 ## Peer protocol
 
-Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame` with the same
-`seq`. A connection carries many requests at once, and replies may come back in any order.
-
-`PeerEnvelope { from, term, body }`: `term` is the sender's current Raft term.
+Nodes call each other through the tarpc service `proto::PeerRpc` (D119). A connection carries many
+calls at once, and replies may come back in any order. Each method takes `from` and `term`, the
+sender's current Raft term, and has a deadline. A connection whose calls have gone unanswered for
+1 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
+maps to one method.
 
 | Body                         | Sent by                    | Reply                              |
 |------------------------------|----------------------------|------------------------------------|
@@ -78,8 +89,14 @@ Every request is a `PeerFrame { seq, envelope }`. The reply is a `PeerReplyFrame
 answers `StaleTerm { current }`. Raft RPCs are always passed to openraft, which rejects stale
 leaders itself and must reply so they step down.
 
-**Silence.** A silenced node reads and discards every incoming frame without replying, and
-fails every outgoing call at once. The caller sees a timeout.
+**Silence.** A silenced node's methods never return, and it fails every outgoing call at once.
+The caller sees its deadline pass.
+
+## Raft log file
+
+With `storage.dir` set, each node writes `node-<id>.wal` before it acknowledges anything to openraft
+(D118). A record is a 4-byte big-endian length, an 8-byte FNV-1a checksum and a body encoded with
+`proto::encode`: `Vote`, `Committed`, `Append`, `Truncate` or `Purge`. Only `Committed` is unsynced.
 
 ## Raft log
 
@@ -105,6 +122,7 @@ Every command is idempotent, so a proposal retried after a leader change is harm
 4. The executor plans on its worker pool from its local copy of the state.
 5. The executor proposes `CommitResult`. A follower forwards it to the leader with `Propose`.
 6. After the entry is committed and applied, the executor replies with the winning result.
+   A node in degraded mode skips steps 3 and 5 and replies `Provisional` straight after planning (D120).
 7. If the client hears nothing within `client_retry_ms`, it resends with the same ID.
 
 ## Timers
@@ -114,8 +132,8 @@ Defaults from `config.rs`, tuned for a LAN:
 | Timer                         | Default      | Meaning                                                   |
 |-------------------------------|--------------|-----------------------------------------------------------|
 | `raft_heartbeat_ms`           | 50           | leader → follower heartbeat; also the append-entries timeout |
-| `election_timeout_min_ms`     | 150          | follower waits at least this long before an election     |
-| `election_timeout_max_ms`     | 300          | ... and at most this long (randomised)                    |
+| `election_timeout_min_ms`     | 150          | base of the election timeout. Each node's range is shifted by its place in the config: 150–225, 300–375, 450–525 ms (D115) |
+| `election_timeout_max_ms`     | 300          | limits the width of each node's range                     |
 | `peer_heartbeat_ms`           | 50           | node → node liveness heartbeat                            |
 | `bid_window_ms`               | 20           | bid round closes this long after the request arrives      |
 | `takeover_missed_heartbeats`  | 3            | missed peer heartbeats before the next bidder takes over  |
@@ -124,6 +142,7 @@ Defaults from `config.rs`, tuned for a LAN:
 | `client_max_retries`          | 5            | resends before the client gives up (about 30 s in total)  |
 | `propose_timeout_ms`          | 3000         | a node stops trying to commit one proposal after this     |
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, forwarded proposal) |
+| `degraded_after_ms`           | 2000         | every peer suspected this long, and a serving node answers without a commit (D121) |
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
 | `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |

@@ -242,6 +242,9 @@ pub struct ClientReply {
 pub enum ReplyBody {
     /// The committed result for the request. Every reply for one request carries the same result.
     Done(CommittedResult),
+    /// A lone node's plan, not committed: no quorum exists to commit it (D120, D123). The node
+    /// commits it once a peer returns, and the first commit wins, so it may turn out to differ.
+    Provisional(Plan),
     /// The node will not handle the request; the client should keep waiting or retry.
     Rejected(String),
 }
@@ -296,23 +299,34 @@ pub struct NodeStatus {
     pub silenced: bool,
     /// False while a returning node is catching up.
     pub serving: bool,
+    /// True while this node answers without a commit, with every peer gone (D121).
+    pub degraded: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
 // Node <-> node (peer port)
 // ---------------------------------------------------------------------------------------------
 
-/// A request frame on a peer connection. Replies carry the same `seq`.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PeerFrame {
-    pub seq: u64,
-    pub envelope: PeerEnvelope,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PeerReplyFrame {
-    pub seq: u64,
-    pub reply: PeerReply,
+/// The remote interface one node offers another (D119), through tarpc. Every method carries the
+/// sender and its Raft term, as [`PeerEnvelope`] does.
+#[tarpc::service]
+pub trait PeerRpc {
+    async fn append_entries(
+        from: NodeId,
+        term: Term,
+        rpc: AppendEntriesRequest<TypeConfig>,
+    ) -> PeerReply;
+    async fn vote(from: NodeId, term: Term, rpc: VoteRequest<NodeId>) -> PeerReply;
+    async fn install_snapshot(
+        from: NodeId,
+        term: Term,
+        rpc: InstallSnapshotRequest<TypeConfig>,
+    ) -> PeerReply;
+    async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
+    async fn read_index(from: NodeId, term: Term) -> PeerReply;
+    async fn fault_order(from: NodeId, term: Term, ms: u64) -> PeerReply;
+    async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
+    async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
 
 /// Every peer message carries the sender and its Raft term.

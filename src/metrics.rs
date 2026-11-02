@@ -75,6 +75,17 @@ pub enum Event {
         received: BTreeMap<&'static str, u64>,
     },
 
+    /// Once a second: this process's memory and CPU, the machine's network counters and the worker
+    /// queue (D128). `cpu_ticks` and the byte counts are cumulative.
+    ResourceUsage {
+        rss_kb: Option<u64>,
+        cpu_ticks: Option<u64>,
+        net_rx_bytes: Option<u64>,
+        net_tx_bytes: Option<u64>,
+        queued: usize,
+        running: usize,
+    },
+
     // --- request handling (all roles)
     RequestReceived {
         request: RequestId,
@@ -159,6 +170,35 @@ pub enum Event {
         waited_us: u64,
     },
 
+    // --- degraded mode (C)
+    /// Every peer has been suspected for `degraded_after_ms`; this node now answers without a
+    /// commit (D120, D121). `held_responders` is what the local table took over (D124).
+    DegradedEntered {
+        held_responders: usize,
+    },
+    /// `reason` is `peer_trusted`, `silenced` or `not_serving`. `provisional` answers are waiting
+    /// to be replayed through Raft.
+    DegradedLeft {
+        reason: String,
+        degraded_ms: u64,
+        provisional: usize,
+    },
+    /// A lone node answered without a commit.
+    ProvisionalReplied {
+        request: RequestId,
+        responder: Option<ResponderId>,
+        latency_us: u64,
+    },
+    /// A provisional answer did not stand (D122). `reason` is `lost_first_commit`, with the winner's
+    /// plan, or `responder_taken`, and then the result is recorded with no responder.
+    ProvisionalConflict {
+        request: RequestId,
+        reason: String,
+        responder: Option<ResponderId>,
+        winner_responder: Option<ResponderId>,
+        winner_executor: Option<NodeId>,
+    },
+
     // --- responders (E)
     /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
     /// true if the executor should have done it first and has not.
@@ -169,6 +209,11 @@ pub enum Event {
     },
 
     // --- rejoin (D)
+    /// The process started with a Raft log from an earlier run (D118, FT-9).
+    Restarted {
+        term: u64,
+        last_log_index: Option<u64>,
+    },
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).
     RejoinStarted {
         applied: Option<u64>,
@@ -192,10 +237,23 @@ pub enum Event {
         executor: NodeId,
         latency_us: u64,
         attempts: u32,
+        /// True if the answer was a lone node's, not committed (D123).
+        provisional: bool,
+        /// True if the plan sent nobody, because no suitable responder was free (D111).
+        no_responder: bool,
     },
     ClientGaveUp {
         request: RequestId,
         attempts: u32,
+    },
+    /// A client connection to `node` was opened (D112).
+    ClientLinkUp {
+        node: NodeId,
+    },
+    /// A client connection to `node` closed or stopped answering pings (D112).
+    ClientLinkDown {
+        node: NodeId,
+        reason: String,
     },
 }
 

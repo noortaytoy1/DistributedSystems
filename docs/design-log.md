@@ -68,7 +68,7 @@ table below in sync.
 | ID  | Decision                                                        | Part | Status            |
 |-----|-----------------------------------------------------------------|------|-------------------|
 | D1  | Raft leader election for the cloud coordinator                  | A    | Implemented (via D14) |
-| D2  | Load-based bidding election per request                         | B    | Implemented (off by default, D34) |
+| D2 | Load-based bidding election per request | B | Implemented (default, D114) |
 | D3  | Leader dispatch kept as a measured baseline                     | B    | Implemented       |
 | D4  | Implement Raft ourselves                                        | A    | Superseded by D14 |
 | D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D75) |
@@ -82,15 +82,15 @@ table below in sync.
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
 | D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
-| D16 | Wire format: length-delimited frames with bincode               | all  | Implemented       |
-| D17 | Clients use TCP on a dedicated client port                      | C, F | Implemented (confirm) |
+| D16 | Wire format: length-delimited frames with bincode | all | Implemented, amended by D119 |
+| D17 | Clients use TCP on a dedicated client port | C, F | Implemented, amended by D119 |
 | D18 | Two ports per node; `ctl` shares the client port                | C    | Implemented       |
-| D19 | One multiplexed connection per peer                             | C    | Implemented, amended by D89 |
+| D19 | One multiplexed connection per peer | C | Superseded by D119 |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
 | D23 | Control frames bypass the fault gate                            | C    | Implemented       |
-| D24 | In-memory Raft storage, no snapshots                            | A    | Implemented       |
+| D24 | In-memory Raft storage, no snapshots | A | Superseded by D118 |
 | D25 | Static membership; every node calls `initialize`                | A    | Implemented       |
 | D26 | Any node proposes; followers forward to the leader              | A    | Implemented       |
 | D27 | First commit wins; the outcome tells the proposer what happened | A    | Implemented       |
@@ -100,7 +100,7 @@ table below in sync.
 | D31 | State digest: an FNV-1a hash chain over the applied log         | A    | Implemented       |
 | D32 | Retry an unreachable peer after two heartbeats                  | A    | Implemented       |
 | D33 | No leader, no executor (leader dispatch)                        | A    | Implemented       |
-| D34 | Leader dispatch is the default until bidding lands              | B    | Implemented, amended by D103 |
+| D34 | Leader dispatch is the default until bidding lands | B | Superseded by D114 |
 | D35 | Re-plan a stale plan at most three times                        | A, E | Implemented       |
 | D36 | A node that cannot answer stays quiet | A, F | Implemented |
 | D37 | Any serving node answers a retry from its own state             | A    | Implemented       |
@@ -117,10 +117,10 @@ table below in sync.
 | D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
-| D51 | Request IDs and per-machine client IDs                          | F    | Implemented       |
-| D52 | Client retry budget | F | Accepted |
-| D53 | One client process, one connection per node, shared by users    | F    | Accepted          |
-| D54 | Load generator: closed loop first, open loop as a mode          | F    | Accepted          |
+| D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113 |
+| D52 | Client retry budget | F | Implemented |
+| D53 | One client process, one connection per node, shared by users | F | Implemented |
+| D54 | Load generator: closed loop first, open loop as a mode | F | Implemented |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
 | D56 | Durations on one clock; latency on the client                   | all  | Implemented       |
 | D57 | Heartbeat logging: one summary a second, details at debug       | A    | Implemented       |
@@ -128,14 +128,14 @@ table below in sync.
 | D59 | One strict TOML config shared by every process                  | A    | Implemented       |
 | D60 | Deployment target: six Ubuntu machines on one LAN               | all  | Implemented       |
 | D61 | Peer port serves before Raft starts                             | A    | Implemented       |
-| D62 | `ctl` is the operator tool; no separate experiment runner yet | C | Accepted |
-| D63 | Experiment method: repetitions, warm-up, run length             | all  | Open              |
-| D64 | Analysis in Python                                              | all  | Pending approval  |
+| D62 | `ctl` is the operator tool; the experiment runner is bash over SSH | C | Implemented (D130) |
+| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented       |
+| D64 | Analysis in Python                                              | all  | Implemented       |
 | D65 | Testing strategy                                                | all  | Implemented       |
 | D66 | Rust coding rules                                               | all  | Implemented       |
 | D67 | Team process: parts, owners, pull requests, CI                  | all  | Implemented       |
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
-| D69 | Phase 2 hooks                                                   | all  | Proposed          |
+| D69 | Phase 2 hooks                                                   | all  | Accepted, docs only |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
@@ -176,11 +176,35 @@ table below in sync.
 | D109 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
 | D110 | Takeover: stand by after a lost round, plan if the winner is silent | C, B | Implemented       |
 | D111 | Responder service time: 200 ms × severity | E, A | Implemented |
-are conflicts between the Phase 1 architecture document and the code. They stay
-open until someone implements the related code: whoever works on it settles the decision first.
-During "grill with docs" the agent finds the open entries the task touches, asks the person to
-decide with the options and recommendation listed in the entry, and updates the entry (status,
-decided by, decision) in the same PR (AGENTS.md, "Design decisions").
+| D112 | Client connections: ping through the gate, bounded send queues | F | Implemented |
+| D113 | Required client IDs; sequence numbers start at the clock | F | Implemented |
+| D115 | A different election timeout range per node | A | Implemented |
+| D114 | Bidding is the default; the leader only sequences the log | B, A | Implemented |
+| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented |
+| D117 | Richer faults are not built | C | Accepted |
+| D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
+| D119 | Peer calls through tarpc, with typed methods | C, A | Implemented |
+| D120 | Degraded mode: the last server answers without a commit | C, A, F | Implemented |
+| D121 | Degraded trigger: every peer suspected for 2 s | C | Implemented |
+| D122 | Leaving degraded mode: replay through Raft, first commit wins | C | Implemented |
+| D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented |
+| D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
+| D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
+| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented |
+| D127 | FT-6: count elections after each `rejoined` | D, A | Implemented |
+| D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented |
+| D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm |
+| D130 | Experiment cells and the runner | all | Implemented, to confirm |
+| D131 | Publish-subscribe: Phase 2, for zones, docs only | all | Accepted, docs only |
+| D132 | The "entries table" is the spec's demo table | all | Implemented |
+
+**Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
+own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
+code, or a question nobody has answered. It stays open until someone implements the related code: whoever works
+on it settles the decision first. During "grill with docs" the agent finds the open entries the task touches,
+asks the person to decide with the options and recommendation listed in the entry, and updates the entry
+(status, decided by, decision) in the same PR (AGENTS.md, "Design decisions"). D125, D129 and D130 were decided by
+the agent on the instruction not to be asked again, and are marked for the team to confirm.
 
 ---
 
@@ -345,7 +369,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D24 · In-memory Raft storage, no snapshots
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Superseded by D118 · **Decided by:** A
 - **Context.** The Phase 1 document planned a durable log on disk (component C7) and a snapshot
   every 1,000 entries (§8.3), plus a crash-restart test (FT-9). The faults we must inject are
   network silences: the process keeps running and keeps its memory.
@@ -650,8 +674,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D17 · Clients use TCP on a dedicated client port
 
-- **Date:** 2026-10-20 (scaffold) · **Part:** C, F · **Status:** Implemented; **team to confirm**
-  because it changes Phase 1's D6 · **Decided by:** A in the scaffold
+- **Date:** 2026-10-20 (scaffold), settled 2026-11-01 · **Part:** C, F · **Status:** Implemented; TCP confirmed for clients, peers amended by D119 · **Decided by:** A in the scaffold; omar.leithym
 - **Context.** The Phase 1 document chose UDP for clients (D6). The scaffold built TCP.
 - **Options considered.**
   1. *UDP* as planned: no connection setup; one datagram per request per node. We would need our
@@ -2197,7 +2220,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D52 · Client retry budget
 
-- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** F · **Status:** Accepted, config in this PR, client in `part-f-client` · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** F · **Status:** Implemented, config in this PR, client in `part-f-client` · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §6.3: reply timeout 2 s, up to **5** retries with exponential backoff and
   random jitter, a total budget of about 30 s, "longer than the longest silence (20 s) plus an
   election". The config defaults are `client_retry_ms = 2000` and `client_max_retries = 3`, a fixed
@@ -2223,7 +2246,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D53 · One client process, one connection per node, shared by users
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Accepted (template: `client.rs`, `TODO(F)`)
+- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented (`client.rs`), retries per D52, connections per D112 · **Decided by:** team; details by omar.leithym, on the agent's recommendation
 - **Decision.** `MeshClient` keeps one connection per node, shared by all simulated users in the
   process via `Arc`. `submit` sends the request to every node, waits `client_retry_ms` for the
   first `Done` with that ID, resends with the same ID, and logs `client_sent`, `client_done`,
@@ -2233,7 +2256,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D54 · Load generator: closed loop first, open loop as a mode
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Accepted (template: `bin/loadgen.rs`)
+- **Date:** 2026-10-20, built 2026-11-01 · **Part:** F · **Status:** Implemented (`bin/loadgen.rs`) · **Decided by:** team; open-loop details by omar.leithym, on the agent's recommendation
 - **Decision.** `loadgen --users N --duration-s S --think-ms T --seed X --client-id C`. Each user is a
   tokio task in a closed loop: send, wait for the reply or give up, think, repeat. An open-loop mode
   at a fixed rate is planned. Phase 1 used P processes × U users per machine; one process with many
@@ -2241,6 +2264,12 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 - **Why.** Closed loop matches "simulated users"; open loop is needed to find saturation without the
   load backing off (coordinated omission). Load is raised by changing `--users`, never the
   application logic.
+- **Open loop as built (2026-11-01).** `--rate R` sends R requests per second at evenly spaced
+  intended times, each in its own task, ignoring `--users`, with at most 20,000 in flight. Latency in
+  the summary counts from the intended time. Rejected: Poisson arrivals (harder to explain, nothing
+  we measure needs them) and latency from the actual send (hides queueing in the generator, the very
+  reason for open loop). `--warmup-s` leaves the start out of the printed figures; raw events are
+  still logged. The summary also counts retried requests and plans with no responder (D111).
 
 ---
 
@@ -2288,7 +2317,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D63 · Experiment method: repetitions, warm-up, run length
 
-- **Date:** 2026-10-27 · **Part:** all · **Status:** **Open**
+- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:**
+  omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §11.4: 5-minute runs after a 30 s warm-up, at least **10** repetitions per
   configuration with different seeds, load levels 30–3,000 users, 95% confidence intervals.
   AGENTS.md and `experiments/README.md`: at least **5** repetitions, drop a 30 s warm-up.
@@ -2296,17 +2326,26 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   which in the report. Keep each run's config and git commit hash next to its logs.
 - **Part B note (2026-11-01).** Part B runs its own tests 5 times for now (D83). That does not
   settle this entry, which stays open for the team.
+- **Settled (2026-11-02).** Two profiles. `quick`: 13 cells, 3 runs, 15 s warm-up + 60 s measured + 15 s
+  restart, about 1 hour. `full`: 5 runs, 30 s warm-up + 2 min measured, about 8 hours. The user first asked
+  for 1 or 2 runs; told that gives no usable confidence interval, they chose this. It amends AGENTS.md's "at
+  least 5" and "drop 30 s" for `quick`. Each run's config and git commit are kept next to its logs.
+- **Consequences.** `quick` falls short of the Phase 1 document's 10 runs and 5 minutes, and of `full`.
+  **The report must state which profile each figure came from, and these limits.** Cells with few
+  requests may also fall short of the spec's "tens of thousands of operations".
 
 ### D64 · Analysis in Python
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Pending approval
-- **Decision.** Analysis scripts (percentiles, confidence intervals, plots) are written in Python,
+- **Date:** 2026-10-20, approved 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:**
+  the team; approval reported by omar.leithym
+- **Decision.** Analysis scripts (percentiles, confidence intervals, plots) are written in Python, with a
+  venv and pinned `analysis/requirements.txt` (numpy, scipy, matplotlib),
   in `analysis/`, output to `analysis/out/` (ignored). They are tools, not part of the system.
 - **Why.** Plotting and statistics libraries; nobody has to write them in Rust.
 
 ### D62 · `ctl` is the operator tool; no separate experiment runner yet
 
-- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** C · **Status:** Accepted · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** C · **Status:** Implemented (D130) · **Decided by:** omar.leithym, on the agent's recommendation
 - **Decision.** `ctl status` shows role, term, leader, log index, applied index, digest, result
   count, `serving` and `silenced` for every node. `ctl silence --node N --ms M` and
   `ctl skew --node N --work W` inject faults and imbalance. The Phase 1 "experiment runner" (start
@@ -2421,7 +2460,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D69 · Phase 2 hooks
 
-- **Date:** Phase 1 architecture · **Part:** all · **Status:** Proposed
+- **Date:** Phase 1 architecture, accepted 2026-11-02 · **Part:** all · **Status:** Accepted, docs only ·
+  **Decided by:** omar.leithym, on the agent's recommendation
 - **Decision.** The Discovery Service becomes a second state machine on the same Raft log
   (registrations and lease renewals as `Command` variants). Claims could become leases with fencing
   tokens issued by the leader. P2P links live in the client; the cloud leaves the data path after
@@ -2473,3 +2513,512 @@ exist because of them.
   assignments.
 - **Where.** `config.rs::CampusConfig`, `node/release.rs`.
 - **How we check it.** `node::release::tests`, `tests/cluster.rs`.
+
+### D112 · Client connections: ping through the gate, bounded send queues
+
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A machine that loses power sends no TCP close, so the socket stays half-open for many
+  minutes, and a restarted node would never be reconnected. "No reply" is no signal, because a node
+  that is not the executor normally says nothing. Separately, frames for an unreachable node would
+  pile up without limit at thousands of users.
+- **Options considered.**
+  1. *Ping with `Control(Status)`*: no `proto.rs` change; small background traffic.
+  2. *Reconnect on every retry*: no background traffic; churns healthy idle connections, and recovers
+     only while requests are failing.
+  3. *TCP keepalive and `TCP_USER_TIMEOUT`*: no application traffic; needs the `socket2` crate and is
+     harder to log.
+  For the queue: *bound it and drop when full*, or *block the sender*, which lets one dead node stall
+  every user, the very thing multicast is meant to avoid.
+- **Decision.** Each connection sends `Control(Status)` every 1 s. Nothing received for 3 s means drop
+  it and reconnect (connect cap 1 s, 500 ms pause after a failure). Each node has a queue of 1024
+  frames; when full, the frame is dropped for that node only. One socket write is capped at 3 s.
+  Events `client_link_up` and `client_link_down`.
+- **Why.** Control frames pass the fault gate (D23), so a silenced node keeps its connection while a
+  dead one is replaced: exactly the difference we need. The other nodes get the frame and the retry
+  timer covers the rest, so `submit` never blocks on one node.
+- **Consequences.** Three small messages a second per client process. These limits are constants in
+  `client.rs`, not config keys: no experiment varies them. Frames queued during an outage are sent
+  on reconnect, which is harmless because requests are idempotent. A `ctl`-style `control` call and
+  `MeshClient` open sockets from `client.rs`, the one place outside the "two places" rule; it reuses
+  `node::transport::framed`.
+- **Where.** `client.rs::run_link`, `serve_link`. **How we check it.** `tests/client.rs`, FT-8.
+
+### D113 · Required client IDs; sequence numbers start at the clock
+
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented, amends D51 · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A random ID makes runs hard to match to machines (D51 already advised against it).
+  With sequence numbers from 0, a rerun with the same ID against a running cluster reuses request IDs,
+  and nodes return the old committed results as though they were new.
+- **Options considered.**
+  1. *Required, sequence from start time*: both problems gone.
+  2. *Random if missing*: convenient locally; two machines could collide by chance.
+  3. *Required, sequence from 0*: simple, but the cluster must be wiped before every run.
+- **Decision.** Option 1. `loadgen` fails without `--client-id`. `MeshClient` starts `seq` at the
+  current time in microseconds and counts up.
+- **Consequences.** IDs are large numbers in the logs. Two processes must not share a client ID.
+- **Where.** `client.rs::MeshClient::new`, `bin/loadgen.rs`.
+- **How we check it.** `tests/client.rs`; the runbook gives each machine its ID.
+
+### D115 · A different election timeout range per node
+
+- **Date:** 2026-11-01 · **Part:** A · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A client test with the leader silenced failed about 1 run in 16: 10 elections in a row
+  with no winner, about 305 ms apart. openraft 0.9 draws one election timeout per process
+  (`EngineConfig::new`) and checks it on a tick of 1.5 heartbeats (75 ms). In a 150–300 ms range, two
+  nodes often get the same number of ticks. If their ticks also line up, each votes for itself in
+  every term. Fresh random timeouts per election, Raft's defence (Ongaro and Ousterhout, §5.2), are
+  not what this version does. Ticks align less on separate machines, but an alignment lasts for the
+  whole outage.
+- **Options considered.**
+  1. *A range per node, by place in the config.*
+  2. *Our own watcher that triggers elections after a fresh random delay*: closest to the paper, but it
+     works around openraft's timer, and interacts with the rejoin gate's `elect(false)` (D75).
+  3. *Document it and rely on client retries*: the demo could show a long failover.
+- **Decision.** Option 1. The range starts at `election_timeout_min_ms + place × 2 ticks`, and is one
+  tick wide or the configured width if smaller. Defaults: node 1 150–225 ms, node 2 300–375 ms, node 3
+  450–525 ms. No new config key.
+- **Why.** Two nodes can no longer fire on the same tick, so one reaches the others first and wins.
+  Small, and easy to explain.
+- **Consequences.** Failover can take up to about 225 ms longer than the old 300 ms bound when only
+  high-ID nodes remain, and lower IDs tend to win elections. `election_timeout_max_ms` now only limits
+  the width. E3 measures the real figure.
+- **Where.** `raft/mod.rs::election_range`.
+- **How we check it.** `raft::tests`; `tests/client.rs::bidding_serves_a_client_with_a_node_silenced`
+  over repeated runs; E3.
+- **Report notes.** A good "found by testing" story: a library detail broke an assumption from the
+  paper, and the repeated-run rule (AGENTS.md) caught it.
+
+### D114 · Bidding is the default; the leader only sequences the log
+
+- **Date:** 2026-11-01 · **Part:** B, A · **Status:** Implemented, supersedes D34 · **Decided by:** omar.leithym
+- **Context.** The plan was to flip the default after a comparison run. That run needs the load
+  generator, on the lab machines. Meanwhile Dr Amr's notes say twice that cloud nodes are peers with
+  no coordinator, and leader dispatch is a coordinator pattern. Takeover (D110) has landed, so bidding
+  now handles a silent winner.
+- **Options considered.**
+  1. *Flip now, keep the baseline in E1.*
+  2. *Keep leader dispatch until E1 has run*: original plan, but the demo could show the pattern he
+     objected to.
+  3. *Change the lab config only*: tests undisturbed, but two different defaults.
+- **Decision.** Option 1, in the owner's words: "we want leader for the state replication and
+  maintenance and the bidding to decide who takes the request". `Bidding` is the code default and is
+  set in both shipped configs. `leader-dispatch` stays as E1's baseline, set explicitly.
+- **Why.** Roles are now clean: bidding picks who plans, Raft's leader only orders the log. See also
+  D116 on what stays with the leader.
+- **Consequences.** The flip came **before** the numbers; if E1 shows bidding much worse, the team
+  must revisit it and say so in the report. The test helper `TestCluster` still defaults to leader
+  dispatch, because most multi-node tests assert on it; the bidding and takeover tests set bidding.
+- **Where.** `config.rs::AssignmentPolicy`, `config/*.toml`, `tests/common/mod.rs`.
+- **How we check it.** E1 policy comparison; `tests/bidding.rs`, `tests/takeover.rs`.
+
+### D116 · Raft and the leader-run fault schedule stay, despite "no coordinator"
+
+- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented · **Decided by:** omar.leithym
+- **Context.** Dr Amr insists on peers with no coordinator (Sept 13, Oct 28). Raft has a leader. D12
+  has that leader run the fault schedule.
+- **Options considered.**
+  1. *Keep Raft, move the schedule to every node, seeded from the config.* The agent's recommendation.
+  2. *Keep Raft and D12*: least change. The spec says servers "elect one machine to ignore
+     communication", and his notes say "mimic failure using election", so a schedule run by the
+     elected node may fit.
+  3. *Replace Raft with a leaderless protocol*: a full rewrite, not possible by Nov 4.
+- **Decision.** Option 2.
+- **Consequences.** The report must argue the point: any node can propose (D26), bidding assigns
+  work (D114), and the leader only sequences the log and picks the fault victim. He may still see this
+  as a coordinator, so **someone should show him the argument before the demo.**
+- **Where.** `raft/`, `node/faults.rs`.
+
+### D117 · Richer faults are not built
+
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Accepted · **Decided by:** omar.leithym, on the agent's
+  recommendation
+- **Decision.** No one-way faults, added delay or loss. E1–E6 and the demo use silence, physical
+  power-off and one-plus-one failures only. The `TODO(C)` marker stays for anyone who needs it later.
+- **Why.** Unused by any experiment, and it adds risk to the gate everything relies on.
+
+### D118 · Raft log and vote on disk, for physical power-off
+
+- **Date:** 2026-11-01 · **Part:** A, D · **Status:** Implemented, supersedes D24 · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** D24 kept the log and vote in memory because the only faults were network silences. Dr
+  Amr's notes (Oct 28) say he wants to see a machine physically turned off. That wipes memory: the node
+  forgets its vote, which Raft forbids, and committed entries could be lost if a wiped node helps
+  elect a node missing them.
+- **Options considered.**
+  1. *Log and vote on disk, with a sync.* Phase 1's original plan (C7), and FT-9 comes back.
+  2. *Disk without a sync*: latency near today's; a process kill is safe, but a real power cut, the
+     exact case he asked for, can lose recent writes.
+  3. *Stay in memory, restart behind the rejoin gate*: small, and usually looks fine in a demo, but
+     breaks Raft's safety, and the report would have to admit it.
+  4. *Keep silences only and ask him to accept that*: fails the stated demo.
+- **Decision.** Option 1. `storage.dir` set: each node appends vote and log changes to
+  `<dir>/node-<id>.wal` (`raft/wal.rs`), syncing before it acknowledges, off the async runtime. Records
+  carry a length and an FNV-1a checksum; a damaged tail is cut off on open. `committed` is written
+  unsynced: it only saves replay work. The state machine is rebuilt by replaying the log. A node
+  with a file from an earlier run starts with `serving` false and elections off, and catches up
+  through the same rejoin path (D46, D75, D76). After 3 s with no leader it allows elections,
+  because the whole cluster may have restarted. Event `restarted`. `storage.dir` unset keeps memory only,
+  for ordinary tests. No new dependency, and still no snapshots.
+- **Why.** Raft's safety rests on a durable vote and log, and this is the smallest thing that gives
+  them. Reusing rejoin means one recovery path to explain.
+- **Consequences.** A disk sync per append raises commit latency, which now measures the disk as well
+  as the protocol, and the report must say so. It depends on each machine's disk, so compare
+  like with like. The runner must wipe `storage.dir` between runs, or the state carries over. Log files
+  grow for the length of a run. Stopping a server now closes its connections (`JoinSet` in
+  `serve_peers` and `serve_clients`), which the restart tests need.
+- **Where.** `raft/wal.rs`, `raft/store.rs::LogStore`, `raft/mod.rs::RaftNode::start`,
+  `node/rejoin.rs::after_restart`, `config.rs::StorageConfig`.
+- **How we check it.** `raft::wal::tests`; `tests/durable.rs` (a restarted follower catches up before
+  serving, with no election; the whole cluster restarts with every result). `kill -9` on the leader
+  under load was tried by hand on one machine. **Only the lab can test real power-off.**
+- **Report notes.** Crash recovery is now in scope. FT-9 returns.
+
+### D119 · Peer calls through tarpc, with typed methods
+
+- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19 · **Decided by:**
+  omar.leithym; typed methods on the agent's recommendation, tarpc against it
+- **Context.** Dr Amr's notes (Sept 13, Oct 4, Oct 28): provide a remote invocation mechanism, do not go
+  low-level, use a ready-made RPC or RMI, pick one and say why, with the chapter 2 table (Java RMI,
+  CORBA, Sun XDR). Our peer request/reply, matching replies to calls by `seq`, was hand-written.
+- **Options considered.**
+  1. *Keep our transport, document it, ask him*: no risk to working code, but a grading risk until he
+     answers. The agent's recommendation.
+  2. *tarpc for peers*: a ready-made Rust RPC library. Meets his wording most directly; a new
+     dependency and a rewrite of Part C's working transport days before the deadline.
+  3. *tonic/gRPC everywhere*: the largest change, with protobuf schemas and a build step.
+  For the shape, once tarpc was chosen: *typed methods* (visibly a remote interface) or *one generic
+  `deliver(envelope)`* (smallest, but really our own protocol tunnelled through tarpc).
+- **Decision.** tarpc 0.37 on the peer port, as `proto::PeerRpc`: `append_entries`, `vote`,
+  `install_snapshot`, `propose`, `read_index`, `fault_order`, `bid`, `heartbeat`, each taking `from` and
+  `term`, and each answering a `PeerReply`. It runs over our existing length-delimited framing, using
+  bincode. `PeerFrame` and `PeerReplyFrame` are gone. `PeerClient::call(envelope, timeout)` and
+  `PeerHandler` keep their signatures, so no caller changed. The client port keeps its own framing:
+  its multicast with replies matched by ID is not request/reply (D17).
+- **Why.** tarpc is plain Rust with no schema step, and it matches replies and propagates deadlines as
+  relative times, so no shared clock is needed (D56). The spec says a framework must not hide what is
+  assessed: election, consistency and recovery remain ours.
+- **Consequences.** The lockfile grows from about 100 crates to 169, including OpenTelemetry, which
+  tarpc uses for tracing. Library credit goes in the report (D68). Silence is kept: a silenced node's
+  methods never return, so the caller sees its deadline pass, and the fault order's last word still
+  goes out. tarpc drops a call at its deadline, so each handler runs in its own task and a Raft RPC is
+  never cut halfway. A new rule: a connection whose calls have gone unanswered for 1 s is replaced,
+  because a machine that lost power sends no close (D118). A silenced peer's connect still succeeds.
+- **Where.** `proto.rs::PeerRpc`, `node/transport.rs`.
+- **How we check it.** Every multi-node suite, unchanged, 10 runs each. **Peer traffic on a real LAN
+  can only be checked in the lab.** Experiments cover its cost in E5.
+- **Report notes.** Fill in the chapter 2 comparison. tarpc is closest to RPC with an interface in the
+  host language (like Java RMI's interfaces, without its object references); bincode is the external
+  data representation, in the role of Sun XDR.
+
+### D120 · Degraded mode: the last server answers without a commit
+
+- **Date:** 2026-11-02 · **Part:** C, A, F · **Status:** Implemented, a deliberate exception to D8 ·
+  **Decided by:** omar.leithym, against the agent's recommendation
+- **Context.** Dr Amr's notes ask to see one machine physically off and another failed, with the one
+  remaining server handling all three client nodes. Raft cannot commit on one of three nodes, so until
+  now the last node stayed quiet and clients gave up after about 30 s (D52).
+- **Options considered.**
+  1. *A clear error, plus results already committed*: keeps every safety property, but the remaining
+     server handles nothing new. The agent's recommendation.
+  2. *Degraded mode*: the lone node plans and answers at once, marks the answer provisional, and commits
+     it when a peer returns. Meets the stated demo; gives up "Commit, then reply" for this one case.
+  3. *Lower the quorum to one*: breaks Raft's safety in every case, not just this one.
+- **Decision.** Option 2. `node/degraded.rs` holds the mode and a local table. In `handle_request` the
+  order is: not serving → silent; committed result → `Done`; answer already stored → the same
+  `Provisional`; degraded → plan, store, `Provisional`; otherwise the normal path. The degraded check
+  comes before `decide_executor`, because neither a bid round nor a proposal can finish alone.
+- **Why.** The transparency Dr Amr describes is what the user feels when servers fail, and he asks for
+  this case by name. The spec allows speculative actions as long as they are "clearly labeled and
+  reconciled"; it lists them under Phase 2, so this is an early, small version: the reply type labels
+  the answer and D122 reconciles it.
+- **Consequences.**
+  - **This breaks "Commit, then reply", and the report must say so.** A provisional answer can later
+    differ from what is on record.
+  - **In a real partition two sides can answer differently.** The lone node cannot tell "both peers
+    are down" from "I am cut off". The other two may commit a different plan for the same request.
+  - **Clients are not told when an answer is replaced** (D122).
+  - The table is memory only: a lone node that loses power loses answers it has not replayed.
+  - No replicated data changes while degraded; the state machine stays deterministic.
+- **Where.** `node/degraded.rs`, `node/mod.rs::handle_request`, `proto.rs::ReplyBody::Provisional`.
+- **How we check it.** `tests/degraded.rs`, for a lone follower and a lone leader. A two-node silence under
+  load was tried by hand on one machine. **A real power-off can only be checked in the lab.**
+- **Report notes.** Present this as a trade-off we chose knowingly: availability for the one-server
+  case against the consistency Raft gives elsewhere. Show it to Dr Amr before the demo.
+
+### D121 · Degraded trigger: every peer suspected for 2 s
+
+- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** Entering degraded mode gives up a guarantee, so a brief stall must not trigger it. The
+  peer detector (D79) suspects after about 150 ms, which is too eager on its own.
+- **Options considered.**
+  1. *Every peer suspected without a break for 2 s*: outlasts a leader election and a slow moment,
+     and is within the client's first 2 s wait, so usually only one retry is lost.
+  2. *As soon as both are suspected*: fastest, but a short network stall gives up the guarantee.
+  3. *Use the client's whole retry budget first*: safest, and the clients have given up by then.
+- **Decision.** Option 1. New key `timers.degraded_after_ms = 2000`, validated above 0. Never while
+  silenced or not serving. It ends as soon as any peer is trusted again, or on silence; the wait then
+  starts over. `NodeStatus` gains `degraded`, and `ctl status` shows it, so the demo can show the mode.
+- **Why.** A node that is silenced or catching up knows it is the one behind, so it has no business
+  answering. Any single peer back means a majority is possible again.
+- **Consequences.** A node that hears nobody because its own network is down enters degraded mode too; D120
+  covers that. A machine so overloaded that it misses heartbeats for 2 s could enter it wrongly, which
+  would show in the logs as `degraded_entered` with peers still running.
+- **Where.** `config.rs::Timers::degraded_after_ms`, `node/degraded.rs::Trigger`, `watch`.
+- **How we check it.** `degraded::tests`; `tests/degraded.rs` shows one silenced node never triggers it and
+  a silenced node never enters it.
+- **Report notes.** Events `degraded_entered`, `degraded_left { reason, degraded_ms, provisional }`.
+
+### D122 · Leaving degraded mode: replay through Raft, first commit wins
+
+- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; event details by the agent, on the instruction not to be asked again
+- **Context.** Provisional answers must end up in the replicated state, or a node's table and the log
+  disagree for good. The spec asks that speculative actions be reconciled.
+- **Options considered.**
+  1. *Propose each result as an ordinary `CommitResult`*: reuses first commit wins (D27), so no new
+     command and no new rule in the state machine.
+  2. *Discard them*: simple, but the record then lacks incidents clients were answered for.
+  3. *A new `Reconcile` command with its own merge rule*: more precise, and a new replicated behaviour
+     to test days before the deadline.
+- **Decision.** Option 1. Once degraded mode is over and the node serves, it proposes up to 64 stored
+  results at a time, retrying every 100 ms until a quorum takes them; each result leaves the table only
+  when settled. `Duplicate` with a different plan logs `provisional_conflict` with reason
+  `lost_first_commit`. `Stale` logs it with reason `responder_taken`, and the result is proposed again with
+  no responder. Clients are not told.
+- **Why.** Every `Command` is already idempotent, so retries are harmless, and no state-machine change
+  means digests still prove convergence.
+- **Consequences.** The local hold is on a timer but the replayed hold is on the log, so answers given one
+  after another with the same responder collide when replayed quickly: the first holds it, and later
+  ones are recorded with no responder though the client was told otherwise. That is what this decision asks
+  for, and the conflict count measures it. While waiting, a retry gets the stored plan, not a new one.
+- **Where.** `node/degraded.rs::replay`, `settle`; events in `metrics.rs`.
+- **How we check it.** `tests/degraded.rs`: equal digests after the return, and both conflict reasons,
+  with a winner forced for `lost_first_commit`.
+- **Report notes.** Report the conflict count against the provisional count from each run.
+
+### D123 · `ReplyBody::Provisional`, and how the client reports it
+
+- **Date:** 2026-11-02 · **Part:** C, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** A client must be able to tell an uncommitted answer from a committed one, and the
+  application must not mistake one for the other.
+- **Options considered.**
+  1. *A new reply variant carrying only the plan*: no log index or term to fake. The client accepts it
+     at once if no `Done` came.
+  2. *`Done` with a flag*: small, but every reader of `Done` must remember to check it.
+  3. *The client keeps retrying for a `Done`*: then nobody gets an answer, and degraded mode has no effect.
+- **Decision.** Option 1. `ReplyBody::Provisional(Plan)`. `client::Submitted` becomes `{ from, executor,
+  plan, committed: Option<CommittedResult>, provisional, latency, attempts }`, so a provisional answer cannot
+  pose as a committed result. `client_done` gains `provisional`, and `loadgen` prints the count.
+- **Why.** Types over comments (AGENTS.md).
+- **Consequences.** Everyone who reads `done.result` now reads `done.plan` or `done.committed`. A `Done` that
+  arrives after a provisional answer is ignored, as any second reply is.
+- **Where.** `proto.rs`, `client.rs::finished`, `hand_over`, `bin/loadgen.rs`.
+- **How we check it.** `tests/degraded.rs`.
+- **Report notes.** Latency of provisional answers is not comparable with committed ones: plot apart.
+
+### D124 · Degraded holds: a local table on the service timer
+
+- **Date:** 2026-11-02 · **Part:** C, E · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; taking over existing holds by the agent, on the instruction not to be asked
+  again
+- **Context.** Two provisional plans must not send the same responder at once, and releases need a
+  quorum (D39), so the replicated holds cannot change while a node is alone.
+- **Options considered.**
+  1. *A local table of holds, freed by the same service time as D111*: same behaviour as normal, no
+     replication.
+  2. *Hold forever until peers return*: after 30 answers every plan has no responder.
+- **Decision.** Option 1. On entering, the table also takes over the replicated holds, each freed after its
+  service time from that moment, because they cannot be released through the log now. Free responders are
+  all responders minus the table. `release.rs` skips its scan while degraded and catches up afterwards.
+- **Why.** Without the takeover, a node that enters degraded mode under load starts with most responders
+  held and keeps them held for the whole outage, which would make the mode useless when it matters.
+- **Consequences.** The table is cleared on leaving; the log is the only truth after that.
+- **Where.** `node/degraded.rs::Table`, `enter`; `state.rs::responders`; `node/release.rs`.
+- **How we check it.** `degraded::tests`; `tests/degraded.rs` checks that answers take different responders
+  while they are held.
+
+### D125 · A returning node with no leader may stand for election after 3 s
+
+- **Date:** 2026-11-02 · **Part:** D, C · **Status:** Implemented, amends D75 · **Decided by:** the agent, on
+  omar.leithym's instruction not to be asked; to be confirmed in the PR review
+- **Context.** Found while testing D120 by hand under load. Two nodes silenced together, and at the end
+  of the silence no leader ever appeared: the third node's log was shorter, since the old leader had
+  uncommitted entries, so its votes were refused, and the two returning nodes had elections off until they
+  were current, which only a leader could confirm. The cluster stayed stuck until the clients gave up.
+  With one fault at a time this cannot happen, but Dr Amr's case makes two faults at once a requirement.
+- **Options considered.**
+  1. *Use the restart rule from D118 after a silence as well*: elections back on after 3 s with no
+     leader. It adds one rule, and the two paths become the same code.
+  2. *Keep elections on during catch-up*: removes the wait, and loses D5's protection, because a
+     returning node with a raised term could depose a healthy leader.
+  3. *Re-enable when a higher term is seen*: more cases, and it still needs a timeout for the case where
+     all three return together.
+- **Decision.** Option 1. `rejoin.rs::catch_up_or_elect` serves both paths. The node still serves nothing
+  until it is current.
+- **Why.** A leader's heartbeats stop a follower standing even with elections on, so under a healthy
+  leader this changes nothing, even if the catch-up takes longer than 3 s.
+- **Consequences.** The architecture rule that a returning node does not vote for itself until current now
+  has this exception. Recovery from a double fault takes at least 3 s, which should show in E4 if it
+  covers the case.
+- **Where.** `node/rejoin.rs`.
+- **How we check it.** `tests/degraded.rs::the_cluster_recovers_when_the_longer_logs_were_all_silenced`, which
+  hangs without this.
+- **Report notes.** A good example of a bug found by running under load rather than by unit tests.
+
+### D126 · Group communication named: `PeerSet::broadcast` and `MeshClient`
+
+- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** Dr Amr's notes ask for group communication, and for the application to send a message once
+  while the middleware gives the replicas their copies, with the two layers kept distinct. We already
+  did all of this, but in separate loops with no name a reader could point to.
+- **Options considered.**
+  1. *Name it with a small module and map the guarantees in the docs*: `PeerSet::broadcast`, used by
+     bids and heartbeats, and `MeshClient` as the client-side group send. No message changes.
+  2. *A group-communication library*: a new dependency doing distributed work (AGENTS.md rule 6), to
+     replace code that works.
+  3. *A reliable, ordered multicast of our own*: Raft already gives total order where we need it.
+- **Decision.** Option 1. The guarantees:
+
+  | Group send | Sender | Guarantee | What covers a lost copy |
+  |------------|--------|-----------|-------------------------|
+  | `MeshClient::submit` to all three nodes | application, through the client middleware | best effort, unordered | the client's retry with the same ID (D52) |
+  | Bids, through `PeerSet::broadcast` | each serving node | best effort, unordered | a split decision, settled by first commit (D27) |
+  | Heartbeats, through `PeerSet::broadcast` | every node | best effort, unordered | the next one; a real loss becomes a suspicion (D79) |
+  | Committed state, through Raft | the leader | totally ordered, agreed by a majority | openraft's log replication (library) |
+
+- **Why.** The state machine needs total order and already has it. Bids and heartbeats are soft: they
+  are worthless late, so retrying them would be wrong.
+- **Consequences.** `submit` is the application's one call and `MeshClient` is the middleware; the report
+  can show the layers directly. A bid is now one task sending to both peers, not one per peer; it still
+  never holds up the bid window.
+- **Where.** `node/transport.rs::PeerSet::broadcast`, `node/bids.rs::send_bid`, `node/heartbeat.rs`,
+  `client.rs::MeshClient`.
+- **How we check it.** `tests/heartbeat.rs::a_group_send_reaches_every_peer_and_reports_who_missed_it`, plus the
+  bidding and heartbeat suites unchanged.
+- **Report notes.** Publish-subscribe is a separate question (see the entry on it). Ask Dr Amr whether he
+  expects either in Phase 1, since his notes read that way while the spec lists zone subscriptions under Phase 2.
+
+### D127 · FT-6: count elections after each `rejoined`
+
+- **Date:** 2026-11-02 · **Part:** D, A · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** FT-6 asks whether a returning node with a stale term forces an election. openraft 0.9.25
+  has no PreVote, so D75's gate is what prevents it, and it needs a measurement.
+- **Options considered.**
+  1. *Count new Raft terms in the logs within 10 s after each `rejoined`*: no new event, and it works on
+     every run that has a fault.
+  2. *A dedicated test only*: exists already in `tests/rejoin.rs`, but says nothing under load.
+- **Decision.** Option 1, as `elections_after_rejoin` in `analysis/analyze.py`. The target is 0.
+- **Consequences.** Timestamps come from several machines, so the 10 s window is approximate. A
+  coincidental election in that window counts against the return. Double faults (D125) can raise it
+  legitimately, so read it on one-victim cells.
+- **Where.** `analysis/analyze.py::elections_after_rejoin`.
+- **How we check it.** `analysis/test_analyze.py`.
+
+### D128 · `resource_usage`: memory, CPU, network and queues once a second
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; the network and queue fields by the agent, on the instruction not to be asked
+- **Context.** The spec lists CPU, memory, network and queue behaviour among the measurements, and
+  nothing logged memory or network.
+- **Options considered.**
+  1. *An event from the node's reporter, read from `/proc`*: no new dependency, and it lands in the same
+     log as everything else.
+  2. *`sysstat` on each machine*: a second log format, and an install on six machines.
+  3. *A crate such as `sysinfo`*: a new dependency for three small files.
+- **Decision.** Option 1. Event `resource_usage { rss_kb, cpu_ticks, net_rx_bytes, net_tx_bytes, queued,
+  running }`, once a second, from `node/usage.rs`, read off the async runtime. `client_done` also gains
+  `no_responder`, because the analysis needs the share of plans that sent nobody (D111).
+- **Consequences.** The network counters cover the machine, not the process, and leave out loopback, so
+  they read zero on one machine and include any other traffic in the lab. `cpu_ticks` assumes 100 ticks per
+  second when converted, which holds on Ubuntu.
+- **Where.** `node/usage.rs`, `node/mod.rs::spawn_reporter`, `metrics.rs`.
+- **How we check it.** `node::usage::tests`; `analysis/test_analyze.py`.
+
+### D129 · Experiment load: `plan_work`, responders and think time
+
+- **Date:** 2026-11-02 · **Part:** E, F · **Status:** Implemented, to confirm · **Decided by:** the agent,
+  on omar.leithym's instruction not to be asked; to be confirmed in the PR review
+- **Context.** Two problems would have made the experiments measure the wrong thing. `workers.plan_work`
+  defaults to 0, where a plan takes under a microsecond, while the spec wants a planner that creates real
+  load, and load balancing has nothing to balance without it. And D111's 30 responders at 600 ms give a
+  capacity of about 50 assignments per second, so at high load nearly every plan would have no responder and
+  E1 would mostly measure that path.
+- **Options considered.**
+  1. *In the cells only: `plan_work = 1000`, `campus.responders = 300`, `think_ms = 1000`*: defaults and
+     the demo stay as agreed.
+  2. *Change the defaults*: every config and test moves, days before the deadline.
+  3. *Leave them, and report the limits*: the honest minimum, but E1 and E2 would show little.
+- **Decision.** Option 1. **`plan_work = 1000`** took about 4 ms per plan on the development machine
+  (calibrated by timing `planner::plan`; this is a setting, not a result). With 4 threads on 3 nodes that is a
+  ceiling near 3000 plans per second. **300 responders** give about 500 assignments per second by D111's
+  arithmetic. **`think_ms = 1000`** makes each user offer about one request per second, so 30, 300 and 3000
+  users run well under, under, and at the planning ceiling. `cpu_weight = 1` in the cells: score is in
+  microseconds and CPU in permille, so full CPU weighs about one job's expected wait at this `plan_work`.
+  `skew_work = 5000` on one node makes its plans about five times slower.
+- **Why.** The sweep then crosses from idle into overload, which is what a scaling figure should show. The
+  responders stay a real limit at the top, and `no_responder_share` reports it instead of hiding it.
+- **Consequences.** Above 500 requests per second, plans increasingly have no responder. **The lab machines
+  may differ**: check `service_mean_us` on one short cell first. A closed loop cannot exceed its users' rate, so
+  overload shows as latency, not as lost offered load (D54). The demo keeps the defaults.
+- **Where.** `experiments/*.toml`, `planner.rs::ROUNDS_PER_UNIT` (its comment now gives the measured cost).
+- **How we check it.** `service_mean_us` and `no_responder_share` in every run's summary.
+- **Report notes.** State these settings beside every figure.
+
+### D130 · Experiment cells and the runner
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, to confirm · **Decided by:** bash over SSH by
+  omar.leithym (D62); the cell format and the extra `full` cells by the agent, on the instruction not to be asked
+- **Context.** The agreed `quick` cells are E1 (30, 300, 3000 users × 2 policies), E2/E6 (skew × 2 scores),
+  E3/E4/FT-6 (2 loads × 2 victims), E5 (faults off). `full` was agreed at about 31 cells with the rest to be defined.
+- **Options considered.** For the format:
+  1. *A TOML overlay plus a `# run:` line*: the file is both the config and the record of how it ran, and
+     strict config parsing checks it.
+  2. *A table in one script*: shorter, but no single file to point to per cell, against `experiments/README.md`.
+  3. *A separate manifest beside each config*: two files per cell to keep in step.
+- **Decision.** Option 1. `scripts/run-experiments.sh` and `lab-build.sh` read a hosts file and share
+  `lab-common.sh`; the ssh target `local` runs on one machine. The other 18 `full` cells: E1 at 100 and 1000
+  users (4); the other two scores (2); silences of 3 s and 20 s at 2 loads (4); faults on (1); FT-8 (1); P-2 at
+  bid windows of 5, 10, 20, 50 ms (4); degraded at 2 loads (2).
+- **Consequences.** Machines need SSH keys and rsync. A fault starts a third of the way into the measured time.
+  `tests/experiment_cells.rs` fails if a cell stops being a valid config or the counts change.
+- **Where.** `experiments/`, `scripts/`, `analysis/`.
+- **How we check it.** The whole pipeline was tried on one machine with `hosts.local`, short durations and three
+  cells, to test the scripts only. **It has not run over SSH or on the lab machines.**
+
+### D131 · Publish-subscribe: Phase 2, for zones, docs only
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Accepted, docs only · **Decided by:** omar.leithym: "we
+  will use publish sub in phase 2 for the zones, for phase 1 we are not dealing with zones but add it to docs
+  so we can do it later"
+- **Context.** Dr Amr's Oct 28 notes say "Implement publish-subscribe", and read as Phase 1. The spec lists
+  zone subscriptions among peers under Phase 2.
+- **Options considered.**
+  1. *Phase 2, for zones, documented now*: follows the spec, and adds no code days before the deadline.
+  2. *A small publish-subscribe in Phase 1, on the client port*: answers his notes literally, but nothing in
+     Phase 1 would subscribe to anything.
+- **Decision.** Option 1. Peers will subscribe to incident updates for their zones, with duplicate suppression
+  and bounded forwarding as the spec requires. `docs/architecture.md` section 13 holds the hook.
+- **Consequences.** A grading risk if he does expect it in Phase 1. **The team should ask him.**
+- **Where.** `docs/architecture.md` section 13.
+- **Report notes.** Name it as planned, and separate it from group communication, which is built (D126).
+
+### D132 · The "entries table" is the spec's demo table
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's
+  recommendation
+- **Context.** Dr Amr's Oct 28 note says to show "4 first entries + last entry" of the "entries table". That
+  could mean a table in the project description, or a log of entries in the running system.
+- **Options considered.**
+  1. *The spec's Required Demonstration Scenarios table*: its first four rows and last row are exactly Phase 1
+     (normal operation, load imbalance, server failure, server recovery, scale and stress), and the rows between are
+     Phase 2. A demo script covers them.
+  2. *The Raft log, through a `ctl log` command*: new code to guess at a meaning that fits the table less well.
+- **Decision.** Option 1. `docs/demo.md` walks through those five, plus his two failure cases (a machine
+  physically off; one off and one failed). No `ctl log` command.
+- **Consequences.** The live part uses `ctl status`, event logs and the load generators' output. Scale and
+  stress is shown as prepared results, since it takes an hour. The demo has not been rehearsed on the lab machines.
+- **Where.** `docs/demo.md`, `docs/runbook.md`.
+- **How we check it.** A rehearsal on the six machines, still to do.

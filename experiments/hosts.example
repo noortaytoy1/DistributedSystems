@@ -1,0 +1,8 @@
+# Copy to experiments/hosts and set the real addresses (ignored by git).
+# role   id  address     ssh target          [peer port] [client port]
+node     1   10.0.0.11   ubuntu@10.0.0.11
+node     2   10.0.0.12   ubuntu@10.0.0.12
+node     3   10.0.0.13   ubuntu@10.0.0.13
+client   1   10.0.0.21   ubuntu@10.0.0.21
+client   2   10.0.0.22   ubuntu@10.0.0.22
+client   3   10.0.0.23   ubuntu@10.0.0.23

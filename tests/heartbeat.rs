@@ -77,3 +77,30 @@ async fn a_silenced_node_is_suspected_by_both_others_and_trusted_after() {
     assert!(!anyone_suspected(&cluster));
     cluster.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_send_reaches_every_peer_and_reports_who_missed_it() {
+    let cluster = TestCluster::start(3).await;
+    let node = cluster.node(1);
+    let send = || {
+        let term = node.ctx.consensus.status().term;
+        node.ctx
+            .peers
+            .broadcast(term, Duration::from_millis(300), || {
+                rescuemesh::proto::PeerBody::Heartbeat
+            })
+    };
+    let everyone = send().await;
+    assert_eq!(
+        everyone.iter().map(|(peer, _)| *peer).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(everyone.iter().all(|(_, answer)| answer.is_ok()));
+
+    cluster.node(3).ctx.gate.silence();
+    let answers = send().await;
+    assert!(answers[0].1.is_ok());
+    assert!(answers[1].1.is_err(), "a silenced peer does not answer");
+    cluster.node(3).ctx.gate.restore();
+    cluster.shutdown().await;
+}

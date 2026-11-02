@@ -28,10 +28,12 @@ client_retry_max_ms = 6000
 client_max_retries = 5
 propose_timeout_ms = 3000
 peer_rpc_timeout_ms = 500
+# Every peer suspected this long, and a serving node answers without a commit (D121).
+degraded_after_ms = 2000
 
 [policy]
 # "bidding" or "leader-dispatch"
-assignment = "leader-dispatch"
+assignment = "bidding"
 # Used under "bidding" only.
 # "expected-wait", "expected-wait-cpu", "queue-only" or "cpu-only"
 score = "expected-wait"

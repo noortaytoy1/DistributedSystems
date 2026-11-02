@@ -1,0 +1,18 @@
+# run: users=30 think_ms=1000
+
+[policy]
+assignment = "leader-dispatch"
+score = "expected-wait"
+cpu_weight = 1
+
+[workers]
+plan_work = 1000
+
+[campus]
+responders = 300
+
+[faults]
+# Faults only as the run line orders them: the schedule never fires within a run.
+enabled = true
+interval_min_ms = 100000000
+interval_max_ms = 100000000
