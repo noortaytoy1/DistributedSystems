@@ -114,7 +114,11 @@ async fn the_last_follower_answers_through_the_client_and_commits_on_return() {
         !node.ctx.status().degraded && node.ctx.degraded.pending() == 0
     })
     .await;
-    assert_eq!(node.ctx.status().results, 1);
+    // Settled means the leader committed it; this follower may not have applied it yet.
+    wait_until(PATIENCE, "the result on this node", || {
+        node.ctx.status().results == 1
+    })
+    .await;
     digests_match(&cluster).await;
 
     // Back to normal: the next answer is committed.
@@ -323,11 +327,12 @@ async fn a_replayed_plan_whose_responder_is_taken_is_recorded_without_it() {
             .is_ok_and(|text| text.contains(r#""reason":"responder_taken""#))
     })
     .await;
-    assert_eq!(
-        node.ctx.state.with(|s| s.result_count()),
-        seq as usize,
-        "every answer is on the record, with or without {shared}"
-    );
+    // Settled means the leader committed it; this follower may not have applied it yet.
+    let what = format!("every answer on the record, with or without {shared}");
+    wait_until(PATIENCE, &what, || {
+        node.ctx.state.with(|s| s.result_count()) == seq as usize
+    })
+    .await;
     digests_match(&cluster).await;
     cluster.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
