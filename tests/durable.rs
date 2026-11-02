@@ -12,6 +12,7 @@ use rescuemesh::config::Config;
 use rescuemesh::node::{self, NodeHandle};
 use rescuemesh::proto::{Capability, ClientRequest, Incident, Point, ReplyBody, RequestId};
 use tokio::net::TcpListener;
+use tokio::time::Instant;
 
 fn request(seq: u64) -> ClientRequest {
     ClientRequest {
@@ -49,10 +50,23 @@ async fn leader_everywhere(nodes: &[NodeHandle]) {
     .await;
 }
 
+/// Bind a port a stopped node just gave up. Until its aborted tasks finish it may still be taken,
+/// and a parallel test's outgoing connection can briefly hold it too.
+async fn rebind(addr: &str) -> TcpListener {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return listener,
+            Err(e) if Instant::now() > deadline => panic!("cannot bind {addr} again: {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
 async fn restart(config: &Config, id: u64) -> NodeHandle {
     let me = config.node(id).unwrap();
-    let peer = TcpListener::bind(&me.peer_addr).await.unwrap();
-    let client = TcpListener::bind(&me.client_addr).await.unwrap();
+    let peer = rebind(&me.peer_addr).await;
+    let client = rebind(&me.client_addr).await;
     node::start_with(config.clone(), id, peer, client)
         .await
         .unwrap()
