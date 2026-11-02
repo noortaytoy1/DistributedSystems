@@ -124,6 +124,7 @@ mod tests {
             seed,
             zones,
             responders,
+            service_ms_per_severity: 200,
         }
     }
 

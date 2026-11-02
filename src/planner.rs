@@ -5,13 +5,13 @@
 //! - Only responders with the capability the incident needs count. Each gets a score: Manhattan
 //!   distance in metres, plus [`ZONE_PENALTY_M`] if it is in another zone than the incident. The
 //!   lowest score wins; a tie goes to a responder in the incident's zone, then to the lowest ID.
-//! - If none of them is free and the incident is severe (severity 4 or 5), the free responder of
-//!   any capability with the lowest score is sent instead, with the same tie-breaks. Otherwise
-//!   the plan has no responder and cost 0.
+//! - If none of them is free and the incident is severe (severity 4 or 5) or old (age of at least
+//!   [`OLD_AGE_MS`]), the free responder of any capability with the lowest score is sent instead,
+//!   with the same tie-breaks. Otherwise the plan has no responder and cost 0.
 //! - `Plan::cost` is the distance in metres from the chosen responder to the incident, without the
 //!   penalty.
 //!
-//! Age is not used yet: the planner has no clock, and the node does not pass a time in (D95).
+//! The planner has no clock: the node passes the incident's age in as an argument (D95).
 //!
 //! `CostKnob::extra_work` adds simulated CPU load (D96): each unit runs [`ROUNDS_PER_UNIT`] rounds
 //! of an integer mixing function. It never changes the plan. 0 means only the regular work.
@@ -29,6 +29,9 @@ pub const ROUNDS_PER_UNIT: u64 = 1_000;
 /// Lowest severity at which a responder of another capability is sent when no match is free.
 pub const SEVERE: u8 = 4;
 
+/// Age at which an incident gets the same fallback as a severe one (D95).
+pub const OLD_AGE_MS: u64 = 5_000;
+
 /// Metres added to the score of a responder outside the incident's zone (D101).
 pub const ZONE_PENALTY_M: u64 = 200;
 
@@ -39,14 +42,14 @@ pub struct CostKnob {
 }
 
 /// Choose a responder for `incident` from `free`.
-pub fn plan(incident: &Incident, free: &[Responder], knob: CostKnob) -> Plan {
+pub fn plan(incident: &Incident, free: &[Responder], age_ms: u64, knob: CostKnob) -> Plan {
     burn(knob.extra_work);
     let matching = nearest(
         incident,
         free.iter().filter(|r| r.capability == incident.needs),
     );
     let chosen = matching.or_else(|| {
-        if incident.severity >= SEVERE {
+        if incident.severity >= SEVERE || age_ms >= OLD_AGE_MS {
             nearest(incident, free.iter())
         } else {
             None
@@ -136,7 +139,7 @@ mod tests {
     }
 
     fn plan0(incident: &Incident, free: &[Responder]) -> Plan {
-        plan(incident, free, CostKnob::default())
+        plan(incident, free, 0, CostKnob::default())
     }
 
     #[test]
@@ -323,8 +326,40 @@ mod tests {
         ];
         let inc = incident(0, 0, 0, 4, Capability::Medical);
         assert_eq!(
-            plan(&inc, &free, CostKnob { extra_work: 50 }),
+            plan(&inc, &free, 0, CostKnob { extra_work: 50 }),
             plan0(&inc, &free)
         );
+    }
+
+    #[test]
+    fn an_old_incident_gets_the_any_capability_fallback() {
+        let inc = Incident {
+            zone: 0,
+            location: Point { x: 0, y: 0 },
+            severity: 1,
+            needs: Capability::Medical,
+            reported_at_ms: 1_000,
+        };
+        let free = [responder(7, 0, 5, 5, Capability::Fire)];
+        let knob = CostKnob::default();
+        assert_eq!(plan(&inc, &free, OLD_AGE_MS - 1, knob).responder, None);
+        assert_eq!(plan(&inc, &free, OLD_AGE_MS, knob).responder, Some(7));
+    }
+
+    #[test]
+    fn age_does_not_change_a_plan_with_a_matching_responder() {
+        let inc = Incident {
+            zone: 0,
+            location: Point { x: 0, y: 0 },
+            severity: 1,
+            needs: Capability::Medical,
+            reported_at_ms: 1_000,
+        };
+        let free = [
+            responder(1, 0, 900, 0, Capability::Medical),
+            responder(2, 0, 1, 0, Capability::Fire),
+        ];
+        let knob = CostKnob::default();
+        assert_eq!(plan(&inc, &free, 0, knob), plan(&inc, &free, 60_000, knob));
     }
 }

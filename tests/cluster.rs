@@ -136,3 +136,65 @@ async fn ctl_silence_is_refused_when_fault_injection_is_disabled() {
     assert!(!cluster.node(2).ctx.gate.is_silenced());
     cluster.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_responder_is_released_by_its_executor_after_the_service_time() {
+    let cluster = TestCluster::start_with(3, |c| c.campus.service_ms_per_severity = 20).await;
+    let total = cluster.config.campus.responders as usize;
+    let node = cluster.node(1);
+    wait_until(Duration::from_secs(5), "responders and a leader", || {
+        node.ctx.state.with(|s| s.responder_count()) == total
+            && node.ctx.consensus.status().leader.is_some()
+    })
+    .await;
+    for seq in 0..10 {
+        let reply = first_reply(&cluster.config, request(seq, 0), Duration::from_secs(5)).await;
+        assert!(reply.is_some(), "request {seq} got no reply");
+    }
+    wait_until(Duration::from_secs(5), "every responder free again", || {
+        cluster.nodes.iter().all(|n| {
+            n.ctx
+                .state
+                .with(|s| s.free_responders().len() == total && s.counters().released > 0)
+        })
+    })
+    .await;
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_executors_responder_is_released_by_a_peer() {
+    // Long enough that the executor is silenced before its own release is due.
+    let cluster = TestCluster::start_with(3, |c| c.campus.service_ms_per_severity = 500).await;
+    let total = cluster.config.campus.responders as usize;
+    wait_until(Duration::from_secs(5), "a leader and responders", || {
+        cluster.nodes.iter().all(|n| {
+            n.ctx.state.with(|s| s.responder_count()) == total
+                && n.ctx.consensus.status().leader.is_some()
+        })
+    })
+    .await;
+    let reply = first_reply(&cluster.config, request(1, 0), Duration::from_secs(5))
+        .await
+        .expect("a reply");
+    let ReplyBody::Done(done) = reply.body else {
+        panic!("expected Done");
+    };
+    let executor = cluster.node(done.executor);
+    executor.ctx.gate.silence();
+    let others: Vec<_> = cluster
+        .nodes
+        .iter()
+        .filter(|n| n.ctx.id != done.executor)
+        .collect();
+    wait_until(Duration::from_secs(10), "a peer releases the hold", || {
+        others.iter().all(|n| {
+            n.ctx
+                .state
+                .with(|s| s.counters().released == 1 && s.free_responders().len() == total)
+        })
+    })
+    .await;
+    executor.ctx.gate.restore();
+    cluster.shutdown().await;
+}

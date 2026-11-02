@@ -24,7 +24,8 @@ peer_heartbeat_ms = 50
 bid_window_ms = 20
 takeover_missed_heartbeats = 3
 client_retry_ms = 2000
-client_max_retries = 3
+client_retry_max_ms = 6000
+client_max_retries = 5
 propose_timeout_ms = 3000
 peer_rpc_timeout_ms = 500
 

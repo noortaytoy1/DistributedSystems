@@ -151,6 +151,17 @@ impl CloudState {
             .collect()
     }
 
+    /// Every held responder with its holder's committed result, in responder ID order.
+    pub fn holds(&self) -> Vec<(ResponderId, &CommittedResult)> {
+        self.responders
+            .iter()
+            .filter_map(|(id, slot)| {
+                let result = self.results.get(&slot.held_by?)?;
+                Some((*id, result))
+            })
+            .collect()
+    }
+
     pub fn counters(&self) -> Counters {
         self.counters
     }

@@ -39,7 +39,8 @@ client                          every node
 
 - `ClientRequest { id, attempt, incident }`. `id = (client, seq)` is unique per client process.
   A retry reuses `id` and increments `attempt`.
-- The client retries after `client_retry_ms` with the same ID, up to `client_max_retries` times.
+- The client resends with the same ID up to `client_max_retries` times. The wait starts at
+  `client_retry_ms` and doubles up to `client_retry_max_ms`, with ±20% random jitter (D52).
 - `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)` or `Rejected(reason)`.
   Every `Done` reply for one ID carries the same committed result, whichever node sends it.
 - A node that already has a committed result for an ID answers a retry straight from its state.
@@ -89,7 +90,7 @@ to `client_write`.
 |-------------------------------------------|------------------------------------------------------------------------|---------|
 | `RegisterResponders { responders }`       | adds unknown responders; known ones are untouched                      | `Applied` |
 | `CommitResult(ResultProposal)`            | first result per request ID wins and holds its responder               | `Committed`, `Duplicate(winner)` or `Stale` |
-| `ReleaseResponder { responder, request }` | frees the responder if `request` holds it                              | `Applied` |
+| `ReleaseResponder { responder, request }` | frees the responder if `request` holds it. Proposed by the executor after the service time, by other nodes after twice that (D39) | `Applied` |
 
 `Stale` means the plan's responder is held by another request or unknown. Nothing is recorded,
 and the executor plans again with fresh state.
@@ -118,11 +119,13 @@ Defaults from `config.rs`, tuned for a LAN:
 | `peer_heartbeat_ms`           | 50           | node → node liveness heartbeat                            |
 | `bid_window_ms`               | 20           | bid round closes this long after the request arrives      |
 | `takeover_missed_heartbeats`  | 3            | missed peer heartbeats before the next bidder takes over  |
-| `client_retry_ms`             | 2000         | client resends after this long without a reply            |
-| `client_max_retries`          | 3            | resends before the client gives up                        |
+| `client_retry_ms`             | 2000         | client's first wait for a reply; each later wait doubles  |
+| `client_retry_max_ms`         | 6000         | longest wait between resends (D52)                        |
+| `client_max_retries`          | 5            | resends before the client gives up (about 30 s in total)  |
 | `propose_timeout_ms`          | 3000         | a node stops trying to commit one proposal after this     |
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, forwarded proposal) |
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
+| `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |
 | `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`) |
 | `faults.silence_min_ms`       | 1000         | shortest scheduled silence                                 |

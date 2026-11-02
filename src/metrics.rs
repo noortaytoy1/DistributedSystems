@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::proto::{NodeId, PeerBody, RaftRpc, RequestId};
+use crate::proto::{NodeId, PeerBody, RaftRpc, RequestId, ResponderId};
 
 /// Wall-clock time in unix microseconds. Use it for event timestamps only; measure durations
 /// with `std::time::Instant`.
@@ -157,6 +157,15 @@ pub enum Event {
         rank: usize,
         reason: String,
         waited_us: u64,
+    },
+
+    // --- responders (E)
+    /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
+    /// true if the executor should have done it first and has not.
+    ReleaseProposed {
+        responder: ResponderId,
+        request: RequestId,
+        backup: bool,
     },
 
     // --- rejoin (D)
