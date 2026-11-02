@@ -876,7 +876,7 @@ stateDiagram-v2
     Retrying --> Sent: resend, same ID, attempt + 1
     Retrying --> GaveUp: attempts exhausted (client_max_retries)
     Done --> [*]: log client_done (latency on the client clock)
-    GaveUp --> [*]: log client_gave_up (counts as a lost request)
+    GaveUp --> [*]: log client_gave_up, submit returns an error
 ```
 
 ---

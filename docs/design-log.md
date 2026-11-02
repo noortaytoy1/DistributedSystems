@@ -117,9 +117,9 @@ table below in sync.
 | D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
-| D51 | Request IDs and per-machine client IDs                          | F    | Implemented       |
+| D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113 |
 | D52 | Client retry budget | F | Accepted |
-| D53 | One client process, one connection per node, shared by users    | F    | Accepted          |
+| D53 | One client process, one connection per node, shared by users | F | Implemented |
 | D54 | Load generator: closed loop first, open loop as a mode          | F    | Accepted          |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
 | D56 | Durations on one clock; latency on the client                   | all  | Implemented       |
@@ -176,6 +176,9 @@ table below in sync.
 | D109 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
 | D110 | Takeover: stand by after a lost round, plan if the winner is silent | C, B | Implemented       |
 | D111 | Responder service time: 200 ms × severity | E, A | Implemented |
+| D112 | Client connections: ping through the gate, bounded send queues | F | Implemented |
+| D113 | Required client IDs; sequence numbers start at the clock | F | Implemented |
+| D115 | A different election timeout range per node | A | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2223,7 +2226,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D53 · One client process, one connection per node, shared by users
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Accepted (template: `client.rs`, `TODO(F)`)
+- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented (`client.rs`), retries per D52, connections per D112 · **Decided by:** team; details by omar.leithym, on the agent's recommendation
 - **Decision.** `MeshClient` keeps one connection per node, shared by all simulated users in the
   process via `Arc`. `submit` sends the request to every node, waits `client_retry_ms` for the
   first `Done` with that ID, resends with the same ID, and logs `client_sent`, `client_done`,
@@ -2473,3 +2476,77 @@ exist because of them.
   assignments.
 - **Where.** `config.rs::CampusConfig`, `node/release.rs`.
 - **How we check it.** `node::release::tests`, `tests/cluster.rs`.
+
+### D112 · Client connections: ping through the gate, bounded send queues
+
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A machine that loses power sends no TCP close, so the socket stays half-open for many
+  minutes, and a restarted node would never be reconnected. "No reply" is no signal, because a node
+  that is not the executor normally says nothing. Separately, frames for an unreachable node would
+  pile up without limit at thousands of users.
+- **Options considered.**
+  1. *Ping with `Control(Status)`*: no `proto.rs` change; small background traffic.
+  2. *Reconnect on every retry*: no background traffic; churns healthy idle connections, and recovers
+     only while requests are failing.
+  3. *TCP keepalive and `TCP_USER_TIMEOUT`*: no application traffic; needs the `socket2` crate and is
+     harder to log.
+  For the queue: *bound it and drop when full*, or *block the sender*, which lets one dead node stall
+  every user, the very thing multicast is meant to avoid.
+- **Decision.** Each connection sends `Control(Status)` every 1 s. Nothing received for 3 s means drop
+  it and reconnect (connect cap 1 s, 500 ms pause after a failure). Each node has a queue of 1024
+  frames; when full, the frame is dropped for that node only. One socket write is capped at 3 s.
+  Events `client_link_up` and `client_link_down`.
+- **Why.** Control frames pass the fault gate (D23), so a silenced node keeps its connection while a
+  dead one is replaced: exactly the difference we need. The other nodes get the frame and the retry
+  timer covers the rest, so `submit` never blocks on one node.
+- **Consequences.** Three small messages a second per client process. These limits are constants in
+  `client.rs`, not config keys: no experiment varies them. Frames queued during an outage are sent
+  on reconnect, which is harmless because requests are idempotent. A `ctl`-style `control` call and
+  `MeshClient` open sockets from `client.rs`, the one place outside the "two places" rule; it reuses
+  `node::transport::framed`.
+- **Where.** `client.rs::run_link`, `serve_link`. **How we check it.** `tests/client.rs`, FT-8.
+
+### D113 · Required client IDs; sequence numbers start at the clock
+
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented, amends D51 · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A random ID makes runs hard to match to machines (D51 already advised against it).
+  With sequence numbers from 0, a rerun with the same ID against a running cluster reuses request IDs,
+  and nodes return the old committed results as though they were new.
+- **Options considered.**
+  1. *Required, sequence from start time*: both problems gone.
+  2. *Random if missing*: convenient locally; two machines could collide by chance.
+  3. *Required, sequence from 0*: simple, but the cluster must be wiped before every run.
+- **Decision.** Option 1. `loadgen` fails without `--client-id`. `MeshClient` starts `seq` at the
+  current time in microseconds and counts up.
+- **Consequences.** IDs are large numbers in the logs. Two processes must not share a client ID.
+- **Where.** `client.rs::MeshClient::new`, `bin/loadgen.rs`.
+- **How we check it.** `tests/client.rs`; the runbook gives each machine its ID.
+
+### D115 · A different election timeout range per node
+
+- **Date:** 2026-11-01 · **Part:** A · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Context.** A client test with the leader silenced failed about 1 run in 16: 10 elections in a row
+  with no winner, about 305 ms apart. openraft 0.9 draws one election timeout per process
+  (`EngineConfig::new`) and checks it on a tick of 1.5 heartbeats (75 ms). In a 150–300 ms range, two
+  nodes often get the same number of ticks. If their ticks also line up, each votes for itself in
+  every term. Fresh random timeouts per election, Raft's defence (Ongaro and Ousterhout, §5.2), are
+  not what this version does. Ticks align less on separate machines, but an alignment lasts for the
+  whole outage.
+- **Options considered.**
+  1. *A range per node, by place in the config.*
+  2. *Our own watcher that triggers elections after a fresh random delay*: closest to the paper, but it
+     works around openraft's timer, and interacts with the rejoin gate's `elect(false)` (D75).
+  3. *Document it and rely on client retries*: the demo could show a long failover.
+- **Decision.** Option 1. The range starts at `election_timeout_min_ms + place × 2 ticks`, and is one
+  tick wide or the configured width if smaller. Defaults: node 1 150–225 ms, node 2 300–375 ms, node 3
+  450–525 ms. No new config key.
+- **Why.** Two nodes can no longer fire on the same tick, so one reaches the others first and wins.
+  Small, and easy to explain.
+- **Consequences.** Failover can take up to about 225 ms longer than the old 300 ms bound when only
+  high-ID nodes remain, and lower IDs tend to win elections. `election_timeout_max_ms` now only limits
+  the width. E3 measures the real figure.
+- **Where.** `raft/mod.rs::election_range`.
+- **How we check it.** `raft::tests`; `tests/client.rs::bidding_serves_a_client_with_a_node_silenced`
+  over repeated runs; E3.
+- **Report notes.** A good "found by testing" story: a library detail broke an assumption from the
+  paper, and the repeated-run rule (AGENTS.md) caught it.

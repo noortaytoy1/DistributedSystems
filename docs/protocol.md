@@ -45,6 +45,10 @@ client                          every node
   Every `Done` reply for one ID carries the same committed result, whichever node sends it.
 - A node that already has a committed result for an ID answers a retry straight from its state.
 
+**Connections (D112).** A client keeps one connection per node and pings on it with
+`Control(Status)` every 1 s. Nothing received for 3 s replaces the connection. A silenced node still
+answers, so it keeps its connection.
+
 ## Control protocol (`ctl`)
 
 Sent on the client port as `ClientFrame::Control`, answered with `ServerFrame::Control`. Control
@@ -114,8 +118,8 @@ Defaults from `config.rs`, tuned for a LAN:
 | Timer                         | Default      | Meaning                                                   |
 |-------------------------------|--------------|-----------------------------------------------------------|
 | `raft_heartbeat_ms`           | 50           | leader → follower heartbeat; also the append-entries timeout |
-| `election_timeout_min_ms`     | 150          | follower waits at least this long before an election     |
-| `election_timeout_max_ms`     | 300          | ... and at most this long (randomised)                    |
+| `election_timeout_min_ms`     | 150          | base of the election timeout. Each node's range is shifted by its place in the config: 150–225, 300–375, 450–525 ms (D115) |
+| `election_timeout_max_ms`     | 300          | limits the width of each node's range                     |
 | `peer_heartbeat_ms`           | 50           | node → node liveness heartbeat                            |
 | `bid_window_ms`               | 20           | bid round closes this long after the request arrives      |
 | `takeover_missed_heartbeats`  | 3            | missed peer heartbeats before the next bidder takes over  |
