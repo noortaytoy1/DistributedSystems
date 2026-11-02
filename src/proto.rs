@@ -302,17 +302,26 @@ pub struct NodeStatus {
 // Node <-> node (peer port)
 // ---------------------------------------------------------------------------------------------
 
-/// A request frame on a peer connection. Replies carry the same `seq`.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PeerFrame {
-    pub seq: u64,
-    pub envelope: PeerEnvelope,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PeerReplyFrame {
-    pub seq: u64,
-    pub reply: PeerReply,
+/// The remote interface one node offers another (D119), through tarpc. Every method carries the
+/// sender and its Raft term, as [`PeerEnvelope`] does.
+#[tarpc::service]
+pub trait PeerRpc {
+    async fn append_entries(
+        from: NodeId,
+        term: Term,
+        rpc: AppendEntriesRequest<TypeConfig>,
+    ) -> PeerReply;
+    async fn vote(from: NodeId, term: Term, rpc: VoteRequest<NodeId>) -> PeerReply;
+    async fn install_snapshot(
+        from: NodeId,
+        term: Term,
+        rpc: InstallSnapshotRequest<TypeConfig>,
+    ) -> PeerReply;
+    async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
+    async fn read_index(from: NodeId, term: Term) -> PeerReply;
+    async fn fault_order(from: NodeId, term: Term, ms: u64) -> PeerReply;
+    async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
+    async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
 
 /// Every peer message carries the sender and its Raft term.

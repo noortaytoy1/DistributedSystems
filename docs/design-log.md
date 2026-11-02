@@ -82,10 +82,10 @@ table below in sync.
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
 | D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
-| D16 | Wire format: length-delimited frames with bincode               | all  | Implemented       |
-| D17 | Clients use TCP on a dedicated client port                      | C, F | Implemented (confirm) |
+| D16 | Wire format: length-delimited frames with bincode | all | Implemented, amended by D119 |
+| D17 | Clients use TCP on a dedicated client port | C, F | Implemented, amended by D119 |
 | D18 | Two ports per node; `ctl` shares the client port                | C    | Implemented       |
-| D19 | One multiplexed connection per peer                             | C    | Implemented, amended by D89 |
+| D19 | One multiplexed connection per peer | C | Superseded by D119 |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
@@ -183,6 +183,7 @@ table below in sync.
 | D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented |
 | D117 | Richer faults are not built | C | Accepted |
 | D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
+| D119 | Peer calls through tarpc, with typed methods | C, A | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -657,8 +658,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D17 · Clients use TCP on a dedicated client port
 
-- **Date:** 2026-10-20 (scaffold) · **Part:** C, F · **Status:** Implemented; **team to confirm**
-  because it changes Phase 1's D6 · **Decided by:** A in the scaffold
+- **Date:** 2026-10-20 (scaffold), settled 2026-11-01 · **Part:** C, F · **Status:** Implemented; TCP confirmed for clients, peers amended by D119 · **Decided by:** A in the scaffold; omar.leithym
 - **Context.** The Phase 1 document chose UDP for clients (D6). The scaffold built TCP.
 - **Options considered.**
   1. *UDP* as planned: no connection setup; one datagram per request per node. We would need our
@@ -2644,3 +2644,40 @@ exist because of them.
   serving, with no election; the whole cluster restarts with every result). `kill -9` on the leader
   under load was tried by hand on one machine. **Only the lab can test real power-off.**
 - **Report notes.** Crash recovery is now in scope. FT-9 returns.
+
+### D119 · Peer calls through tarpc, with typed methods
+
+- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19 · **Decided by:**
+  omar.leithym; typed methods on the agent's recommendation, tarpc against it
+- **Context.** Dr Amr's notes (Sept 13, Oct 4, Oct 28): provide a remote invocation mechanism, do not go
+  low-level, use a ready-made RPC or RMI, pick one and say why, with the chapter 2 table (Java RMI,
+  CORBA, Sun XDR). Our peer request/reply, matching replies to calls by `seq`, was hand-written.
+- **Options considered.**
+  1. *Keep our transport, document it, ask him*: no risk to working code, but a grading risk until he
+     answers. The agent's recommendation.
+  2. *tarpc for peers*: a ready-made Rust RPC library. Meets his wording most directly; a new
+     dependency and a rewrite of Part C's working transport days before the deadline.
+  3. *tonic/gRPC everywhere*: the largest change, with protobuf schemas and a build step.
+  For the shape, once tarpc was chosen: *typed methods* (visibly a remote interface) or *one generic
+  `deliver(envelope)`* (smallest, but really our own protocol tunnelled through tarpc).
+- **Decision.** tarpc 0.37 on the peer port, as `proto::PeerRpc`: `append_entries`, `vote`,
+  `install_snapshot`, `propose`, `read_index`, `fault_order`, `bid`, `heartbeat`, each taking `from` and
+  `term`, and each answering a `PeerReply`. It runs over our existing length-delimited framing, using
+  bincode. `PeerFrame` and `PeerReplyFrame` are gone. `PeerClient::call(envelope, timeout)` and
+  `PeerHandler` keep their signatures, so no caller changed. The client port keeps its own framing:
+  its multicast with replies matched by ID is not request/reply (D17).
+- **Why.** tarpc is plain Rust with no schema step, and it matches replies and propagates deadlines as
+  relative times, so no shared clock is needed (D56). The spec says a framework must not hide what is
+  assessed: election, consistency and recovery remain ours.
+- **Consequences.** The lockfile grows from about 100 crates to 169, including OpenTelemetry, which
+  tarpc uses for tracing. Library credit goes in the report (D68). Silence is kept: a silenced node's
+  methods never return, so the caller sees its deadline pass, and the fault order's last word still
+  goes out. tarpc drops a call at its deadline, so each handler runs in its own task and a Raft RPC is
+  never cut halfway. A new rule: a connection whose calls have gone unanswered for 1 s is replaced,
+  because a machine that lost power sends no close (D118). A silenced peer's connect still succeeds.
+- **Where.** `proto.rs::PeerRpc`, `node/transport.rs`.
+- **How we check it.** Every multi-node suite, unchanged, 10 runs each. **Peer traffic on a real LAN
+  can only be checked in the lab.** Experiments cover its cost in E5.
+- **Report notes.** Fill in the chapter 2 comparison. tarpc is closest to RPC with an interface in the
+  host language (like Java RMI's interfaces, without its object references); bincode is the external
+  data representation, in the role of Sun XDR.
