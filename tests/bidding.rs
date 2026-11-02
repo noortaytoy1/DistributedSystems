@@ -16,6 +16,8 @@ use rescuemesh::proto::{
     Capability, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody, RequestId,
 };
 
+/// Sends per request, the same as a client's first send and five retries (D52).
+const MAX_ATTEMPTS: u32 = 6;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn request(seq: u64, attempt: u32) -> ClientRequest {
@@ -99,11 +101,20 @@ async fn every_request_gets_one_committed_result() {
     let cluster = bidding_cluster(|_| {}).await;
     let count = 20;
 
+    // Retries as a client does: all 20 want the same responder, and a node that keeps losing it
+    // gives up after three plans and leaves the rest to the retry (D35). Without this the test
+    // failed about 2 runs in 100.
     let mut replies = Vec::new();
     for seq in 0..count {
         let config = cluster.config.clone();
         replies.push(tokio::spawn(async move {
-            first_reply(&config, request(seq, 0), REPLY_TIMEOUT).await
+            for attempt in 0..MAX_ATTEMPTS {
+                let wait = REPLY_TIMEOUT / MAX_ATTEMPTS;
+                if let Some(reply) = first_reply(&config, request(seq, attempt), wait).await {
+                    return Some(reply);
+                }
+            }
+            None
         }));
     }
     let mut results = Vec::new();
