@@ -42,13 +42,18 @@ injected failures of up to 20 s, rejoin with state recovery, and stress tests wi
 
 | Requirement (project description)                         | Mechanism                                                               | Status   | Decisions |
 |-----------------------------------------------------------|-------------------------------------------------------------------------|----------|-----------|
-| Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built (node side), template (client) | D6, D17, D53 |
+| Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built | D6, D17, D53, D112 |
 | An election picks the coordinator                          | Raft leader election (openraft)                                         | built    | D1, D14   |
-| An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | template (bidding), built (baseline) | D2, D3, D45 |
+| An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | built | D2, D3, D45, D114 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built    | D12, D13, D41, D42, D110 |
 | The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
 | One answer per report, even with retries and duplicates   | Unique request IDs, first commit wins, reply after commit               | built    | D8, D9, D27 |
-| Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E6                    | built (logging), planned (runs) | D55, D56, D63 |
+| Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E6, with a runner and analysis | built; **the lab runs are still to do** | D55, D56, D63, D130 |
+| One server left still handles the clients                  | Degraded mode: labelled provisional answers, replayed through Raft on return | built | D120–D125 |
+| A machine physically off comes back                        | Raft log and vote on disk, then the same catch-up as a silence           | built; **real power-off is untested** | D118 |
+| Remote invocation through a ready-made RPC                 | tarpc on the peer port, typed methods                                    | built | D119 |
+| Group communication                                        | `PeerSet::broadcast`, `MeshClient`, Raft for total order                 | built | D126 |
+| Publish-subscribe                                          | Zone subscriptions in Phase 2; documented only                           | planned | D131 |
 
 ### System model
 
@@ -134,7 +139,7 @@ flowchart TB
     subgraph PR["Protocol layer"]
         direction LR
         C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
-        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding, node/bids.rs: built, off by default"]
+        C4["C4 Assignment<br/>leader dispatch: built<br/>bidding, node/bids.rs: built, the default (D114)"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
     end
@@ -169,11 +174,14 @@ flowchart TB
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
 | —   | Takeover                  | `node/takeover.rs`                          | C     | built    | A node that lost a round plans the request if the winner is suspected, or nothing commits within max(200 ms, 3 × the winner's bid) (D42, D110). |
-| K1  | Client middleware         | `client.rs::MeshClient`                     | F     | template | Send to all nodes, retry with the same ID, first reply wins (D53). |
-| K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built (`random_incident`, `unseeded_incident`), template (loadgen) | Uniform random incidents, seeded or from OS randomness (D99, D102). |
-| K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | template | Users, duration, think time, seed (D54). |
-| K4  | Client metrics            | `metrics.rs` client events                  | F     | built (events), template (use) | `client_sent`, `client_done`, `client_gave_up`. |
+| K1  | Client middleware         | `client.rs::MeshClient`                     | F     | built    | Send to all nodes, retry with the same ID, first reply wins (D53, D112). |
+| K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built | Uniform random incidents, seeded or from OS randomness (D99, D102). |
+| K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | built    | Users, duration, think time, seed, open-loop rate, warm-up (D54). |
+| K4  | Client metrics            | `metrics.rs` client events                  | F     | built    | `client_sent`, `client_done`, `client_gave_up`, `client_link_up`, `client_link_down`. |
 | —   | Operator tool             | `bin/ctl.rs`, `client::control`             | C     | built    | Status, silence, skew (D62). |
+| —   | Degraded mode             | `node/degraded.rs`                          | C     | built    | The last node left answers provisionally and replays on return (D120–D124). |
+| —   | Experiment runner         | `scripts/run-experiments.sh`, `experiments/` | all  | built    | Bash over SSH from a hosts file (D62, D130). Untested over SSH. |
+| —   | Analysis                  | `analysis/analyze.py`                       | all   | built    | Python: every metric the spec lists, with 95% intervals (D64). |
 
 ### 4.1 Module dependencies
 
@@ -1087,7 +1095,7 @@ flowchart LR
     NF --> COL["Collected after the run into<br/>runs/experiment/cell/run/ (not in git)"]
     CF --> COL
     CFG["run config + git commit"] --> COL
-    COL --> AN["analysis/ (Python, pending approval):<br/>percentiles, CIs, plots in analysis/out/"]
+    COL --> AN["analysis/ (Python, D64):<br/>percentiles, CIs, plots in analysis/out/"]
     AN --> REP["Report figures and tables"]
 ```
 
@@ -1150,11 +1158,11 @@ The report should say what changed between the submitted design and the built sy
 | Phase 1 document said                                  | The system now                                                | Decision |
 |--------------------------------------------------------|---------------------------------------------------------------|----------|
 | We implement Raft ourselves (D4)                       | openraft 0.9.25 behind `Consensus`                            | D14 (supersedes D4) |
-| PreVote stops returning nodes from forcing elections (D5) | Not available in openraft 0.9.25; to be measured (FT-6)    | D5 (open) |
+| PreVote stops returning nodes from forcing elections (D5) | Not available in openraft 0.9.25; the rejoin gate does it, measured by FT-6 | D5, D75, D127 |
 | Clients use UDP (D6)                                   | Clients use TCP; still send to all three nodes                | D17 |
 | Three ports: UDP 7000, TCP 7100, TCP 7200              | Two TCP ports: 7001 peers, 8001 clients and `ctl`             | D18 |
-| Durable log on disk (C7), snapshots every 1,000 entries | In-memory log and vote, no snapshots; restart unsupported    | D24 |
-| Crash-restart test FT-9                                | Dropped for Phase 1                                           | D24 |
+| Durable log on disk (C7), snapshots every 1,000 entries | Log and vote on disk, as first designed; still no snapshots  | D118 (supersedes D24) |
+| Crash-restart test FT-9                                | Back in scope, for the physical power-off Dr Amr asks for     | D118 |
 | Single-owner tasks with channels (D11)                 | Shared `NodeContext` with closure-scoped locks and atomics    | D47 |
 | Per-resource versions checked at commit (D10)          | Responder hold check: `Stale` if held or unknown              | D28 |
 | Request table trimmed by TTL (D9)                      | Never trimmed during a run                                    | D9 |
@@ -1165,13 +1173,18 @@ The report should say what changed between the submitted design and the built sy
 | `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
 | Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
 | `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D78 |
-| Client: 5 retries, exponential backoff with jitter     | 3 retries at a fixed 2 s; open                                | D52 |
+| Client: 5 retries, exponential backoff with jitter     | 5 retries; waits of 2, 4, 6, 6, 6, 6 s, ±20% jitter           | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
-| Experiment runner on a control port                    | `ctl` on the client port; no runner yet                       | D62 |
+| Experiment runner on a control port                    | `ctl` on the client port; the runner is bash over SSH         | D62, D130 |
 | Worker threads = cores − 1                             | `workers.threads`, default 4, set per machine in the lab config | D48 |
 | External busy loop for LB-2                            | Planner CPU knob, `ctl skew`; E6 case (b) still uses an outside busy loop | D49, D83 |
-| Planner: weighted scoring or matching (§13.3, open)    | Nearest matching responder, own zone preferred; severe falls back; age not yet | D49, D93–D95, D101 |
-| ≥ 10 repetitions                                       | ≥ 5 in AGENTS.md; open                                        | D63 |
+| Planner: weighted scoring or matching (§13.3, open)    | Nearest matching responder, own zone preferred; severe or old falls back | D49, D93–D95, D101 |
+| ≥ 10 repetitions                                       | `quick`: 3 runs; `full`: 5 runs. The report states the limits | D63 |
+| Reply only after commit (D8)                           | Still the rule, except a last node left alone answers provisionally | D120 |
+| No fault with two nodes down                           | Handled: degraded mode, and a returning node may stand after 3 s with no leader | D120, D125 |
+| Bidding off by default                                 | Bidding is the default; leader dispatch stays as E1's baseline | D114 |
+| Our own request/reply transport on the peer port       | tarpc, with typed methods; the client port keeps its own framing | D119 |
+| A hand-chosen election timeout range per cluster       | A different range per node, to stop split votes               | D115 |
 
 ---
 
@@ -1182,12 +1195,19 @@ The report should say what changed between the submitted design and the built sy
   replication protocol (D69).
 - **Leases with fencing tokens** for executor claims: the leader issues an increasing token, so a
   stale holder's late write is rejected.
-- **P2P links** in the client; the cloud leaves the data path after discovery.
+- **P2P links** in the client; the cloud leaves the data path after discovery (D69).
+- **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
+  duplicate suppression and bounded forwarding. Phase 1 does not deal with zones in this way (D131).
+- **Speculative actions and conflicts** for offline clients can build on degraded mode's labelled answers
+  and first-commit reconciliation (D120, D122).
 
 ## 14. Open questions
 
-All open decisions, with options and recommendations, are in [design-log.md](design-log.md): D5
-(PreVote), D17 (confirm TCP), D39 (releasing responders), D52 (client retry
-budget), D63 (repetitions), D95 (incident age in the
-planner). Each stays open until someone
-implements the related code; that person settles it first, during "grill with docs".
+No design decision in Phase 1's code is `Open` now. Three things remain for people to confirm:
+
+- **D125, D129, D130** were decided by the agent, on the instruction not to be asked again. Their
+  entries give the options and reasons.
+- **Questions for Dr Amr:** whether Raft plus a leader-run fault schedule meets "no coordinator" (D116), whether
+  he accepts degraded mode's trade-off (D120), whether he expects publish-subscribe and group communication in
+  Phase 1 (D126, D131), and whether tarpc suits his RPC question (D119).
+- **Lab results:** nothing has run on the six machines; see [runbook.md](runbook.md).

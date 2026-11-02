@@ -1,5 +1,5 @@
 # Three nodes on three lab machines. Copy to config/lab.toml and set the real addresses.
-# Peer and client ports must be open between the machines.
+# Peer and client ports must be open between the machines. Full steps: docs/runbook.md.
 # Anything left out uses the defaults in src/config.rs.
 
 [[cluster.nodes]]
@@ -33,6 +33,10 @@ cpu_weight = 10
 just_won = "won-and-leading"
 # Planning time a node assumes until its first job finishes. Low, so an untried node gets tried.
 initial_service_us = 1
+
+[campus]
+# Simulated time on scene: a responder is held this long per point of severity (D111).
+service_ms_per_severity = 200
 
 [metrics]
 dir = "runs/lab"
