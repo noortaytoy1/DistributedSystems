@@ -118,7 +118,7 @@ table below in sync.
 | D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
 | D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
 | D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113 |
-| D52 | Client retry budget | F | Accepted |
+| D52 | Client retry budget | F | Implemented |
 | D53 | One client process, one connection per node, shared by users | F | Implemented |
 | D54 | Load generator: closed loop first, open loop as a mode | F | Implemented |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
@@ -135,7 +135,7 @@ table below in sync.
 | D66 | Rust coding rules                                               | all  | Implemented       |
 | D67 | Team process: parts, owners, pull requests, CI                  | all  | Implemented       |
 | D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
-| D69 | Phase 2 hooks                                                   | all  | Proposed          |
+| D69 | Phase 2 hooks                                                   | all  | Accepted, docs only |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
@@ -195,11 +195,16 @@ table below in sync.
 | D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented |
 | D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm |
 | D130 | Experiment cells and the runner | all | Implemented, to confirm |
-are conflicts between the Phase 1 architecture document and the code. They stay
-open until someone implements the related code: whoever works on it settles the decision first.
-During "grill with docs" the agent finds the open entries the task touches, asks the person to
-decide with the options and recommendation listed in the entry, and updates the entry (status,
-decided by, decision) in the same PR (AGENTS.md, "Design decisions").
+| D131 | Publish-subscribe: Phase 2, for zones, docs only | all | Accepted, docs only |
+| D132 | The "entries table" is the spec's demo table | all | Implemented |
+
+**Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
+own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
+code, or a question nobody has answered. It stays open until someone implements the related code: whoever works
+on it settles the decision first. During "grill with docs" the agent finds the open entries the task touches,
+asks the person to decide with the options and recommendation listed in the entry, and updates the entry
+(status, decided by, decision) in the same PR (AGENTS.md, "Design decisions"). D125, D129 and D130 were decided by
+the agent on the instruction not to be asked again, and are marked for the team to confirm.
 
 ---
 
@@ -2215,7 +2220,7 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D52 · Client retry budget
 
-- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** F · **Status:** Accepted, config in this PR, client in `part-f-client` · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-27, settled 2026-11-01 · **Part:** F · **Status:** Implemented, config in this PR, client in `part-f-client` · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §6.3: reply timeout 2 s, up to **5** retries with exponential backoff and
   random jitter, a total budget of about 30 s, "longer than the longest silence (20 s) plus an
   election". The config defaults are `client_retry_ms = 2000` and `client_max_retries = 3`, a fixed
@@ -2455,7 +2460,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D69 · Phase 2 hooks
 
-- **Date:** Phase 1 architecture · **Part:** all · **Status:** Proposed
+- **Date:** Phase 1 architecture, accepted 2026-11-02 · **Part:** all · **Status:** Accepted, docs only ·
+  **Decided by:** omar.leithym, on the agent's recommendation
 - **Decision.** The Discovery Service becomes a second state machine on the same Raft log
   (registrations and lease renewals as `Command` variants). Claims could become leases with fencing
   tokens issued by the leader. P2P links live in the client; the cloud leaves the data path after
@@ -2981,3 +2987,38 @@ exist because of them.
 - **Where.** `experiments/`, `scripts/`, `analysis/`.
 - **How we check it.** The whole pipeline was tried on one machine with `hosts.local`, short durations and three
   cells, to test the scripts only. **It has not run over SSH or on the lab machines.**
+
+### D131 · Publish-subscribe: Phase 2, for zones, docs only
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Accepted, docs only · **Decided by:** omar.leithym: "we
+  will use publish sub in phase 2 for the zones, for phase 1 we are not dealing with zones but add it to docs
+  so we can do it later"
+- **Context.** Dr Amr's Oct 28 notes say "Implement publish-subscribe", and read as Phase 1. The spec lists
+  zone subscriptions among peers under Phase 2.
+- **Options considered.**
+  1. *Phase 2, for zones, documented now*: follows the spec, and adds no code days before the deadline.
+  2. *A small publish-subscribe in Phase 1, on the client port*: answers his notes literally, but nothing in
+     Phase 1 would subscribe to anything.
+- **Decision.** Option 1. Peers will subscribe to incident updates for their zones, with duplicate suppression
+  and bounded forwarding as the spec requires. `docs/architecture.md` section 13 holds the hook.
+- **Consequences.** A grading risk if he does expect it in Phase 1. **The team should ask him.**
+- **Where.** `docs/architecture.md` section 13.
+- **Report notes.** Name it as planned, and separate it from group communication, which is built (D126).
+
+### D132 · The "entries table" is the spec's demo table
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's
+  recommendation
+- **Context.** Dr Amr's Oct 28 note says to show "4 first entries + last entry" of the "entries table". That
+  could mean a table in the project description, or a log of entries in the running system.
+- **Options considered.**
+  1. *The spec's Required Demonstration Scenarios table*: its first four rows and last row are exactly Phase 1
+     (normal operation, load imbalance, server failure, server recovery, scale and stress), and the rows between are
+     Phase 2. A demo script covers them.
+  2. *The Raft log, through a `ctl log` command*: new code to guess at a meaning that fits the table less well.
+- **Decision.** Option 1. `docs/demo.md` walks through those five, plus his two failure cases (a machine
+  physically off; one off and one failed). No `ctl log` command.
+- **Consequences.** The live part uses `ctl status`, event logs and the load generators' output. Scale and
+  stress is shown as prepared results, since it takes an hour. The demo has not been rehearsed on the lab machines.
+- **Where.** `docs/demo.md`, `docs/runbook.md`.
+- **How we check it.** A rehearsal on the six machines, still to do.
