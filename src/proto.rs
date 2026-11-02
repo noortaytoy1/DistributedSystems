@@ -242,6 +242,9 @@ pub struct ClientReply {
 pub enum ReplyBody {
     /// The committed result for the request. Every reply for one request carries the same result.
     Done(CommittedResult),
+    /// A lone node's plan, not committed: no quorum exists to commit it (D120, D123). The node
+    /// commits it once a peer returns, and the first commit wins, so it may turn out to differ.
+    Provisional(Plan),
     /// The node will not handle the request; the client should keep waiting or retry.
     Rejected(String),
 }
@@ -296,6 +299,8 @@ pub struct NodeStatus {
     pub silenced: bool,
     /// False while a returning node is catching up.
     pub serving: bool,
+    /// True while this node answers without a commit, with every peer gone (D121).
+    pub degraded: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

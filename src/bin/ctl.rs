@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn status(config: &Config) -> anyhow::Result<()> {
     println!(
-        "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8}",
+        "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8}",
         "node",
         "role",
         "term",
@@ -76,12 +76,13 @@ async fn status(config: &Config) -> anyhow::Result<()> {
         "digest",
         "results",
         "serving",
-        "silenced"
+        "silenced",
+        "degraded"
     );
     for n in &config.cluster.nodes {
         match control(&n.client_addr, ControlRequest::Status, TIMEOUT).await {
             Ok(ControlReply::Status(s)) => println!(
-                "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8}",
+                "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8}",
                 s.id,
                 s.role,
                 s.term,
@@ -91,7 +92,8 @@ async fn status(config: &Config) -> anyhow::Result<()> {
                 format!("{:016x}", s.digest),
                 s.results,
                 s.serving,
-                s.silenced
+                s.silenced,
+                s.degraded
             ),
             Ok(other) => println!("{:>4} unexpected reply: {other:?}", n.id),
             Err(e) => println!("{:>4} unreachable: {e}", n.id),

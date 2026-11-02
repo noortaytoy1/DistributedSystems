@@ -692,7 +692,11 @@ flowchart TD
     SERV -->|no| QUIET1["No reply (catching up)"]
     SERV -->|yes| DONE{"Result already in local state?"}
     DONE -->|yes| REPLY1["Reply Done(result) (D37)"]
-    DONE -->|no| POL{"policy.assignment"}
+    DONE -->|no| STORED{"Provisional answer waiting to be replayed?"}
+    STORED -->|yes| REPLY3["Reply the same Provisional(plan)"]
+    STORED -->|no| DEG{"Degraded? (D120)"}
+    DEG -->|yes| LONE["Plan from all responders minus local holds,<br/>store it, reply Provisional(plan)"]
+    DEG -->|no| POL{"policy.assignment"}
     POL -->|leader-dispatch| LEAD{"I am the leader?"}
     POL -->|bidding| BID["Open the round, bid, send to peers,<br/>wait bid_window_ms, close the round"]
     BID --> WON{"I won and nothing is committed yet?"}
@@ -705,6 +709,50 @@ flowchart TD
     PROP -->|Committed or Duplicate| REPLY2["Reply Done(winner)"]
     PROP -->|Stale, attempts left| PLAN
     PROP -->|Stale 3 times, or propose error| QUIET4["No reply, client retries (D36)"]
+```
+
+---
+
+### 6.13 The last server left answers without a commit (built, D120–D125)
+
+Node 3 is the last one left. The answer is labelled, kept for retries, and replayed when a peer
+returns. This is the one exception to "Commit, then reply", and the spec's "speculative action must be
+clearly labeled and reconciled" is the reference for it.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant N3 as Node 3 (last left)
+    participant N1 as Node 1
+
+    Note over N3: Nodes 1 and 2 stop answering heartbeats
+    N3->>N3: both suspected after about 150 ms (D79)
+    Note over N3: both still suspected 2 s later (D121)
+    N3->>N3: log degraded_entered, take over the holds locally (D124)
+    C->>N3: Request(id, attempt)
+    N3->>N3: plan from free responders minus local holds
+    N3->>N3: store id → plan, hold the responder for its service time
+    N3-->>C: Reply Provisional(plan)
+    C->>C: log client_done, provisional true (D123)
+    C->>N3: a retry of the same id, if the reply was lost
+    N3-->>C: Reply Provisional(the same plan)
+    Note over N1: Node 1 returns
+    N1->>N3: heartbeat
+    N3->>N3: trust node 1, log degraded_left (reason, degraded_ms, provisional)
+    Note over N1,N3: 2 of 3 can elect and commit. With no leader for 3 s,<br/>a returning node may stand itself (D125)
+    N3->>N1: Propose CommitResult(id, plan), through the leader
+    alt First commit for this id
+        N1-->>N3: Committed
+    else Someone committed another plan first
+        N1-->>N3: Duplicate(winner)
+        N3->>N3: log provisional_conflict, reason lost_first_commit
+    else The responder is held on the record
+        N1-->>N3: Stale
+        N3->>N3: log provisional_conflict, reason responder_taken
+        N3->>N1: Propose CommitResult(id, no responder)
+    end
+    Note over C: Clients are not told if the record differs (D122)
 ```
 
 ---
@@ -870,6 +918,8 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> Sent: assign RequestId, attempt 0, send to all 3 nodes, log client_sent
     Sent --> Done: first Reply Done(result) with this ID
+    Sent --> Provisional: first Reply Provisional(plan) from a lone node, no Done yet (D123)
+    Provisional --> [*]: log client_done with provisional true
     Sent --> Retrying: no reply within the wait (2, 4, 6, 6, 6, 6 s with jitter)
     Retrying --> Sent: resend, same ID, attempt + 1
     Retrying --> GaveUp: attempts exhausted (client_max_retries)
@@ -885,8 +935,11 @@ stateDiagram-v2
 
 - **Injected omission.** The fault gate drops every peer and client frame in and out (D13, D22). The
   process keeps running and keeps its state, which goes stale. Duration 1–20 s.
-- **Not handled in Phase 1.** Two faulty nodes at once (no majority), Byzantine behaviour, process
-  crash and restart (in-memory vote, D24), partitions longer than the client's retry budget (D52).
+- **Two faulty nodes at once.** No majority, so nothing commits. The last node answers provisionally
+  and replays when a peer returns (6.13, D120).
+- **Process crash and restart.** Survived through the Raft log on disk (9.5, D118).
+- **Not handled in Phase 1.** Byzantine behaviour, and partitions longer than the client's retry budget
+  (D52) with no serving node on the client's side.
 
 ### 9.2 Who detects what
 
@@ -896,7 +949,8 @@ stateDiagram-v2
 | A follower           | The leader      | Append-entries calls fail; openraft retries every 100 ms (D32) | next heartbeat  | built |
 | Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D79) | 150–200 ms | built |
 | A bidding winner     | Other bidders   | The peer detector above, or the backstop, with no commit for the request (takeover) | 150 ms; backstop ≥ 200 ms (D42, D110) | built |
-| Anyone (operator)    | `ctl status`    | `silenced`, `serving`, role, term, digest per node      | on demand             | built |
+| Both peers           | The last node   | The peer detector above, without a break for `degraded_after_ms`; logs `degraded_entered` (D121) | about 2.15 s | built |
+| Anyone (operator)    | `ctl status`    | `silenced`, `serving`, `degraded`, role, term, digest per node | on demand        | built |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
 extra election, never two committed results or two leaders in one term.
@@ -909,6 +963,7 @@ extra election, never two committed results or two leaders in one term.
 | The leader                      | Proposals to it are lost; uncommitted entries may be lost | New leader in one election; forwarded proposals retry (D26); the client retries with the same ID (6.4) | built |
 | An idle follower                | Nothing visible to clients                           | The other two are a majority    | built |
 | Executor under leader dispatch = leader | as "the leader"                              | The client's retry reaches the new leader | built |
+| Both peers, with the request in flight | Its proposal cannot commit                    | The client's retry gets a `Provisional` once the node is degraded (6.13); the old proposal may still commit later, and first commit wins | built |
 
 ### 9.4 Recovery: what is copied, replayed and rebuilt
 

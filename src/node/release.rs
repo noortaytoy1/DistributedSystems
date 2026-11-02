@@ -80,7 +80,8 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
         let mut tick = tokio::time::interval(SCAN_INTERVAL);
         loop {
             tick.tick().await;
-            if !ctx.serving.load(Ordering::SeqCst) {
+            // A lone node cannot commit a release; its local table does the job meanwhile (D124).
+            if !ctx.serving.load(Ordering::SeqCst) || ctx.degraded.is_active() {
                 continue;
             }
             let ms = ctx.config.campus.service_ms_per_severity;

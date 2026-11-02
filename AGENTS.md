@@ -90,7 +90,7 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 |------|--------------------------|----------------------------------------------------------------------|-----------------------|-------|
 | A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `config.rs`                      | E5, commit latency    |       |
 | B    | Bidding election         | `bidding.rs`, `node/bids.rs`, `node/cpu.rs`                          | E1 policies, E6       |       |
-| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `bin/ctl.rs` | E3                |       |
+| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `node/degraded.rs`, `bin/ctl.rs` | E3 |       |
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
 | E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`                         | E2, CPU and queues    |       |
 | F    | Client and scale         | `client.rs`, `bin/loadgen.rs`                                        | E1 scaling sweep      |       |
@@ -207,11 +207,14 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   from an older term and answer `StaleTerm`. Never drop Raft RPCs this way, because openraft
   must see them to reject a stale leader.
 - **Commit, then reply.** A node replies to a client only after the result is committed and
-  applied. The first committed result per request ID wins; later ones get the winner back.
+  applied. The first committed result per request ID wins; later ones get the winner back. The one
+  exception is degraded mode (D120): a node left alone answers `Provisional`, clearly labelled, and
+  replays the result through Raft when a peer returns.
 - **Every `Command` is idempotent.** A proposal can be retried after a leader change, so
   applying a command twice must equal applying it once.
-- **A returning node serves nothing until it is current.** It does not vote for itself, bid
-  or reply until its applied index reaches the leader's commit index (`NodeContext::serving`).
+- **A returning node serves nothing until it is current.** It does not bid or reply until its
+  applied index reaches the leader's commit index (`NodeContext::serving`). It does not vote for
+  itself either, unless it has heard from no leader for 3 s (D125).
 - **The fault gate drops everything but control.** A silenced node neither sends nor receives
   peer or client traffic. `ctl` control frames still get through.
 - **Integers in replicated data.** No floats in `Command` or `CloudState`. Use integer units
@@ -316,3 +319,7 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   (`Outcome::Stale`); the executor plans again.
 - **Serving:** a node that is current and may bid, plan and reply.
 - **Silenced:** a node whose fault gate is closed. It drops all peer and client traffic.
+- **Degraded:** a serving node whose peers have all been suspected for `degraded_after_ms`. It answers
+  without a commit (D120).
+- **Provisional:** an answer given without a commit. It is replayed through Raft later, and first commit
+  wins, so it can turn out to differ (D122).

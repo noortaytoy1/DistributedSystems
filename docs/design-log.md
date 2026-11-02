@@ -184,6 +184,12 @@ table below in sync.
 | D117 | Richer faults are not built | C | Accepted |
 | D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
 | D119 | Peer calls through tarpc, with typed methods | C, A | Implemented |
+| D120 | Degraded mode: the last server answers without a commit | C, A, F | Implemented |
+| D121 | Degraded trigger: every peer suspected for 2 s | C | Implemented |
+| D122 | Leaving degraded mode: replay through Raft, first commit wins | C | Implemented |
+| D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented |
+| D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
+| D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2681,3 +2687,160 @@ exist because of them.
 - **Report notes.** Fill in the chapter 2 comparison. tarpc is closest to RPC with an interface in the
   host language (like Java RMI's interfaces, without its object references); bincode is the external
   data representation, in the role of Sun XDR.
+
+### D120 · Degraded mode: the last server answers without a commit
+
+- **Date:** 2026-11-02 · **Part:** C, A, F · **Status:** Implemented, a deliberate exception to D8 ·
+  **Decided by:** omar.leithym, against the agent's recommendation
+- **Context.** Dr Amr's notes ask to see one machine physically off and another failed, with the one
+  remaining server handling all three client nodes. Raft cannot commit on one of three nodes, so until
+  now the last node stayed quiet and clients gave up after about 30 s (D52).
+- **Options considered.**
+  1. *A clear error, plus results already committed*: keeps every safety property, but the remaining
+     server handles nothing new. The agent's recommendation.
+  2. *Degraded mode*: the lone node plans and answers at once, marks the answer provisional, and commits
+     it when a peer returns. Meets the stated demo; gives up "Commit, then reply" for this one case.
+  3. *Lower the quorum to one*: breaks Raft's safety in every case, not just this one.
+- **Decision.** Option 2. `node/degraded.rs` holds the mode and a local table. In `handle_request` the
+  order is: not serving → silent; committed result → `Done`; answer already stored → the same
+  `Provisional`; degraded → plan, store, `Provisional`; otherwise the normal path. The degraded check
+  comes before `decide_executor`, because neither a bid round nor a proposal can finish alone.
+- **Why.** The transparency Dr Amr describes is what the user feels when servers fail, and he asks for
+  this case by name. The spec allows speculative actions as long as they are "clearly labeled and
+  reconciled"; it lists them under Phase 2, so this is an early, small version: the reply type labels
+  the answer and D122 reconciles it.
+- **Consequences.**
+  - **This breaks "Commit, then reply", and the report must say so.** A provisional answer can later
+    differ from what is on record.
+  - **In a real partition two sides can answer differently.** The lone node cannot tell "both peers
+    are down" from "I am cut off". The other two may commit a different plan for the same request.
+  - **Clients are not told when an answer is replaced** (D122).
+  - The table is memory only: a lone node that loses power loses answers it has not replayed.
+  - No replicated data changes while degraded; the state machine stays deterministic.
+- **Where.** `node/degraded.rs`, `node/mod.rs::handle_request`, `proto.rs::ReplyBody::Provisional`.
+- **How we check it.** `tests/degraded.rs`, for a lone follower and a lone leader. A two-node silence under
+  load was tried by hand on one machine. **A real power-off can only be checked in the lab.**
+- **Report notes.** Present this as a trade-off we chose knowingly: availability for the one-server
+  case against the consistency Raft gives elsewhere. Show it to Dr Amr before the demo.
+
+### D121 · Degraded trigger: every peer suspected for 2 s
+
+- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** Entering degraded mode gives up a guarantee, so a brief stall must not trigger it. The
+  peer detector (D79) suspects after about 150 ms, which is too eager on its own.
+- **Options considered.**
+  1. *Every peer suspected without a break for 2 s*: outlasts a leader election and a slow moment,
+     and is within the client's first 2 s wait, so usually only one retry is lost.
+  2. *As soon as both are suspected*: fastest, but a short network stall gives up the guarantee.
+  3. *Use the client's whole retry budget first*: safest, and the clients have given up by then.
+- **Decision.** Option 1. New key `timers.degraded_after_ms = 2000`, validated above 0. Never while
+  silenced or not serving. It ends as soon as any peer is trusted again, or on silence; the wait then
+  starts over. `NodeStatus` gains `degraded`, and `ctl status` shows it, so the demo can show the mode.
+- **Why.** A node that is silenced or catching up knows it is the one behind, so it has no business
+  answering. Any single peer back means a majority is possible again.
+- **Consequences.** A node that hears nobody because its own network is down enters degraded mode too; D120
+  covers that. A machine so overloaded that it misses heartbeats for 2 s could enter it wrongly, which
+  would show in the logs as `degraded_entered` with peers still running.
+- **Where.** `config.rs::Timers::degraded_after_ms`, `node/degraded.rs::Trigger`, `watch`.
+- **How we check it.** `degraded::tests`; `tests/degraded.rs` shows one silenced node never triggers it and
+  a silenced node never enters it.
+- **Report notes.** Events `degraded_entered`, `degraded_left { reason, degraded_ms, provisional }`.
+
+### D122 · Leaving degraded mode: replay through Raft, first commit wins
+
+- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; event details by the agent, on the instruction not to be asked again
+- **Context.** Provisional answers must end up in the replicated state, or a node's table and the log
+  disagree for good. The spec asks that speculative actions be reconciled.
+- **Options considered.**
+  1. *Propose each result as an ordinary `CommitResult`*: reuses first commit wins (D27), so no new
+     command and no new rule in the state machine.
+  2. *Discard them*: simple, but the record then lacks incidents clients were answered for.
+  3. *A new `Reconcile` command with its own merge rule*: more precise, and a new replicated behaviour
+     to test days before the deadline.
+- **Decision.** Option 1. Once degraded mode is over and the node serves, it proposes up to 64 stored
+  results at a time, retrying every 100 ms until a quorum takes them; each result leaves the table only
+  when settled. `Duplicate` with a different plan logs `provisional_conflict` with reason
+  `lost_first_commit`. `Stale` logs it with reason `responder_taken`, and the result is proposed again with
+  no responder. Clients are not told.
+- **Why.** Every `Command` is already idempotent, so retries are harmless, and no state-machine change
+  means digests still prove convergence.
+- **Consequences.** The local hold is on a timer but the replayed hold is on the log, so answers given one
+  after another with the same responder collide when replayed quickly: the first holds it, and later
+  ones are recorded with no responder though the client was told otherwise. That is what this decision asks
+  for, and the conflict count measures it. While waiting, a retry gets the stored plan, not a new one.
+- **Where.** `node/degraded.rs::replay`, `settle`; events in `metrics.rs`.
+- **How we check it.** `tests/degraded.rs`: equal digests after the return, and both conflict reasons,
+  with a winner forced for `lost_first_commit`.
+- **Report notes.** Report the conflict count against the provisional count from each run.
+
+### D123 · `ReplyBody::Provisional`, and how the client reports it
+
+- **Date:** 2026-11-02 · **Part:** C, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** A client must be able to tell an uncommitted answer from a committed one, and the
+  application must not mistake one for the other.
+- **Options considered.**
+  1. *A new reply variant carrying only the plan*: no log index or term to fake. The client accepts it
+     at once if no `Done` came.
+  2. *`Done` with a flag*: small, but every reader of `Done` must remember to check it.
+  3. *The client keeps retrying for a `Done`*: then nobody gets an answer, and degraded mode has no effect.
+- **Decision.** Option 1. `ReplyBody::Provisional(Plan)`. `client::Submitted` becomes `{ from, executor,
+  plan, committed: Option<CommittedResult>, provisional, latency, attempts }`, so a provisional answer cannot
+  pose as a committed result. `client_done` gains `provisional`, and `loadgen` prints the count.
+- **Why.** Types over comments (AGENTS.md).
+- **Consequences.** Everyone who reads `done.result` now reads `done.plan` or `done.committed`. A `Done` that
+  arrives after a provisional answer is ignored, as any second reply is.
+- **Where.** `proto.rs`, `client.rs::finished`, `hand_over`, `bin/loadgen.rs`.
+- **How we check it.** `tests/degraded.rs`.
+- **Report notes.** Latency of provisional answers is not comparable with committed ones: plot apart.
+
+### D124 · Degraded holds: a local table on the service timer
+
+- **Date:** 2026-11-02 · **Part:** C, E · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; taking over existing holds by the agent, on the instruction not to be asked
+  again
+- **Context.** Two provisional plans must not send the same responder at once, and releases need a
+  quorum (D39), so the replicated holds cannot change while a node is alone.
+- **Options considered.**
+  1. *A local table of holds, freed by the same service time as D111*: same behaviour as normal, no
+     replication.
+  2. *Hold forever until peers return*: after 30 answers every plan has no responder.
+- **Decision.** Option 1. On entering, the table also takes over the replicated holds, each freed after its
+  service time from that moment, because they cannot be released through the log now. Free responders are
+  all responders minus the table. `release.rs` skips its scan while degraded and catches up afterwards.
+- **Why.** Without the takeover, a node that enters degraded mode under load starts with most responders
+  held and keeps them held for the whole outage, which would make the mode useless when it matters.
+- **Consequences.** The table is cleared on leaving; the log is the only truth after that.
+- **Where.** `node/degraded.rs::Table`, `enter`; `state.rs::responders`; `node/release.rs`.
+- **How we check it.** `degraded::tests`; `tests/degraded.rs` checks that answers take different responders
+  while they are held.
+
+### D125 · A returning node with no leader may stand for election after 3 s
+
+- **Date:** 2026-11-02 · **Part:** D, C · **Status:** Implemented, amends D75 · **Decided by:** the agent, on
+  omar.leithym's instruction not to be asked; to be confirmed in the PR review
+- **Context.** Found while testing D120 by hand under load. Two nodes silenced together, and at the end
+  of the silence no leader ever appeared: the third node's log was shorter, since the old leader had
+  uncommitted entries, so its votes were refused, and the two returning nodes had elections off until they
+  were current, which only a leader could confirm. The cluster stayed stuck until the clients gave up.
+  With one fault at a time this cannot happen, but Dr Amr's case makes two faults at once a requirement.
+- **Options considered.**
+  1. *Use the restart rule from D118 after a silence as well*: elections back on after 3 s with no
+     leader. It adds one rule, and the two paths become the same code.
+  2. *Keep elections on during catch-up*: removes the wait, and loses D5's protection, because a
+     returning node with a raised term could depose a healthy leader.
+  3. *Re-enable when a higher term is seen*: more cases, and it still needs a timeout for the case where
+     all three return together.
+- **Decision.** Option 1. `rejoin.rs::catch_up_or_elect` serves both paths. The node still serves nothing
+  until it is current.
+- **Why.** A leader's heartbeats stop a follower standing even with elections on, so under a healthy
+  leader this changes nothing, even if the catch-up takes longer than 3 s.
+- **Consequences.** The architecture rule that a returning node does not vote for itself until current now
+  has this exception. Recovery from a double fault takes at least 3 s, which should show in E4 if it
+  covers the case.
+- **Where.** `node/rejoin.rs`.
+- **How we check it.** `tests/degraded.rs::the_cluster_recovers_when_the_longer_logs_were_all_silenced`, which
+  hangs without this.
+- **Report notes.** A good example of a bug found by running under load rather than by unit tests.

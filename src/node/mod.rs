@@ -2,7 +2,8 @@
 //!
 //! A client request goes: received → already decided? reply from state → assignment picks the
 //! executor → executor plans on the worker pool → proposes `CommitResult` through Raft →
-//! replies with the committed (winning) result. A node never replies before the commit.
+//! replies with the committed (winning) result. A node never replies before the commit, with one
+//! exception: a node left alone answers provisionally (degraded.rs, D120).
 //!
 //! Each part's entry point (`heartbeat::spawn`, `faults::spawn_schedule`, `rejoin::spawn`, ...)
 //! is called from here, so owners fill in their own file without editing this one.
@@ -11,6 +12,7 @@
 
 pub mod bids;
 pub mod cpu;
+pub mod degraded;
 pub mod faults;
 pub mod heartbeat;
 pub mod rejoin;
@@ -36,12 +38,13 @@ use crate::metrics::{Event, EventLog};
 use crate::planner::{self, CostKnob};
 use crate::proto::{
     ClientFrame, ClientReply, ClientRequest, Command, CommittedResult, ControlReply,
-    ControlRequest, NodeId, NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError,
-    ReplyBody, ResultProposal, ServerFrame,
+    ControlRequest, NodeId, NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, Plan,
+    ProposeError, ReplyBody, RequestId, Responder, ResultProposal, ServerFrame,
 };
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
+use degraded::DegradedState;
 use heartbeat::Suspicion;
 use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
 use workers::{Overloaded, WorkerPool};
@@ -72,6 +75,8 @@ pub struct NodeContext {
     pub bids: BidState,
     /// Extra planner work per request, set by `ctl skew`.
     pub plan_work: AtomicU32,
+    /// Whether this node is the last one left, and what it answered meanwhile (degraded.rs).
+    pub degraded: DegradedState,
 }
 
 impl NodeContext {
@@ -96,6 +101,7 @@ impl NodeContext {
             responders,
             silenced: self.gate.is_silenced(),
             serving: self.serving.load(Ordering::SeqCst),
+            degraded: self.degraded.is_active(),
         }
     }
 }
@@ -206,6 +212,7 @@ pub async fn start_with(
         serving: AtomicBool::new(!restarted),
         bids: BidState::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
+        degraded: DegradedState::default(),
         config: Arc::new(config),
     });
     let _ = raft_tx.send(ctx.clone());
@@ -231,6 +238,7 @@ pub async fn start_with(
     tasks.extend(rejoin::spawn(&ctx, restarted));
     tasks.extend(bids::spawn(&ctx));
     tasks.push(release::spawn(&ctx));
+    tasks.extend(degraded::spawn(&ctx));
 
     Ok(NodeHandle {
         ctx,
@@ -302,6 +310,19 @@ async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, reply: ReplyT
         send_done(&ctx, &reply, done, started);
         return;
     }
+    // Waiting to be replayed: a retry gets the same answer, in or out of degraded mode.
+    if let Some(plan) = ctx.degraded.stored(&req.id) {
+        send_provisional(&ctx, &reply, req.id, plan, started);
+        return;
+    }
+    // Before any bid or proposal: neither can finish on one node.
+    if ctx.degraded.is_active() {
+        match degraded::plan(&ctx, &req).await {
+            Ok(plan) => send_provisional(&ctx, &reply, req.id, plan, started),
+            Err(e) => tracing::debug!(request = %req.id, "not answered: {e}"),
+        }
+        return;
+    }
     if decide_executor(&ctx, &req).await != Decision::Execute {
         return;
     }
@@ -357,24 +378,7 @@ enum ExecuteError {
 async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResult, ExecuteError> {
     for _ in 0..MAX_PLAN_ATTEMPTS {
         let free = ctx.state.with(|s| s.free_responders());
-        let incident = req.incident.clone();
-        // Two machines' clocks: NTP error is negligible against the planner's threshold (D95).
-        let age_ms = (crate::metrics::now_us() / 1_000).saturating_sub(incident.reported_at_ms);
-        let knob = CostKnob {
-            extra_work: ctx.plan_work.load(Ordering::Relaxed),
-        };
-        // Timed inside the job: queue wait is already counted by `queued`.
-        let (plan, planning) = ctx
-            .workers
-            .run(move || {
-                let started = std::time::Instant::now();
-                (
-                    planner::plan(&incident, &free, age_ms, knob),
-                    started.elapsed(),
-                )
-            })
-            .await?;
-        ctx.bids.record_service(planning);
+        let plan = plan_on_workers(ctx, req, free).await?;
         let proposal = ResultProposal {
             request: req.id,
             incident: req.incident.clone(),
@@ -393,6 +397,55 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
         }
     }
     Err(ExecuteError::StillStale)
+}
+
+/// Plan one request from `free` on the worker pool.
+async fn plan_on_workers(
+    ctx: &NodeContext,
+    req: &ClientRequest,
+    free: Vec<Responder>,
+) -> Result<Plan, Overloaded> {
+    let incident = req.incident.clone();
+    // Two machines' clocks: NTP error is negligible against the planner's threshold (D95).
+    let age_ms = (crate::metrics::now_us() / 1_000).saturating_sub(incident.reported_at_ms);
+    let knob = CostKnob {
+        extra_work: ctx.plan_work.load(Ordering::Relaxed),
+    };
+    // Timed inside the job: queue wait is already counted by `queued`.
+    let (plan, planning) = ctx
+        .workers
+        .run(move || {
+            let started = std::time::Instant::now();
+            (
+                planner::plan(&incident, &free, age_ms, knob),
+                started.elapsed(),
+            )
+        })
+        .await?;
+    ctx.bids.record_service(planning);
+    Ok(plan)
+}
+
+fn send_provisional(
+    ctx: &NodeContext,
+    reply: &ReplyTx,
+    request: RequestId,
+    plan: Plan,
+    started: Instant,
+) {
+    let responder = plan.responder;
+    let sent = reply.send(&ServerFrame::Reply(ClientReply {
+        id: request,
+        from: ctx.id,
+        body: ReplyBody::Provisional(plan),
+    }));
+    if sent {
+        ctx.log.log(Event::ProvisionalReplied {
+            request,
+            responder,
+            latency_us: started.elapsed().as_micros() as u64,
+        });
+    }
 }
 
 fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started: Instant) {

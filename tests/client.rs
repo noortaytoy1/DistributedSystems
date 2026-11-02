@@ -56,14 +56,16 @@ async fn a_submit_returns_the_committed_result_and_logs_its_events() {
     let client = MeshClient::new(5, &cluster.config, log.clone());
 
     let done = client.submit(incident()).await.unwrap();
-    assert_eq!(done.result.request.client, 5);
+    let result = done.committed.as_ref().unwrap();
+    assert!(!done.provisional);
+    assert_eq!(result.request.client, 5);
     assert_eq!(done.attempts, 1);
     let stored = cluster
         .node(done.from)
         .ctx
         .state
-        .with(|s| s.result(&done.result.request).cloned());
-    assert_eq!(stored.as_ref(), Some(&done.result));
+        .with(|s| s.result(&result.request).cloned());
+    assert_eq!(stored.as_ref(), Some(result));
 
     drop(client);
     tokio::task::spawn_blocking(move || log.close())
@@ -84,7 +86,15 @@ async fn many_users_share_one_client() {
     let mut users = JoinSet::new();
     for _ in 0..50 {
         let client = client.clone();
-        users.spawn(async move { client.submit(incident()).await.unwrap().result.request });
+        users.spawn(async move {
+            client
+                .submit(incident())
+                .await
+                .unwrap()
+                .committed
+                .unwrap()
+                .request
+        });
     }
     let mut seen = std::collections::BTreeSet::new();
     while let Some(id) = users.join_next().await {
@@ -118,7 +128,8 @@ async fn a_silenced_leader_is_covered_by_a_retry_with_the_same_id() {
 
     let client = MeshClient::new(8, &cluster.config, EventLog::disabled("c"));
     let done = client.submit(incident()).await.unwrap();
-    assert_ne!(done.result.executor, leader);
+    assert_ne!(done.executor, leader);
+    let request = done.committed.unwrap().request;
     assert!(done.attempts >= 1);
     // One result for the ID, however many attempts it took.
     for id in (1..=3u64).filter(|id| *id != leader) {
@@ -126,11 +137,7 @@ async fn a_silenced_leader_is_covered_by_a_retry_with_the_same_id() {
         wait_until(
             Duration::from_secs(5),
             "the result on every live node",
-            || {
-                node.ctx
-                    .state
-                    .with(|s| s.result(&done.result.request).is_some())
-            },
+            || node.ctx.state.with(|s| s.result(&request).is_some()),
         )
         .await;
     }
@@ -328,7 +335,8 @@ async fn a_retry_keeps_the_request_id_and_increments_the_attempt() {
     let seen = seen.lock().unwrap();
     let attempts: Vec<u32> = seen.iter().map(|(_, a)| *a).collect();
     assert_eq!(attempts, vec![0, 1, 2]);
-    assert!(seen.iter().all(|(id, _)| *id == done.result.request));
+    let request = done.committed.unwrap().request;
+    assert!(seen.iter().all(|(id, _)| *id == request));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -343,7 +351,7 @@ async fn bidding_serves_a_client_with_a_node_silenced() {
     let client = MeshClient::new(14, &cluster.config, EventLog::disabled("c"));
     for _ in 0..5 {
         let done = client.submit(incident()).await.unwrap();
-        assert_ne!(done.result.executor, 3);
+        assert_ne!(done.executor, 3);
     }
     cluster.node(3).ctx.gate.restore();
     cluster.shutdown().await;
