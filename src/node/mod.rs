@@ -19,6 +19,7 @@ pub mod rejoin;
 pub mod release;
 pub mod takeover;
 pub mod transport;
+pub mod usage;
 pub mod workers;
 
 use std::net::SocketAddr;
@@ -512,7 +513,7 @@ fn spawn_campus_seeding(ctx: Arc<NodeContext>) -> JoinHandle<()> {
     })
 }
 
-/// Every `REPORT_INTERVAL`, log message counts (E5) and the state digest.
+/// Every `REPORT_INTERVAL`, log message counts (E5), the state digest and resource use (D128).
 fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REPORT_INTERVAL);
@@ -523,6 +524,18 @@ fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
             ctx.log.log(Event::StateDigest {
                 last_applied,
                 digest,
+            });
+            let Ok(usage) = tokio::task::spawn_blocking(usage::read).await else {
+                continue;
+            };
+            let pool = ctx.workers.load();
+            ctx.log.log(Event::ResourceUsage {
+                rss_kb: usage.rss_kb,
+                cpu_ticks: usage.cpu_ticks,
+                net_rx_bytes: usage.net_rx_bytes,
+                net_tx_bytes: usage.net_tx_bytes,
+                queued: pool.queued,
+                running: pool.running,
             });
         }
     })

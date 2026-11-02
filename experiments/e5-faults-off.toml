@@ -1,0 +1,16 @@
+# run: users=300 think_ms=1000
+
+[policy]
+assignment = "bidding"
+score = "expected-wait"
+cpu_weight = 1
+
+[workers]
+plan_work = 1000
+
+[campus]
+responders = 300
+
+[faults]
+# No injected faults at all (D77): the baseline.
+enabled = false

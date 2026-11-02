@@ -75,6 +75,17 @@ pub enum Event {
         received: BTreeMap<&'static str, u64>,
     },
 
+    /// Once a second: this process's memory and CPU, the machine's network counters and the worker
+    /// queue (D128). `cpu_ticks` and the byte counts are cumulative.
+    ResourceUsage {
+        rss_kb: Option<u64>,
+        cpu_ticks: Option<u64>,
+        net_rx_bytes: Option<u64>,
+        net_tx_bytes: Option<u64>,
+        queued: usize,
+        running: usize,
+    },
+
     // --- request handling (all roles)
     RequestReceived {
         request: RequestId,
@@ -228,6 +239,8 @@ pub enum Event {
         attempts: u32,
         /// True if the answer was a lone node's, not committed (D123).
         provisional: bool,
+        /// True if the plan sent nobody, because no suitable responder was free (D111).
+        no_responder: bool,
     },
     ClientGaveUp {
         request: RequestId,

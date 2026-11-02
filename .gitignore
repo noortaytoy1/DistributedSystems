@@ -4,6 +4,8 @@
 # Experiment and run output: raw data stays on the machine that produced it
 /runs/
 /experiments/runs/
+/data/
+/runs-config/
 *.jsonl
 
 # Python analysis
@@ -14,6 +16,7 @@ __pycache__/
 
 # Local configs with real lab addresses
 /config/lab.toml
+/experiments/hosts
 
 # Editors and OS
 .idea/
