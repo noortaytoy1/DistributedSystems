@@ -1,8 +1,9 @@
-//! In-memory Raft log and state machine storage for openraft (storage API v2).
+//! Raft log and state machine storage for openraft (storage API v2).
 //!
-//! Faults in Phase 1 are network silences: the process and its memory survive, so in-memory
-//! storage keeps Raft's guarantees. Restarting a node process would lose its vote, which Raft
-//! forbids, so it is not a supported fault (docs/design-log.md).
+//! The log and vote live in memory, and with `storage.dir` set they also go to a write-ahead file
+//! first (wal.rs), so a node that lost power comes back with its vote and log (D118). The state
+//! machine is always in memory: it is rebuilt by replaying the log. Without `storage.dir` a
+//! restarted node has forgotten its vote, which Raft forbids; only tests run that way.
 //!
 //! Snapshots are implemented so openraft can use them, but the node config never triggers one
 //! (`SnapshotPolicy::Never`), so the log is never purged and a returning node catches up by log
@@ -14,6 +15,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::ops::RangeBounds;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
@@ -26,6 +28,7 @@ use openraft::{
 
 use crate::proto::{NodeId, Outcome};
 use crate::raft::TypeConfig;
+use crate::raft::wal::{Record, Replayed, Wal};
 use crate::state::CloudState;
 
 type StorageResult<T> = Result<T, StorageError<NodeId>>;
@@ -71,6 +74,45 @@ struct LogInner {
 #[derive(Debug, Clone, Default)]
 pub struct LogStore {
     inner: Arc<Mutex<LogInner>>,
+    /// The write-ahead file, if this node has `storage.dir` set.
+    wal: Option<Arc<Mutex<Wal>>>,
+}
+
+impl LogStore {
+    /// Open the node's file and load what it holds. Returns true if the node ran here before.
+    pub async fn open(path: PathBuf) -> anyhow::Result<(Self, bool)> {
+        let (wal, replayed) = tokio::task::spawn_blocking(move || Wal::open(&path)).await??;
+        let restarted = replayed.is_restart();
+        let Replayed {
+            vote,
+            committed,
+            last_purged,
+            log,
+        } = replayed;
+        let store = Self {
+            inner: Arc::new(Mutex::new(LogInner {
+                vote,
+                committed,
+                last_purged,
+                log,
+            })),
+            wal: Some(Arc::new(Mutex::new(wal))),
+        };
+        Ok((store, restarted))
+    }
+
+    /// Write a record to the file off the async runtime. A no-op without a file. Callers await
+    /// this before they change memory, so nothing is reported that a power cut could lose.
+    async fn persist(&self, record: Record, sync: bool) -> StorageResult<()> {
+        let Some(wal) = self.wal.clone() else {
+            return Ok(());
+        };
+        let written = tokio::task::spawn_blocking(move || lock(&wal).write(&record, sync))
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(|r| r);
+        written.map_err(|e| StorageIOError::write_logs(&e).into())
+    }
 }
 
 impl RaftLogReader<TypeConfig> for LogStore {
@@ -108,6 +150,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StorageResult<()> {
+        self.persist(Record::Vote(*vote), true).await?;
         lock(&self.inner).vote = Some(*vote);
         Ok(())
     }
@@ -117,6 +160,8 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_committed(&mut self, committed: Option<LogId<NodeId>>) -> StorageResult<()> {
+        // Not synced: it only saves replay work, and a stale value is safe.
+        self.persist(Record::Committed(committed), false).await?;
         lock(&self.inner).committed = committed;
         Ok(())
     }
@@ -130,25 +175,29 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        let entries: Vec<_> = entries.into_iter().collect();
+        self.persist(Record::Append(entries.clone()), true).await?;
         {
             let mut inner = lock(&self.inner);
             for entry in entries {
                 inner.log.insert(entry.log_id.index, entry);
             }
         }
-        // Memory is our durable medium: the entries are "flushed" as soon as they are stored.
+        // On disk if this node has a file; otherwise memory is the durable medium.
         callback.log_io_completed(Ok(()));
         Ok(())
     }
 
     /// Delete entries at `log_id.index` and after (they conflict with the leader's log).
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
+        self.persist(Record::Truncate(log_id.index), true).await?;
         lock(&self.inner).log.split_off(&log_id.index);
         Ok(())
     }
 
     /// Delete entries up to and including `log_id.index` (already in a snapshot).
     async fn purge(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
+        self.persist(Record::Purge(log_id), true).await?;
         let mut inner = lock(&self.inner);
         inner.last_purged = Some(log_id);
         inner.log = inner.log.split_off(&(log_id.index + 1));

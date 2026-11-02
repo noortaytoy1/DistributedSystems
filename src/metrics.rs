@@ -169,6 +169,11 @@ pub enum Event {
     },
 
     // --- rejoin (D)
+    /// The process started with a Raft log from an earlier run (D118, FT-9).
+    Restarted {
+        term: u64,
+        last_log_index: Option<u64>,
+    },
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).
     RejoinStarted {
         applied: Option<u64>,

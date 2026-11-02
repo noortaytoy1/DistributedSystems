@@ -31,6 +31,8 @@ pub struct Config {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub faults: FaultConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +218,14 @@ impl Default for CampusConfig {
 pub struct MetricsConfig {
     /// Directory for JSONL event logs (`node-<id>.jsonl`, `client-<id>.jsonl`).
     /// Unset means events are not written.
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Directory for each node's Raft log file (`node-<id>.wal`). Unset keeps the log in memory
+    /// only, so a restarted node has forgotten its vote: tests only, never the lab (D118).
     pub dir: Option<PathBuf>,
 }
 

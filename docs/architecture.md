@@ -919,6 +919,25 @@ extra election, never two committed results or two leaders in one term.
   other nodes.
 - **Rebuilt locally:** load inputs, bid rounds, suspicion timestamps.
 
+
+### 9.5 A machine loses power and restarts (built, D118)
+
+```mermaid
+sequenceDiagram
+    participant N as Restarted node
+    participant D as node-id.wal
+    participant L as Leader
+    N->>D: read vote, committed and log, cut any damaged tail
+    Note over N: serving false, elections off, log restarted
+    N->>N: openraft applies up to committed
+    L->>N: AppendEntries, missed entries
+    N->>L: ReadIndex
+    L-->>N: commit index confirmed by a majority
+    N->>N: apply up to the target
+    Note over N: serving true, elections on, log rejoined
+    Note over N: no leader after 3 s means the whole cluster may have restarted, so elections go on
+```
+
 ---
 
 ## 10. Concurrency inside a node

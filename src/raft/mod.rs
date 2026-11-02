@@ -17,6 +17,7 @@
 
 pub mod network;
 pub mod store;
+pub mod wal;
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -155,15 +156,21 @@ impl RaftNode {
         config: &Config,
         peers: Arc<PeerSet>,
         log: EventLog,
-    ) -> anyhow::Result<(Arc<Self>, StateReader)> {
+    ) -> anyhow::Result<(Arc<Self>, StateReader, bool)> {
         let t = &config.timers;
         let (election_min, election_max) = election_range(id, config);
+        let (log_store, restarted) = match &config.storage.dir {
+            Some(dir) => LogStore::open(dir.join(format!("node-{id}.wal"))).await?,
+            None => (LogStore::default(), false),
+        };
         let raft_config = openraft::Config {
             cluster_name: "rescuemesh".into(),
             heartbeat_interval: t.raft_heartbeat_ms,
             election_timeout_min: election_min,
             election_timeout_max: election_max,
             snapshot_policy: SnapshotPolicy::Never,
+            // A restarted node must not raise its term before it hears from a leader (D118).
+            enable_elect: !restarted,
             ..Default::default()
         }
         .validate()?;
@@ -173,14 +180,7 @@ impl RaftNode {
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());
         let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
-        let raft = Raft::new(
-            id,
-            Arc::new(raft_config),
-            network,
-            LogStore::default(),
-            state_machine,
-        )
-        .await?;
+        let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
         let members: BTreeMap<NodeId, BasicNode> = config
             .cluster
@@ -202,7 +202,7 @@ impl RaftNode {
             heartbeats,
             leader_commit: watch::channel(None).0,
         });
-        Ok((node, state))
+        Ok((node, state, restarted))
     }
 
     /// Log a one-line heartbeat summary every second until the task is aborted.
