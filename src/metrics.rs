@@ -159,6 +159,35 @@ pub enum Event {
         waited_us: u64,
     },
 
+    // --- degraded mode (C)
+    /// Every peer has been suspected for `degraded_after_ms`; this node now answers without a
+    /// commit (D120, D121). `held_responders` is what the local table took over (D124).
+    DegradedEntered {
+        held_responders: usize,
+    },
+    /// `reason` is `peer_trusted`, `silenced` or `not_serving`. `provisional` answers are waiting
+    /// to be replayed through Raft.
+    DegradedLeft {
+        reason: String,
+        degraded_ms: u64,
+        provisional: usize,
+    },
+    /// A lone node answered without a commit.
+    ProvisionalReplied {
+        request: RequestId,
+        responder: Option<ResponderId>,
+        latency_us: u64,
+    },
+    /// A provisional answer did not stand (D122). `reason` is `lost_first_commit`, with the winner's
+    /// plan, or `responder_taken`, and then the result is recorded with no responder.
+    ProvisionalConflict {
+        request: RequestId,
+        reason: String,
+        responder: Option<ResponderId>,
+        winner_responder: Option<ResponderId>,
+        winner_executor: Option<NodeId>,
+    },
+
     // --- responders (E)
     /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
     /// true if the executor should have done it first and has not.
@@ -197,6 +226,8 @@ pub enum Event {
         executor: NodeId,
         latency_us: u64,
         attempts: u32,
+        /// True if the answer was a lone node's, not committed (D123).
+        provisional: bool,
     },
     ClientGaveUp {
         request: RequestId,

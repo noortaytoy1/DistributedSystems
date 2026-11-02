@@ -17,6 +17,10 @@ id = 3
 peer_addr = "10.0.0.13:7001"
 client_addr = "10.0.0.13:8001"
 
+[timers]
+# Every peer suspected this long, and a serving node answers without a commit (D121).
+degraded_after_ms = 2000
+
 [policy]
 assignment = "bidding"
 # Used under "bidding" only.

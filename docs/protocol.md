@@ -42,8 +42,13 @@ client                          every node
   A retry reuses `id` and increments `attempt`.
 - The client resends with the same ID up to `client_max_retries` times. The wait starts at
   `client_retry_ms` and doubles up to `client_retry_max_ms`, with ±20% random jitter (D52).
-- `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)` or `Rejected(reason)`.
-  Every `Done` reply for one ID carries the same committed result, whichever node sends it.
+- `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)`, `Provisional(Plan)` or
+  `Rejected(reason)`. Every `Done` reply for one ID carries the same committed result, whichever node
+  sends it.
+- `Provisional(Plan)` comes only from a node in degraded mode: every peer suspected for
+  `degraded_after_ms` (D120, D121). It is not committed. The client takes it at once if no `Done` came and
+  reports `provisional: true` (D123). A retry gets the same plan. The node replays the result through
+  Raft when a peer returns, and first commit wins, so the record can differ; clients are not told (D122).
 - A node that already has a committed result for an ID answers a retry straight from its state.
 
 **Connections (D112).** A client keeps one connection per node and pings on it with
@@ -117,6 +122,7 @@ Every command is idempotent, so a proposal retried after a leader change is harm
 4. The executor plans on its worker pool from its local copy of the state.
 5. The executor proposes `CommitResult`. A follower forwards it to the leader with `Propose`.
 6. After the entry is committed and applied, the executor replies with the winning result.
+   A node in degraded mode skips steps 3 and 5 and replies `Provisional` straight after planning (D120).
 7. If the client hears nothing within `client_retry_ms`, it resends with the same ID.
 
 ## Timers
@@ -136,6 +142,7 @@ Defaults from `config.rs`, tuned for a LAN:
 | `client_max_retries`          | 5            | resends before the client gives up (about 30 s in total)  |
 | `propose_timeout_ms`          | 3000         | a node stops trying to commit one proposal after this     |
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, forwarded proposal) |
+| `degraded_after_ms`           | 2000         | every peer suspected this long, and a serving node answers without a commit (D121) |
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
 | `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |

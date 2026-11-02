@@ -10,6 +10,8 @@
 //! - **Dead nodes (D112).** Each connection pings with `Control(Status)`. Control frames pass the
 //!   fault gate, so a silenced node keeps its connection; a machine that lost power stops
 //!   answering, and the connection is replaced.
+//! - **Provisional answers (D123).** A lone node's answer counts as a reply, because no commit can
+//!   come. `Submitted` keeps it apart from a committed result.
 //! - **Backpressure (D112).** Each node has a bounded send queue. A full queue drops the frame for
 //!   that node only, so a dead node never blocks a user.
 //!
@@ -33,7 +35,7 @@ use crate::metrics::{Event, EventLog, now_us};
 use crate::node::transport::framed;
 use crate::proto::{
     self, ClientFrame, ClientId, ClientReply, ClientRequest, CommittedResult, ControlReply,
-    ControlRequest, Incident, NodeId, ReplyBody, RequestId, ServerFrame,
+    ControlRequest, Incident, NodeId, Plan, ReplyBody, RequestId, ServerFrame,
 };
 
 /// Frames waiting for one node. Frames beyond this are dropped; the retry covers them.
@@ -70,7 +72,13 @@ pub enum ClientError {
 pub struct Submitted {
     /// The node that answered first.
     pub from: NodeId,
-    pub result: CommittedResult,
+    /// The node that planned the request.
+    pub executor: NodeId,
+    pub plan: Plan,
+    /// The committed result; `None` for a provisional answer, which has none yet.
+    pub committed: Option<CommittedResult>,
+    /// True if a lone node answered without a commit (D123).
+    pub provisional: bool,
     /// From first send to first reply, on the client clock.
     pub latency: Duration,
     pub attempts: u32,
@@ -195,20 +203,28 @@ impl MeshClient {
     }
 
     fn finished(&self, reply: ClientReply, started: Instant, attempts: u32) -> Submitted {
-        let ReplyBody::Done(result) = reply.body else {
-            unreachable!("run_link only hands over Done replies");
+        let (executor, plan, committed) = match reply.body {
+            ReplyBody::Done(result) => (result.executor, result.plan.clone(), Some(result)),
+            // A lone node plans for itself.
+            ReplyBody::Provisional(plan) => (reply.from, plan, None),
+            ReplyBody::Rejected(_) => unreachable!("run_link does not hand over Rejected replies"),
         };
+        let provisional = committed.is_none();
         let latency = started.elapsed();
         self.log.log(Event::ClientDone {
             request: reply.id,
             from: reply.from,
-            executor: result.executor,
+            executor,
             latency_us: latency.as_micros() as u64,
             attempts,
+            provisional,
         });
         Submitted {
             from: reply.from,
-            result,
+            executor,
+            plan,
+            committed,
+            provisional,
             latency,
             attempts,
         }
@@ -317,10 +333,11 @@ async fn serve_link(
     }
 }
 
-/// First `Done` for an ID wins: it takes the waiter, so later ones find nothing. `Rejected` is
-/// not an answer (D36): the client keeps waiting for another node or its retry.
+/// The first `Done` or `Provisional` for an ID wins: it takes the waiter, so later ones find
+/// nothing. `Rejected` is not an answer (D36): the client keeps waiting for another node or its
+/// retry.
 fn hand_over(waiters: &Waiters, reply: ClientReply) {
-    if !matches!(reply.body, ReplyBody::Done(_)) {
+    if matches!(reply.body, ReplyBody::Rejected(_)) {
         return;
     }
     if let Some(waiter) = lock(waiters).remove(&reply.id) {

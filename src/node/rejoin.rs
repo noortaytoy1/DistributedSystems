@@ -17,8 +17,12 @@
 //!   `rejoined` with the recovery time (E4).
 //!
 //! A node restarted with a Raft log from disk (D118) goes through the same catch-up from the
-//! start, elections off. If it hears from no leader for [`RESTART_ELECT_AFTER`], the whole cluster
-//! may have restarted, so it allows elections again; it still serves nothing until it is current.
+//! start, elections off.
+//!
+//! Either way, a node that hears from no leader for [`NO_LEADER_ELECT_AFTER`] allows elections
+//! again, and still serves nothing until it is current (D125). Without this, two nodes silenced
+//! together hang the cluster: the third cannot win with a shorter log, and they stay out of the
+//! running because nobody can tell them they are current.
 //!
 //! A node that hears from no current leader keeps waiting and warns; it cannot know it is
 //! current. Votes and log entries are accepted throughout, so the 2-of-3 majority stays intact.
@@ -39,8 +43,8 @@ use crate::node::NodeContext;
 /// How often a node still catching up warns about it.
 const WAIT_WARNING: Duration = Duration::from_secs(5);
 
-/// How long a restarted node waits for a leader before it may stand for election itself.
-const RESTART_ELECT_AFTER: Duration = Duration::from_secs(3);
+/// How long a returning node waits for a leader before it may stand for election itself.
+const NO_LEADER_ELECT_AFTER: Duration = Duration::from_secs(3);
 
 /// A node is current once its applied index reaches the leader's commit index.
 pub fn is_current(local_applied: Option<u64>, leader_commit: Option<u64>) -> bool {
@@ -71,12 +75,11 @@ pub fn spawn(ctx: &Arc<NodeContext>, restarted: bool) -> Option<JoinHandle<()>> 
             if gate.wait_for(|silenced| !*silenced).await.is_err() {
                 return;
             }
-            catch_up(&ctx, &mut gate).await;
+            catch_up_or_elect(&ctx, &mut gate).await;
         }
     }))
 }
 
-/// Catch up after a restart, allowing elections if no leader shows up.
 async fn after_restart(ctx: &NodeContext, gate: &mut watch::Receiver<bool>) {
     let status = ctx.consensus.status();
     tracing::info!(node = ctx.id, "restarted from the Raft log file");
@@ -84,12 +87,15 @@ async fn after_restart(ctx: &NodeContext, gate: &mut watch::Receiver<bool>) {
         term: status.term,
         last_log_index: status.last_log_index,
     });
+    catch_up_or_elect(ctx, gate).await;
+}
+
+/// Catch up, allowing elections if no leader shows up. A leader's heartbeats keep this node from
+/// standing even with elections on, so a slow catch-up under a healthy leader deposes nobody.
+async fn catch_up_or_elect(ctx: &NodeContext, gate: &mut watch::Receiver<bool>) {
     let allow_elections = async {
-        tokio::time::sleep(RESTART_ELECT_AFTER).await;
-        tracing::warn!(
-            node = ctx.id,
-            "no leader after a restart: allowing elections"
-        );
+        tokio::time::sleep(NO_LEADER_ELECT_AFTER).await;
+        tracing::warn!(node = ctx.id, "no leader yet: allowing elections");
         ctx.consensus.set_elect(true);
         std::future::pending::<()>().await
     };

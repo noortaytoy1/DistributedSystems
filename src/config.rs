@@ -69,6 +69,8 @@ pub struct Timers {
     pub propose_timeout_ms: u64,
     /// Timeout for one non-Raft peer RPC (bid, heartbeat, forwarded proposal attempt).
     pub peer_rpc_timeout_ms: u64,
+    /// Every peer suspected for this long, and a serving node answers without a commit (D121).
+    pub degraded_after_ms: u64,
 }
 
 impl Default for Timers {
@@ -85,6 +87,7 @@ impl Default for Timers {
             client_max_retries: 5,
             propose_timeout_ms: 3000,
             peer_rpc_timeout_ms: 500,
+            degraded_after_ms: 2000,
         }
     }
 }
@@ -107,6 +110,9 @@ impl Timers {
     }
     pub fn peer_rpc_timeout(&self) -> Duration {
         Duration::from_millis(self.peer_rpc_timeout_ms)
+    }
+    pub fn degraded_after(&self) -> Duration {
+        Duration::from_millis(self.degraded_after_ms)
     }
 }
 
@@ -350,6 +356,7 @@ impl Config {
             ("client_retry_max_ms", t.client_retry_max_ms),
             ("propose_timeout_ms", t.propose_timeout_ms),
             ("peer_rpc_timeout_ms", t.peer_rpc_timeout_ms),
+            ("degraded_after_ms", t.degraded_after_ms),
         ] {
             if v == 0 {
                 return invalid(format!("timers: {name} must be > 0"));
@@ -487,6 +494,8 @@ mod tests {
             node(1, 7001)
         );
         assert!(Config::from_toml(&backwards).is_err());
+        let never_degraded = format!("{}[timers]\ndegraded_after_ms = 0\n", node(1, 7001));
+        assert!(Config::from_toml(&never_degraded).is_err());
         let overlapping = format!(
             "{}[faults]\ninterval_min_ms = 5000\nsilence_max_ms = 10000\n",
             node(1, 7001)

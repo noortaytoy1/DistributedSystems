@@ -142,6 +142,14 @@ impl CloudState {
         self.responders.len()
     }
 
+    /// Every responder, held or not, in ID order.
+    pub fn responders(&self) -> Vec<Responder> {
+        self.responders
+            .values()
+            .map(|s| s.responder.clone())
+            .collect()
+    }
+
     /// Responders not held by any request, in ID order.
     pub fn free_responders(&self) -> Vec<Responder> {
         self.responders
