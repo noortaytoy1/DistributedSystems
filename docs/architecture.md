@@ -1113,13 +1113,33 @@ then LB-2.
 | FT-3 | Silence an idle follower                      | no latency change beyond noise                  | needs `silence_for` (C) |
 | FT-4 | Rejoin after 1–5 s and 15–20 s                | node serving again; digest equals the leader's  | replay tested; gate needs D |
 | FT-5 | Rejoin under load                             | recovery completes at every load                | needs D, F |
-| FT-6 | Returning node with a stale term              | 0 elections caused by the return                | open (D5) |
+| FT-6 | Returning node with a stale term              | 0 elections caused by the return                | `elections_after_rejoin` in the analysis (D127); needs lab runs |
 | FT-7 | Client retry after commit                     | cached reply, 1 execution                       | tested in `tests/cluster.rs` |
 | FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | schedule built (D78); needs the load generator |
 | FT-9 | Crash and restart                             | —                                               | dropped for Phase 1 (D24) |
 
 Method (D56, D63): latency on the client clock, durations with a monotonic clock on one machine,
 30 s warm-up dropped, repetitions per cell as decided in D63, raw logs kept per run.
+
+---
+
+### 11.3 Running an experiment (built, D62, D63, D130)
+
+```mermaid
+flowchart LR
+    CELL["experiments/&lt;experiment&gt;-&lt;cell&gt;.toml<br/>run line + config sections"] --> RUN["scripts/run-experiments.sh<br/>bash over SSH, from a hosts file"]
+    HOSTS["experiments/hosts"] --> RUN
+    RUN -->|"one config to all six,<br/>wipe storage and metrics"| N["3 node machines"]
+    RUN -->|"loadgen, unique client IDs"| C["3 client machines"]
+    RUN -->|"ctl silence / ctl skew"| N
+    N -->|rsync| LOGS["runs/&lt;experiment&gt;/&lt;cell&gt;/run-&lt;n&gt;/<br/>logs, config, commit, final status"]
+    C -->|rsync| LOGS
+    LOGS --> AN["analysis/analyze.py<br/>Python, venv"]
+    AN --> OUT["analysis/out/<br/>summary.csv, plots"]
+```
+
+Nodes also log `resource_usage` once a second (memory, CPU, network, queues, D128). The settings the
+experiments run under are in D129. It has been tried on one machine only; **SSH and the lab are untested.**
 
 ---
 

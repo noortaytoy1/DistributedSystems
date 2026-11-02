@@ -128,9 +128,9 @@ table below in sync.
 | D59 | One strict TOML config shared by every process                  | A    | Implemented       |
 | D60 | Deployment target: six Ubuntu machines on one LAN               | all  | Implemented       |
 | D61 | Peer port serves before Raft starts                             | A    | Implemented       |
-| D62 | `ctl` is the operator tool; no separate experiment runner yet | C | Accepted |
-| D63 | Experiment method: repetitions, warm-up, run length             | all  | Open              |
-| D64 | Analysis in Python                                              | all  | Pending approval  |
+| D62 | `ctl` is the operator tool; the experiment runner is bash over SSH | C | Implemented (D130) |
+| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented       |
+| D64 | Analysis in Python                                              | all  | Implemented       |
 | D65 | Testing strategy                                                | all  | Implemented       |
 | D66 | Rust coding rules                                               | all  | Implemented       |
 | D67 | Team process: parts, owners, pull requests, CI                  | all  | Implemented       |
@@ -191,6 +191,10 @@ table below in sync.
 | D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
 | D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
 | D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented |
+| D127 | FT-6: count elections after each `rejoined` | D, A | Implemented |
+| D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented |
+| D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm |
+| D130 | Experiment cells and the runner | all | Implemented, to confirm |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2308,7 +2312,8 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
 
 ### D63 · Experiment method: repetitions, warm-up, run length
 
-- **Date:** 2026-10-27 · **Part:** all · **Status:** **Open**
+- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:**
+  omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §11.4: 5-minute runs after a 30 s warm-up, at least **10** repetitions per
   configuration with different seeds, load levels 30–3,000 users, 95% confidence intervals.
   AGENTS.md and `experiments/README.md`: at least **5** repetitions, drop a 30 s warm-up.
@@ -2316,17 +2321,26 @@ decided by, decision) in the same PR (AGENTS.md, "Design decisions").
   which in the report. Keep each run's config and git commit hash next to its logs.
 - **Part B note (2026-11-01).** Part B runs its own tests 5 times for now (D83). That does not
   settle this entry, which stays open for the team.
+- **Settled (2026-11-02).** Two profiles. `quick`: 13 cells, 3 runs, 15 s warm-up + 60 s measured + 15 s
+  restart, about 1 hour. `full`: 5 runs, 30 s warm-up + 2 min measured, about 8 hours. The user first asked
+  for 1 or 2 runs; told that gives no usable confidence interval, they chose this. It amends AGENTS.md's "at
+  least 5" and "drop 30 s" for `quick`. Each run's config and git commit are kept next to its logs.
+- **Consequences.** `quick` falls short of the Phase 1 document's 10 runs and 5 minutes, and of `full`.
+  **The report must state which profile each figure came from, and these limits.** Cells with few
+  requests may also fall short of the spec's "tens of thousands of operations".
 
 ### D64 · Analysis in Python
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Pending approval
-- **Decision.** Analysis scripts (percentiles, confidence intervals, plots) are written in Python,
+- **Date:** 2026-10-20, approved 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:**
+  the team; approval reported by omar.leithym
+- **Decision.** Analysis scripts (percentiles, confidence intervals, plots) are written in Python, with a
+  venv and pinned `analysis/requirements.txt` (numpy, scipy, matplotlib),
   in `analysis/`, output to `analysis/out/` (ignored). They are tools, not part of the system.
 - **Why.** Plotting and statistics libraries; nobody has to write them in Rust.
 
 ### D62 · `ctl` is the operator tool; no separate experiment runner yet
 
-- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** C · **Status:** Accepted · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-20, confirmed 2026-11-01 · **Part:** C · **Status:** Implemented (D130) · **Decided by:** omar.leithym, on the agent's recommendation
 - **Decision.** `ctl status` shows role, term, leader, log index, applied index, digest, result
   count, `serving` and `silenced` for every node. `ctl silence --node N --ms M` and
   `ctl skew --node N --work W` inject faults and imbalance. The Phase 1 "experiment runner" (start
@@ -2879,3 +2893,91 @@ exist because of them.
   bidding and heartbeat suites unchanged.
 - **Report notes.** Publish-subscribe is a separate question (see the entry on it). Ask Dr Amr whether he
   expects either in Phase 1, since his notes read that way while the spec lists zone subscriptions under Phase 2.
+
+### D127 · FT-6: count elections after each `rejoined`
+
+- **Date:** 2026-11-02 · **Part:** D, A · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** FT-6 asks whether a returning node with a stale term forces an election. openraft 0.9.25
+  has no PreVote, so D75's gate is what prevents it, and it needs a measurement.
+- **Options considered.**
+  1. *Count new Raft terms in the logs within 10 s after each `rejoined`*: no new event, and it works on
+     every run that has a fault.
+  2. *A dedicated test only*: exists already in `tests/rejoin.rs`, but says nothing under load.
+- **Decision.** Option 1, as `elections_after_rejoin` in `analysis/analyze.py`. The target is 0.
+- **Consequences.** Timestamps come from several machines, so the 10 s window is approximate. A
+  coincidental election in that window counts against the return. Double faults (D125) can raise it
+  legitimately, so read it on one-victim cells.
+- **Where.** `analysis/analyze.py::elections_after_rejoin`.
+- **How we check it.** `analysis/test_analyze.py`.
+
+### D128 · `resource_usage`: memory, CPU, network and queues once a second
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation; the network and queue fields by the agent, on the instruction not to be asked
+- **Context.** The spec lists CPU, memory, network and queue behaviour among the measurements, and
+  nothing logged memory or network.
+- **Options considered.**
+  1. *An event from the node's reporter, read from `/proc`*: no new dependency, and it lands in the same
+     log as everything else.
+  2. *`sysstat` on each machine*: a second log format, and an install on six machines.
+  3. *A crate such as `sysinfo`*: a new dependency for three small files.
+- **Decision.** Option 1. Event `resource_usage { rss_kb, cpu_ticks, net_rx_bytes, net_tx_bytes, queued,
+  running }`, once a second, from `node/usage.rs`, read off the async runtime. `client_done` also gains
+  `no_responder`, because the analysis needs the share of plans that sent nobody (D111).
+- **Consequences.** The network counters cover the machine, not the process, and leave out loopback, so
+  they read zero on one machine and include any other traffic in the lab. `cpu_ticks` assumes 100 ticks per
+  second when converted, which holds on Ubuntu.
+- **Where.** `node/usage.rs`, `node/mod.rs::spawn_reporter`, `metrics.rs`.
+- **How we check it.** `node::usage::tests`; `analysis/test_analyze.py`.
+
+### D129 · Experiment load: `plan_work`, responders and think time
+
+- **Date:** 2026-11-02 · **Part:** E, F · **Status:** Implemented, to confirm · **Decided by:** the agent,
+  on omar.leithym's instruction not to be asked; to be confirmed in the PR review
+- **Context.** Two problems would have made the experiments measure the wrong thing. `workers.plan_work`
+  defaults to 0, where a plan takes under a microsecond, while the spec wants a planner that creates real
+  load, and load balancing has nothing to balance without it. And D111's 30 responders at 600 ms give a
+  capacity of about 50 assignments per second, so at high load nearly every plan would have no responder and
+  E1 would mostly measure that path.
+- **Options considered.**
+  1. *In the cells only: `plan_work = 1000`, `campus.responders = 300`, `think_ms = 1000`*: defaults and
+     the demo stay as agreed.
+  2. *Change the defaults*: every config and test moves, days before the deadline.
+  3. *Leave them, and report the limits*: the honest minimum, but E1 and E2 would show little.
+- **Decision.** Option 1. **`plan_work = 1000`** took about 4 ms per plan on the development machine
+  (calibrated by timing `planner::plan`; this is a setting, not a result). With 4 threads on 3 nodes that is a
+  ceiling near 3000 plans per second. **300 responders** give about 500 assignments per second by D111's
+  arithmetic. **`think_ms = 1000`** makes each user offer about one request per second, so 30, 300 and 3000
+  users run well under, under, and at the planning ceiling. `cpu_weight = 1` in the cells: score is in
+  microseconds and CPU in permille, so full CPU weighs about one job's expected wait at this `plan_work`.
+  `skew_work = 5000` on one node makes its plans about five times slower.
+- **Why.** The sweep then crosses from idle into overload, which is what a scaling figure should show. The
+  responders stay a real limit at the top, and `no_responder_share` reports it instead of hiding it.
+- **Consequences.** Above 500 requests per second, plans increasingly have no responder. **The lab machines
+  may differ**: check `service_mean_us` on one short cell first. A closed loop cannot exceed its users' rate, so
+  overload shows as latency, not as lost offered load (D54). The demo keeps the defaults.
+- **Where.** `experiments/*.toml`, `planner.rs::ROUNDS_PER_UNIT` (its comment now gives the measured cost).
+- **How we check it.** `service_mean_us` and `no_responder_share` in every run's summary.
+- **Report notes.** State these settings beside every figure.
+
+### D130 · Experiment cells and the runner
+
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, to confirm · **Decided by:** bash over SSH by
+  omar.leithym (D62); the cell format and the extra `full` cells by the agent, on the instruction not to be asked
+- **Context.** The agreed `quick` cells are E1 (30, 300, 3000 users × 2 policies), E2/E6 (skew × 2 scores),
+  E3/E4/FT-6 (2 loads × 2 victims), E5 (faults off). `full` was agreed at about 31 cells with the rest to be defined.
+- **Options considered.** For the format:
+  1. *A TOML overlay plus a `# run:` line*: the file is both the config and the record of how it ran, and
+     strict config parsing checks it.
+  2. *A table in one script*: shorter, but no single file to point to per cell, against `experiments/README.md`.
+  3. *A separate manifest beside each config*: two files per cell to keep in step.
+- **Decision.** Option 1. `scripts/run-experiments.sh` and `lab-build.sh` read a hosts file and share
+  `lab-common.sh`; the ssh target `local` runs on one machine. The other 18 `full` cells: E1 at 100 and 1000
+  users (4); the other two scores (2); silences of 3 s and 20 s at 2 loads (4); faults on (1); FT-8 (1); P-2 at
+  bid windows of 5, 10, 20, 50 ms (4); degraded at 2 loads (2).
+- **Consequences.** Machines need SSH keys and rsync. A fault starts a third of the way into the measured time.
+  `tests/experiment_cells.rs` fails if a cell stops being a valid config or the counts change.
+- **Where.** `experiments/`, `scripts/`, `analysis/`.
+- **How we check it.** The whole pipeline was tried on one machine with `hosts.local`, short durations and three
+  cells, to test the scripts only. **It has not run over SSH or on the lab machines.**

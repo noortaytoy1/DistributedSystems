@@ -218,6 +218,7 @@ impl MeshClient {
             latency_us: latency.as_micros() as u64,
             attempts,
             provisional,
+            no_responder: plan.responder.is_none(),
         });
         Submitted {
             from: reply.from,

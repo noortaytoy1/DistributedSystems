@@ -1,0 +1,7 @@
+# Everything on this machine, for trying the scripts. Never for results.
+node     1   127.0.0.1   local   7001  8001
+node     2   127.0.0.1   local   7002  8002
+node     3   127.0.0.1   local   7003  8003
+client   1   127.0.0.1   local
+client   2   127.0.0.1   local
+client   3   127.0.0.1   local

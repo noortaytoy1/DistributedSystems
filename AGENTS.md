@@ -262,8 +262,9 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   adds and plots their own events. Keep field names stable once a script reads them.
 - Client latency is measured on the client clock. Durations are measured with
   `std::time::Instant`, never by subtracting wall-clock timestamps from different machines.
-- Run at least 5 repetitions per experiment cell, drop a 30 s warm-up, and keep each run's raw
-  logs. Raw data never goes into git: `runs/` and `*.jsonl` are ignored.
+- Two profiles (D63): `full` is 5 runs per cell with a 30 s warm-up and 2 min measured; `quick` is 3
+  runs with 15 s and 60 s, and the report states its limits. Keep each run's raw logs. Raw data never
+  goes into git: `runs/` and `*.jsonl` are ignored.
 - Experiment configs live in `experiments/`, analysis code in `analysis/`.
 
 ## Skills this project needs
@@ -278,8 +279,7 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **E:** CPU-bound work in async systems, bounded queues and backpressure.
 - **F:** load generation (open versus closed loop), percentiles, statistical design of
   experiments.
-- **Analysis:** percentiles, confidence intervals, and plotting (Python is pending the
-  instructor's approval).
+- **Analysis:** percentiles, confidence intervals, and plotting, in Python (D64).
 
 ## Notes for AI coding agents
 
