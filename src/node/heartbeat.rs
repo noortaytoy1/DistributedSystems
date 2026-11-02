@@ -22,7 +22,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::metrics::Event;
 use crate::node::NodeContext;
-use crate::proto::{NodeId, PeerBody, PeerEnvelope};
+use crate::proto::{NodeId, PeerBody};
 
 /// When each peer was last heard from, and who is suspected. Takes the time as an argument so it
 /// is easy to test.
@@ -131,23 +131,20 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
                 lock(&ctx.suspicion).reset(peers.iter().map(|p| p.peer()), Instant::now());
             }
 
-            let (me, term) = (ctx.id, ctx.consensus.status().term);
-            let calls = peers.iter().map(|peer| async move {
-                let beat = PeerEnvelope {
-                    from: me,
-                    term,
-                    body: PeerBody::Heartbeat,
-                };
-                // Any answer, even StaleTerm, proves the peer is up.
-                peer.call(beat, interval).await.ok().map(|_| peer.peer())
-            });
-            let answered = futures::future::join_all(calls).await;
+            let term = ctx.consensus.status().term;
+            let answers = ctx
+                .peers
+                .broadcast(term, interval, || PeerBody::Heartbeat)
+                .await;
 
             let now = Instant::now();
             let changes = {
                 let mut s = lock(&ctx.suspicion);
-                for peer in answered.into_iter().flatten() {
-                    s.heard_from(peer, now);
+                for (peer, answer) in answers {
+                    // Any answer, even StaleTerm, proves the peer is up.
+                    if answer.is_ok() {
+                        s.heard_from(peer, now);
+                    }
                 }
                 s.update(now)
             };

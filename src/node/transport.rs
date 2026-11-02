@@ -402,6 +402,26 @@ impl PeerSet {
     pub fn iter(&self) -> impl Iterator<Item = &Arc<PeerClient>> {
         self.peers.values()
     }
+
+    /// Group send: one copy of a message to every peer, sent at once, so a slow peer holds up
+    /// nobody else. Best effort, with no ordering across senders: a peer that misses a copy is
+    /// reported here and not retried (D126). Anything that must be agreed goes through Raft.
+    pub async fn broadcast(
+        &self,
+        term: Term,
+        timeout: Duration,
+        body: impl Fn() -> PeerBody,
+    ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
+        let calls = self.peers.values().map(|peer| {
+            let envelope = PeerEnvelope {
+                from: self.me,
+                term,
+                body: body(),
+            };
+            async move { (peer.peer(), peer.call(envelope, timeout).await) }
+        });
+        futures::future::join_all(calls).await
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -15,7 +15,7 @@ use super::{NodeContext, cpu, lock};
 use crate::bidding::{BidRounds, BidStatus, LoadInputs, ServiceTime, load_score};
 use crate::config::{AssignmentPolicy, Config};
 use crate::metrics::Event;
-use crate::proto::{Bid, ClientRequest, NodeId, PeerBody, PeerEnvelope};
+use crate::proto::{Bid, ClientRequest, NodeId, PeerBody};
 
 /// How often closed rounds past their grace period are dropped.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
@@ -133,25 +133,21 @@ pub fn on_bid(ctx: &NodeContext, from: NodeId, bid: &Bid) {
     lock(&ctx.bids.rounds).add_bid((bid.request, bid.attempt), from, bid.score, Instant::now());
 }
 
-/// Sends the bid to each peer without waiting: the window runs by the clock, so a slow peer must
+/// Sends the bid to the group without waiting: the window runs by the clock, so a slow peer must
 /// not hold it up. A lost bid can only cause a split decision, which the first commit settles.
-/// Each task ends within the peer RPC timeout, so none needs an owner.
+/// The task ends within the peer RPC timeout, so it needs no owner.
 fn send_bid(ctx: &NodeContext, bid: Bid) {
     let term = ctx.consensus.status().term;
     let timeout = ctx.config.timers.peer_rpc_timeout();
-    for peer in ctx.peers.iter() {
-        let peer = peer.clone();
-        let envelope = PeerEnvelope {
-            from: ctx.id,
-            term,
-            body: PeerBody::Bid(bid.clone()),
-        };
-        tokio::spawn(async move {
-            if let Err(e) = peer.call(envelope, timeout).await {
-                tracing::debug!("bid not delivered: {e}");
+    let peers = ctx.peers.clone();
+    tokio::spawn(async move {
+        let sent = peers.broadcast(term, timeout, || PeerBody::Bid(bid.clone()));
+        for (peer, outcome) in sent.await {
+            if let Err(e) = outcome {
+                tracing::debug!(peer, "bid not delivered: {e}");
             }
-        });
-    }
+        }
+    });
 }
 
 /// Starts the round cleanup and the CPU sampler. Neither is needed under leader dispatch.

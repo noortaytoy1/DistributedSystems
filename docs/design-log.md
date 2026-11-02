@@ -190,6 +190,7 @@ table below in sync.
 | D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented |
 | D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
 | D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
+| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented |
 are conflicts between the Phase 1 architecture document and the code. They stay
 open until someone implements the related code: whoever works on it settles the decision first.
 During "grill with docs" the agent finds the open entries the task touches, asks the person to
@@ -2844,3 +2845,37 @@ exist because of them.
 - **How we check it.** `tests/degraded.rs::the_cluster_recovers_when_the_longer_logs_were_all_silenced`, which
   hangs without this.
 - **Report notes.** A good example of a bug found by running under load rather than by unit tests.
+
+### D126 · Group communication named: `PeerSet::broadcast` and `MeshClient`
+
+- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+  agent's recommendation
+- **Context.** Dr Amr's notes ask for group communication, and for the application to send a message once
+  while the middleware gives the replicas their copies, with the two layers kept distinct. We already
+  did all of this, but in separate loops with no name a reader could point to.
+- **Options considered.**
+  1. *Name it with a small module and map the guarantees in the docs*: `PeerSet::broadcast`, used by
+     bids and heartbeats, and `MeshClient` as the client-side group send. No message changes.
+  2. *A group-communication library*: a new dependency doing distributed work (AGENTS.md rule 6), to
+     replace code that works.
+  3. *A reliable, ordered multicast of our own*: Raft already gives total order where we need it.
+- **Decision.** Option 1. The guarantees:
+
+  | Group send | Sender | Guarantee | What covers a lost copy |
+  |------------|--------|-----------|-------------------------|
+  | `MeshClient::submit` to all three nodes | application, through the client middleware | best effort, unordered | the client's retry with the same ID (D52) |
+  | Bids, through `PeerSet::broadcast` | each serving node | best effort, unordered | a split decision, settled by first commit (D27) |
+  | Heartbeats, through `PeerSet::broadcast` | every node | best effort, unordered | the next one; a real loss becomes a suspicion (D79) |
+  | Committed state, through Raft | the leader | totally ordered, agreed by a majority | openraft's log replication (library) |
+
+- **Why.** The state machine needs total order and already has it. Bids and heartbeats are soft: they
+  are worthless late, so retrying them would be wrong.
+- **Consequences.** `submit` is the application's one call and `MeshClient` is the middleware; the report
+  can show the layers directly. A bid is now one task sending to both peers, not one per peer; it still
+  never holds up the bid window.
+- **Where.** `node/transport.rs::PeerSet::broadcast`, `node/bids.rs::send_bid`, `node/heartbeat.rs`,
+  `client.rs::MeshClient`.
+- **How we check it.** `tests/heartbeat.rs::a_group_send_reaches_every_peer_and_reports_who_missed_it`, plus the
+  bidding and heartbeat suites unchanged.
+- **Report notes.** Publish-subscribe is a separate question (see the entry on it). Ask Dr Amr whether he
+  expects either in Phase 1, since his notes read that way while the spec lists zone subscriptions under Phase 2.

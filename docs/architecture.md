@@ -255,13 +255,45 @@ flowchart LR
 
 | Channel                   | Transport                                   | Pattern                                           | Status | Decisions |
 |---------------------------|---------------------------------------------|---------------------------------------------------|--------|-----------|
-| Client → every node       | TCP to `client_addr`                        | `ClientFrame::Request`, the same frame to all three | built (node), template (client) | D6, D17 |
+| Client → every node       | TCP to `client_addr`                        | `ClientFrame::Request`, the same frame to all three | built | D6, D17, D112 |
 | Node → client             | same connection                             | `ServerFrame::Reply`, matched by request ID       | built  | D8, D37 |
 | `ctl` → one node          | TCP to `client_addr`                        | `ClientFrame::Control` / `ServerFrame::Control`, bypasses the fault gate | built | D18, D23 |
 | Node ↔ node               | one TCP connection per peer pair direction, multiplexed | tarpc calls to `proto::PeerRpc` | built | D7, D119 |
 
 Every frame: a 4-byte big-endian length, then a bincode body (varint integers, at most 16 MiB,
 no trailing bytes). A malformed frame closes the connection (D16).
+
+### 5.1a Group communication (built, D126)
+
+The application sends once and the middleware makes the copies, so the layers stay distinct.
+
+```mermaid
+flowchart LR
+    subgraph APP["Application"]
+        USER["Simulated user:<br/>one call to submit(incident)"]
+    end
+    subgraph MW["Client middleware: MeshClient"]
+        COPY["Copies the request to every node,<br/>retries with the same ID,<br/>keeps the first reply"]
+    end
+    subgraph CLOUD["Cloud group"]
+        N1["Node 1"]
+        N2["Node 2"]
+        N3["Node 3"]
+    end
+    USER --> COPY
+    COPY --> N1
+    COPY --> N2
+    COPY --> N3
+    N1 <-->|"PeerSet::broadcast: bids, heartbeats<br/>best effort, unordered"| N2
+    N2 <-->|"Raft: committed state<br/>totally ordered"| N3
+```
+
+| Group send | Guarantee | What covers a lost copy |
+|------------|-----------|-------------------------|
+| `MeshClient::submit` to all nodes | best effort, unordered | the client's retry with the same ID (D52) |
+| Bids, `PeerSet::broadcast` | best effort, unordered | a split decision, settled by first commit (D27) |
+| Heartbeats, `PeerSet::broadcast` | best effort, unordered | the next heartbeat; a real loss becomes a suspicion (D79) |
+| Committed state, Raft | totally ordered, agreed by a majority | openraft's log replication |
 
 ### 5.2 Message catalogue
 
