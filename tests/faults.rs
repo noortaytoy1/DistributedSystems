@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -220,9 +220,9 @@ async fn no_scheduled_faults_when_fault_injection_is_disabled() {
     cluster.shutdown().await;
 }
 
-/// All three hold the same numbers, so they name one node. The first half of the claim is checked
-/// on every round in the logs. The second half keeps the check honest: at least one round has to
-/// be closed by all three, or there would be nothing for them to disagree on.
+/// All three hold the same numbers, so they name one node: the highest, for its own time. Checked
+/// on every round in the logs. At least one round has to be closed by all three, or there would be
+/// nothing for them to disagree on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_two_nodes_name_different_victims() {
     let dir = log_dir("split");
@@ -235,24 +235,36 @@ async fn no_two_nodes_name_different_victims() {
     wait_for_faults(&cluster, 3).await;
     cluster.shutdown().await;
 
-    let mut rounds: BTreeMap<u64, Vec<Option<NodeId>>> = BTreeMap::new();
+    let mut rounds: BTreeMap<u64, Vec<serde_json::Value>> = BTreeMap::new();
     for id in 1..=3 {
         for line in events_of(&dir, id, "fault_election") {
-            let named = line["victim"].as_u64();
             rounds
                 .entry(line["round"].as_u64().unwrap())
                 .or_default()
-                .push(named);
+                .push(line);
         }
     }
-    for (round, named) in &rounds {
-        let distinct: BTreeSet<_> = named.iter().flatten().collect();
-        assert!(distinct.len() <= 1, "round {round} named {named:?}");
+    let mut closed_by_all = 0;
+    for (round, lines) in &rounds {
+        let closed: Vec<_> = lines.iter().filter(|l| !l["victim"].is_null()).collect();
+        for line in &closed {
+            for field in ["tickets", "victim", "ms"] {
+                assert_eq!(line[field], closed[0][field], "round {round}: {lines:?}");
+            }
+            let tickets = line["tickets"].as_object().unwrap();
+            assert_eq!(tickets.len(), 3, "round {round}: {lines:?}");
+            let highest = tickets.values().filter_map(|t| t.as_u64()).max();
+            let victim = line["victim"].as_u64().unwrap().to_string();
+            assert_eq!(
+                tickets[&victim].as_u64(),
+                highest,
+                "round {round}: {lines:?}"
+            );
+        }
+        closed_by_all += usize::from(closed.len() == 3);
     }
     assert!(
-        rounds
-            .values()
-            .any(|named| named.len() == 3 && named.iter().all(Option::is_some)),
+        closed_by_all > 0,
         "no round was closed by all three: {rounds:?}"
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -475,9 +487,10 @@ async fn the_winner_goes_silent_for_its_own_time() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_schedule_resumes_after_two_nodes_were_out() {
     let cluster = TestCluster::start_with(3, fast_faults).await;
+    // On a busy machine an election can get to one of them first, which leaves it out all the same.
     let out = Duration::from_millis(1_000);
-    faults::silence_for(&cluster.node(1).ctx, out).unwrap();
-    faults::silence_for(&cluster.node(2).ctx, out).unwrap();
+    let _ = faults::silence_for(&cluster.node(1).ctx, out);
+    let _ = faults::silence_for(&cluster.node(2).ctx, out);
 
     wait_until(WAIT, "both to be back and serving", || {
         cluster
