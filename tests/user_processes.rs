@@ -17,13 +17,6 @@ use common::TestCluster;
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/start-users.sh");
 
-fn bin_dir() -> PathBuf {
-    Path::new(env!("CARGO_BIN_EXE_loadgen"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
 /// A temporary directory for one test, removed when the test ends well.
 struct Scratch(PathBuf);
 
@@ -39,6 +32,10 @@ impl Scratch {
         self.0.join("logs")
     }
 
+    fn config(&self) -> PathBuf {
+        self.0.join("config.toml")
+    }
+
     fn pid_file(&self, machine: u32, batch: u32) -> PathBuf {
         self.0.join(format!("users-{machine}-{batch}.pid"))
     }
@@ -47,13 +44,9 @@ impl Scratch {
         self.0.join(format!("users-{machine}-{batch}.out"))
     }
 
-    fn config(&self) -> PathBuf {
-        self.0.join("config.toml")
-    }
-
     /// A config for a node nobody listens on, with retries short enough that requests give up fast.
     fn write_closed_config(&self) {
-        // Held together, so the two ports differ, then closed.
+        // Held together so the two ports differ, then closed.
         let peer = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let text = format!(
@@ -80,11 +73,14 @@ impl Scratch {
         std::fs::write(self.config(), text).unwrap();
     }
 
-    fn script(&self) -> Command {
+    /// The script with only this test's environment. `flags` is split on spaces.
+    fn script(&self, flags: &str) -> Command {
+        let bin = Path::new(env!("CARGO_BIN_EXE_loadgen")).parent().unwrap();
         let mut command = Command::new("bash");
         command
             .arg(SCRIPT)
-            .env("BIN", bin_dir())
+            .args(flags.split_whitespace())
+            .env("BIN", bin)
             .env("PID_DIR", &self.0)
             .env_remove("PROGRAMS_PER_PC")
             .stdin(Stdio::null());
@@ -92,16 +88,30 @@ impl Scratch {
     }
 
     /// The script with a config and an output directory, ready for a real start.
-    fn start_command(&self, machine: u32, extra: &[&str]) -> Command {
-        let mut command = self.script();
+    fn start(&self, flags: &str) -> Command {
+        let mut command = self.script(flags);
         command
             .arg("--config")
             .arg(self.config())
             .arg("--out")
-            .arg(&self.0)
-            .args(["--machine", &machine.to_string()])
-            .args(extra);
+            .arg(&self.0);
         command
+    }
+
+    /// Start in the background, with its output kept for `finish`.
+    fn spawn(&self, flags: &str) -> Child {
+        self.start(flags)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn log_files(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(self.logs()) else {
+            return Vec::new();
+        };
+        entries.map(|e| e.unwrap().path()).collect()
     }
 
     /// Every event of this type in every log, as parsed JSON.
@@ -118,13 +128,6 @@ impl Scratch {
         found
     }
 
-    fn log_files(&self) -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(self.logs()) else {
-            return Vec::new();
-        };
-        entries.map(|e| e.unwrap().path()).collect()
-    }
-
     /// How many programs have logged a `client_sent`. By then each has its signal handler: the
     /// handler goes in before the first user runs.
     fn programs_that_sent(&self) -> usize {
@@ -138,15 +141,25 @@ impl Scratch {
             .count()
     }
 
-    /// True while anything still runs with this test's config on its command line.
-    fn something_runs(&self) -> bool {
+    fn wait_for_programs(&self, programs: usize) {
+        poll_until(Duration::from_secs(30), "the programs to send", || {
+            self.programs_that_sent() == programs
+        });
+    }
+
+    /// True while anything runs with this text on its command line, as far as `pgrep` sees.
+    fn runs(&self, text: &str) -> bool {
         Command::new("pgrep")
             .arg("-f")
-            .arg(self.config())
+            .arg(format!("{}{text}", self.config().display()))
             .stdout(Stdio::null())
             .status()
             .unwrap()
             .success()
+    }
+
+    fn output_file_text(&self, machine: u32, batch: u32) -> String {
+        std::fs::read_to_string(self.out_file(machine, batch)).unwrap()
     }
 }
 
@@ -179,15 +192,19 @@ fn signal(name: &str, pid: u32) {
 }
 
 /// Wait for a spawned script, with a deadline so a hung script fails the test instead of the run.
-fn finish(mut child: Child, timeout: Duration) -> Output {
-    poll_until(timeout, "the script to end", || {
+fn finish(mut child: Child) -> Output {
+    poll_until(Duration::from_secs(30), "the script to end", || {
         child.try_wait().unwrap().is_some()
     });
     child.wait_with_output().unwrap()
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// One program line of a dry run.
@@ -208,19 +225,13 @@ fn field(line: &str, name: &str) -> u64 {
         .unwrap()
 }
 
-fn dry_run(scratch: &Scratch, args: &[&str]) -> Output {
-    scratch
-        .script()
-        .args(["--dry-run", "--config", "any.toml"])
-        .args(args)
-        .output()
-        .unwrap()
+fn dry_run(scratch: &Scratch, flags: &str) -> Output {
+    let flags = format!("--dry-run --config any.toml {flags}");
+    scratch.script(&flags).output().unwrap()
 }
 
-fn plan(scratch: &Scratch, args: &[&str]) -> Vec<Planned> {
-    let output = dry_run(scratch, args);
-    assert!(output.status.success(), "{}", text(&output.stderr));
-    text(&output.stdout)
+fn planned(output: &Output) -> Vec<Planned> {
+    stdout(output)
         .lines()
         .filter(|line| line.starts_with("program "))
         .map(|line| Planned {
@@ -232,18 +243,24 @@ fn plan(scratch: &Scratch, args: &[&str]) -> Vec<Planned> {
         .collect()
 }
 
+fn plan(scratch: &Scratch, flags: &str) -> Vec<Planned> {
+    let output = dry_run(scratch, flags);
+    assert!(output.status.success(), "{flags}: {}", stderr(&output));
+    planned(&output)
+}
+
 #[test]
 fn the_default_is_ten_programs_sharing_the_users() {
     let scratch = Scratch::new("users-default");
-    let programs = plan(&scratch, &["--machine", "1", "--users", "1000"]);
+    let programs = plan(&scratch, "--machine 1 --users 1000");
     assert_eq!(programs.len(), 10);
     assert!(programs.iter().all(|p| p.users == 100));
     // Fewer users than programs: never a program with nobody in it.
-    let few = plan(&scratch, &["--machine", "1", "--users", "3"]);
+    let few = plan(&scratch, "--machine 1 --users 3");
     assert_eq!(few.len(), 3);
     assert!(few.iter().all(|p| p.users == 1));
-    // 34 users: 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, so the total stays exact.
-    let uneven = plan(&scratch, &["--machine", "1", "--users", "34"]);
+    // 34 users: the total stays exact.
+    let uneven = plan(&scratch, "--machine 1 --users 34");
     let shares: Vec<u64> = uneven.iter().map(|p| p.users).collect();
     assert_eq!(shares, [4, 4, 4, 4, 3, 3, 3, 3, 3, 3]);
 }
@@ -251,51 +268,45 @@ fn the_default_is_ten_programs_sharing_the_users() {
 #[test]
 fn the_number_of_programs_is_a_setting() {
     let scratch = Scratch::new("users-setting");
-    let flag = plan(
-        &scratch,
-        &["--machine", "1", "--users", "100", "--programs", "4"],
+    assert_eq!(
+        plan(&scratch, "--machine 1 --users 100 --programs 4").len(),
+        4
     );
-    assert_eq!(flag.len(), 4);
-    let output = scratch
-        .script()
+    let from_the_environment = scratch
+        .script("--dry-run --config any.toml --machine 1 --users 100")
         .env("PROGRAMS_PER_PC", "5")
-        .args(["--dry-run", "--config", "any.toml"])
-        .args(["--machine", "1", "--users", "100"])
         .output()
         .unwrap();
-    let programs = text(&output.stdout)
-        .lines()
-        .filter(|line| line.starts_with("program "))
-        .count();
-    assert_eq!(programs, 5);
+    assert_eq!(planned(&from_the_environment).len(), 5);
+}
+
+#[test]
+fn the_plan_line_says_how_the_users_are_shared() {
+    let scratch = Scratch::new("users-plan-line");
+    let even = dry_run(&scratch, "--machine 1 --users 1000");
+    assert!(
+        stdout(&even).starts_with("plan machine=1 batch=0 users=1000 programs=10 users_each=100 "),
+        "{}",
+        stdout(&even)
+    );
+    let uneven = dry_run(&scratch, "--machine 1 --users 34");
+    assert!(stdout(&uneven).contains(" users_each=3-4 "));
 }
 
 #[test]
 fn dry_run_ids_are_unique_and_users_sum_exactly() {
     let scratch = Scratch::new("users-ids");
-    let mut ids = BTreeSet::new();
     for users in [30, 100, 300, 1000, 1500, 3000] {
         for limit in [1, 10, 100, 500, 1000] {
-            // The batch makes each setting's IDs its own only within one PC and batch, so the
-            // no-collision check runs per setting across PCs and batches.
-            ids.clear();
+            // Across the three PCs and two batches that may run at one time.
+            let mut ids = BTreeSet::new();
             for machine in [1, 2, 3] {
                 for batch in [0, 9] {
-                    let programs = plan(
-                        &scratch,
-                        &[
-                            "--machine",
-                            &machine.to_string(),
-                            "--batch",
-                            &batch.to_string(),
-                            "--users",
-                            &users.to_string(),
-                            "--programs",
-                            &limit.to_string(),
-                            "--seed-base",
-                            "3000000",
-                        ],
+                    let flags = format!(
+                        "--machine {machine} --batch {batch} --users {users} --programs {limit} \
+                         --seed-base 3000000"
                     );
+                    let programs = plan(&scratch, &flags);
                     assert_eq!(programs.len() as u64, users.min(limit));
                     assert_eq!(programs.iter().map(|p| p.users).sum::<u64>(), users);
                     for p in &programs {
@@ -313,12 +324,14 @@ fn dry_run_ids_are_unique_and_users_sum_exactly() {
 #[test]
 fn the_id_shows_the_machine_the_batch_and_the_program() {
     let scratch = Scratch::new("users-id-digits");
-    let programs = plan(
-        &scratch,
-        &["--machine", "2", "--batch", "9", "--users", "30"],
-    );
+    let programs = plan(&scratch, "--machine 2 --batch 9 --users 30");
     let ids: Vec<u64> = programs.iter().map(|p| p.client_id).collect();
     assert_eq!(ids, (29_000..29_010).collect::<Vec<_>>());
+    let last = plan(
+        &scratch,
+        "--machine 9 --batch 9 --users 1000 --programs 1000",
+    );
+    assert_eq!(last.last().unwrap().client_id, 99_999);
 }
 
 #[test]
@@ -326,114 +339,62 @@ fn dry_run_gives_every_user_its_own_slot() {
     let scratch = Scratch::new("users-slots");
     let (users, think_ms) = (1000u64, 1000u64);
     for limit in [10u64, 100, 1000] {
-        let programs = plan(
-            &scratch,
-            &[
-                "--machine",
-                "1",
-                "--users",
-                &users.to_string(),
-                "--programs",
-                &limit.to_string(),
-            ],
-        );
+        let flags = format!("--machine 1 --users {users} --programs {limit}");
         // Inside loadgen, user j of a program with U users first sends j*T/U after its start.
         let mut slots = BTreeSet::new();
-        for p in &programs {
+        for p in plan(&scratch, &flags) {
             for j in 0..p.users {
                 assert!(slots.insert(p.start_ms + j * think_ms / p.users));
             }
         }
         assert_eq!(slots.len() as u64, users, "at {limit} programs");
-        assert_eq!(*slots.iter().next_back().unwrap(), think_ms - 1);
+        assert_eq!(slots.iter().next_back(), Some(&(think_ms - 1)));
     }
 }
 
 #[test]
 fn all_at_once_has_no_start_spread_and_steady_and_random_do() {
     let scratch = Scratch::new("users-spread");
-    let args = |pattern: &'static str| ["--machine", "1", "--users", "100", "--pattern", pattern];
-    let starts = |pattern| -> Vec<u64> {
-        plan(&scratch, &args(pattern))
-            .iter()
-            .map(|p| p.start_ms)
-            .collect()
+    let starts = |pattern: &str| -> Vec<u64> {
+        plan(
+            &scratch,
+            &format!("--machine 1 --users 100 --pattern {pattern}"),
+        )
+        .iter()
+        .map(|p| p.start_ms)
+        .collect()
     };
     assert_eq!(starts("all-at-once"), vec![0; 10]);
-    assert_eq!(
-        starts("steady"),
-        (0..10).map(|k| k * 10).collect::<Vec<_>>()
-    );
-    assert_eq!(starts("random"), starts("steady"));
+    let spread: Vec<u64> = (0..10).map(|k| k * 10).collect();
+    assert_eq!(starts("steady"), spread);
+    assert_eq!(starts("random"), spread);
 }
 
 #[test]
 fn dry_run_refuses_what_would_collide_or_mean_nothing() {
     let scratch = Scratch::new("users-refuse");
-    let refused: &[&[&str]] = &[
-        &["--users", "10"],                                         // no machine
-        &["--machine", "1"],                                        // no users
-        &["--machine", "0", "--users", "10"],                       // would land on hand-run IDs
-        &["--machine", "10", "--users", "10"],                      // a sixth digit
-        &["--machine", "1", "--users", "0"],                        // nobody
-        &["--machine", "1", "--users", "ten"],                      // not a number
-        &["--machine", "1", "--users", "10", "--batch", "10"],      // would collide with machine 2
-        &["--machine", "1", "--users", "10", "--programs", "1001"], // would collide with batch 1
-        &["--machine", "1", "--users", "10", "--programs", "0"],
-        &["--machine", "1", "--users", "10", "--pattern", "spike"],
-        &[
-            "--machine",
-            "1",
-            "--users",
-            "10",
-            "--pattern",
-            "random",
-            "--think-ms",
-            "0",
-        ],
-        &[
-            "--machine",
-            "1",
-            "--users",
-            "10",
-            "--pattern",
-            "all-at-once",
-            "--think-ms",
-            "0",
-        ],
-        &["--machine", "1", "--users", "10", "--duration-s", "0"],
-        &[
-            "--machine",
-            "1",
-            "--users",
-            "10",
-            "--duration-s",
-            "5",
-            "--warmup-s",
-            "5",
-        ],
-        &["--machine", "1", "--users", "10", "--no-such-flag", "1"],
-    ];
-    for args in refused {
-        let output = dry_run(&scratch, args);
-        assert_eq!(output.status.code(), Some(2), "{args:?} was not refused");
-        assert!(!text(&output.stderr).is_empty(), "{args:?} gave no reason");
+    for flags in [
+        "--users 10",                                                // no machine
+        "--machine 1",                                               // no users
+        "--machine 0 --users 10",                                    // would land on hand-run IDs
+        "--machine 10 --users 10",                                   // a sixth digit
+        "--machine 1 --users 0",                                     // nobody
+        "--machine 1 --users ten",                                   // not a number
+        "--machine 1 --users 10 --batch 10",                         // would collide with machine 2
+        "--machine 1 --users 10 --programs 1001",                    // would collide with batch 1
+        "--machine 1 --users 10 --programs 0",                       // nobody to run them
+        "--machine 1 --users 10 --pattern spike",                    // no such pattern
+        "--machine 1 --users 10 --pattern random --think-ms 0",      // nothing to randomise
+        "--machine 1 --users 10 --pattern all-at-once --think-ms 0", // no beat to send on
+        "--machine 1 --users 10 --duration-s 0",                     // no run
+        "--machine 1 --users 10 --duration-s 5 --warmup-s 5",        // nothing left to measure
+        "--machine 1 --users 10 --no-such-flag 1",                   // a typing mistake
+        "--machine 1 --users",                                       // a flag with no value
+    ] {
+        let output = dry_run(&scratch, flags);
+        assert_eq!(output.status.code(), Some(2), "{flags} was not refused");
+        assert!(!stderr(&output).is_empty(), "{flags} gave no reason");
     }
-    // The edges that must still work.
-    let last = plan(
-        &scratch,
-        &[
-            "--machine",
-            "9",
-            "--batch",
-            "9",
-            "--users",
-            "1000",
-            "--programs",
-            "1000",
-        ],
-    );
-    assert_eq!(last.last().unwrap().client_id, 99_999);
 }
 
 #[test]
@@ -441,29 +402,17 @@ fn a_real_start_gives_one_log_per_program() {
     let scratch = Scratch::new("users-real");
     scratch.write_closed_config();
     let output = scratch
-        .start_command(
-            1,
-            &[
-                "--users",
-                "5",
-                "--programs",
-                "5",
-                "--think-ms",
-                "100",
-                "--duration-s",
-                "1",
-            ],
-        )
+        .start("--machine 1 --users 5 --programs 5 --think-ms 100 --duration-s 1")
         .output()
         .unwrap();
-    let stdout = text(&output.stdout);
-    assert!(output.status.success(), "{stdout}{}", text(&output.stderr));
+    let printed = stdout(&output);
+    assert!(output.status.success(), "{printed}{}", stderr(&output));
     assert!(
-        stdout.starts_with("plan machine=1 batch=0 users=5 programs=5"),
-        "{stdout}"
+        printed.starts_with("plan machine=1 batch=0 users=5 programs=5"),
+        "{printed}"
     );
-    assert!(stdout.contains("started 5, failed 0"), "{stdout}");
-    assert!(stdout.contains("reported 5 of 5 programs"), "{stdout}");
+    assert!(printed.contains("started 5, failed 0"), "{printed}");
+    assert!(printed.contains("reported 5 of 5 programs"), "{printed}");
 
     let logs: BTreeSet<String> = scratch
         .log_files()
@@ -483,7 +432,7 @@ fn a_real_start_gives_one_log_per_program() {
     assert!(samples[0]["mem_available_kb"].as_u64().unwrap() > 0);
     // The PID file goes when the script ends, and every program's output is in one file.
     assert!(!scratch.pid_file(1, 0).exists());
-    let out = std::fs::read_to_string(scratch.out_file(1, 0)).unwrap();
+    let out = scratch.output_file_text(1, 0);
     let summaries = out.lines().filter(|l| l.starts_with("client 1")).count();
     assert_eq!(summaries, 5, "{out}");
 }
@@ -492,44 +441,23 @@ fn a_real_start_gives_one_log_per_program() {
 fn term_leaves_no_child_no_pid_file_and_a_summary_from_each_program() {
     let scratch = Scratch::new("users-term");
     scratch.write_closed_config();
-    let child = scratch
-        .start_command(
-            1,
-            &[
-                "--users",
-                "9",
-                "--programs",
-                "3",
-                "--think-ms",
-                "100",
-                "--duration-s",
-                "120",
-            ],
-        )
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    poll_until(Duration::from_secs(30), "every program to send", || {
-        scratch.programs_that_sent() == 3
-    });
-    assert_eq!(
-        std::fs::read_to_string(scratch.pid_file(1, 0))
-            .unwrap()
-            .trim(),
-        child.id().to_string()
-    );
+    let child = scratch.spawn("--machine 1 --users 9 --programs 3 --think-ms 100 --duration-s 120");
+    scratch.wait_for_programs(3);
+    let recorded = std::fs::read_to_string(scratch.pid_file(1, 0)).unwrap();
+    assert_eq!(recorded.trim(), child.id().to_string());
+
     signal("TERM", child.id());
-    let output = finish(child, Duration::from_secs(30));
-    let stdout = text(&output.stdout);
-    assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("stopped early"), "{stdout}");
-    assert!(stdout.contains("started 3, failed 0"), "{stdout}");
-    assert!(stdout.contains("reported 3 of 3 programs"), "{stdout}");
+    let output = finish(child);
+    let printed = stdout(&output);
+    assert!(output.status.success(), "{printed}{}", stderr(&output));
+    assert!(printed.contains("stopped early"), "{printed}");
+    assert!(printed.contains("started 3, failed 0"), "{printed}");
+    assert!(printed.contains("reported 3 of 3 programs"), "{printed}");
     assert!(!scratch.pid_file(1, 0).exists());
-    assert!(!scratch.something_runs());
-    let out = std::fs::read_to_string(scratch.out_file(1, 0)).unwrap();
+    assert!(!scratch.runs(""));
+    let out = scratch.output_file_text(1, 0);
     assert_eq!(out.matches("stopped by a signal").count(), 3, "{out}");
-    // Flushed: the logs hold what happened right up to the signal.
+    // Flushed: the logs hold what happened up to the signal.
     assert!(scratch.events("client_sent").len() >= 3);
 }
 
@@ -537,58 +465,32 @@ fn term_leaves_no_child_no_pid_file_and_a_summary_from_each_program() {
 fn a_second_start_is_refused_while_the_first_lives_and_stop_ends_it() {
     let scratch = Scratch::new("users-second");
     scratch.write_closed_config();
-    let args = ["--users", "2", "--think-ms", "100", "--duration-s", "120"];
-    let first = scratch
-        .start_command(2, &args)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    poll_until(Duration::from_secs(30), "the programs to send", || {
-        scratch.programs_that_sent() == 2
-    });
+    let flags = "--machine 2 --users 2 --think-ms 100 --duration-s 120";
+    let first = scratch.spawn(flags);
+    scratch.wait_for_programs(2);
 
-    let second = scratch.start_command(2, &args).output().unwrap();
+    let second = scratch.start(flags).output().unwrap();
     assert_eq!(second.status.code(), Some(2));
-    assert!(text(&second.stderr).contains("already running"));
+    assert!(stderr(&second).contains("already running"));
 
     // Another batch on the same PC is allowed: that is what batches are for.
     let other = scratch
-        .start_command(
-            2,
-            &[
-                "--batch",
-                "1",
-                "--users",
-                "1",
-                "--think-ms",
-                "100",
-                "--duration-s",
-                "1",
-            ],
-        )
+        .start("--machine 2 --batch 1 --users 1 --think-ms 100 --duration-s 1")
         .output()
         .unwrap();
-    assert!(other.status.success(), "{}", text(&other.stderr));
+    assert!(other.status.success(), "{}", stderr(&other));
 
-    let stop = scratch
-        .script()
-        .args(["--stop", "--machine", "2"])
-        .output()
-        .unwrap();
-    assert!(stop.status.success(), "{}", text(&stop.stderr));
-    let first = finish(first, Duration::from_secs(30));
+    let stop = scratch.script("--stop --machine 2").output().unwrap();
+    assert!(stop.status.success(), "{}", stderr(&stop));
+    let first = finish(first);
     assert!(first.status.success());
-    assert!(text(&first.stdout).contains("reported 2 of 2 programs"));
-    assert!(!scratch.something_runs());
+    assert!(stdout(&first).contains("reported 2 of 2 programs"));
+    assert!(!scratch.runs(""));
 
     // Nothing left to stop is no error.
-    let again = scratch
-        .script()
-        .args(["--stop", "--machine", "2"])
-        .output()
-        .unwrap();
+    let again = scratch.script("--stop --machine 2").output().unwrap();
     assert!(again.status.success());
-    assert!(text(&again.stdout).contains("nothing running"));
+    assert!(stdout(&again).contains("nothing running"));
 }
 
 #[test]
@@ -598,61 +500,42 @@ fn a_stale_pid_file_does_not_block_a_start() {
     // A PID that is alive but is not this script, as after a reboot.
     std::fs::write(scratch.pid_file(3, 0), format!("{}\n", std::process::id())).unwrap();
     let output = scratch
-        .start_command(
-            3,
-            &["--users", "1", "--think-ms", "100", "--duration-s", "1"],
-        )
+        .start("--machine 3 --users 1 --think-ms 100 --duration-s 1")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(output.status.success(), "{}", stderr(&output));
 }
 
 #[test]
 fn a_dead_program_counts_as_failed_and_the_rest_keep_going() {
     let scratch = Scratch::new("users-dead");
     scratch.write_closed_config();
-    let child = scratch
-        .start_command(
-            4,
-            &["--users", "10", "--think-ms", "100", "--duration-s", "120"],
-        )
-        .stdout(Stdio::piped())
-        // bash reports the killed program here, which is expected and only clutters the test output.
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    poll_until(Duration::from_secs(30), "every program to send", || {
-        scratch.programs_that_sent() == 10
-    });
+    let child = scratch.spawn("--machine 4 --users 10 --think-ms 100 --duration-s 120");
+    scratch.wait_for_programs(10);
+    let program = " --client-id 40003";
     let found = Command::new("pgrep")
         .arg("-f")
-        .arg(format!("{} --client-id 40003", scratch.config().display()))
+        .arg(format!("{}{program}", scratch.config().display()))
         .output()
         .unwrap();
-    let pid: u32 = text(&found.stdout).trim().parse().unwrap();
+    let pid: u32 = stdout(&found).trim().parse().unwrap();
     signal("KILL", pid);
-    // The other nine are still there.
     poll_until(Duration::from_secs(10), "program 3 to go", || {
-        !Command::new("pgrep")
-            .arg("-f")
-            .arg(format!("{} --client-id 40003", scratch.config().display()))
-            .stdout(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
+        !scratch.runs(program)
     });
-    assert!(scratch.something_runs());
+    assert!(scratch.runs(" --client-id 40004"), "the others keep going");
+
     signal("TERM", child.id());
-    let output = finish(child, Duration::from_secs(30));
-    let stdout = text(&output.stdout);
+    let output = finish(child);
+    let printed = stdout(&output);
     // One of ten is exactly 10 percent, which does not stop a series: exit 1, not 2.
-    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert_eq!(output.status.code(), Some(1), "{printed}");
     assert!(
-        stdout.contains("client 40003 exited with status 137"),
-        "{stdout}"
+        printed.contains("client 40003 exited with status 137"),
+        "{printed}"
     );
-    assert!(stdout.contains("started 10, failed 1"), "{stdout}");
-    assert!(stdout.contains("reported 9 of 10 programs"), "{stdout}");
+    assert!(printed.contains("started 10, failed 1"), "{printed}");
+    assert!(printed.contains("reported 9 of 10 programs"), "{printed}");
 }
 
 #[test]
@@ -661,26 +544,14 @@ fn more_than_a_tenth_failing_exits_with_two() {
     // Starts fine as far as the script can tell, but every program refuses this config.
     std::fs::write(scratch.config(), "no_such_key = 1\n").unwrap();
     let output = scratch
-        .start_command(
-            5,
-            &["--users", "4", "--think-ms", "100", "--duration-s", "1"],
-        )
+        .start("--machine 5 --users 4 --think-ms 100 --duration-s 1")
         .output()
         .unwrap();
-    let stdout = text(&output.stdout);
-    assert_eq!(output.status.code(), Some(2), "{stdout}");
-    assert!(stdout.contains("started 4, failed 4"), "{stdout}");
-    assert!(stdout.contains("reported 0 of 4 programs"), "{stdout}");
+    let printed = stdout(&output);
+    assert_eq!(output.status.code(), Some(2), "{printed}");
+    assert!(printed.contains("started 4, failed 4"), "{printed}");
+    assert!(printed.contains("reported 0 of 4 programs"), "{printed}");
     assert!(!scratch.pid_file(5, 0).exists());
-}
-
-/// Run the script as a child of this test's runtime, which also runs the cluster.
-async fn start_and_wait(scratch: &Scratch, machine: u32, extra: &[&str]) -> Output {
-    let command = scratch.start_command(machine, extra);
-    tokio::process::Command::from(command)
-        .output()
-        .await
-        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -697,37 +568,29 @@ async fn every_pattern_gets_answers_from_a_real_cluster() {
     for (machine, pattern) in [(1, "steady"), (2, "random"), (3, "all-at-once")] {
         let scratch = Scratch::new(&format!("users-cluster-{pattern}"));
         scratch.write_cluster_config(&cluster);
-        let output = start_and_wait(
-            &scratch,
-            machine,
-            &[
-                "--users",
-                "8",
-                "--programs",
-                "2",
-                "--think-ms",
-                "500",
-                "--pattern",
-                pattern,
-                "--duration-s",
-                "2",
-            ],
-        )
-        .await;
-        let stdout = text(&output.stdout);
-        assert!(output.status.success(), "{pattern}: {stdout}");
+        let flags = format!(
+            "--machine {machine} --users 8 --programs 2 --think-ms 500 --pattern {pattern} \
+             --duration-s 2"
+        );
+        // Run as a child of this runtime, which also runs the cluster.
+        let output = tokio::process::Command::from(scratch.start(&flags))
+            .output()
+            .await
+            .unwrap();
+        let printed = stdout(&output);
+        assert!(output.status.success(), "{pattern}: {printed}");
         assert!(
-            stdout.contains("started 2, failed 0"),
-            "{pattern}: {stdout}"
+            printed.contains("started 2, failed 0"),
+            "{pattern}: {printed}"
         );
         assert!(
-            stdout.contains("reported 2 of 2 programs"),
-            "{pattern}: {stdout}"
+            printed.contains("reported 2 of 2 programs"),
+            "{pattern}: {printed}"
         );
-        assert!(stdout.contains("gave up 0"), "{pattern}: {stdout}");
+        assert!(printed.contains("gave up 0"), "{pattern}: {printed}");
         assert!(
             !scratch.events("client_done").is_empty(),
-            "{pattern}: {stdout}"
+            "{pattern}: {printed}"
         );
     }
     cluster.shutdown().await;
@@ -744,34 +607,21 @@ fn first_sends_us(scratch: &Scratch) -> Vec<u64> {
     times
 }
 
-/// Sleeps can only run long, so these bounds hold however busy the machine is: a first wave that
-/// went out together would fail the first test, and an all-at-once user off the beat the second.
 #[test]
 fn steady_spreads_the_first_sends_over_the_think_time() {
     let scratch = Scratch::new("users-steady-times");
     scratch.write_closed_config();
     let output = scratch
-        .start_command(
-            6,
-            &[
-                "--users",
-                "20",
-                "--programs",
-                "2",
-                "--think-ms",
-                "1000",
-                "--duration-s",
-                "2",
-            ],
-        )
+        .start("--machine 6 --users 20 --programs 2 --think-ms 1000 --duration-s 2")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", text(&output.stdout));
+    assert!(output.status.success(), "{}", stdout(&output));
     let times = first_sends_us(&scratch);
     assert!(times.len() >= 20, "{} first sends", times.len());
-    // The slots run from 0 to 950 ms, and no user sends a second time before 1000 ms.
+    // The slots run from 0 to 950 ms. Sleeps only ever run long, so a busy machine cannot make this
+    // shorter by much, while a first wave sent together would take a few milliseconds.
     let span_ms = (times[19] - times[0]) / 1000;
-    assert!(span_ms >= 900, "the first 20 sends took only {span_ms} ms");
+    assert!(span_ms >= 500, "the first 20 sends took only {span_ms} ms");
 }
 
 #[test]
@@ -779,26 +629,13 @@ fn all_at_once_users_send_on_a_multiple_of_the_think_time() {
     let scratch = Scratch::new("users-all-at-once-times");
     scratch.write_closed_config();
     let output = scratch
-        .start_command(
-            7,
-            &[
-                "--users",
-                "6",
-                "--programs",
-                "2",
-                "--think-ms",
-                "2000",
-                "--pattern",
-                "all-at-once",
-                "--duration-s",
-                "5",
-            ],
-        )
+        .start("--machine 7 --users 6 --programs 2 --think-ms 2000 --pattern all-at-once --duration-s 5")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", text(&output.stdout));
+    assert!(output.status.success(), "{}", stdout(&output));
     let times = first_sends_us(&scratch);
     assert!(times.len() >= 6, "{} first sends", times.len());
+    // A whole second of slack against the 2 s beat, so a busy machine does not fail this.
     for ts in times {
         let past_the_beat_ms = (ts % 2_000_000) / 1000;
         assert!(

@@ -105,11 +105,12 @@ stop_all() {
 # little before refusing. The brackets stop pgrep finding the shell that runs this very line.
 refuse_leftovers() {
   local pattern="$BIN/[l]oadgen|$BIN/[n]ode|$BIN/[f]rontend|$BIN/[z]onefeed"
-  local deadline=$((SECONDS + 10)) host found
+  local deadline=$((SECONDS + 10)) host here found
   while :; do
     found=""
     for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-      found+=$(on_host "$host" "pgrep -af '$pattern' || true")
+      here=$(on_host "$host" "pgrep -af '$pattern' || true")
+      [[ -z "$here" ]] || found+="$host: $here"$'\n'
     done
     [[ -n "$found" ]] || return 0
     if ((SECONDS > deadline)); then
