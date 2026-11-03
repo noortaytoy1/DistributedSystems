@@ -213,7 +213,7 @@ fn chain(prev: u64, index: u64, cmd: &Command, outcome: &Outcome) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Incident, Plan, Point};
+    use crate::proto::{Capability, Category, Incident, Plan, Point, UserId};
 
     fn rid(seq: u64) -> RequestId {
         RequestId { client: 1, seq }
@@ -232,11 +232,14 @@ mod tests {
         Command::CommitResult(ResultProposal {
             request: rid(seq),
             incident: Incident {
+                owner: UserId { client: 1, user: 0 },
+                category: Category::MedicalAssistance,
                 zone: 0,
                 location: Point { x: 1, y: 1 },
                 severity: 3,
                 needs: Capability::Medical,
                 reported_at_ms: 0,
+                ttl_ms: 60_000,
             },
             executor,
             term: 1,

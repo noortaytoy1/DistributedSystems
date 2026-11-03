@@ -112,7 +112,7 @@ fn mix(x: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Point, ResponderId, ZoneId};
+    use crate::proto::{Capability, Point, ResponderId, UserId, ZoneId};
 
     fn responder(
         id: ResponderId,
@@ -131,11 +131,14 @@ mod tests {
 
     fn incident(zone: ZoneId, x: i32, y: i32, severity: u8, needs: Capability) -> Incident {
         Incident {
+            owner: UserId { client: 1, user: 0 },
+            category: needs.categories()[0],
             zone,
             location: Point { x, y },
             severity,
             needs,
             reported_at_ms: 1_000,
+            ttl_ms: 60_000,
         }
     }
 
@@ -223,7 +226,7 @@ mod tests {
         let inc = incident(1, 500, 0, 5, Capability::Medical);
         let free = [
             responder(1, 0, 400, 0, Capability::Fire), // 100 m, other zone: score 300
-            responder(2, 1, 750, 0, Capability::Security), // 250 m, own zone: score 250
+            responder(2, 1, 750, 0, Capability::Technical), // 250 m, own zone: score 250
         ];
         assert_eq!(
             plan0(&inc, &free),
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn no_match_for_a_severe_incident_sends_the_nearest_of_any_capability() {
         let free = [
-            responder(1, 0, 90, 0, Capability::Security),
+            responder(1, 0, 90, 0, Capability::Technical),
             responder(2, 0, 20, 30, Capability::Fire),
             responder(3, 0, 0, 50, Capability::Rescue),
         ];
@@ -303,7 +306,7 @@ mod tests {
                 responder(id, (id % 3) as ZoneId, (id as i32 % 5) * 50, 100, cap)
             })
             .collect();
-        let inc = incident(1, 0, 0, 3, Capability::Security);
+        let inc = incident(1, 0, 0, 3, Capability::Technical);
         let first = plan0(&inc, &free);
         assert!(first.responder.is_some());
         for _ in 0..3 {
@@ -334,13 +337,7 @@ mod tests {
 
     #[test]
     fn an_old_incident_gets_the_any_capability_fallback() {
-        let inc = Incident {
-            zone: 0,
-            location: Point { x: 0, y: 0 },
-            severity: 1,
-            needs: Capability::Medical,
-            reported_at_ms: 1_000,
-        };
+        let inc = incident(0, 0, 0, 1, Capability::Medical);
         let free = [responder(7, 0, 5, 5, Capability::Fire)];
         let knob = CostKnob::default();
         assert_eq!(plan(&inc, &free, OLD_AGE_MS - 1, knob).responder, None);
@@ -349,13 +346,7 @@ mod tests {
 
     #[test]
     fn age_does_not_change_a_plan_with_a_matching_responder() {
-        let inc = Incident {
-            zone: 0,
-            location: Point { x: 0, y: 0 },
-            severity: 1,
-            needs: Capability::Medical,
-            reported_at_ms: 1_000,
-        };
+        let inc = incident(0, 0, 0, 1, Capability::Medical);
         let free = [
             responder(1, 0, 900, 0, Capability::Medical),
             responder(2, 0, 1, 0, Capability::Fire),

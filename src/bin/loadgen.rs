@@ -7,7 +7,8 @@
 //!
 //! Closed loop (default): each user sends, waits for the reply or gives up, thinks, repeats. Open
 //! loop (`--rate`): requests go out at evenly spaced intended times whatever the replies do, and
-//! latency counts from the intended time, so overload cannot hide in the generator (D54).
+//! latency counts from the intended time, so overload cannot hide in the generator (D54). Reports
+//! then take turns among `--users` owners (D146).
 //!
 //! Every address comes from `--config`, so the same command works on all three client machines.
 //! Prints throughput and percentiles; raw events go to `metrics.dir` from the config.
@@ -26,6 +27,7 @@ use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{EventLog, now_us};
+use rescuemesh::proto::{ClientId, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -41,7 +43,8 @@ struct Args {
     /// Unique per load generator, across all machines (D113).
     #[arg(long)]
     client_id: u64,
-    /// Concurrent simulated users (closed loop). Ignored with `--rate`.
+    /// Concurrent simulated users (closed loop). With `--rate`, how many users the reports are
+    /// shared among; it does not change the rate.
     #[arg(long, default_value_t = 10)]
     users: u32,
     /// Sending time, including any warm-up.
@@ -59,6 +62,10 @@ struct Args {
     warmup_s: u64,
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// How long each report stays valid, instead of `campus.incident_ttl_ms`. For showing a refusal
+    /// (0 refuses every report at once); the experiment runner never passes it.
+    #[arg(long)]
+    ttl_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -92,13 +99,22 @@ fn percentile(sorted: &[u64], percent: u64) -> Option<u64> {
 }
 
 /// One draw from this run's seeded generator, stamped with the current time.
-fn incident(rng: &mut StdRng, campus: &CampusConfig) -> rescuemesh::proto::Incident {
-    campus::random_incident(rng, campus, now_us() / 1000)
+fn incident(rng: &mut StdRng, campus: &CampusConfig, owner: UserId) -> rescuemesh::proto::Incident {
+    campus::random_incident(rng, campus, owner, now_us() / 1000)
 }
 
 /// Each user draws from its own generator, so a seed repeats the same incidents per user.
 fn user_rng(seed: u64, user: u64) -> StdRng {
     StdRng::seed_from_u64(seed.wrapping_mul(1_000_003).wrapping_add(user))
+}
+
+/// Who reports the next open-loop request: the users take turns. `.max(1)` keeps `--users 0`, which
+/// open loop used to ignore, from dividing by zero.
+fn open_loop_owner(client: ClientId, sent: u32, users: u32) -> UserId {
+    UserId {
+        client,
+        user: sent % users.max(1),
+    }
 }
 
 async fn closed_loop(
@@ -114,10 +130,14 @@ async fn closed_loop(
     for user in 0..args.users {
         let (client, stats) = (client.clone(), stats.clone());
         let mut rng = user_rng(args.seed, u64::from(user));
+        let owner = UserId {
+            client: args.client_id,
+            user,
+        };
         users.spawn(async move {
             while Instant::now() < stop_at {
                 let started = Instant::now();
-                let outcome = client.submit(incident(&mut rng, &campus)).await;
+                let outcome = client.submit(incident(&mut rng, &campus, owner)).await;
                 if started >= measure_from {
                     lock(&stats).record(outcome);
                 }
@@ -156,7 +176,8 @@ async fn open_loop(
             break;
         };
         let (client, stats) = (client.clone(), stats.clone());
-        let report = incident(&mut rng, &campus);
+        let owner = open_loop_owner(args.client_id, sent, args.users);
+        let report = incident(&mut rng, &campus, owner);
         requests.spawn(async move {
             let outcome = client.submit_from(report, intended).await;
             if intended >= measure_from {
@@ -217,7 +238,11 @@ async fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     let measure_from = start + Duration::from_secs(args.warmup_s);
     let stop_at = start + Duration::from_secs(args.duration_s);
-    let (shared, campus) = (stats.clone(), config.campus);
+    let shared = stats.clone();
+    let mut campus = config.campus;
+    if let Some(ttl_ms) = args.ttl_ms {
+        campus.incident_ttl_ms = ttl_ms;
+    }
     match args.rate {
         Some(rate) => {
             open_loop(
@@ -264,9 +289,21 @@ mod tests {
     }
 
     #[test]
+    fn open_loop_owner_survives_zero_users() {
+        assert_eq!(open_loop_owner(4, 7, 0), UserId { client: 4, user: 0 });
+    }
+
+    #[test]
+    fn open_loop_reports_take_turns_among_the_users() {
+        let users: Vec<u32> = (0..5).map(|s| open_loop_owner(4, s, 3).user).collect();
+        assert_eq!(users, vec![0, 1, 2, 0, 1]);
+    }
+
+    #[test]
     fn a_seed_repeats_the_same_incidents_and_users_differ() {
         let campus = CampusConfig::default();
-        let draw = |user| campus::random_incident(&mut user_rng(5, user), &campus, 0);
+        let owner = UserId { client: 1, user: 0 };
+        let draw = |user| campus::random_incident(&mut user_rng(5, user), &campus, owner, 0);
         assert_eq!(draw(1), draw(1));
         assert_ne!(
             (1..20).map(draw).collect::<Vec<_>>(),

@@ -16,19 +16,22 @@ use rescuemesh::config::{ClusterConfig, Config, NodeAddr};
 use rescuemesh::metrics::EventLog;
 use rescuemesh::node::transport::framed;
 use rescuemesh::proto::{
-    self, Capability, ClientFrame, ClientReply, CommittedResult, ControlReply, Incident, Plan,
-    Point, ReplyBody, ServerFrame,
+    self, Capability, Category, ClientFrame, ClientReply, CommittedResult, ControlReply, Incident,
+    Plan, Point, ReplyBody, ServerFrame, UserId,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
 fn incident() -> Incident {
     Incident {
+        owner: UserId { client: 5, user: 0 },
+        category: Category::MedicalAssistance,
         zone: 0,
         location: Point { x: 10, y: 20 },
         severity: 2,
         needs: Capability::Medical,
         reported_at_ms: rescuemesh::metrics::now_us() / 1000,
+        ttl_ms: 60_000,
     }
 }
 

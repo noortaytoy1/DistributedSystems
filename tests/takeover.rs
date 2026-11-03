@@ -12,7 +12,8 @@ use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::node::NodeHandle;
 use rescuemesh::proto::{
-    Capability, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody, RequestId,
+    Capability, Category, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody,
+    RequestId, UserId,
 };
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,11 +23,17 @@ fn request(seq: u64) -> ClientRequest {
         id: RequestId { client: 88, seq },
         attempt: 0,
         incident: Incident {
+            owner: UserId {
+                client: 88,
+                user: 0,
+            },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 10, y: 20 },
             severity: 3,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
     }
 }

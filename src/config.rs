@@ -206,6 +206,9 @@ pub struct CampusConfig {
     pub responders: u32,
     /// Simulated time on scene: a responder is held this long per point of severity (D111).
     pub service_ms_per_severity: u64,
+    /// How long a client says its reports stay valid (D143). Longer than the client's retries, at
+    /// most 36 s by default, so a report is refused only after every resend had its chance.
+    pub incident_ttl_ms: u64,
 }
 
 impl Default for CampusConfig {
@@ -215,6 +218,7 @@ impl Default for CampusConfig {
             zones: 6,
             responders: 30,
             service_ms_per_severity: 200,
+            incident_ttl_ms: 60_000,
         }
     }
 }
@@ -349,6 +353,10 @@ impl Config {
         if self.campus.service_ms_per_severity == 0 {
             return invalid("campus: service_ms_per_severity must be > 0".into());
         }
+        // Every report would be refused at once. `loadgen --ttl-ms 0` is how a demo asks for that.
+        if self.campus.incident_ttl_ms == 0 {
+            return invalid("campus: incident_ttl_ms must be > 0".into());
+        }
         for (name, v) in [
             ("peer_heartbeat_ms", t.peer_heartbeat_ms),
             ("bid_window_ms", t.bid_window_ms),
@@ -469,6 +477,32 @@ mod tests {
         )
         .unwrap();
         assert!(!c.faults.enabled);
+    }
+
+    #[test]
+    fn incident_ttl_defaults_to_sixty_seconds_and_zero_is_rejected() {
+        let node = "[[cluster.nodes]]\nid = 1\npeer_addr = \"127.0.0.1:7001\"\nclient_addr = \"127.0.0.1:8001\"\n";
+        assert_eq!(
+            Config::from_toml(node).unwrap().campus.incident_ttl_ms,
+            60_000
+        );
+        let zero = format!("{node}[campus]\nincident_ttl_ms = 0\n");
+        assert!(Config::from_toml(&zero).is_err());
+        let short = format!("{node}[campus]\nincident_ttl_ms = 1\n");
+        assert_eq!(Config::from_toml(&short).unwrap().campus.incident_ttl_ms, 1);
+    }
+
+    #[test]
+    fn the_default_ttl_outlasts_every_retry_at_full_jitter() {
+        let t = Timers::default();
+        let mut total_ms = 0;
+        let mut wait_ms = t.client_retry_ms;
+        for _ in 0..=t.client_max_retries {
+            total_ms += wait_ms;
+            wait_ms = (wait_ms * 2).min(t.client_retry_max_ms);
+        }
+        assert_eq!(total_ms, 30_000, "2, 4, 6, 6, 6 and 6 s");
+        assert!(CampusConfig::default().incident_ttl_ms > total_ms * 120 / 100);
     }
 
     #[test]

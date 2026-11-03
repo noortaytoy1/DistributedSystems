@@ -11,18 +11,25 @@ use rescuemesh::client::MeshClient;
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::metrics::EventLog;
 use rescuemesh::proto::{
-    Capability, ClientRequest, Command, Incident, Plan, Point, ReplyBody, RequestId, ResultProposal,
+    Capability, Category, ClientRequest, Command, Incident, Plan, Point, ReplyBody, RequestId,
+    ResultProposal, UserId,
 };
 
 const PATIENCE: Duration = Duration::from_secs(15);
 
 fn incident() -> Incident {
     Incident {
+        owner: UserId {
+            client: 90,
+            user: 0,
+        },
+        category: Category::MedicalAssistance,
         zone: 0,
         location: Point { x: 10, y: 20 },
         severity: 1,
         needs: Capability::Medical,
         reported_at_ms: rescuemesh::metrics::now_us() / 1000,
+        ttl_ms: 60_000,
     }
 }
 

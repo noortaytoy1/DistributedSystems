@@ -8,7 +8,8 @@ use std::time::Duration;
 use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::client::control;
 use rescuemesh::proto::{
-    Capability, ClientRequest, ControlReply, ControlRequest, Incident, Point, ReplyBody, RequestId,
+    Capability, Category, ClientRequest, ControlReply, ControlRequest, Incident, Point, ReplyBody,
+    RequestId, UserId,
 };
 
 fn request(seq: u64, attempt: u32) -> ClientRequest {
@@ -16,11 +17,17 @@ fn request(seq: u64, attempt: u32) -> ClientRequest {
         id: RequestId { client: 99, seq },
         attempt,
         incident: Incident {
+            owner: UserId {
+                client: 99,
+                user: 0,
+            },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 10, y: 20 },
             severity: 3,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
     }
 }

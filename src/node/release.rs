@@ -112,17 +112,20 @@ async fn propose(ctx: &NodeContext, due: Due) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Incident, Plan, Point};
+    use crate::proto::{Capability, Category, Incident, Plan, Point, UserId};
 
     fn result(seq: u64, executor: NodeId, severity: u8) -> CommittedResult {
         CommittedResult {
             request: RequestId { client: 1, seq },
             incident: Incident {
+                owner: UserId { client: 1, user: 0 },
+                category: Category::MedicalAssistance,
                 zone: 0,
                 location: Point { x: 0, y: 0 },
                 severity,
                 needs: Capability::Medical,
                 reported_at_ms: 0,
+                ttl_ms: 60_000,
             },
             executor,
             term: 1,

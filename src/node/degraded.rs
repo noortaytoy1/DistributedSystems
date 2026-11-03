@@ -333,7 +333,7 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Point};
+    use crate::proto::{Capability, Category, Point, UserId};
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -345,11 +345,14 @@ mod tests {
 
     fn incident() -> Incident {
         Incident {
+            owner: UserId { client: 1, user: 0 },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 0, y: 0 },
             severity: 1,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         }
     }
 

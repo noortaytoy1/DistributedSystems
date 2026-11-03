@@ -10,7 +10,9 @@ use std::time::Duration;
 use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::config::Config;
 use rescuemesh::node::{self, NodeHandle};
-use rescuemesh::proto::{Capability, ClientRequest, Incident, Point, ReplyBody, RequestId};
+use rescuemesh::proto::{
+    Capability, Category, ClientRequest, Incident, Point, ReplyBody, RequestId, UserId,
+};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 
@@ -19,11 +21,17 @@ fn request(seq: u64) -> ClientRequest {
         id: RequestId { client: 77, seq },
         attempt: 0,
         incident: Incident {
+            owner: UserId {
+                client: 77,
+                user: 0,
+            },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 1, y: 2 },
             severity: 3,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
     }
 }

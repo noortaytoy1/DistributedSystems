@@ -40,6 +40,24 @@ impl fmt::Display for RequestId {
     }
 }
 
+/// One report is one incident, so an incident goes by the ID of its request (D140). Retries reuse
+/// it and it keys the results table; a second ID could only disagree with this one.
+pub type IncidentId = RequestId;
+
+/// A simulated campus user. Needs no coordination: client IDs are unique across machines (D113),
+/// and each client numbers its own users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UserId {
+    pub client: ClientId,
+    pub user: u32,
+}
+
+impl fmt::Display for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.client, self.user)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Domain
 // ---------------------------------------------------------------------------------------------
@@ -61,7 +79,7 @@ impl Point {
 pub enum Capability {
     Medical,
     Fire,
-    Security,
+    Technical,
     Rescue,
 }
 
@@ -69,14 +87,71 @@ impl Capability {
     pub const ALL: [Capability; 4] = [
         Capability::Medical,
         Capability::Fire,
-        Capability::Security,
+        Capability::Technical,
         Capability::Rescue,
     ];
+
+    /// The categories this capability answers: [`Category::needs`] read the other way.
+    pub fn categories(self) -> &'static [Category] {
+        match self {
+            Capability::Medical => &[Category::MedicalAssistance],
+            Capability::Fire => &[Category::LabIncident],
+            Capability::Technical => &[
+                Category::PowerOutage,
+                Category::NetworkOutage,
+                Category::TechnicalAssistance,
+            ],
+            Capability::Rescue => &[Category::BlockedRoad, Category::Flooding],
+        }
+    }
 }
 
-/// An incident reported by a client.
+/// What happened, in the spec's own examples. [`Capability`] says who can help; this says what the
+/// report is about (D141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Category {
+    BlockedRoad,
+    PowerOutage,
+    LabIncident,
+    Flooding,
+    NetworkOutage,
+    MedicalAssistance,
+    TechnicalAssistance,
+}
+
+impl Category {
+    pub const ALL: [Category; 7] = [
+        Category::BlockedRoad,
+        Category::PowerOutage,
+        Category::LabIncident,
+        Category::Flooding,
+        Category::NetworkOutage,
+        Category::MedicalAssistance,
+        Category::TechnicalAssistance,
+    ];
+
+    /// The capability a report of this category needs. The spec names the categories but not who
+    /// answers them, so this table is our own reading (D141).
+    pub fn needs(self) -> Capability {
+        match self {
+            Category::BlockedRoad | Category::Flooding => Capability::Rescue,
+            Category::PowerOutage | Category::NetworkOutage | Category::TechnicalAssistance => {
+                Capability::Technical
+            }
+            Category::LabIncident => Capability::Fire,
+            Category::MedicalAssistance => Capability::Medical,
+        }
+    }
+}
+
+/// An incident reported by a client. Its ID is the request's ([`IncidentId`]). Its status is worked
+/// out on read, not stored: see [`IncidentStatus`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Incident {
+    /// Who reported it.
+    pub owner: UserId,
+    /// What happened. Only people read this; the planner reads `needs`.
+    pub category: Category,
     pub zone: ZoneId,
     pub location: Point,
     /// 1 (minor) to 5 (life-threatening).
@@ -84,6 +159,16 @@ pub struct Incident {
     pub needs: Capability,
     /// When the client reported it: unix milliseconds on the client clock.
     pub reported_at_ms: u64,
+    /// How long the report stays valid, counted from when it was reported (D143). 0 means it is
+    /// already too old, not that it never expires.
+    pub ttl_ms: u64,
+}
+
+impl Incident {
+    /// Whether a report of this age may no longer be planned.
+    pub fn is_too_old(&self, age_ms: u64) -> bool {
+        age_ms >= self.ttl_ms
+    }
 }
 
 /// A responder that plans can assign to incidents.
@@ -423,12 +508,56 @@ mod tests {
 
     fn incident() -> Incident {
         Incident {
+            owner: UserId { client: 7, user: 3 },
+            category: Category::MedicalAssistance,
             zone: 2,
             location: Point { x: 10, y: -4 },
             severity: 4,
             needs: Capability::Medical,
             reported_at_ms: 1_700_000_000_000,
+            ttl_ms: 60_000,
         }
+    }
+
+    #[test]
+    fn every_category_maps_to_its_capability() {
+        let expected = [
+            (Category::BlockedRoad, Capability::Rescue),
+            (Category::Flooding, Capability::Rescue),
+            (Category::PowerOutage, Capability::Technical),
+            (Category::NetworkOutage, Capability::Technical),
+            (Category::TechnicalAssistance, Capability::Technical),
+            (Category::LabIncident, Capability::Fire),
+            (Category::MedicalAssistance, Capability::Medical),
+        ];
+        assert_eq!(expected.len(), Category::ALL.len());
+        for (category, capability) in expected {
+            assert_eq!(category.needs(), capability, "{category:?}");
+        }
+    }
+
+    #[test]
+    fn the_two_category_tables_agree() {
+        for category in Category::ALL {
+            assert!(category.needs().categories().contains(&category));
+        }
+        let listed: usize = Capability::ALL.iter().map(|c| c.categories().len()).sum();
+        assert_eq!(listed, Category::ALL.len());
+    }
+
+    #[test]
+    fn a_report_is_too_old_at_its_ttl_and_not_before() {
+        assert!(!incident().is_too_old(59_999));
+        assert!(incident().is_too_old(60_000));
+    }
+
+    #[test]
+    fn a_zero_ttl_is_too_old_at_once() {
+        let inc = Incident {
+            ttl_ms: 0,
+            ..incident()
+        };
+        assert!(inc.is_too_old(0));
     }
 
     #[test]
