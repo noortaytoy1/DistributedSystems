@@ -218,6 +218,12 @@ pub enum Event {
     RejoinStarted {
         applied: Option<u64>,
     },
+    /// The leader's next answer was below the catch-up target, so the target was an index that was
+    /// not committed then, and may never be (D135).
+    RejoinTargetLowered {
+        from: u64,
+        to: u64,
+    },
     /// The node applied the leader's commit index and serves again. `recovery_us` runs from
     /// `rejoin_started` to here, on this node's clock (E4).
     Rejoined {

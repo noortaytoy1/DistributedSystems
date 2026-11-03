@@ -122,7 +122,10 @@ pub trait Consensus: Send + Sync + 'static {
     fn leader_commit(&self) -> watch::Receiver<Option<u64>>;
 
     /// The leader's commit index, confirmed by a majority (Raft ReadIndex). Asks the leader over
-    /// `PeerBody::ReadIndex` when this node is not the leader (D76).
+    /// `PeerBody::ReadIndex` when this node is not the leader (D76). Nothing committed before the
+    /// call is above the answer, but a leader just elected answers with its first entry of the
+    /// term, which is not committed yet and is lost if that leader is replaced: never wait on the
+    /// answer for ever (D135).
     fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
 
     /// `read_index` only if this node is the leader; used for queries from peers.

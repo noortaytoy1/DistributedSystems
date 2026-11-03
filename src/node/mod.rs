@@ -18,6 +18,8 @@ pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
 pub mod takeover;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transport;
 pub mod usage;
 pub mod workers;
