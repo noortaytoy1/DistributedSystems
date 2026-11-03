@@ -47,6 +47,8 @@ pub(crate) struct ScriptedConsensus {
     leader: Mutex<Option<NodeId>>,
     answers: Mutex<VecDeque<Result<Option<u64>, ProposeError>>>,
     questions: AtomicUsize,
+    /// As a Raft that has stopped: every wait fails at once.
+    stopped: AtomicBool,
     applied: watch::Sender<Option<u64>>,
     heard: watch::Sender<Option<u64>>,
     /// One permit for each proposal that has arrived.
@@ -62,6 +64,7 @@ impl ScriptedConsensus {
             leader: Mutex::new(None),
             answers: Mutex::new(VecDeque::new()),
             questions: AtomicUsize::new(0),
+            stopped: AtomicBool::new(false),
             applied: watch::channel(None).0,
             heard: watch::channel(None).0,
             proposed: Semaphore::new(0),
@@ -88,6 +91,11 @@ impl ScriptedConsensus {
 
     pub(crate) fn apply_up_to(&self, index: u64) {
         self.applied.send_replace(Some(index));
+    }
+
+    /// From here on every `wait_applied` fails at once, as on a Raft that has stopped.
+    pub(crate) fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
     }
 
     /// As if an AppendEntries from a current leader was accepted.
@@ -180,6 +188,11 @@ impl Consensus for ScriptedConsensus {
 
     fn wait_applied(&self, index: u64, timeout: Duration) -> BoxFuture<'_, bool> {
         Box::pin(async move {
+            if self.stopped.load(Ordering::SeqCst) {
+                // Lets a test see a caller that loops on this, instead of being shut out by it.
+                tokio::task::yield_now().await;
+                return false;
+            }
             let mut applied = self.applied.subscribe();
             let reached = applied.wait_for(|a| a.is_some_and(|a| a >= index));
             matches!(tokio::time::timeout(timeout, reached).await, Ok(Ok(_)))
