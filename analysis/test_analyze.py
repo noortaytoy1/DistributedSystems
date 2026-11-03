@@ -194,6 +194,15 @@ class TheLeadersRole(unittest.TestCase):
         self.assertEqual(m["commit_forwarded_count"], 0)
         self.assertTrue(math.isnan(m["commit_forwarded_mean_ms"]))
 
+    def test_a_whole_run_reports_both(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_run(run_dir, synthetic_run(), 1)
+            _, m = analyze.analyse_run(run_dir)
+        # The leader changes in this run.
+        self.assertTrue(math.isnan(m["leader_plan_share"]))
+        self.assertEqual(m["commit_local_count"], 0)
+
 
 class OneRun(unittest.TestCase):
     def setUp(self):
@@ -235,9 +244,6 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(self.m["election_duration_mean_ms"], 200.0)
         self.assertEqual(self.m["detection_mean_ms"], 150)
         self.assertEqual(self.m["recovery_mean_ms"], 40.0)
-
-    def test_a_run_whose_leader_changes_has_no_leader_share(self):
-        self.assertTrue(math.isnan(self.m["leader_plan_share"]))
 
     def test_an_election_right_after_a_rejoin_counts_against_it(self):
         self.assertEqual(self.m["elections_after_rejoin"], 1)  # term 4, 100 ms after
