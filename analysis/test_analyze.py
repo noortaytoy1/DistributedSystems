@@ -271,6 +271,10 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(self.m["net_bytes_per_s_mean"], 1000.0)
         self.assertEqual(self.m["queued_max"], 4)
 
+    def test_a_run_the_runner_set_aside_is_not_read(self):
+        write_run(self.root / "dropped" / "e9-synthetic-run-2", synthetic_run(), 2)
+        self.assertEqual(analyze.summarise(self.root)[("e9", "synthetic")]["mean_ms"][2], 1)
+
     def test_a_whole_tree_gives_a_csv_and_an_interval_across_runs(self):
         slower = synthetic_run()
         for e in slower["client-1"]:
