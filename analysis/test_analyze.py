@@ -24,7 +24,8 @@ def request(seq):
     return {"client": 1, "seq": seq}
 
 
-def done(start_s, latency_ms, executor, provisional=False, no_responder=False, attempts=1):
+def done(start_s, latency_ms, executor, provisional=False, no_responder=False, attempts=1,
+         status="assigned", priority=300):
     latency_us = latency_ms * 1000
     return {
         "ts_us": T0 + int(start_s * S) + latency_us,
@@ -36,16 +37,20 @@ def done(start_s, latency_ms, executor, provisional=False, no_responder=False, a
         "attempts": attempts,
         "provisional": provisional,
         "no_responder": no_responder,
+        "status": status,
+        "priority": priority,
     }
 
 
 def synthetic_run():
     client = [{"ts_us": T0, "ev": "client_sent", "request": request(0), "attempt": 0}]
     client.append(done(1, 999, 1))  # inside the 2 s warm-up: dropped
-    # Ten measured requests: 10..100 ms, split 6/3/1 between the nodes.
+    # Ten measured requests: 10..100 ms, split 6/3/1 between the nodes. The first was refused.
     for i, executor in enumerate([1, 1, 1, 1, 1, 1, 2, 2, 2, 3]):
-        client.append(done(3 + i * 0.5, (i + 1) * 10, executor, no_responder=i == 0))
-    client.append(done(9, 1, 3, provisional=True))
+        client.append(done(3 + i * 0.5, (i + 1) * 10, executor, no_responder=i == 0,
+                           status="expired" if i == 0 else "assigned",
+                           priority=0 if i == 0 else 330))
+    client.append(done(9, 1, 3, provisional=True, status="provisional"))
     client.append({"ts_us": T0 + 9 * S, "ev": "client_gave_up", "request": request(99), "attempts": 6})
 
     node1 = [
@@ -142,6 +147,24 @@ class OneRun(unittest.TestCase):
 
     def test_no_responder_share(self):
         self.assertAlmostEqual(self.m["no_responder_share"], 1 / 11)
+
+    def test_reports_expired(self):
+        self.assertEqual(self.m["reports_expired"], 1)
+
+    def test_priority_mean_covers_every_answer(self):
+        self.assertAlmostEqual(self.m["priority_mean"], (0 + 9 * 330 + 300) / 11)
+
+    def test_a_cell_with_expired_reports_gets_a_warning(self):
+        def cell(mean):
+            return {("e1", "30-bidding"): {"reports_expired": (mean, float("nan"), 1)}}
+
+        warnings = analyze.expired_warnings(cell(2.0))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("e1/30-bidding", warnings[0])
+        self.assertEqual(analyze.expired_warnings(cell(0.0)), [])
+        # A run with no answers has nothing to warn about, and neither does an older log.
+        self.assertEqual(analyze.expired_warnings(cell(float("nan"))), [])
+        self.assertEqual(analyze.expired_warnings({("e1", "old"): {}}), [])
 
     def test_bids_and_split_decisions(self):
         self.assertEqual(self.m["bid_rounds"], 2)

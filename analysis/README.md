@@ -38,7 +38,9 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Failover, recovery, convergence | `detection_mean_ms`, `takeover_wait_mean_ms`, `recovery_mean_ms`, `elections_after_rejoin` (FT-6) |
 | CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean` |
 | Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers` |
-| Plans with no responder (D111) | `no_responder_share` |
+| Plans with no responder (D111) | `no_responder_share`; an expired report counts here too |
+| Reports refused as too old (D147) | `reports_expired`. Should be 0 in every measured cell: `analyze.py` prints a warning otherwise, because the likeliest cause is a stamping bug |
+| Incident priority (D148) | `priority_mean`, in priority points. 0 only for a refused report |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
 

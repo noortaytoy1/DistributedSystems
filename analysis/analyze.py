@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -110,6 +111,10 @@ def request_metrics(events, warmup_s, measured_s):
     no_responder = sum(1 for e in done if e.get("no_responder"))
     metrics["retried_share"] = retried / answered if answered else float("nan")
     metrics["no_responder_share"] = no_responder / answered if answered else float("nan")
+    # An expired report also counts in no_responder_share. See expired_warnings.
+    metrics["reports_expired"] = sum(1 for e in done if e.get("status") == "expired")
+    priorities = [e["priority"] for e in done if "priority" in e]
+    metrics["priority_mean"] = float(np.mean(priorities)) if priorities else float("nan")
 
     nodes = sorted(int(s.split("-")[1]) for s in node_events(events))
     by_node = defaultdict(int)
@@ -355,6 +360,21 @@ def summarise(root):
     return summary
 
 
+def expired_warnings(summary):
+    """Cells where a report was refused as too old. The default TTL outlasts every client retry and
+    the runner never passes --ttl-ms, so a measured run should have none (D147). Any here most likely
+    means an age stamped wrongly, which looks like a very fast run where nobody gets sent."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        mean = metrics.get("reports_expired", (float("nan"),))[0]
+        if mean > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: reports_expired is {mean:g} per run, expected 0; "
+                "check how the client stamps ages before trusting this cell"
+            )
+    return warnings
+
+
 def write_csv(summary, path):
     with open(path, "w", newline="", encoding="utf-8") as out:
         writer = csv.writer(out)
@@ -488,6 +508,8 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
+    for warning in expired_warnings(summary):
+        print(warning, file=sys.stderr)
 
 
 if __name__ == "__main__":
