@@ -152,9 +152,9 @@ pub struct Policy {
     pub just_won: JustWonMode,
     /// Planning time a node assumes until its first job finishes.
     pub initial_service_us: u64,
-    /// A Raft leader whose load score stays at least this many times its lowest peer's goes quiet,
-    /// so that a normal vote picks a new leader (D218). 0 turns this off. Under bidding only: it
-    /// reads the bids.
+    /// A Raft leader whose load stays at least this many times its lowest peer's mean bid goes
+    /// quiet, so that a normal vote picks a new leader (D218). Its load is its own mean bid, or how
+    /// long its log takes if that is slow. 0 turns this off. Under bidding only: it reads the bids.
     pub leader_overload_ratio: u64,
     /// How long that must hold without a break.
     pub leader_overload_for_ms: u64,

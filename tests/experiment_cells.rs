@@ -62,6 +62,18 @@ fn a_busy_leader_stays_leader_in_every_cell_but_the_one_that_tests_it() {
     }
 }
 
+/// The configs people run by hand have it on, with the defaults D218 argues for.
+#[test]
+fn a_busy_leader_steps_aside_in_the_configs_people_run_by_hand() {
+    for file in ["config/local.toml", "config/lab.example.toml"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let config = Config::from_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(config.policy.leader_overload_ratio, 3, "{file}");
+        assert_eq!(config.policy.leader_overload_for_ms, 5_000, "{file}");
+        assert_eq!(config.policy.leader_overload_cooldown_ms, 60_000, "{file}");
+    }
+}
+
 /// The sweep below this load keeps D129's pool, so a figure must say where the pool changes.
 #[test]
 fn the_top_e1_cells_have_responders_for_their_load() {

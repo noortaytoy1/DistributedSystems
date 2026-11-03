@@ -53,7 +53,7 @@ const CLIENT_MAY_NAME: [&str; 7] = [
 /// Names that only mean something below the line. An application file that says one has reached
 /// past the interface, however it got there. A whole word and not `.consensus`, so that
 /// `let NodeContext { consensus, .. } = ctx;` counts too.
-const BELOW_THE_LINE: [&str; 18] = [
+const BELOW_THE_LINE: [&str; 19] = [
     // Raft.
     "consensus",
     "Consensus",
@@ -68,6 +68,8 @@ const BELOW_THE_LINE: [&str; 18] = [
     ".suspicion",
     ".gate",
     "FaultGate",
+    // A busy leader stepping aside: the service must not know it happened (D218).
+    "step_aside",
     // The wire, and the group send behind `submit`.
     "tarpc",
     "UdpSocket",

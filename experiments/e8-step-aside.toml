@@ -1,6 +1,7 @@
 # run: users=300 think_ms=1000 skew_work=20000
 # The first node is skewed before the load starts, and with default timers it is usually the leader
-# (D115). Compare with e2e6-skew-expected-wait, where a busy leader stays leader (D218).
+# (D115). Compare with e2e6-skew-expected-wait, where a busy leader stays leader and the skew is only
+# 5000, which would not move it anyway (D218).
 
 [policy]
 assignment = "bidding"
