@@ -1,5 +1,7 @@
 # Three nodes on three lab machines. Copy to config/lab.toml and set the real addresses.
-# Peer and client ports must be open between the machines. Full steps: docs/runbook.md.
+# Peer ports must be open between the node machines over TCP, and client ports from the client
+# machines over both UDP (reports) and TCP (ctl). A big UDP buffer needs a sysctl on all six machines.
+# `ctl status` says "udp no answer" if a rule is missing. Full steps: docs/runbook.md.
 # Anything left out uses the defaults in src/config.rs.
 
 [[cluster.nodes]]

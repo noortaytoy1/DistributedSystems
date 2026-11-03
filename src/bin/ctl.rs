@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use rescuemesh::client::control;
-use rescuemesh::config::Config;
+use rescuemesh::client::{control, udp_answers};
+use rescuemesh::config::{Config, NodeAddr};
 use rescuemesh::proto::{
     ControlReply, ControlRequest, DEFAULT_INCIDENT_ROWS, IncidentQuery, IncidentView, NodeStatus,
     RequestId,
@@ -33,7 +33,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show term, leader, log position and state digest of every node.
+    /// Show term, leader, log position and state digest of every node, and whether its UDP port,
+    /// which reports travel on, answers.
     Status,
     /// Read incident records from every node, or from the one `--node` names.
     Incidents {
@@ -131,7 +132,33 @@ async fn status(config: &Config) -> anyhow::Result<()> {
             Err(e) => println!("{:>4} unreachable: {e}", n.id),
         }
     }
+    check_udp(config).await;
     Ok(())
+}
+
+/// Below the table, so the columns stay where scripts read them. This table comes over TCP, so a
+/// missing UDP firewall rule shows nowhere in it: the node looks healthy while every report to it
+/// vanishes (D168).
+async fn check_udp(config: &Config) {
+    let checks = config.cluster.nodes.iter().map(|n| async move {
+        let answered = udp_answers(&n.client_addr, TIMEOUT).await;
+        udp_line(n, answered)
+    });
+    for line in futures::future::join_all(checks).await {
+        println!("{line}");
+    }
+}
+
+fn udp_line(node: &NodeAddr, answered: bool) -> String {
+    if answered {
+        return format!("node {}: udp ok", node.id);
+    }
+    let port = node.client_addr.rsplit(':').next().unwrap_or("?");
+    format!(
+        "node {}: udp no answer. Reports to it vanish: is it running, and is the port open? \
+         sudo ufw allow {port}/udp",
+        node.id
+    )
 }
 
 /// Asks the nodes one after another, so under load their lists can shift between two answers. To
@@ -226,6 +253,19 @@ fn opt<T: ToString>(v: Option<T>) -> String {
 mod tests {
     use super::*;
     use rescuemesh::proto::{Capability, Category, Incident, IncidentStatus, Point, UserId};
+
+    #[test]
+    fn the_udp_line_names_the_node_and_the_rule_to_add() {
+        let node = NodeAddr {
+            id: 2,
+            peer_addr: "10.0.0.12:7001".into(),
+            client_addr: "10.0.0.12:8001".into(),
+        };
+        assert_eq!(udp_line(&node, true), "node 2: udp ok");
+        let line = udp_line(&node, false);
+        assert!(line.starts_with("node 2: udp no answer"), "{line}");
+        assert!(line.contains("ufw allow 8001/udp"), "{line}");
+    }
 
     fn parse(line: &[&str]) -> Result<Args, clap::Error> {
         Args::try_parse_from(std::iter::once("ctl").chain(line.iter().copied()))

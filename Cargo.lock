@@ -895,6 +895,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "socket2",
  "tarpc",
  "thiserror 1.0.69",
  "tokio",

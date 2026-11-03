@@ -13,6 +13,7 @@
 
 pub mod bids;
 pub mod cpu;
+pub mod datagram;
 pub mod degraded;
 pub mod faults;
 pub mod heartbeat;
@@ -36,19 +37,22 @@ use tokio::time::Instant;
 
 use crate::campus;
 use crate::config::{AssignmentPolicy, Config};
-use crate::metrics::{Event, EventLog, now_ms};
+use crate::metrics::{Event, EventLog, UdpCounters, now_ms};
 use crate::planner::{self, CostKnob};
 use crate::proto::{
-    ClientFrame, ClientReply, ClientRequest, Command, CommittedResult, ControlReply,
-    ControlRequest, NodeId, NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, Plan,
-    ProposeError, ReplyBody, RequestId, Responder, ResultProposal, ServerFrame,
+    ClientReply, ClientRequest, Command, CommittedResult, ControlReply, ControlRequest, NodeId,
+    NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, Plan, ProposeError, ReplyBody,
+    RequestId, Responder, ResultProposal,
 };
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
 use degraded::DegradedState;
 use heartbeat::Suspicion;
-use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
+use transport::{
+    ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet, ReplyTx,
+    RequestHandler,
+};
 use workers::{Overloaded, WorkerPool};
 
 /// How often a node logs its message counts and state digest.
@@ -113,6 +117,8 @@ pub struct NodeHandle {
     pub ctx: Arc<NodeContext>,
     pub peer_addr: SocketAddr,
     pub client_addr: SocketAddr,
+    /// What this node's UDP socket has done (D172).
+    pub udp_counters: Arc<UdpCounters>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -137,22 +143,24 @@ pub async fn start(config: Config, id: NodeId) -> anyhow::Result<NodeHandle> {
     let peer = TcpListener::bind(&me.peer_addr)
         .await
         .with_context(|| format!("binding peer address {}", me.peer_addr))?;
-    let client = TcpListener::bind(&me.client_addr)
+    let client = ClientPort::bind(&me.client_addr)
         .await
         .with_context(|| format!("binding client address {}", me.client_addr))?;
     start_with(config, id, peer, client).await
 }
 
-/// Start a node on listeners that are already bound (tests bind port 0 first).
+/// Start a node on sockets that are already bound (tests bind port 0 first).
 pub async fn start_with(
     config: Config,
     id: NodeId,
     peer_listener: TcpListener,
-    client_listener: TcpListener,
+    client_port: ClientPort,
 ) -> anyhow::Result<NodeHandle> {
     let peer_addr = peer_listener.local_addr()?;
-    let client_addr = client_listener.local_addr()?;
+    let client_addr = client_port.local_addr()?;
     let log = EventLog::open(config.metrics.dir.as_deref(), &format!("node-{id}"))?;
+    client_port.report_buffer(&log);
+    let udp_counters = Arc::new(UdpCounters::default());
     let gate = FaultGate::default();
     // Same cooldown as openraft's retry of an unreachable peer (D32, D90).
     let reconnect_backoff = Duration::from_millis(2 * config.timers.raft_heartbeat_ms);
@@ -223,18 +231,25 @@ pub async fn start_with(
         client_addr: client_addr.to_string(),
     });
 
-    let client_handler: ClientHandler = {
+    let on_request: RequestHandler = {
         let ctx = ctx.clone();
-        Arc::new(move |frame, reply| on_client_frame(&ctx, frame, reply))
+        // In its own task, so a client's cancel cannot cut off a bid or a commit (D169). It owns
+        // itself: every wait in it is capped, so it ends without help.
+        Arc::new(move |req, reply| {
+            tokio::spawn(handle_request(ctx.clone(), req, reply));
+        })
+    };
+    let on_control: ControlHandler = {
+        let ctx = ctx.clone();
+        Arc::new(move |cmd| on_control(&ctx, cmd))
     };
     tasks.push(tokio::spawn(transport::serve_clients(
-        client_listener,
-        gate,
-        log.msgs().clone(),
-        client_handler,
+        client_port,
+        ClientServer::new(gate, log.msgs().clone(), on_request, on_control),
+        udp_counters.clone(),
     )));
     tasks.push(spawn_campus_seeding(ctx.clone()));
-    tasks.push(spawn_reporter(ctx.clone()));
+    tasks.push(spawn_reporter(ctx.clone(), udp_counters.clone()));
     tasks.extend(heartbeat::spawn(&ctx));
     tasks.extend(faults::spawn_schedule(&ctx));
     tasks.extend(rejoin::spawn(&ctx, restarted));
@@ -246,6 +261,7 @@ pub async fn start_with(
         ctx,
         peer_addr,
         client_addr,
+        udp_counters,
         tasks,
     })
 }
@@ -285,18 +301,6 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
 // ---------------------------------------------------------------------------------------------
 // Client requests
 // ---------------------------------------------------------------------------------------------
-
-fn on_client_frame(ctx: &Arc<NodeContext>, frame: ClientFrame, reply: ReplyTx) {
-    match frame {
-        ClientFrame::Request(req) => {
-            tokio::spawn(handle_request(ctx.clone(), req, reply));
-        }
-        ClientFrame::Control(cmd) => {
-            let answer = on_control(ctx, cmd);
-            reply.send(&ServerFrame::Control(answer));
-        }
-    }
-}
 
 async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, reply: ReplyTx) {
     let started = Instant::now();
@@ -451,11 +455,11 @@ fn send_provisional(
     started: Instant,
 ) {
     let responder = plan.responder;
-    let sent = reply.send(&ServerFrame::Reply(ClientReply {
+    let sent = reply.send(ClientReply {
         id: request,
         from: ctx.id,
         body: ReplyBody::Provisional(plan),
-    }));
+    });
     if sent {
         ctx.log.log(Event::ProvisionalReplied {
             request,
@@ -474,11 +478,11 @@ fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started:
     } else {
         ReplyBody::Done(done)
     };
-    let sent = reply.send(&ServerFrame::Reply(ClientReply {
+    let sent = reply.send(ClientReply {
         id: request,
         from: ctx.id,
         body,
-    }));
+    });
     if sent {
         ctx.log.log(Event::Replied {
             request,
@@ -547,8 +551,9 @@ fn spawn_campus_seeding(ctx: Arc<NodeContext>) -> JoinHandle<()> {
     })
 }
 
-/// Every `REPORT_INTERVAL`, log message counts (E5), the state digest and resource use (D128).
-fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
+/// Every `REPORT_INTERVAL`, log message counts (E5), the state digest, resource use (D128) and what
+/// the UDP socket did (D172).
+fn spawn_reporter(ctx: Arc<NodeContext>, udp_counters: Arc<UdpCounters>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REPORT_INTERVAL);
         loop {
@@ -568,8 +573,13 @@ fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
                 cpu_ticks: usage.cpu_ticks,
                 net_rx_bytes: usage.net_rx_bytes,
                 net_tx_bytes: usage.net_tx_bytes,
+                udp_drops: usage.udp_drops,
                 queued: pool.queued,
                 running: pool.running,
+            });
+            ctx.log.log(Event::UdpCounters {
+                counts: udp_counters.snapshot(),
+                udp_drops: usage.udp_drops,
             });
         }
     })

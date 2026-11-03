@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::config::Config;
+use rescuemesh::node::transport::ClientPort;
 use rescuemesh::node::{self, NodeHandle};
 use rescuemesh::proto::{
     Capability, Category, ClientRequest, Incident, Point, ReplyBody, RequestId, UserId,
@@ -72,10 +73,22 @@ async fn rebind(addr: &str) -> TcpListener {
     }
 }
 
+/// The same for the client port, which takes the number on both TCP and UDP.
+async fn rebind_client_port(addr: &str) -> ClientPort {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match ClientPort::bind(addr).await {
+            Ok(port) => return port,
+            Err(e) if Instant::now() > deadline => panic!("cannot bind {addr} again: {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
 async fn restart(config: &Config, id: u64) -> NodeHandle {
     let me = config.node(id).unwrap();
     let peer = rebind(&me.peer_addr).await;
-    let client = rebind(&me.client_addr).await;
+    let client = rebind_client_port(&me.client_addr).await;
     node::start_with(config.clone(), id, peer, client)
         .await
         .unwrap()
