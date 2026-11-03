@@ -96,8 +96,7 @@ victims_of() {
   esac
 }
 
-# Delete this run and stop the batch, for what would spoil the next run too. A run must not stay,
-# because analysis reads every run.json it finds.
+# Delete this run and stop the batch, for what would spoil the next run too.
 abandon_run() {
   rm -rf "$1"
   echo "run dropped and batch stopped: $2" >&2
@@ -147,7 +146,8 @@ run_once() {
   # Before anything is wiped. The last run's nodes were only just told to stop, so they get a moment.
   refuse_leftovers "$ALL_PROGRAMS" 10
   # Logs are copied by merging, so a rerun into the same folder would keep the old run's client logs and
-  # add them to its throughput. Under runs/old/ the analysis does not see them.
+  # add them to its throughput, and its run.json would survive a run that then fails. Under runs/old/ the
+  # analysis does not see them.
   if [[ -e "$out" ]]; then
     mkdir -p runs/old
     mv "$out" "runs/old/$cell-run-$rep-$(date +%Y%m%d-%H%M%S)"
@@ -156,9 +156,11 @@ run_once() {
   local config="$out/config.toml"
   write_config "$file" "$config"
   echo "$COMMIT" >"$out/commit.txt"
+  # The analysis counts every run.json it finds, with throughput 0 if the logs never came, so the file
+  # gets its name only when the run is whole. A batch killed or failing anywhere leaves no half a run.
   printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s","users":%d,"programs_per_pc":%d,"client_programs_expected":%d,"pattern":"%s","think_ms":%d,"victim":"%s"}\n' \
     "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" \
-    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" >"$out/run.json"
+    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" >"$out/run.json.partial"
 
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
     on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config'
@@ -223,6 +225,8 @@ run_once() {
   if [[ -n "$no_fault" ]]; then
     set_aside "$out" "$cell" "$rep" "$no_fault"
     logs="runs/dropped/$cell-run-$rep"
+  else
+    mv "$out/run.json.partial" "$out/run.json"
   fi
   if ((worst >= 2)); then
     echo "stopping the series: a client machine ended with status $worst; see above and $logs/users-*.out" >&2
