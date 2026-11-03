@@ -8,7 +8,8 @@
 # For each run: writes one config, copies it to every machine, wipes storage and metrics, starts the
 # nodes, waits for a leader, starts one load generator per client machine, injects the cell's fault,
 # stops everything, and copies the logs to runs/<experiment>/<cell>/<run>/ with the config, the git
-# commit and the final `ctl status`.
+# commit and the final `ctl status`. It refuses to start a run while a program of ours is left over
+# on any machine, and drops a run it cannot trust instead of keeping it (D139).
 #
 # Run scripts/lab-build.sh first, so every machine has the same commit. WARMUP, MEASURED, GAP and REPS
 # override the profile's values. A cell's first line says how to run it:
@@ -84,10 +85,20 @@ victims_of() {
   case "$1" in
     leader) echo "$leader" ;;
     follower) echo "$follower" ;;
-    # Everyone but one follower, which is left alone (D120).
-    others) printf '%s\n' "${NODE_IDS[@]}" | grep -vx "$follower" ;;
+    # Everyone but one follower, which is left alone (D120). With no follower in the table nobody can
+    # be left alone, and `grep -vx ""` would name all three.
+    others) if [[ -n "$follower" ]]; then printf '%s\n' "${NODE_IDS[@]}" | grep -vx "$follower"; fi ;;
     *) echo "unknown victim: $1" >&2; return 1 ;;
   esac
+}
+
+# Stop the batch and drop this run: analysis reads every run.json it finds, so a run that cannot be
+# trusted must not stay. The load generators of a run dropped halfway end on their own at their
+# duration, and until then the next batch refuses to start.
+abandon_run() {
+  rm -rf "$1"
+  echo "run dropped and batch stopped: $2" >&2
+  exit 1
 }
 
 stop_all() {
@@ -109,6 +120,8 @@ run_once() {
   victim=$(run_value "$file" victim none)
   silence_ms=$(run_value "$file" silence_ms 0)
   skew_work=$(run_value "$file" skew_work 0)
+  # Before anything is wiped. The last run's nodes were only just told to stop, so they get a moment.
+  refuse_leftovers "$ALL_PROGRAMS" 10
   mkdir -p "$out"
   local config="$out/config.toml"
   write_config "$file" "$config"
@@ -139,13 +152,23 @@ run_once() {
   if [[ "$victim" != none ]]; then
     # A third of the way in, so the measured time has a before, a during and an after.
     sleep $((WARMUP + MEASURED / 3))
-    local v
-    for v in $(victims_of "$victim"); do
-      ctl silence --node "$v" --ms "$silence_ms" >/dev/null
+    # `ctl status` shows a node that misses its 2 s as unreachable, so the victim can be missing from
+    # the table: a fault cell with no fault would look like a good run.
+    local v victims="" try
+    for try in 1 2 3; do
+      victims=$(victims_of "$victim")
+      [[ -z "$victims" ]] || break
+      sleep 1
+    done
+    [[ -n "$victims" ]] || abandon_run "$out" "ctl status shows no $victim to silence"
+    for v in $victims; do
+      silence_with_retry "$v" "$silence_ms" || abandon_run "$out" "could not silence node $v"
       echo "  silenced node $v for $silence_ms ms"
     done
   fi
   wait "${pids[@]}"
+  # Our own load generators have ended, so any still here ran beside them and the figures are wrong.
+  refuse_leftovers "$LOAD_PROGRAMS" || abandon_run "$out" "something else was sending during the run"
   ctl status >"$out/status-after.txt" || true
   stop_all
   sleep 0.5
