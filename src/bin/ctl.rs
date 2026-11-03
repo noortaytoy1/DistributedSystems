@@ -56,7 +56,8 @@ enum Cmd {
         #[arg(long, default_value_t = 5000)]
         ms: u64,
     },
-    /// Add planner work per request on one node to create load imbalance.
+    /// Set the planner work per request on one node, to create load imbalance. It replaces
+    /// `workers.plan_work`, so to put a node back, set it to that value again.
     Skew {
         #[arg(long)]
         node: u64,
