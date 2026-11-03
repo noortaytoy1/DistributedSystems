@@ -30,6 +30,9 @@ const WAIT: Duration = Duration::from_secs(40);
 /// 20 ms of planning in release, so about 5 ms of expected wait.
 const SKEW: u32 = 8_000;
 
+/// How long a plan takes with that skew on, in release: see [`skew`].
+const SKEWED_PLAN: Duration = Duration::from_millis(20);
+
 /// With the default timers every follower has started a vote well within this if nothing resets its
 /// timer: about 1.1 s at the longest (D115).
 const SETTLE: Duration = Duration::from_millis(2_000);
@@ -115,6 +118,13 @@ async fn stays(cluster: &TestCluster, leader: NodeId, term: Term, span: Duration
     }
 }
 
+/// `ctl skew`, and what it does to the node's bid once the node has planned with it.
+///
+/// A skew reaches a bid only through a job the node plans. With few users rounds do not overlap, so
+/// the node with the lowest planning time wins them all and the others' averages stay as they were.
+/// A node whose average was not the lowest may then never plan again: on 2 CPUs a leader won 0 of
+/// about 2100 rounds in 40 s, with its bid stuck at 10 µs, and the skew never showed. So the test
+/// does not leave that to chance. Under real load rounds overlap and every node wins some.
 async fn skew(cluster: &TestCluster, node: NodeId, extra_work: u32) {
     let addr = &cluster.config.node(node).unwrap().client_addr;
     let request = ControlRequest::SkewLoad { extra_work };
@@ -122,6 +132,15 @@ async fn skew(cluster: &TestCluster, node: NodeId, extra_work: u32) {
         .await
         .unwrap();
     assert!(matches!(answer, ControlReply::Done), "{answer:?}");
+    let plan = if extra_work > 0 {
+        SKEWED_PLAN
+    } else {
+        Duration::from_micros(1)
+    };
+    // Enough for the running average to reach it, at 1/8 of the way each.
+    for _ in 0..64 {
+        cluster.node(node).ctx.bids.record_service(plan);
+    }
 }
 
 /// A few users on the real client middleware, each sending a report, waiting for the answer and
@@ -295,6 +314,34 @@ async fn even_load_changes_nothing() {
     let bids = events(&cluster, &dir, leader, "bid_sent");
     let high = bids.iter().filter(|b| b["score"].as_u64().unwrap() > 1_000);
     assert!(high.count() > 0, "this test never got over the floor");
+    load.finish().await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A busy follower is the bid's business. The rule asks whether the leader is busier than its least
+/// busy peer, so a peer that is busier proves nothing, and a follower has nothing to step aside from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_skewed_follower_moves_nothing() {
+    const COOLDOWN_MS: u64 = 3_000;
+    let dir = log_dir("skewed-follower");
+    let cluster = TestCluster::start_with(3, |c| config(c, &dir, COOLDOWN_MS)).await;
+    let (leader, term) = agreed_leader(&cluster).await;
+    let follower = (1..=3).find(|id| *id != leader).unwrap();
+    let load = Load::start(&cluster, 4);
+    load.wait_for_answers(20).await;
+
+    skew(&cluster, follower, SKEW).await;
+    // Past the cooldown and the time in a row, as in the test where the leader moves.
+    let span = Duration::from_millis(COOLDOWN_MS + FOR_MS) + CHECK_SLACK;
+    stays(&cluster, leader, term, span).await;
+
+    assert!(all_events(&cluster, &dir, "leader_stepped_aside").is_empty());
+    let bids = events(&cluster, &dir, follower, "bid_sent");
+    assert!(
+        bids.iter().any(|b| b["score"].as_u64().unwrap() > 1_000),
+        "the skew never showed, so this tested nothing"
+    );
     load.finish().await;
     cluster.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
