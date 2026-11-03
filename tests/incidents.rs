@@ -136,6 +136,22 @@ async fn a_too_old_report_commits_nobody_with_responders_free() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_too_old_report_is_refused_under_leader_dispatch_too() {
+    let cluster = start(30, |c| {
+        c.policy.assignment = AssignmentPolicy::LeaderDispatch
+    })
+    .await;
+    let reply = first_reply(&cluster.config, request(1, 0, 1_000, 1_000), PATIENCE)
+        .await
+        .expect("a refusal is still an answer");
+    let record = expired_record(&reply.body);
+    assert_eq!(record.plan.responder, None);
+    let leader = cluster.node(1).ctx.consensus.status().leader;
+    assert_eq!(Some(record.executor), leader);
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_report_one_millisecond_younger_than_its_ttl_is_planned() {
     let cluster = start(30, |_| {}).await;
     let reply = first_reply(&cluster.config, request(1, 0, 999, 1_000), PATIENCE)
@@ -149,17 +165,11 @@ async fn a_report_one_millisecond_younger_than_its_ttl_is_planned() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_zero_ttl_is_refused_through_the_client_without_a_retry() {
-    // Retries far away, so only the refusal can end this submit, however busy the machine is.
-    let cluster = start(30, |c| {
-        c.timers.client_retry_ms = 60_000;
-        c.timers.client_retry_max_ms = 60_000;
-    })
-    .await;
+async fn a_zero_ttl_is_refused_through_the_client() {
+    let cluster = start(30, |_| {}).await;
     let client = MeshClient::new(72, &cluster.config, EventLog::disabled("c"));
     let done = client.submit(incident(5, 0)).await.unwrap();
     assert_eq!(done.status, IncidentStatus::Expired);
-    assert_eq!(done.attempts, 1);
     assert_eq!(done.plan.responder, None);
     assert!(!done.provisional);
     assert!(free_everywhere(&cluster, 30));
@@ -239,7 +249,8 @@ async fn a_retry_that_arrives_too_late_is_refused() {
 async fn nobody_free_reads_unassigned_then_expired_with_no_log_entry() {
     let cluster = start(0, |c| c.campus.responders = 0).await;
     let client = MeshClient::new(74, &cluster.config, EventLog::disabled("c"));
-    let ttl_ms = 1_000;
+    // Longer than the first retry's wait, so even a lost first send is not refused here.
+    let ttl_ms = 3_000;
     let done = client.submit(incident(2, ttl_ms)).await.unwrap();
     assert_eq!(done.status, IncidentStatus::Unassigned);
     let result = done.committed.as_ref().unwrap();

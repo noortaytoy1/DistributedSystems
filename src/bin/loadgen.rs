@@ -26,7 +26,7 @@ use rand::rngs::StdRng;
 use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{EventLog, now_us};
+use rescuemesh::metrics::{EventLog, now_ms};
 use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -102,7 +102,7 @@ fn percentile(sorted: &[u64], percent: u64) -> Option<u64> {
 
 /// One draw from this run's seeded generator, stamped with the current time.
 fn incident(rng: &mut StdRng, campus: &CampusConfig, owner: UserId) -> rescuemesh::proto::Incident {
-    campus::random_incident(rng, campus, owner, now_us() / 1000)
+    campus::random_incident(rng, campus, owner, now_ms())
 }
 
 /// Each user draws from its own generator, so a seed repeats the same incidents per user.
