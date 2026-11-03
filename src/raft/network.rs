@@ -9,8 +9,9 @@
 //! Owner: A (Raft and replication).
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openraft::BasicNode;
 use openraft::error::{
@@ -64,6 +65,11 @@ pub struct PeerBeats {
 #[derive(Debug, Default)]
 pub struct HeartbeatStats {
     peers: Mutex<BTreeMap<NodeId, PeerBeats>>,
+    /// When an AppendEntries of any kind last arrived, and the longest gap between two since
+    /// [`take_largest_gap_us`](Self::take_largest_gap_us): how close this node came to starting
+    /// an election.
+    last_append: Mutex<Option<Instant>>,
+    largest_gap_us: AtomicU64,
 }
 
 impl HeartbeatStats {
@@ -81,6 +87,28 @@ impl HeartbeatStats {
 
     pub fn received(&self, from: NodeId) {
         self.update(from, |b| b.received += 1);
+    }
+
+    pub fn append_arrived(&self) {
+        let now = Instant::now();
+        let last = self
+            .last_append
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(now);
+        if let Some(last) = last {
+            let gap = now.saturating_duration_since(last).as_micros() as u64;
+            self.largest_gap_us.fetch_max(gap, Ordering::Relaxed);
+        }
+    }
+
+    /// A leader hears from nobody, and that is no gap: its next one is counted from its next
+    /// AppendEntries as a follower.
+    pub fn take_largest_gap_us(&self, leading: bool) -> u64 {
+        if leading {
+            *self.last_append.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+        self.largest_gap_us.swap(0, Ordering::Relaxed)
     }
 
     /// Counts since the previous call; resets them.
@@ -259,6 +287,7 @@ pub async fn serve(
 ) -> PeerReply {
     match rpc {
         RaftRpc::AppendEntries(r) => {
+            heartbeats.append_arrived();
             if r.entries.is_empty() {
                 heartbeats.received(from);
                 let term = r.vote.leader_id().get_term();

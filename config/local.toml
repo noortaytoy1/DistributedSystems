@@ -29,6 +29,7 @@ client_max_retries = 5
 propose_timeout_ms = 3000
 peer_rpc_timeout_ms = 500
 # Every peer suspected this long, and a serving node answers without a commit (D121).
+# One peer suspected this long leaves this node's group member list (D153).
 degraded_after_ms = 2000
 
 [policy]
@@ -54,6 +55,9 @@ plan_work = 0
 seed = 42
 zones = 6
 responders = 30
+# How long a report stays valid; a node refuses an older one and sends nobody (D143). Keep it above
+# the client's retries, at most 36 s with these timers. Set it for one run with: loadgen --ttl-ms
+incident_ttl_ms = 60000
 
 [metrics]
 dir = "runs/local"

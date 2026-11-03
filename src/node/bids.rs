@@ -134,14 +134,14 @@ pub fn on_bid(ctx: &NodeContext, from: NodeId, bid: &Bid) {
 }
 
 /// Sends the bid to the group without waiting: the window runs by the clock, so a slow peer must
-/// not hold it up. A lost bid can only cause a split decision, which the first commit settles.
-/// The task ends within the peer RPC timeout, so it needs no owner.
+/// not hold it up. A lost bid can only cause a split decision, which the first commit settles, and
+/// a peer this node has listed as gone gets no copy at all (D154). The task ends within the peer
+/// RPC timeout, so it needs no owner.
 fn send_bid(ctx: &NodeContext, bid: Bid) {
-    let term = ctx.consensus.status().term;
     let timeout = ctx.config.timers.peer_rpc_timeout();
-    let peers = ctx.peers.clone();
+    let group = ctx.group.clone();
     tokio::spawn(async move {
-        let sent = peers.broadcast(term, timeout, || PeerBody::Bid(bid.clone()));
+        let sent = group.send(timeout, || PeerBody::Bid(bid.clone()));
         for (peer, outcome) in sent.await {
             if let Err(e) = outcome {
                 tracing::debug!(peer, "bid not delivered: {e}");

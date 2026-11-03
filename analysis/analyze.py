@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -110,6 +111,10 @@ def request_metrics(events, warmup_s, measured_s):
     no_responder = sum(1 for e in done if e.get("no_responder"))
     metrics["retried_share"] = retried / answered if answered else float("nan")
     metrics["no_responder_share"] = no_responder / answered if answered else float("nan")
+    # An expired report also counts in no_responder_share. See expired_warnings.
+    metrics["reports_expired"] = sum(1 for e in done if e.get("status") == "expired")
+    priorities = [e["priority"] for e in done if "priority" in e]
+    metrics["priority_mean"] = float(np.mean(priorities)) if priorities else float("nan")
 
     nodes = sorted(int(s.split("-")[1]) for s in node_events(events))
     by_node = defaultdict(int)
@@ -153,14 +158,24 @@ def silent_spans(events):
 
 def election_metrics(events, start_us):
     """Raft elections: new terms seen, and how long each node had no leader, leaving out the times
-    it was silenced or catching up itself."""
+    it was silenced or catching up itself.
+
+    An election is a term above the one already running when the window opened. That term is the
+    highest logged before the window; it logs nothing inside the window unless something changes,
+    so counting the terms seen and taking one off comes out one too low. A log with nothing before
+    the window treats its first term as the running one. Node clocks agree only as far as NTP does,
+    so a term starting right at the edge can land on either side."""
     terms = set()
+    running = 0
     durations_us = []
     for es in node_events(events).values():
         spans = silent_spans(es)
         lost_at = None
         for e in es:
-            if e["ev"] != "raft_state" or e["ts_us"] < start_us:
+            if e["ev"] != "raft_state":
+                continue
+            if e["ts_us"] < start_us:
+                running = max(running, e["term"])
                 continue
             terms.add(e["term"])
             if any(a <= e["ts_us"] <= b for a, b in spans):
@@ -170,8 +185,9 @@ def election_metrics(events, start_us):
             elif e["leader"] is not None and lost_at is not None:
                 durations_us.append(e["ts_us"] - lost_at)
                 lost_at = None
+    running = running or min(terms, default=0)
     return {
-        "elections": max(len(terms) - 1, 0),
+        "elections": sum(1 for term in terms if term > running),
         "election_duration_mean_ms": float(np.mean(durations_us)) / 1000
         if durations_us
         else float("nan"),
@@ -199,6 +215,24 @@ def elections_after_rejoin(events):
     return total
 
 
+def client_gap_metrics(events, fault_start, fault_end):
+    """E3's client-visible gap: for each client, the longest time between two answers, on its own
+    clock, that overlaps the fault. This is what failover looks like from outside. Only choosing
+    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock."""
+    longest = []
+    for source, es in events.items():
+        if not source.startswith("client-"):
+            continue
+        answered = sorted(e["ts_us"] for e in es if e["ev"] == "client_done")
+        gaps = [b - a for a, b in zip(answered, answered[1:]) if a < fault_end and b > fault_start]
+        if gaps:
+            longest.append(max(gaps))
+    return {
+        "client_gap_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
+        "client_gap_max_ms": max(longest) / 1000 if longest else float("nan"),
+    }
+
+
 def fault_metrics(events, measured_requests):
     logs = node_events(events)
     def values(name, field):
@@ -210,7 +244,6 @@ def fault_metrics(events, measured_requests):
     metrics = {
         "detection_mean_ms": mean_or_nan(values("peer_suspected", "silent_ms")),
         "takeovers": len(values("takeover_started", "waited_us")),
-        "takeover_wait_mean_ms": mean_or_nan(values("takeover_started", "waited_us"), 1000),
         "recovery_mean_ms": mean_or_nan(values("rejoined", "recovery_us"), 1000),
         "rejoins": len(values("rejoined", "recovery_us")),
         "elections_after_rejoin": elections_after_rejoin(events),
@@ -221,11 +254,22 @@ def fault_metrics(events, measured_requests):
     for reason in ("lost_first_commit", "responder_taken"):
         metrics[f"conflicts_{reason}"] = sum(1 for r in values("provisional_conflict", "reason") if r == reason)
 
+    # Split by reason and kept away from the failover figures: a `backstop` takeover fires when a
+    # busy winner runs out of time, with no fault anywhere, and under overload that is nearly all
+    # of them. Only `suspected` has anything to do with a node that went away, and even that is
+    # one request's wait, not how long clients saw nothing.
+    takeovers = [e for es in logs.values() for e in es if e["ev"] == "takeover_started"]
+    for reason in ("suspected", "backstop"):
+        waits = [e["waited_us"] for e in takeovers if e["reason"] == reason]
+        metrics[f"takeovers_{reason}"] = len(waits)
+        metrics[f"takeover_wait_{reason}_mean_ms"] = mean_or_nan(waits, 1000)
+
     silenced = [e["ts_us"] for es in logs.values() for e in es if e["ev"] == "silenced"]
     restored = [e["ts_us"] for es in logs.values() for e in es if e["ev"] == "restored"]
     if not silenced or not restored:
         return metrics
     fault_start, fault_end = min(silenced), max(restored)
+    metrics.update(client_gap_metrics(events, fault_start, fault_end))
     sent_at = [e["ts_us"] - e["latency_us"] for e in measured_requests]
     if not sent_at:
         return metrics
@@ -240,6 +284,48 @@ def fault_metrics(events, measured_requests):
         seconds = (hi - lo) / 1_000_000
         metrics[f"{phase}_rps"] = len(inside) / seconds if seconds > 0 else float("nan")
     return metrics
+
+
+def refusal_metrics(events, start_us):
+    """Planning jobs a full worker pool refused (D73, D138). The client hears nothing and retries,
+    so nothing else tells shed work from slow work."""
+    metrics = {"plans_refused": 0}
+    for source, es in node_events(events).items():
+        refused = sum(1 for e in es if e["ev"] == "overloaded" and e["ts_us"] >= start_us)
+        metrics["plans_refused"] += refused
+        metrics[f"plans_refused_node_{source.split('-')[1]}"] = refused
+    return metrics
+
+
+def convergence_metrics(events):
+    """Digests at fixed log indexes (D138). A digest chains over the whole log before it, so one
+    equal digest shows that everything before it was equal too. A rejoin is confirmed by the first
+    checkpoint its node logs after `rejoined`, if another node logged that index with the same
+    digest. Over the whole run, warm-up included: state from any time counts."""
+    logs = node_events(events)
+    digests = defaultdict(set)
+    nodes = defaultdict(set)
+    for source, es in logs.items():
+        for e in es:
+            if e["ev"] == "state_checkpoint":
+                digests[e["log_index"]].add(e["digest"])
+                nodes[e["log_index"]].add(source)
+    confirmed = 0
+    for source, es in logs.items():
+        for at, e in enumerate(es):
+            if e["ev"] != "rejoined":
+                continue
+            index = next((c["log_index"] for c in es[at + 1:] if c["ev"] == "state_checkpoint"), None)
+            if index is not None and nodes[index] - {source} and len(digests[index]) == 1:
+                confirmed += 1
+    return {
+        "digest_checkpoints_compared": sum(1 for seen_by in nodes.values() if len(seen_by) > 1),
+        "digest_mismatches": sum(1 for found in digests.values() if len(found) > 1),
+        "rejoins_digest_confirmed": confirmed,
+        "rejoin_targets_lowered": sum(
+            1 for es in logs.values() for e in es if e["ev"] == "rejoin_target_lowered"
+        ),
+    }
 
 
 def message_metrics(events, start_us, completed):
@@ -312,6 +398,90 @@ def commit_metrics(events, start_us):
     return metrics
 
 
+def client_sources(events):
+    return {s: es for s, es in events.items() if s.startswith("client-")}
+
+
+def client_program_metrics(events, meta):
+    """How the load was shaped (D181, D186): real programs that sent anything, users per program, and
+    client connections dropped, by reason. Link events exist only while clients hold connections."""
+    programs = sum(
+        1 for es in client_sources(events).values() if any(e["ev"] == "client_sent" for e in es)
+    )
+    metrics = {"client_programs": programs}
+    if meta.get("users") and programs:
+        metrics["users_per_program"] = meta["users"] / programs
+    drops = [
+        e["reason"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_link_down"
+    ]
+    metrics["client_link_down"] = len(drops)
+    for reason in set(drops):
+        metrics[f"client_link_down_{reason.replace(' ', '_')}"] = drops.count(reason)
+    return metrics
+
+
+def arrival_peak_share(times_us):
+    """The share of arrivals in the busiest 100 ms of their second, over all the seconds given. Even
+    arrivals give a tenth, and a whole second's users sending together give 1. Client machines agree
+    only as far as NTP does, which is good enough at this width. Seconds with few arrivals read high."""
+    seconds = defaultdict(lambda: defaultdict(int))
+    for ts in times_us:
+        seconds[ts // 1_000_000][ts // 100_000] += 1
+    if not seconds:
+        return float("nan")
+    peaks = sum(max(buckets.values()) for buckets in seconds.values())
+    return peaks / len(times_us)
+
+
+def arrival_metrics(events, start_us):
+    """Do first sends clump (D182)? At the very start, over the measured time, and after a fault, when
+    waiting users can come back together."""
+    sends = sorted(
+        e["ts_us"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_sent" and e["attempt"] == 0
+    )
+    if not sends:
+        return {}
+    metrics = {
+        "arrival_peak_100ms_share_first_s": arrival_peak_share(
+            [ts - sends[0] for ts in sends if ts < sends[0] + 1_000_000]
+        ),
+        "arrival_peak_100ms_share": arrival_peak_share([ts for ts in sends if ts >= start_us]),
+    }
+    restored = [e["ts_us"] for es in node_events(events).values() for e in es if e["ev"] == "restored"]
+    if restored:
+        fault_end = max(restored)
+        metrics["arrival_peak_100ms_share_after_fault"] = arrival_peak_share(
+            [ts for ts in sends if ts >= fault_end]
+        )
+    return metrics
+
+
+def client_pc_metrics(events, start_us):
+    """The client PCs' own CPU and memory (D185): a saturated client PC reads as cloud latency."""
+    busy, available = [], []
+    for es in client_sources(events).values():
+        samples = [e for e in es if e["ev"] == "machine_usage" and e["ts_us"] >= start_us]
+        for before, after in zip(samples, samples[1:]):
+            if None in (before["cpu_total_ticks"], after["cpu_total_ticks"]):
+                continue
+            total = after["cpu_total_ticks"] - before["cpu_total_ticks"]
+            if total > 0:
+                busy.append((after["cpu_busy_ticks"] - before["cpu_busy_ticks"]) / total)
+        available += [e["mem_available_kb"] for e in samples if e["mem_available_kb"] is not None]
+    metrics = {}
+    if busy:
+        metrics["client_pc_cpu_busy_p95"] = nearest_rank(sorted(busy), 95)
+    if available:
+        metrics["client_pc_mem_available_min_mb"] = min(available) / 1024
+    return metrics
+
+
 def analyse_run(run_dir):
     meta = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
     warmup_s, measured_s = meta["warmup_s"], meta["measured_s"]
@@ -322,10 +492,31 @@ def analyse_run(run_dir):
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
     metrics.update(fault_metrics(events, done))
+    metrics.update(refusal_metrics(events, start))
+    metrics.update(convergence_metrics(events))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))
+    metrics.update(client_program_metrics(events, meta))
+    metrics.update(arrival_metrics(events, start))
+    metrics.update(client_pc_metrics(events, start))
+    metrics["silenced_events"] = sum(
+        1 for es in node_events(events).values() for e in es if e["ev"] == "silenced"
+    )
     return meta, metrics
+
+
+def run_problem(meta, metrics):
+    """Why this run must not be averaged in, or None (D186). Missing programs mean less load than the
+    cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
+    before the runner wrote these keys skips the checks."""
+    expected = meta.get("client_programs_expected")
+    if expected is not None and metrics["client_programs"] != expected:
+        return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    victim = meta.get("victim", "none")
+    if victim != "none" and metrics["silenced_events"] == 0:
+        return f"the cell silences its {victim}, and no node logged a silence"
+    return None
 
 
 def confidence_interval(values):
@@ -344,6 +535,10 @@ def summarise(root):
     per_cell = defaultdict(list)
     for meta_path in sorted(Path(root).glob("*/*/*/run.json")):
         meta, metrics = analyse_run(meta_path.parent)
+        problem = run_problem(meta, metrics)
+        if problem:
+            print(f"left out {meta_path.parent}: {problem}")
+            continue
         per_cell[(meta["experiment"], meta["cell"])].append(metrics)
     summary = {}
     for key, runs in per_cell.items():
@@ -353,6 +548,21 @@ def summarise(root):
             for name in names
         }
     return summary
+
+
+def expired_warnings(summary):
+    """Cells where a report was refused as too old. The default TTL outlasts every client retry and
+    the runner never passes --ttl-ms, so a measured run should have none (D147). Any here most likely
+    means an age stamped wrongly, which looks like a very fast run where nobody gets sent."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        mean = metrics.get("reports_expired", (float("nan"),))[0]
+        if mean > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: reports_expired is {mean:g} per run, expected 0; "
+                "check how the client stamps ages before trusting this cell"
+            )
+    return warnings
 
 
 def write_csv(summary, path):
@@ -488,6 +698,8 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
+    for warning in expired_warnings(summary):
+        print(warning, file=sys.stderr)
 
 
 if __name__ == "__main__":

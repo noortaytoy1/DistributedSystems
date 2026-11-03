@@ -13,7 +13,8 @@ use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::node::NodeHandle;
 use rescuemesh::proto::{
-    Capability, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody, RequestId,
+    Capability, Category, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody,
+    RequestId, UserId,
 };
 
 /// Sends per request, the same as a client's first send and five retries (D52).
@@ -24,12 +25,19 @@ fn request(seq: u64, attempt: u32) -> ClientRequest {
     ClientRequest {
         id: RequestId { client: 77, seq },
         attempt,
+        age_ms: 0,
         incident: Incident {
+            owner: UserId {
+                client: 77,
+                user: 0,
+            },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 10, y: 20 },
             severity: 3,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
     }
 }

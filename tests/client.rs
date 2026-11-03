@@ -16,19 +16,22 @@ use rescuemesh::config::{ClusterConfig, Config, NodeAddr};
 use rescuemesh::metrics::EventLog;
 use rescuemesh::node::transport::framed;
 use rescuemesh::proto::{
-    self, Capability, ClientFrame, ClientReply, CommittedResult, ControlReply, Incident, Plan,
-    Point, ReplyBody, ServerFrame,
+    self, Capability, Category, ClientFrame, ClientReply, CommittedResult, ControlReply, Incident,
+    IncidentStatus, Plan, Point, ReplyBody, ServerFrame, UserId,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
 fn incident() -> Incident {
     Incident {
+        owner: UserId { client: 5, user: 0 },
+        category: Category::MedicalAssistance,
         zone: 0,
         location: Point { x: 10, y: 20 },
         severity: 2,
         needs: Capability::Medical,
         reported_at_ms: rescuemesh::metrics::now_us() / 1000,
+        ttl_ms: 60_000,
     }
 }
 
@@ -198,7 +201,10 @@ async fn serve_stub(
                                 plan: Plan {
                                     responder: None,
                                     cost: 0,
+                                    priority: 200,
                                 },
+                                age_ms: req.age_ms,
+                                assigned_at_ms: 0,
                                 log_index: 1,
                             }),
                         }))
@@ -318,7 +324,10 @@ async fn a_retry_keeps_the_request_id_and_increments_the_attempt() {
                     plan: Plan {
                         responder: None,
                         cost: 0,
+                        priority: 200,
                     },
+                    age_ms: req.age_ms,
+                    assigned_at_ms: 0,
                     log_index: 1,
                 }),
             });
@@ -337,6 +346,133 @@ async fn a_retry_keeps_the_request_id_and_increments_the_attempt() {
     assert_eq!(attempts, vec![0, 1, 2]);
     let request = done.committed.unwrap().request;
     assert!(seen.iter().all(|(id, _)| *id == request));
+}
+
+#[tokio::test]
+async fn each_retry_states_a_larger_age() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let ages = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = ages.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut conn = framed(stream);
+        while let Some(Ok(frame)) = conn.next().await {
+            if let ClientFrame::Request(req) = proto::decode::<ClientFrame>(&frame).unwrap() {
+                recorded.lock().unwrap().push(req.age_ms);
+            }
+        }
+    });
+    let mut config = stub_config(&[addr]);
+    config.timers.client_retry_ms = 20;
+    config.timers.client_retry_max_ms = 40;
+    let client = MeshClient::new(15, &config, EventLog::disabled("c"));
+    assert!(matches!(
+        client.submit(incident()).await,
+        Err(ClientError::GaveUp { .. })
+    ));
+    let last_retry = Duration::from_secs(5);
+    wait_until(last_retry, "every send at the stub", || {
+        ages.lock().unwrap().len() == 6
+    })
+    .await;
+    let ages = ages.lock().unwrap();
+    // Waits of at least 16 ms between sends, at the lowest jitter.
+    assert!(
+        ages.windows(2).all(|pair| pair[1] >= pair[0] + 15),
+        "{ages:?}"
+    );
+    assert!(ages[0] < ages[5], "{ages:?}");
+}
+
+/// The trap of a send loop that says "Done or Provisional returns, anything else keeps waiting":
+/// this reply would be ignored, and a report the cloud has answered would end in `GaveUp`.
+#[tokio::test]
+async fn an_expired_reply_ends_the_wait_at_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut conn = framed(stream);
+        while let Some(Ok(frame)) = conn.next().await {
+            let ClientFrame::Request(req) = proto::decode::<ClientFrame>(&frame).unwrap() else {
+                continue;
+            };
+            let answer = ServerFrame::Reply(ClientReply {
+                id: req.id,
+                from: 1,
+                body: ReplyBody::Expired(CommittedResult {
+                    request: req.id,
+                    incident: req.incident,
+                    executor: 1,
+                    term: 1,
+                    plan: Plan {
+                        responder: None,
+                        cost: 0,
+                        priority: 0,
+                    },
+                    age_ms: req.age_ms,
+                    assigned_at_ms: 0,
+                    log_index: 1,
+                }),
+            });
+            let bytes = Bytes::from(proto::encode(&answer).unwrap());
+            conn.send(bytes).await.unwrap();
+        }
+    });
+    let mut config = stub_config(&[addr]);
+    // A retry an hour away: only the reply itself can end this submit in time.
+    config.timers.client_retry_ms = 3_600_000;
+    config.timers.client_retry_max_ms = 3_600_000;
+    let client = MeshClient::new(16, &config, EventLog::disabled("c"));
+    let report = Incident {
+        ttl_ms: 0,
+        ..incident()
+    };
+    let done = tokio::time::timeout(Duration::from_secs(10), client.submit(report))
+        .await
+        .expect("an Expired reply must end the wait")
+        .unwrap();
+    assert_eq!(done.status, IncidentStatus::Expired);
+    assert_eq!(done.attempts, 1);
+    assert_eq!(done.plan.responder, None);
+    assert!(!done.provisional);
+    assert_eq!(done.committed.unwrap().request, done.id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fresh_report_gets_a_responder_and_reads_assigned() {
+    let cluster = TestCluster::start(3).await;
+    ready(&cluster).await;
+    let node = cluster.node(1);
+    wait_until(Duration::from_secs(10), "the campus registered", || {
+        node.ctx.status().responders > 0
+    })
+    .await;
+    let dir = std::env::temp_dir().join(format!("rescuemesh-fresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let log = EventLog::open(Some(&dir), "client-17").unwrap();
+    let client = MeshClient::new(17, &cluster.config, log.clone());
+
+    // Guards the age's units: milliseconds read as microseconds, or the wrong clock, would refuse
+    // every report and look like a very fast run in which nobody is ever sent.
+    let done = client.submit(incident()).await.unwrap();
+    assert!(done.plan.responder.is_some());
+    assert_eq!(done.status, IncidentStatus::Assigned);
+    assert!(done.plan.priority >= 200, "severity 2 alone is 200 points");
+    let result = done.committed.unwrap();
+    assert!(!result.too_old_on_arrival());
+    assert!(result.age_ms < 10_000, "age {} ms", result.age_ms);
+    assert!(result.assigned_at_ms >= result.incident.reported_at_ms);
+
+    drop(client);
+    tokio::task::spawn_blocking(move || log.close())
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(dir.join("client-17.jsonl")).unwrap();
+    assert!(text.contains(r#""status":"assigned""#), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+    cluster.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

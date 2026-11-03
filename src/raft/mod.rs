@@ -3,11 +3,14 @@
 //! Node code talks to Raft only through the [`Consensus`] trait, so the library can be swapped
 //! for our own Raft without touching `node/`.
 //!
-//! - Every node calls `initialize` with the full membership from the config; openraft treats the
-//!   repeats as no-ops, so the cluster forms whichever nodes start first.
+//! - On its first start every node calls `initialize` with the full membership from the config;
+//!   openraft treats the repeats as no-ops, so the cluster forms whichever nodes start first.
 //! - Any node can propose. A follower forwards its proposal to the leader (`PeerBody::Propose`)
-//!   and retries across leader changes until `timers.propose_timeout_ms`. Retrying is safe
-//!   because every `Command` is idempotent.
+//!   and retries across leader changes until `timers.propose_timeout_ms`, which is a real cap on
+//!   the wait. Retrying is safe because every `Command` is idempotent.
+//! - On the leader every proposal, its own or forwarded, goes through one queue (proposals.rs): one
+//!   `client_write` at a time, carrying everything that waited as one log entry, so that disk saves
+//!   cannot stop the heartbeats (D133).
 //! - Each finished proposal logs a `commit` event with its latency, and every term, leader or role
 //!   change logs a `raft_state` event (E5).
 //! - Once a second each node logs a one-line summary of the Raft heartbeats it sent and received
@@ -16,12 +19,14 @@
 //! Owner: A (Raft and replication).
 
 pub mod network;
+pub mod proposals;
 pub mod store;
 pub mod wal;
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -35,19 +40,24 @@ use crate::config::{Config, Timers};
 use crate::metrics::{Event, EventLog};
 use crate::node::transport::PeerSet;
 use crate::proto::{
-    Command, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError, RaftRpc, Term,
+    Command, CommandGroup, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError,
+    RaftRpc, Term,
 };
 use network::{HeartbeatStats, Network, PeerBeats};
-use store::{LogStore, StateMachineStore, StateReader};
+use proposals::{GROUP_LIMIT, ProposalQueue};
+use store::{LogStats, LogStore, StateMachineStore, StateReader};
 
 /// How often the heartbeat summary is logged.
 const HEARTBEAT_SUMMARY_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How often the proposal queue's and the log file's counters are logged.
+const IO_REPORT_INTERVAL: Duration = Duration::from_secs(1);
+
 openraft::declare_raft_types!(
     /// openraft type configuration for RescueMesh.
     pub TypeConfig:
-        D = Command,
-        R = Outcome,
+        D = CommandGroup,
+        R = Vec<Outcome>,
         NodeId = NodeId,
         Node = BasicNode,
         Entry = openraft::Entry<TypeConfig>,
@@ -122,7 +132,10 @@ pub trait Consensus: Send + Sync + 'static {
     fn leader_commit(&self) -> watch::Receiver<Option<u64>>;
 
     /// The leader's commit index, confirmed by a majority (Raft ReadIndex). Asks the leader over
-    /// `PeerBody::ReadIndex` when this node is not the leader (D76).
+    /// `PeerBody::ReadIndex` when this node is not the leader (D76). Nothing committed before the
+    /// call is above the answer, but a leader just elected answers with its first entry of the
+    /// term, which is not committed yet and is lost if that leader is replaced: never wait on the
+    /// answer for ever (D135).
     fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
 
     /// `read_index` only if this node is the leader; used for queries from peers.
@@ -147,6 +160,11 @@ pub struct RaftNode {
     log: EventLog,
     heartbeats: Arc<HeartbeatStats>,
     leader_commit: watch::Sender<Option<u64>>,
+    /// Who this node believes leads. Changes only when that does, so waiting on it costs nothing
+    /// under load, unlike the metrics channel, which changes with every entry.
+    leader: watch::Sender<Option<NodeId>>,
+    queue: ProposalQueue,
+    log_stats: Arc<LogStats>,
 }
 
 impl RaftNode {
@@ -163,6 +181,7 @@ impl RaftNode {
             Some(dir) => LogStore::open(dir.join(format!("node-{id}.wal"))).await?,
             None => (LogStore::default(), false),
         };
+        let log_stats = log_store.stats();
         let raft_config = openraft::Config {
             cluster_name: "rescuemesh".into(),
             heartbeat_interval: t.raft_heartbeat_ms,
@@ -175,24 +194,36 @@ impl RaftNode {
         }
         .validate()?;
 
-        let (state_machine, state) = StateMachineStore::new();
+        let (state_machine, state) = StateMachineStore::new(log.clone());
         // openraft's default 500 ms backoff would delay catching up a node that just returned.
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());
         let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
         let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
-        let members: BTreeMap<NodeId, BasicNode> = config
-            .cluster
-            .nodes
-            .iter()
-            .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
-            .collect();
-        match raft.initialize(members).await {
-            Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
-            Err(e) => return Err(e.into()),
+        // A restarted node has its membership in its log file, and openraft would refuse to
+        // initialize it again and log an ERROR for it (D137). Asking also waits for Raft's first
+        // metrics, which the rest of the node reads as soon as this returns.
+        if !raft.is_initialized().await? {
+            let members: BTreeMap<NodeId, BasicNode> = config
+                .cluster
+                .nodes
+                .iter()
+                .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
+                .collect();
+            match raft.initialize(members).await {
+                Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
+        let queue = {
+            let raft = raft.clone();
+            ProposalQueue::start(GROUP_LIMIT, t.propose_timeout(), move |group| {
+                let raft = raft.clone();
+                async move { write_group(&raft, group).await }
+            })
+        };
         let node = Arc::new(Self {
             id,
             raft,
@@ -201,6 +232,9 @@ impl RaftNode {
             log,
             heartbeats,
             leader_commit: watch::channel(None).0,
+            leader: watch::channel(None).0,
+            queue,
+            log_stats,
         });
         Ok((node, state, restarted))
     }
@@ -221,6 +255,39 @@ impl RaftNode {
         })
     }
 
+    /// Log the proposal queue's and the log file's counters every second until the task is aborted.
+    pub fn spawn_io_report(self: &Arc<Self>) -> JoinHandle<()> {
+        let node = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(IO_REPORT_INTERVAL);
+            loop {
+                tick.tick().await;
+                node.log.log(node.io_report());
+            }
+        })
+    }
+
+    fn io_report(&self) -> Event {
+        let queue = self.queue.stats();
+        let saved = &self.log_stats;
+        Event::RaftIo {
+            waiting: queue.waiting.load(Ordering::Relaxed),
+            writes: queue.writes.load(Ordering::Relaxed),
+            commands: queue.commands.load(Ordering::Relaxed),
+            expired: queue.expired.load(Ordering::Relaxed),
+            write_timeouts: queue.write_timeouts.load(Ordering::Relaxed),
+            syncs: saved.syncs.load(Ordering::Relaxed),
+            sync_us: saved.sync_us.load(Ordering::Relaxed),
+            max_sync_us: saved.max_sync_us.swap(0, Ordering::Relaxed),
+            saves: saved.saves.load(Ordering::Relaxed),
+            saved_entries: saved.entries.load(Ordering::Relaxed),
+            saved_commands: saved.commands.load(Ordering::Relaxed),
+            max_leader_gap_us: self
+                .heartbeats
+                .take_largest_gap_us(self.status().role == Role::Leader),
+        }
+    }
+
     pub fn raft(&self) -> &Raft {
         &self.raft
     }
@@ -230,6 +297,7 @@ impl RaftNode {
         let mut metrics = self.raft.metrics();
         let log = self.log.clone();
         let id = self.id;
+        let current_leader = self.leader.clone();
         tokio::spawn(async move {
             let mut last = None;
             loop {
@@ -244,6 +312,11 @@ impl RaftNode {
                 };
                 if last != Some((term, leader, role)) {
                     last = Some((term, leader, role));
+                    current_leader.send_if_modified(|known| {
+                        let changed = *known != leader;
+                        *known = leader;
+                        changed
+                    });
                     tracing::info!(node = id, term, ?leader, role = role.as_str(), "raft state");
                     log.log(Event::RaftState {
                         term,
@@ -257,19 +330,6 @@ impl RaftNode {
                 }
             }
         })
-    }
-
-    async fn write_local(&self, cmd: Command) -> Result<Outcome, ProposeError> {
-        match self.raft.client_write(cmd).await {
-            Ok(resp) => Ok(resp.data),
-            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
-                Err(ProposeError::NotLeader {
-                    leader: f.leader_id,
-                })
-            }
-            Err(RaftError::APIError(e)) => Err(ProposeError::Fatal(e.to_string())),
-            Err(RaftError::Fatal(e)) => Err(ProposeError::Fatal(e.to_string())),
-        }
     }
 
     async fn forward(
@@ -286,7 +346,13 @@ impl RaftNode {
             term: self.status().term,
             body: PeerBody::Propose(cmd),
         };
-        match peer.call(envelope, timeout).await {
+        let mut leader_change = self.leader.subscribe();
+        let reply = tokio::select! {
+            reply = peer.call(envelope, timeout) => reply,
+            // Long before the deadline: a leader that went silent never answers.
+            _ = leader_change.changed() => return Err(ProposeError::NotLeader { leader: None }),
+        };
+        match reply {
             Ok(PeerReply::Proposed(result)) => result,
             // Our term is behind; retry once Raft has caught us up.
             Ok(_) => Err(ProposeError::NotLeader { leader: None }),
@@ -318,18 +384,24 @@ impl RaftNode {
         let mut backoff = Duration::from_millis(5);
         let mut forwarded = false;
         loop {
-            let hint = match self.write_local(cmd.clone()).await {
-                Ok(outcome) => return (Ok(outcome), forwarded),
-                Err(ProposeError::NotLeader { leader }) => leader,
-                Err(e @ ProposeError::Fatal(_)) => return (Err(e), forwarded),
-                Err(ProposeError::Timeout) => None,
+            // A follower that knows the leader goes straight there, instead of waiting in its own
+            // queue to be told so.
+            let hint = match self.status().leader {
+                Some(leader) if leader != self.id => Some(leader),
+                _ => match self.queue.submit(cmd.clone(), deadline).await {
+                    Ok(outcome) => return (Ok(outcome), forwarded),
+                    Err(ProposeError::NotLeader { leader }) => leader,
+                    Err(e @ ProposeError::Fatal(_)) => return (Err(e), forwarded),
+                    Err(ProposeError::Timeout) => None,
+                },
             };
             if let Some(leader) = hint.filter(|l| *l != self.id) {
                 forwarded = true;
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                let timeout = remaining.min(self.timers.peer_rpc_timeout());
+                // The answer can take as long as the leader's queue does, so this waits up to the
+                // deadline: giving up sooner would only add the same command to that queue again.
                 // Any failure here is retried: the leader may have changed or be unreachable.
-                if let Ok(outcome) = self.forward(leader, cmd.clone(), timeout).await {
+                if let Ok(outcome) = self.forward(leader, cmd.clone(), remaining).await {
                     return (Ok(outcome), forwarded);
                 }
             }
@@ -373,7 +445,16 @@ impl Consensus for RaftNode {
     }
 
     fn propose_local(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
-        Box::pin(self.write_local(cmd))
+        Box::pin(async move {
+            // The sender's news is old: tell it now, instead of after a wait in the queue.
+            if let Some(leader) = self.status().leader.filter(|l| *l != self.id) {
+                return Err(ProposeError::NotLeader {
+                    leader: Some(leader),
+                });
+            }
+            let deadline = Instant::now() + self.timers.propose_timeout();
+            self.queue.submit(cmd, deadline).await
+        })
     }
 
     fn handle_rpc(&self, from: NodeId, rpc: RaftRpc) -> BoxFuture<'_, PeerReply> {
@@ -450,7 +531,22 @@ impl Consensus for RaftNode {
             if let Err(e) = self.raft.shutdown().await {
                 tracing::warn!("raft shutdown: {e}");
             }
+            self.queue.stop();
         })
+    }
+}
+
+/// One `client_write`, with openraft's errors in our terms.
+async fn write_group(raft: &Raft, group: CommandGroup) -> Result<Vec<Outcome>, ProposeError> {
+    match raft.client_write(group).await {
+        Ok(resp) => Ok(resp.data),
+        Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
+            Err(ProposeError::NotLeader {
+                leader: f.leader_id,
+            })
+        }
+        Err(RaftError::APIError(e)) => Err(ProposeError::Fatal(e.to_string())),
+        Err(RaftError::Fatal(e)) => Err(ProposeError::Fatal(e.to_string())),
     }
 }
 

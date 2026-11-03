@@ -35,12 +35,21 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Election frequency, duration, message overhead | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms`, `msgs_raft_vote_per_req`. All messages: `msgs_all_per_req` |
 | Load distribution and fairness | `share_node_<n>`, `fairness_jain`; plot `fairness.png` |
 | Before, during and after a failure | `before_*`, `during_*`, `after_*`; plot `fault_phases.png` |
-| Failover, recovery, convergence | `detection_mean_ms`, `takeover_wait_mean_ms`, `recovery_mean_ms`, `elections_after_rejoin` (FT-6) |
-| CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean` |
-| Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers` |
-| Plans with no responder (D111) | `no_responder_share` |
+| Failover and recovery | `client_gap_mean_ms`, `client_gap_max_ms` (E3's client-visible gap), `detection_mean_ms`, `election_duration_mean_ms`, `recovery_mean_ms`, `elections_after_rejoin` (FT-6) |
+| Convergence after a rejoin (D138) | `digest_checkpoints_compared`, `digest_mismatches` (must be 0), `rejoins_digest_confirmed` against `rejoins`, `rejoin_targets_lowered` (D135) |
+| CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean`; shed work as `plans_refused`, `plans_refused_node_<n>` (D138) |
+| Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers`, `takeovers_suspected`, `takeovers_backstop`, `takeover_wait_suspected_mean_ms`, `takeover_wait_backstop_mean_ms`. Not failover figures: a backstop takeover needs no fault, only a busy winner (D138) |
+| Plans with no responder (D111) | `no_responder_share`; an expired report counts here too |
+| Reports refused as too old (D147) | `reports_expired`. Should be 0 in every measured cell: `analyze.py` prints a warning otherwise, because the likeliest cause is a stamping bug |
+| Incident priority (D148) | `priority_mean`, in priority points. 0 only for a refused report |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
+| Client model, and whether the client PCs were the limit (D181, D185) | `client_programs`, `users_per_program`, `client_link_down`, `client_link_down_<reason>`, `client_pc_cpu_busy_p95` (share of the PC's CPU, 0 to 1), `client_pc_mem_available_min_mb` |
+| Whether arrivals clump (D182) | `arrival_peak_100ms_share` over the measured time, `arrival_peak_100ms_share_first_s` for the first second of the run, `arrival_peak_100ms_share_after_fault`. Even arrivals read 0.1, and all together 1 |
+
+**Runs left out (D186).** `summarise` names a run on screen and does not average it in if fewer programs sent
+anything than `run.json` expected, which means less load than the cell says, or if the cell has a victim and no
+node logged `silenced`, which means the fault never fired. A `run.json` without these keys skips the checks.
 
 ## Conventions
 

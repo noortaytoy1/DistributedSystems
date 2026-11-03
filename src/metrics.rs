@@ -30,6 +30,11 @@ pub fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wall-clock time in unix milliseconds, the unit of the timestamps inside incidents and results.
+pub fn now_ms() -> u64 {
+    now_us() / 1_000
+}
+
 /// Every event any process logs. Field names are the analysis contract.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "ev", rename_all = "snake_case")]
@@ -64,9 +69,41 @@ pub enum Event {
         error: String,
         latency_us: u64,
     },
+    /// Once a second: the proposal queue and the Raft log file (D133). All cumulative, except
+    /// `waiting` (now) and the two largest-so-far figures (since the last event). Commands per
+    /// save is `saved_commands / saves`; disk syncs per second comes from `syncs`.
+    RaftIo {
+        /// Proposals in the queue now.
+        waiting: usize,
+        /// `client_write` calls the queue started, and the commands they carried.
+        writes: u64,
+        commands: u64,
+        /// Proposals that left the queue unwritten at their deadline.
+        expired: u64,
+        /// Writes that outlasted the write cap (`propose_timeout_ms`).
+        write_timeouts: u64,
+        /// Writes to the log file that waited for the disk, and the time they took.
+        syncs: u64,
+        sync_us: u64,
+        max_sync_us: u64,
+        /// Calls to save log entries, and the entries and commands they carried.
+        saves: u64,
+        saved_entries: u64,
+        saved_commands: u64,
+        /// Longest gap between two AppendEntries arriving while this node follows: how close to an
+        /// election it came.
+        max_leader_gap_us: u64,
+    },
     /// Periodic state fingerprint; equal digests at equal indexes mean identical state.
     StateDigest {
         last_applied: u64,
+        digest: u64,
+    },
+    /// The digest right after applying a log index that is a multiple of
+    /// `store::CHECKPOINT_EVERY`. Every node applies every index, so these can be compared between
+    /// nodes under load, which the once-a-second `state_digest` cannot (D138).
+    StateCheckpoint {
+        log_index: u64,
         digest: u64,
     },
     /// Cumulative message counts by type (E5).
@@ -95,6 +132,13 @@ pub enum Event {
         request: RequestId,
         executor: NodeId,
         latency_us: u64,
+    },
+    /// A report reached the node that would plan it too old, so nobody is planned for it (D143).
+    /// Rare: the default TTL outlasts every retry, so a measured run should log none (D147).
+    ReportExpired {
+        request: RequestId,
+        age_ms: u64,
+        ttl_ms: u64,
     },
 
     // --- bidding (B)
@@ -158,6 +202,13 @@ pub enum Event {
         peer: NodeId,
         down_ms: u64,
     },
+    /// This node's list of who is in the group, once at start and once per change (D152, D155).
+    /// `view` counts this process's changes only, so it means nothing across nodes, and it starts
+    /// again at 1 in the same file after a restart.
+    GroupView {
+        view: u64,
+        members: Vec<NodeId>,
+    },
     /// This node lost the round and plans the request instead of `winner` (D110). `rank` is its
     /// place in the round's ranking (1 = runner-up); `reason` is `suspected` or `backstop`.
     /// `waited_us` runs from the round closing to here: E3 takeover time.
@@ -199,6 +250,16 @@ pub enum Event {
         winner_executor: Option<NodeId>,
     },
 
+    // --- planner and workers (E)
+    /// The worker pool was full and refused this planning job (D48, D73). `queued` and `running`
+    /// are the pool at that moment.
+    Overloaded {
+        request: RequestId,
+        attempt: u32,
+        queued: usize,
+        running: usize,
+    },
+
     // --- responders (E)
     /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
     /// true if the executor should have done it first and has not.
@@ -217,6 +278,12 @@ pub enum Event {
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).
     RejoinStarted {
         applied: Option<u64>,
+    },
+    /// The leader's next answer was below the catch-up target, so the target was an index that was
+    /// not committed then, and may never be (D135).
+    RejoinTargetLowered {
+        from: u64,
+        to: u64,
     },
     /// The node applied the leader's commit index and serves again. `recovery_us` runs from
     /// `rejoin_started` to here, on this node's clock (E4).
@@ -239,8 +306,14 @@ pub enum Event {
         attempts: u32,
         /// True if the answer was a lone node's, not committed (D123).
         provisional: bool,
-        /// True if the plan sent nobody, because no suitable responder was free (D111).
+        /// True if the plan sent nobody, because no suitable responder was free (D111) or the
+        /// report was too old (D143).
         no_responder: bool,
+        /// Where the incident stood when this answer was given (D142): `provisional`, `unassigned`,
+        /// `assigned` or `expired`.
+        status: &'static str,
+        /// The plan's priority points (D148).
+        priority: u32,
     },
     ClientGaveUp {
         request: RequestId,
@@ -255,6 +328,55 @@ pub enum Event {
         node: NodeId,
         reason: String,
     },
+    /// Once a second, from one program on each client PC: the whole PC's CPU and memory (D185). A
+    /// saturated client PC reads as cloud latency, so the analysis must be able to see it. The tick
+    /// counts are cumulative.
+    MachineUsage {
+        cpu_busy_ticks: Option<u64>,
+        cpu_total_ticks: Option<u64>,
+        mem_available_kb: Option<u64>,
+    },
+}
+
+/// The whole machine's CPU and memory, as a `machine_usage` event. Blocking file reads: run it off
+/// the async runtime. A file that cannot be read leaves its fields out. It lives here, not in
+/// `node/usage.rs`, so a load generator never has to reach into the node's code (D185).
+pub fn machine_usage() -> Event {
+    let file = |path| fs::read_to_string(path).ok();
+    let (cpu_busy_ticks, cpu_total_ticks) = file("/proc/stat")
+        .as_deref()
+        .and_then(parse_machine_cpu)
+        .unzip();
+    Event::MachineUsage {
+        cpu_busy_ticks,
+        cpu_total_ticks,
+        mem_available_kb: file("/proc/meminfo")
+            .as_deref()
+            .and_then(parse_mem_available_kb),
+    }
+}
+
+/// `(busy, total)` from the first line of `/proc/stat`: user, nice, system, idle, iowait, irq,
+/// softirq, steal. The guest fields after them are already counted in user and nice. A CPU waiting
+/// on the disk has nothing to do, so iowait counts as idle.
+fn parse_machine_cpu(stat: &str) -> Option<(u64, u64)> {
+    let mut fields = stat.lines().next()?.split_whitespace();
+    if fields.next()? != "cpu" {
+        return None;
+    }
+    let ticks: Vec<u64> = fields
+        .take(8)
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let total: u64 = ticks.iter().sum();
+    let idle = ticks.get(3)?.saturating_add(*ticks.get(4)?);
+    Some((total.saturating_sub(idle), total))
+}
+
+fn parse_mem_available_kb(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
 }
 
 #[derive(Serialize)]
@@ -536,5 +658,37 @@ mod tests {
         assert_eq!(sent["bid"], 2);
         assert_eq!(received["raft_vote"], 1);
         assert_eq!(received["bid"], 0);
+    }
+
+    #[test]
+    fn machine_cpu_comes_from_the_first_stat_line() {
+        // 100 + 5 + 20 busy, 800 + 50 idle, 3 + 2 + 1 busy, and guest fields that are not added.
+        let stat = "cpu  100 5 20 800 50 3 2 1 70 0\ncpu0 1 1 1 1 1 1 1 1 0 0\nintr 12345\n";
+        assert_eq!(parse_machine_cpu(stat), Some((131, 981)));
+        assert_eq!(parse_machine_cpu("cpu0 1 1 1 1\n"), None);
+        assert_eq!(parse_machine_cpu("cpu  1 x 1 1\n"), None);
+        assert_eq!(parse_machine_cpu(""), None);
+    }
+
+    #[test]
+    fn mem_available_comes_from_meminfo() {
+        let meminfo =
+            "MemTotal:       16000000 kB\nMemFree:  1000 kB\nMemAvailable:    8000000 kB\n";
+        assert_eq!(parse_mem_available_kb(meminfo), Some(8_000_000));
+        assert_eq!(parse_mem_available_kb("MemTotal: 1 kB\n"), None);
+    }
+
+    #[test]
+    fn machine_usage_keeps_its_field_names() {
+        let event = Event::MachineUsage {
+            cpu_busy_ticks: Some(1),
+            cpu_total_ticks: Some(2),
+            mem_available_kb: None,
+        };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""ev":"machine_usage""#), "{text}");
+        assert!(text.contains(r#""cpu_busy_ticks":1"#), "{text}");
+        assert!(text.contains(r#""cpu_total_ticks":2"#), "{text}");
+        assert!(text.contains(r#""mem_available_kb":null"#), "{text}");
     }
 }

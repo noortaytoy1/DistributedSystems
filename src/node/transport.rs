@@ -6,7 +6,8 @@
 //!   requests, so many calls can be in flight at once. [`PeerClient`] keeps one connection per
 //!   peer. After a failed connect it fails calls to that peer fast for a short cooldown instead of
 //!   reconnecting on every call (D89–D92). A connection whose calls have gone unanswered for
-//!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close.
+//!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close. Every
+//!   call ends by its own deadline, even one tarpc has not managed to write yet (D150).
 //! - Client port: one-way frames in both directions, encoded with `proto::encode`; replies are
 //!   matched by request ID.
 //!
@@ -214,7 +215,13 @@ impl PeerClient {
         let conn = self.connection(deadline, timeout).await?;
 
         self.log.msgs().sent(kind);
-        let result = invoke(&conn.client, envelope, deadline).await;
+        // tarpc starts a call's timer only once it has written the call. Behind a full socket (a
+        // machine that lost power stops taking data) the call would wait in its queue for ever,
+        // and so would the group send and the heartbeat loop above it (D150). Dropping the call
+        // here is safe: tarpc cancels it.
+        let result = tokio::time::timeout_at(deadline, invoke(&conn.client, envelope, deadline))
+            .await
+            .unwrap_or(Err(RpcError::DeadlineExceeded));
         match result {
             // A reply that arrives after the node was silenced is dropped like any other traffic.
             Ok(_) if self.gate.is_silenced() => Err(TransportError::Silenced),
@@ -403,23 +410,39 @@ impl PeerSet {
         self.peers.values()
     }
 
-    /// Group send: one copy of a message to every peer, sent at once, so a slow peer holds up
-    /// nobody else. Best effort, with no ordering across senders: a peer that misses a copy is
-    /// reported here and not retried (D126). Anything that must be agreed goes through Raft.
+    /// One copy of a message to every peer, sent at once, so a slow peer holds up nobody else.
+    /// Best effort, with no ordering across senders: a peer that misses a copy is reported here
+    /// and not retried (D126). Anything that must be agreed goes through Raft. The primitive under
+    /// `CloudGroup`, which is what the rest of a node sends through (D152).
     pub async fn broadcast(
         &self,
         term: Term,
         timeout: Duration,
         body: impl Fn() -> PeerBody,
     ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
-        let calls = self.peers.values().map(|peer| {
-            let envelope = PeerEnvelope {
-                from: self.me,
-                term,
-                body: body(),
-            };
-            async move { (peer.peer(), peer.call(envelope, timeout).await) }
-        });
+        self.broadcast_to(|_| true, term, timeout, body).await
+    }
+
+    /// [`broadcast`](Self::broadcast) to the peers `addressed` picks.
+    pub async fn broadcast_to(
+        &self,
+        addressed: impl Fn(NodeId) -> bool,
+        term: Term,
+        timeout: Duration,
+        body: impl Fn() -> PeerBody,
+    ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
+        let calls = self
+            .peers
+            .values()
+            .filter(|peer| addressed(peer.peer()))
+            .map(|peer| {
+                let envelope = PeerEnvelope {
+                    from: self.me,
+                    term,
+                    body: body(),
+                };
+                async move { (peer.peer(), peer.call(envelope, timeout).await) }
+            });
         futures::future::join_all(calls).await
     }
 }
@@ -601,6 +624,14 @@ impl ReplyTx {
         }
         sent
     }
+
+    /// A sender with no connection behind it, and what would have gone down that connection.
+    #[cfg(test)]
+    pub(crate) fn for_tests(gate: FaultGate) -> (Self, mpsc::UnboundedReceiver<Bytes>) {
+        let (tx, frames) = mpsc::unbounded_channel();
+        let msgs = Arc::default();
+        (Self { tx, gate, msgs }, frames)
+    }
 }
 
 /// Handles one client frame. Must not block: spawn any real work.
@@ -678,8 +709,62 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
-    use crate::proto::PeerBody;
+    use crate::config::NodeAddr;
+    use crate::proto::{Capability, PeerBody, Point, Responder};
+
+    /// About 2 MiB per call on the wire, at about 9 bytes per responder.
+    const FLOOD_RESPONDERS: u32 = 250_000;
+    /// Far more than a loopback socket holds (on Ubuntu, up to 4 MiB to send and 6 MiB to receive),
+    /// so the last of these calls cannot be written.
+    const FLOOD_CALLS: usize = 12;
+    /// A call still out after this has hung: nothing is timing it.
+    const HUNG: Duration = Duration::from_secs(10);
+    /// How far past its deadline a call may return on a busy machine.
+    const SLACK: Duration = Duration::from_secs(2);
+
+    /// Accepts connections and never reads them, so the socket fills up and stays full. From this
+    /// side that is what a machine that lost power looks like: no reply, no close, no reset.
+    async fn never_reading_server() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let count = accepted.clone();
+        tokio::spawn(async move {
+            // Kept open: a closed socket would fail the calls instead of stalling them.
+            let mut open = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                open.push(stream);
+            }
+        });
+        (addr, accepted)
+    }
+
+    fn big_propose() -> PeerEnvelope {
+        let responders = (0..FLOOD_RESPONDERS)
+            .map(|i| Responder {
+                id: u32::MAX - i,
+                zone: 0,
+                location: Point { x: 0, y: 0 },
+                capability: Capability::Medical,
+            })
+            .collect();
+        PeerEnvelope {
+            from: 1,
+            term: 1,
+            body: PeerBody::Propose(Command::RegisterResponders { responders }),
+        }
+    }
+
+    fn proposes_sent(log: &EventLog) -> u64 {
+        match log.msgs().snapshot() {
+            Event::Messages { sent, .. } => sent["propose"],
+            _ => 0,
+        }
+    }
 
     fn serve_echo(listener: TcpListener, gate: FaultGate) {
         let handler: PeerHandler = Arc::new(|env: PeerEnvelope| {
@@ -813,5 +898,112 @@ mod tests {
             }
         }
         assert!(lock(&client.outage).is_none(), "a connect ends the outage");
+    }
+
+    /// tarpc times a call only once it has written it. Behind a full socket a call waits in
+    /// tarpc's queue with no timer at all, so without a deadline of our own it never returns, and
+    /// a heartbeat loop waiting on it stops for good (D150).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_call_to_a_peer_that_never_reads_returns_by_its_deadline() {
+        let (addr, accepted) = never_reading_server().await;
+        let client = Arc::new(peer_client(
+            addr,
+            FaultGate::default(),
+            Duration::from_millis(100),
+        ));
+        let deadline = Duration::from_millis(300);
+
+        let envelopes: Vec<_> = (0..FLOOD_CALLS).map(|_| big_propose()).collect();
+        let calls = envelopes.into_iter().map(|envelope| {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                let result = client.call(envelope, deadline).await;
+                (result, started.elapsed())
+            })
+        });
+        let answers = tokio::time::timeout(HUNG, futures::future::join_all(calls))
+            .await
+            .expect("a call queued behind a full socket hung past its deadline");
+        for answer in answers {
+            let (result, took) = answer.unwrap();
+            assert!(
+                matches!(result, Err(TransportError::Timeout(_))),
+                "{result:?}"
+            );
+            assert!(took < deadline + SLACK, "returned after {took:?}");
+        }
+
+        // Nothing has answered for over `STALE_CONNECTION` soon, so a timeout replaces the
+        // connection. The stuck socket must not hold up the calls that do this.
+        let until = Instant::now() + HUNG;
+        while accepted.load(Ordering::SeqCst) < 2 {
+            assert!(Instant::now() < until, "the connection was never replaced");
+            let result =
+                tokio::time::timeout(HUNG, client.call(heartbeat(1), Duration::from_millis(100)))
+                    .await
+                    .expect("a call hung past its deadline");
+            assert!(
+                matches!(result, Err(TransportError::Timeout(_))),
+                "{result:?}"
+            );
+        }
+    }
+
+    /// The same stall through the group send: a peer that lost power must not hold up the answer
+    /// about the healthy one, or suspicion and degraded mode stop with it (D150).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_broadcast_returns_with_one_stuck_peer_and_reports_the_healthy_one() {
+        let healthy = echo_server(FaultGate::default()).await;
+        let (stuck, _) = never_reading_server().await;
+        let node = |id, peer_addr: String| NodeAddr {
+            id,
+            peer_addr,
+            client_addr: "127.0.0.1:9".into(),
+        };
+        let cluster = ClusterConfig {
+            nodes: vec![
+                node(1, "127.0.0.1:9".into()),
+                node(2, healthy),
+                node(3, stuck),
+            ],
+        };
+        let log = EventLog::disabled("test");
+        let peers = PeerSet::new(
+            1,
+            &cluster,
+            &FaultGate::default(),
+            &log,
+            Duration::from_millis(100),
+        );
+
+        // Fill node 3's socket and keep it full for the whole test.
+        for envelope in (0..FLOOD_CALLS).map(|_| big_propose()) {
+            let peer = peers.get(3).unwrap().clone();
+            tokio::spawn(async move {
+                let _ = peer.call(envelope, HUNG * 2).await;
+            });
+        }
+        let until = Instant::now() + HUNG;
+        while proposes_sent(&log) < FLOOD_CALLS as u64 {
+            assert!(Instant::now() < until, "the flood never started");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let deadline = Duration::from_millis(200);
+        let started = Instant::now();
+        let answers =
+            tokio::time::timeout(HUNG, peers.broadcast(1, deadline, || PeerBody::Heartbeat))
+                .await
+                .expect("one stuck peer held up the whole group send");
+        assert!(started.elapsed() < deadline + SLACK);
+        assert!(
+            matches!(answers[0], (2, Ok(PeerReply::StaleTerm { current: 1 }))),
+            "{answers:?}"
+        );
+        assert!(
+            matches!(answers[1], (3, Err(TransportError::Timeout(_)))),
+            "{answers:?}"
+        );
     }
 }

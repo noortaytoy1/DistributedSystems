@@ -19,6 +19,7 @@ client_addr = "10.0.0.13:8001"
 
 [timers]
 # Every peer suspected this long, and a serving node answers without a commit (D121).
+# One peer suspected this long leaves this node's group member list (D153).
 degraded_after_ms = 2000
 
 [policy]
@@ -34,9 +35,19 @@ just_won = "won-and-leading"
 # Planning time a node assumes until its first job finishes. Low, so an untried node gets tried.
 initial_service_us = 1
 
+[workers]
+# The demo runs E1's values, because at the defaults idle nodes tie and node 1 plans every typed
+# report (D205). The experiment runner builds its own config and never reads this file.
+plan_work = 1000
+
 [campus]
+# E1's value (D205). With 30 responders about half of the demo's load would find nobody free.
+responders = 300
 # Simulated time on scene: a responder is held this long per point of severity (D111).
 service_ms_per_severity = 200
+# How long a report stays valid; a node refuses an older one and sends nobody (D143). Keep it above
+# the client's retries, at most 36 s by default. Set it for one run with: loadgen --ttl-ms
+incident_ttl_ms = 60000
 
 [metrics]
 dir = "runs/lab"

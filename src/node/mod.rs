@@ -3,7 +3,9 @@
 //! A client request goes: received → already decided? reply from state → assignment picks the
 //! executor → executor plans on the worker pool → proposes `CommitResult` through Raft →
 //! replies with the committed (winning) result. A node never replies before the commit, with one
-//! exception: a node left alone answers provisionally (degraded.rs, D120).
+//! exception: a node left alone answers provisionally (degraded.rs, D120). It never replies at all
+//! while it is not serving, whatever it was waiting on when it stopped (D136). A report too old to
+//! plan takes the same path with nobody on the plan, and its reply says `Expired` (D143).
 //!
 //! Each part's entry point (`heartbeat::spawn`, `faults::spawn_schedule`, `rejoin::spawn`, ...)
 //! is called from here, so owners fill in their own file without editing this one.
@@ -14,10 +16,13 @@ pub mod bids;
 pub mod cpu;
 pub mod degraded;
 pub mod faults;
+pub mod group;
 pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
 pub mod takeover;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transport;
 pub mod usage;
 pub mod workers;
@@ -35,7 +40,7 @@ use tokio::time::Instant;
 
 use crate::campus;
 use crate::config::{AssignmentPolicy, Config};
-use crate::metrics::{Event, EventLog};
+use crate::metrics::{Event, EventLog, now_ms};
 use crate::planner::{self, CostKnob};
 use crate::proto::{
     ClientFrame, ClientReply, ClientRequest, Command, CommittedResult, ControlReply,
@@ -46,6 +51,7 @@ use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
 use degraded::DegradedState;
+use group::CloudGroup;
 use heartbeat::Suspicion;
 use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
 use workers::{Overloaded, WorkerPool};
@@ -65,6 +71,8 @@ pub struct NodeContext {
     pub state: StateReader,
     pub gate: FaultGate,
     pub peers: Arc<PeerSet>,
+    /// The cloud nodes as one group: this node's member list, and sends through it (group.rs).
+    pub group: Arc<CloudGroup>,
     pub workers: WorkerPool,
     pub log: EventLog,
     /// Peer liveness from heartbeats (heartbeat.rs).
@@ -103,6 +111,7 @@ impl NodeContext {
             silenced: self.gate.is_silenced(),
             serving: self.serving.load(Ordering::SeqCst),
             degraded: self.degraded.is_active(),
+            members: self.group.view().members.into_iter().collect(),
         }
     }
 }
@@ -196,13 +205,22 @@ pub async fn start_with(
     };
     tasks.push(raft.spawn_watcher());
     tasks.push(raft.spawn_heartbeat_summary());
+    tasks.push(raft.spawn_io_report());
 
+    let group = Arc::new(CloudGroup::new(
+        id,
+        &config.cluster,
+        peers.clone(),
+        raft.clone(),
+        log.clone(),
+    ));
     let ctx = Arc::new(NodeContext {
         id,
         consensus: raft,
         state,
         gate: gate.clone(),
         peers,
+        group,
         workers: WorkerPool::new(config.workers.threads, config.workers.queue_capacity),
         log: log.clone(),
         suspicion: Mutex::new(Suspicion::new(
@@ -386,6 +404,8 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             executor: ctx.id,
             term: ctx.consensus.status().term,
             plan,
+            age_ms: req.age_ms,
+            assigned_at_ms: now_ms(),
         };
         match ctx
             .consensus
@@ -406,9 +426,22 @@ async fn plan_on_workers(
     req: &ClientRequest,
     free: Vec<Responder>,
 ) -> Result<Plan, Overloaded> {
+    // Too old means not planned (D143). Here, after the election, so one node commits it, and for
+    // `execute` and `degraded::plan` alike. No worker job and no `record_service`, so a refusal
+    // leaves the planning time this node bids with as it was.
+    if req.incident.is_too_old(req.age_ms) {
+        ctx.log.log(Event::ReportExpired {
+            request: req.id,
+            age_ms: req.age_ms,
+            ttl_ms: req.incident.ttl_ms,
+        });
+        return Ok(planner::not_planned());
+    }
     let incident = req.incident.clone();
-    // Two machines' clocks: NTP error is negligible against the planner's threshold (D95).
-    let age_ms = (crate::metrics::now_us() / 1_000).saturating_sub(incident.reported_at_ms);
+    // Two machines' clocks: NTP error is negligible against the planner's threshold (D95). The
+    // too-old rule above reads the client's stated age instead, because a wrong clock there would
+    // turn a whole run into refusals with no error; here it can only change a fallback.
+    let age_ms = now_ms().saturating_sub(incident.reported_at_ms);
     let knob = CostKnob {
         extra_work: ctx.plan_work.load(Ordering::Relaxed),
     };
@@ -422,9 +455,30 @@ async fn plan_on_workers(
                 started.elapsed(),
             )
         })
-        .await?;
+        .await
+        .inspect_err(|_| {
+            // The client hears nothing and retries, so only this tells shed work from slow work.
+            let pool = ctx.workers.load();
+            ctx.log.log(Event::Overloaded {
+                request: req.id,
+                attempt: req.attempt,
+                queued: pool.queued,
+                running: pool.running,
+            });
+        })?;
     ctx.bids.record_service(planning);
     Ok(plan)
+}
+
+/// Whether a reply may leave now. A handler can wait on a commit for a long time, and by then the
+/// node may have been silenced and be back, still catching up: `serving` when the request arrived
+/// says nothing about now (D136). The client retries, as with any node that stays quiet (D36).
+fn may_reply(ctx: &NodeContext, request: RequestId) -> bool {
+    let serving = ctx.serving.load(Ordering::SeqCst);
+    if !serving {
+        tracing::debug!(%request, "not answered: not serving");
+    }
+    serving
 }
 
 fn send_provisional(
@@ -434,6 +488,9 @@ fn send_provisional(
     plan: Plan,
     started: Instant,
 ) {
+    if !may_reply(ctx, request) {
+        return;
+    }
     let responder = plan.responder;
     let sent = reply.send(&ServerFrame::Reply(ClientReply {
         id: request,
@@ -449,12 +506,22 @@ fn send_provisional(
     }
 }
 
+/// Reply with a committed result. Which body it gets comes from the record alone, with no state and
+/// no clock, so every reply for one ID is the same (D37).
 fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started: Instant) {
     let (request, executor) = (done.request, done.executor);
+    if !may_reply(ctx, request) {
+        return;
+    }
+    let body = if done.too_old_on_arrival() {
+        ReplyBody::Expired(done)
+    } else {
+        ReplyBody::Done(done)
+    };
     let sent = reply.send(&ServerFrame::Reply(ClientReply {
         id: request,
         from: ctx.id,
-        body: ReplyBody::Done(done),
+        body,
     }));
     if sent {
         ctx.log.log(Event::Replied {
@@ -480,6 +547,17 @@ fn on_control(ctx: &Arc<NodeContext>, cmd: ControlRequest) -> ControlReply {
         ControlRequest::SkewLoad { extra_work } => {
             ctx.plan_work.store(extra_work, Ordering::SeqCst);
             ControlReply::Done
+        }
+        ControlRequest::Incidents(query) => {
+            let ms_per_severity = ctx.config.campus.service_ms_per_severity;
+            let now = now_ms();
+            let rows = ctx
+                .state
+                .with(|s| s.incident_rows(&query, now, ms_per_severity));
+            ControlReply::Incidents {
+                node: ctx.status(),
+                rows,
+            }
         }
     }
 }
@@ -543,4 +621,171 @@ fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use tokio::sync::mpsc;
+
+    use super::testing::{ScriptedConsensus, context, log_dir, logged, until};
+    use super::*;
+    use crate::proto::{self, Capability, Category, Incident, Point, UserId};
+
+    fn request() -> ClientRequest {
+        ClientRequest {
+            id: RequestId { client: 7, seq: 1 },
+            attempt: 0,
+            age_ms: 0,
+            incident: Incident {
+                owner: UserId { client: 7, user: 0 },
+                category: Category::MedicalAssistance,
+                zone: 0,
+                location: Point { x: 1, y: 2 },
+                severity: 3,
+                needs: Capability::Medical,
+                reported_at_ms: 0,
+                ttl_ms: 60_000,
+            },
+        }
+    }
+
+    fn replies(frames: &mut mpsc::UnboundedReceiver<Bytes>) -> Vec<ClientReply> {
+        let mut replies = Vec::new();
+        while let Ok(bytes) = frames.try_recv() {
+            match proto::decode(&bytes).unwrap() {
+                ServerFrame::Reply(reply) => replies.push(reply),
+                other => panic!("expected a reply, got {other:?}"),
+            }
+        }
+        replies
+    }
+
+    /// Runs one request on a leader that plans it itself, up to the moment it waits on the commit;
+    /// `during_the_wait` then runs, the commit finishes and the handler ends.
+    async fn wait_on_a_commit(
+        ctx: &Arc<NodeContext>,
+        fake: &ScriptedConsensus,
+        during_the_wait: impl FnOnce(),
+    ) -> Vec<ClientReply> {
+        let (reply, mut frames) = ReplyTx::for_tests(ctx.gate.clone());
+        let handler = tokio::spawn(handle_request(ctx.clone(), request(), reply));
+        fake.proposal_arrived().await;
+        during_the_wait();
+        fake.commit_one();
+        handler.await.unwrap();
+        replies(&mut frames)
+    }
+
+    fn planning_leader(dir: &std::path::Path) -> (Arc<ScriptedConsensus>, Arc<NodeContext>) {
+        let fake = ScriptedConsensus::new(1);
+        fake.set_leader(Some(1));
+        let log = EventLog::to_dir(dir, "node-1").unwrap();
+        let ctx = context(fake.clone(), log, |c| {
+            c.policy.assignment = AssignmentPolicy::LeaderDispatch;
+        });
+        (fake, ctx)
+    }
+
+    #[tokio::test]
+    async fn a_serving_node_replies_once_the_commit_is_done() {
+        let dir = log_dir("reply-while-serving");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = wait_on_a_commit(&ctx, &fake, || {}).await;
+
+        assert!(matches!(replies[..], [ClientReply { from: 1, .. }]));
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The node was silenced with this request waiting on its commit, and is back, catching up. The
+    /// commit is done, but the node has not yet caught up, so it must stay quiet (AGENTS.md).
+    #[tokio::test]
+    async fn a_commit_done_while_the_node_is_not_serving_gets_no_reply() {
+        let dir = log_dir("reply-while-not-serving");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = wait_on_a_commit(&ctx, &fake, || {
+            ctx.serving.store(false, Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(replies.is_empty(), "replied while not serving: {replies:?}");
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "request_received"));
+        assert!(!events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_planning_job_is_logged() {
+        let dir = log_dir("overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |c| {
+            c.workers.threads = 1;
+            c.workers.queue_capacity = 0;
+        });
+        // Keep the only worker busy until this test lets it go.
+        let (let_go, hold) = std::sync::mpsc::channel::<()>();
+        let busy = {
+            let workers = ctx.workers.clone();
+            tokio::spawn(async move { workers.run(move || hold.recv()).await })
+        };
+        until("the worker to be busy", || ctx.workers.load().running == 1).await;
+
+        let refused = plan_on_workers(&ctx, &request(), Vec::new()).await;
+
+        assert!(refused.is_err());
+        let _ = let_go.send(());
+        busy.await.unwrap().unwrap().unwrap();
+        let events = logged(&ctx.log, &dir);
+        let event = events.iter().find(|e| e["ev"] == "overloaded").unwrap();
+        assert_eq!(event["request"]["seq"], 1);
+        assert_eq!(event["attempt"], 0);
+        assert_eq!(event["queued"], 0);
+        assert_eq!(event["running"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_accepted_planning_job_logs_no_refusal() {
+        let dir = log_dir("not-overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |_| {});
+
+        assert!(plan_on_workers(&ctx, &request(), Vec::new()).await.is_ok());
+
+        let events = logged(&ctx.log, &dir);
+        assert!(!events.iter().any(|e| e["ev"] == "overloaded"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_provisional_answer_also_needs_a_serving_node() {
+        let dir = log_dir("provisional-while-not-serving");
+        let (_, ctx) = planning_leader(&dir);
+        let (reply, mut frames) = ReplyTx::for_tests(ctx.gate.clone());
+        let plan = Plan {
+            responder: None,
+            cost: 1,
+            priority: 300,
+        };
+        let send = || send_provisional(&ctx, &reply, request().id, plan.clone(), Instant::now());
+
+        ctx.serving.store(false, Ordering::SeqCst);
+        send();
+        assert!(replies(&mut frames).is_empty());
+        assert!(
+            !logged(&ctx.log, &dir)
+                .iter()
+                .any(|e| e["ev"] == "provisional_replied")
+        );
+
+        ctx.serving.store(true, Ordering::SeqCst);
+        send();
+        assert_eq!(replies(&mut frames).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -3,15 +3,19 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::{TestCluster, wait_until};
 use rescuemesh::node::faults;
 use rescuemesh::proto::{
-    Capability, Command, Incident, NodeId, Outcome, Plan, Point, RequestId, ResultProposal,
+    Capability, Category, Command, Incident, NodeId, Outcome, Plan, Point, RequestId,
+    ResultProposal, UserId,
 };
 use rescuemesh::raft::Role;
+use rescuemesh::raft::store::CHECKPOINT_EVERY;
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -19,18 +23,24 @@ fn proposal(seq: u64, executor: NodeId) -> Command {
     Command::CommitResult(ResultProposal {
         request: RequestId { client: 7, seq },
         incident: Incident {
+            owner: UserId { client: 7, user: 0 },
+            category: Category::Flooding,
             zone: 0,
             location: Point { x: 5, y: 5 },
             severity: 2,
             needs: Capability::Rescue,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
         executor,
         term: 0,
         plan: Plan {
             responder: None,
             cost: 1,
+            priority: 200,
         },
+        age_ms: 0,
+        assigned_at_ms: 0,
     })
 }
 
@@ -171,6 +181,70 @@ async fn a_leader_back_from_a_short_silence_serves_again() {
     })
     .await;
     cluster.shutdown().await;
+}
+
+/// The digest each node logged at each checkpoint index.
+fn checkpoints(dir: &Path, id: NodeId) -> BTreeMap<u64, u64> {
+    let text = std::fs::read_to_string(dir.join(format!("node-{id}.jsonl"))).unwrap();
+    text.lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|e| e["ev"] == "state_checkpoint")
+        .map(|e| {
+            (
+                e["log_index"].as_u64().unwrap(),
+                e["digest"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The convergence check the analysis runs (D138): a node that missed part of the log still logs
+/// every checkpoint, with the same digests as the nodes that never left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_returning_node_logs_the_same_digests_at_the_same_indexes() {
+    let dir = std::env::temp_dir().join(format!("rescuemesh-checkpoints-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let logs = dir.clone();
+    let cluster = TestCluster::start_with(3, move |c| c.metrics.dir = Some(logs)).await;
+    let leader = agreed_leader(&cluster, &[1, 2, 3]).await;
+    let follower = (1..=3).find(|id| *id != leader).unwrap();
+
+    let consensus = &cluster.node(leader).ctx.consensus;
+    // One at a time, because this needs log entries: proposals that wait together share one (D133).
+    let commits = |range: std::ops::Range<u64>| async move {
+        for seq in range {
+            consensus.propose(proposal(seq, leader)).await.unwrap();
+        }
+    };
+    cluster.node(follower).ctx.gate.silence();
+    wait_until(WAIT, "silenced follower stops serving", || {
+        !serving(&cluster, follower)
+    })
+    .await;
+    // Past a checkpoint while it is away, and past another after it is back.
+    commits(0..CHECKPOINT_EVERY + 10).await;
+    cluster.node(follower).ctx.gate.restore();
+    wait_until(WAIT, "follower serving again", || {
+        serving(&cluster, follower)
+    })
+    .await;
+    commits(CHECKPOINT_EVERY + 10..2 * CHECKPOINT_EVERY + 20).await;
+    wait_until(WAIT, "identical state on every node", || {
+        same_state(&cluster)
+    })
+    .await;
+    cluster.shutdown().await;
+
+    let reference = checkpoints(&dir, leader);
+    assert!(
+        reference.contains_key(&CHECKPOINT_EVERY)
+            && reference.contains_key(&(2 * CHECKPOINT_EVERY)),
+        "{reference:?}"
+    );
+    for id in 1..=3 {
+        assert_eq!(checkpoints(&dir, id), reference, "node {id}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A leader silent long enough to be replaced returns as a follower and catches up.
