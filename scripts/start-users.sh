@@ -85,6 +85,7 @@ done
 ((machine >= 1 && machine <= 9)) || refuse "--machine must be 1 to 9, not $machine"
 ((batch <= 9)) || refuse "--batch must be 0 to 9, not $batch"
 pid_file="$PID_DIR/users-$machine-$batch.pid"
+programs_file="$PID_DIR/users-$machine-$batch.programs"
 
 # The PID in the file, if that process is still this script: after a reboot the number can be anything's.
 running_pid() {
@@ -97,23 +98,48 @@ running_pid() {
   echo "$pid"
 }
 
-if ((stop)); then
-  if ! pid=$(running_pid); then
-    echo "machine $machine batch $batch: nothing running"
-    rm -f "$pid_file"
-    exit 0
-  fi
-  kill -TERM "$pid" 2>/dev/null || true
-  for ((i = 0; i < (STOP_GRACE_S + 2) * 10; i++)); do
-    # Not kill -0 alone: the script's parent may not have reaped it yet, and a zombie still answers.
-    if ! running_pid >/dev/null; then
-      echo "machine $machine batch $batch: stopped"
-      exit 0
+# Programs of this machine and batch still running from a script that was killed: nobody can stop them
+# now, and a new start would run a second program under each client ID. One still waiting for its start
+# time is a copy of this script, and it will go on to start.
+leftover_programs() {
+  local pid
+  [[ -r "$programs_file" ]] || return 0
+  while read -r pid; do
+    if tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" | grep -Eq -- "start-users|--client-id $machine$batch[0-9]{3} "; then
+      echo "$pid"
     fi
-    sleep 0.1
-  done
-  echo "machine $machine batch $batch: pid $pid is still running" >&2
-  exit 1
+  done <"$programs_file"
+}
+
+if ((stop)); then
+  said="nothing running"
+  if pid=$(running_pid); then
+    said=stopped
+    kill -TERM "$pid" 2>/dev/null || true
+    for ((i = 0; i < (STOP_GRACE_S + 2) * 10; i++)); do
+      # Not kill -0 alone: the script's parent may not have reaped it yet, and a zombie still answers.
+      running_pid >/dev/null || break
+      sleep 0.1
+    done
+    if running_pid >/dev/null; then
+      echo "machine $machine batch $batch: pid $pid is still running" >&2
+      exit 1
+    fi
+  fi
+  left=$(leftover_programs)
+  if [[ -n "$left" ]]; then
+    said="stopped the programs a killed start left, pids $(echo $left)"
+    kill -TERM $left 2>/dev/null || true
+    for ((i = 0; i < STOP_GRACE_S * 10; i++)); do
+      left=$(leftover_programs)
+      [[ -n "$left" ]] || break
+      sleep 0.1
+    done
+    [[ -z "$left" ]] || kill -KILL $left 2>/dev/null || true
+  fi
+  rm -f "$pid_file" "$programs_file"
+  echo "machine $machine batch $batch: $said"
+  exit 0
 fi
 
 [[ -n "$config" ]] || refuse "--config is required"
@@ -170,7 +196,9 @@ mkdir -p "$PID_DIR" "$out_dir" || refuse "cannot create $PID_DIR or $out_dir"
 if holder=$(running_pid); then
   refuse "machine $machine batch $batch is already running as pid $holder: use --stop, or another --batch"
 fi
-rm -f "$pid_file"
+left=$(leftover_programs)
+[[ -z "$left" ]] || refuse "a killed start left programs running as machine $machine batch $batch, pids $(echo $left): use --stop, or another --batch"
+rm -f "$pid_file" "$programs_file"
 (set -o noclobber; echo "$$" >"$pid_file") 2>/dev/null ||
   refuse "cannot take $pid_file: another start just did, or the folder is not writable"
 
@@ -179,7 +207,7 @@ pids=() client_ids=() stopping=0 got_signal=0 killer=""
 # Also runs when set -e aborts the script: no program may outlive it.
 cleanup() {
   ((${#pids[@]} == 0)) || kill -TERM "${pids[@]}" 2>/dev/null || true
-  rm -f "$pid_file"
+  rm -f "$pid_file" "$programs_file"
 }
 trap cleanup EXIT
 
@@ -211,13 +239,17 @@ for ((k = 0; k < P; k++)); do
     --pattern "$pattern" --duration-s "$duration_s" --warmup-s "$warmup_s" --seed "$program_seed")
   ((program_samples == 0)) || args+=(--sample-machine)
   printf -v delay_s '%d.%03d' "$((program_start_ms / 1000))" "$((program_start_ms % 1000))"
-  # exec keeps the PID, so TERM reaches loadgen itself. The wait falls before loadgen's clock starts.
+  # exec keeps the PID, so TERM reaches loadgen itself. The wait falls before loadgen's clock starts. A
+  # closing terminal sends HUP to this script and to every program at once: the script answers with TERM,
+  # so HUP must not end a program first, with nothing flushed or printed.
   (
+    trap '' HUP
     sleep "$delay_s"
     TOKIO_WORKER_THREADS=$threads exec "$BIN/loadgen" "${args[@]}"
   ) </dev/null >>"$out_file" 2>&1 &
   pids+=($!)
   client_ids+=("$program_id")
+  echo "$!" >>"$programs_file" || true
 done
 # A signal that came during the last start reached every program but that one.
 ((stopping == 0)) || kill -TERM "${pids[@]}" 2>/dev/null || true

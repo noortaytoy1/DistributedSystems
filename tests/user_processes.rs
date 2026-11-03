@@ -8,7 +8,8 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -423,6 +424,37 @@ fn the_runner_shares_a_cells_users_exactly() {
 }
 
 #[test]
+fn the_hosts_file_refuses_numbers_that_would_share_client_ids() {
+    let scratch = Scratch::new("users-hosts");
+    let read = |clients: &str| {
+        let hosts = scratch.0.join("hosts");
+        std::fs::write(&hosts, format!("node 1 10.0.0.11 a\n{clients}")).unwrap();
+        let script = format!(
+            "source scripts/lab-common.sh; read_hosts {}",
+            hosts.display()
+        );
+        Command::new("bash")
+            .args(["-c", &script])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap()
+    };
+    assert!(
+        read("client 1 10.0.0.21 b\nclient 2 10.0.0.22 c\n")
+            .status
+            .success()
+    );
+    let same = read("client 1 10.0.0.21 b\nclient 1 10.0.0.22 c\n");
+    assert!(!same.status.success());
+    assert!(stderr(&same).contains("same number"), "{}", stderr(&same));
+    for number in ["0", "10", "x"] {
+        let bad = read(&format!("client {number} 10.0.0.21 b\n"));
+        assert!(!bad.status.success(), "client number {number}");
+        assert!(stderr(&bad).contains("1 to 9"), "{}", stderr(&bad));
+    }
+}
+
+#[test]
 fn a_real_start_gives_one_log_per_program() {
     let scratch = Scratch::new("users-real");
     scratch.write_closed_config();
@@ -516,6 +548,102 @@ fn a_second_start_is_refused_while_the_first_lives_and_stop_ends_it() {
     let again = scratch.script("--stop --machine 2").output().unwrap();
     assert!(again.status.success());
     assert!(stdout(&again).contains("nothing running"));
+}
+
+#[test]
+fn a_killed_script_leaves_programs_that_a_start_refuses_and_stop_ends() {
+    let scratch = Scratch::new("users-killed");
+    scratch.write_closed_config();
+    let flags = "--machine 8 --users 2 --think-ms 100 --duration-s 120";
+    let first = scratch.spawn(flags);
+    scratch.wait_for_programs(2);
+    signal("KILL", first.id());
+    let first = finish(first);
+    assert!(first.status.code().is_none(), "the script should have died");
+    assert!(scratch.runs(" --client-id 80000"), "its programs live on");
+
+    // A second program under the same client ID would share its log and its request IDs.
+    let second = scratch.start(flags).output().unwrap();
+    assert_eq!(second.status.code(), Some(2), "{}", stdout(&second));
+    assert!(
+        stderr(&second).contains("a killed start left"),
+        "{}",
+        stderr(&second)
+    );
+
+    let stop = scratch.script("--stop --machine 8").output().unwrap();
+    assert!(stop.status.success(), "{}", stderr(&stop));
+    assert!(stdout(&stop).contains("stopped"), "{}", stdout(&stop));
+    assert!(!scratch.runs(""), "nothing may be left");
+    // They stopped as programs do: printed, and flushed.
+    let out = scratch.output_file_text(8, 0);
+    assert_eq!(out.matches("stopped by a signal").count(), 2, "{out}");
+
+    let again = scratch
+        .start("--machine 8 --users 1 --think-ms 100 --duration-s 1")
+        .output()
+        .unwrap();
+    assert!(again.status.success(), "{}", stderr(&again));
+}
+
+#[test]
+fn a_closing_terminal_still_gets_every_program_stopped_and_flushed() {
+    let scratch = Scratch::new("users-hup");
+    scratch.write_closed_config();
+    // Its own process group, with its programs in it, as a terminal's foreground group would be.
+    let child = scratch
+        .start("--machine 9 --users 3 --programs 3 --think-ms 100 --duration-s 120")
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    scratch.wait_for_programs(3);
+
+    // A hangup reaches the whole group at once: the script and every program.
+    let status = Command::new("kill")
+        .args(["-HUP", "--", &format!("-{}", child.id())])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let output = finish(child);
+    let printed = stdout(&output);
+    assert!(output.status.success(), "{printed}{}", stderr(&output));
+    assert!(printed.contains("started 3, failed 0"), "{printed}");
+    assert!(printed.contains("reported 3 of 3 programs"), "{printed}");
+    assert!(!scratch.runs(""));
+}
+
+#[test]
+fn a_program_whose_reader_has_gone_still_flushes_and_exits_well() {
+    let scratch = Scratch::new("users-no-reader");
+    scratch.write_closed_config();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_loadgen"))
+        .arg("--config")
+        .arg(scratch.config())
+        .args([
+            "--client-id",
+            "4",
+            "--users",
+            "1",
+            "--think-ms",
+            "100",
+            "--duration-s",
+            "120",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    scratch.wait_for_programs(1);
+    signal("TERM", child.id());
+    poll_until(Duration::from_secs(10), "the program to end", || {
+        child.try_wait().unwrap().is_some()
+    });
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    assert!(!scratch.events("client_sent").is_empty());
 }
 
 #[test]
@@ -668,4 +796,25 @@ fn all_at_once_users_send_on_a_multiple_of_the_think_time() {
             "a send {past_the_beat_ms} ms after the beat"
         );
     }
+    // Together across the programs, not only each near its beat: on a full beat, all six users of both
+    // programs send within a moment, where users spread over the beat would take most of its 2 s.
+    let mut by_beat = BTreeMap::<u64, Vec<(u64, String)>>::new();
+    for event in scratch.events("client_sent") {
+        if event["attempt"] == 0 {
+            let ts = event["ts_us"].as_u64().unwrap();
+            let program = event["src"].to_string();
+            by_beat
+                .entry(ts / 2_000_000)
+                .or_default()
+                .push((ts, program));
+        }
+    }
+    let fullest = by_beat.values().max_by_key(|sends| sends.len()).unwrap();
+    assert_eq!(fullest.len(), 6, "{fullest:?}");
+    let programs: BTreeSet<_> = fullest.iter().map(|(_, program)| program).collect();
+    assert_eq!(programs.len(), 2, "{fullest:?}");
+    let first = fullest.iter().map(|(ts, _)| ts).min().unwrap();
+    let last = fullest.iter().map(|(ts, _)| ts).max().unwrap();
+    let span_ms = (last - first) / 1000;
+    assert!(span_ms < 500, "the users of one beat took {span_ms} ms");
 }
