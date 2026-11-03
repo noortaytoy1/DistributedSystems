@@ -629,18 +629,22 @@ mod tests {
 
     use super::testing::{ScriptedConsensus, context, log_dir, logged, until};
     use super::*;
-    use crate::proto::{self, Capability, Incident, Point};
+    use crate::proto::{self, Capability, Category, Incident, Point, UserId};
 
     fn request() -> ClientRequest {
         ClientRequest {
             id: RequestId { client: 7, seq: 1 },
             attempt: 0,
+            age_ms: 0,
             incident: Incident {
+                owner: UserId { client: 7, user: 0 },
+                category: Category::MedicalAssistance,
                 zone: 0,
                 location: Point { x: 1, y: 2 },
                 severity: 3,
                 needs: Capability::Medical,
                 reported_at_ms: 0,
+                ttl_ms: 60_000,
             },
         }
     }
@@ -765,6 +769,7 @@ mod tests {
         let plan = Plan {
             responder: None,
             cost: 1,
+            priority: 300,
         };
         let send = || send_provisional(&ctx, &reply, request().id, plan.clone(), Instant::now());
 

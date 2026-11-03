@@ -13,8 +13,8 @@ use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::metrics::Event;
 use rescuemesh::node::transport::TransportError;
 use rescuemesh::proto::{
-    Bid, Capability, ClientRequest, ControlReply, ControlRequest, Incident, NodeId, NodeStatus,
-    PeerBody, PeerReply, Point, RequestId,
+    Bid, Capability, Category, ClientRequest, ControlReply, ControlRequest, Incident, NodeId,
+    NodeStatus, PeerBody, PeerReply, Point, RequestId, UserId,
 };
 use tokio::time::Instant;
 
@@ -77,12 +77,19 @@ fn request(seq: u64) -> ClientRequest {
     ClientRequest {
         id: RequestId { client: 88, seq },
         attempt: 0,
+        age_ms: 0,
         incident: Incident {
+            owner: UserId {
+                client: 88,
+                user: 0,
+            },
+            category: Category::MedicalAssistance,
             zone: 0,
             location: Point { x: 10, y: 20 },
             severity: 1,
             needs: Capability::Medical,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
     }
 }

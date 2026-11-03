@@ -890,6 +890,7 @@ mod tests {
                 silenced: false,
                 serving: true,
                 degraded: false,
+                members: vec![1, 2, 3],
             },
             rows: vec![IncidentView {
                 id: RequestId { client: 3, seq: 4 },

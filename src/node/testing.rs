@@ -16,6 +16,7 @@ use tokio::time::Instant;
 
 use super::bids::BidState;
 use super::degraded::DegradedState;
+use super::group::CloudGroup;
 use super::heartbeat::Suspicion;
 use super::transport::{FaultGate, PeerSet};
 use super::workers::WorkerPool;
@@ -123,6 +124,8 @@ impl Consensus for ScriptedConsensus {
                     executor: p.executor,
                     term: p.term,
                     plan: p.plan,
+                    age_ms: p.age_ms,
+                    assigned_at_ms: p.assigned_at_ms,
                     log_index: 1,
                 }),
                 _ => Outcome::Applied,
@@ -204,13 +207,27 @@ pub(crate) fn context(
     tweak(&mut config);
     let id = consensus.status().id;
     let gate = FaultGate::default();
-    let peers = PeerSet::new(id, &config.cluster, &gate, &log, Duration::from_millis(100));
+    let peers = Arc::new(PeerSet::new(
+        id,
+        &config.cluster,
+        &gate,
+        &log,
+        Duration::from_millis(100),
+    ));
+    let group = Arc::new(CloudGroup::new(
+        id,
+        &config.cluster,
+        peers.clone(),
+        consensus.clone(),
+        log.clone(),
+    ));
     Arc::new(NodeContext {
         id,
         consensus,
         state: StateReader::default(),
         gate,
-        peers: Arc::new(peers),
+        peers,
+        group,
         workers: WorkerPool::new(config.workers.threads, config.workers.queue_capacity),
         log,
         suspicion: Mutex::new(Suspicion::new(
