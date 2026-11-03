@@ -113,14 +113,32 @@ pub enum Event {
     },
 
     /// Once a second: this process's memory and CPU, the machine's network counters and the worker
-    /// queue (D128). `cpu_ticks` and the byte counts are cumulative.
+    /// queue (D128). `cpu_ticks`, the byte counts and `udp_drops` are cumulative. `udp_drops` is the
+    /// machine's `UdpRcvbufErrors`: datagrams the kernel threw away for want of buffer (D171).
     ResourceUsage {
         rss_kb: Option<u64>,
         cpu_ticks: Option<u64>,
         net_rx_bytes: Option<u64>,
         net_tx_bytes: Option<u64>,
+        udp_drops: Option<u64>,
         queued: usize,
         running: usize,
+    },
+
+    // --- UDP client path (C, F)
+    /// A UDP socket opened, and the receive buffer the kernel really gave it (D171).
+    UdpSocket {
+        local_addr: String,
+        rcvbuf_asked_bytes: u64,
+        rcvbuf_got_bytes: u64,
+    },
+    /// Once a second on nodes and clients: what this process's UDP sockets did, cumulative (D172).
+    /// `udp_drops` is as in `resource_usage`, for client PCs, which log no `resource_usage`. It is
+    /// absent from the last line a client writes as it stops.
+    UdpCounters {
+        #[serde(flatten)]
+        counts: UdpCounts,
+        udp_drops: Option<u64>,
     },
 
     // --- request handling (all roles)
@@ -170,13 +188,19 @@ pub enum Event {
         ms: u64,
     },
     Restored,
-    /// The leader's schedule ordered `victim` silent for `ms` (E3, FT-8).
-    FaultOrdered {
-        victim: NodeId,
-        ms: u64,
-        term: u64,
+    /// One round of the fault election as this node saw it, once per round (D158, D161). `tickets`
+    /// are the numbers it held. `victim` and `ms` are null if it never held all of them, and then it
+    /// did nothing. `called` is true if this node's timer started the round. `election_us` runs from
+    /// this node's own bid to the last bid it needed, on this node's clock, and is null with `victim`.
+    FaultElection {
+        round: u64,
+        tickets: BTreeMap<NodeId, u64>,
+        victim: Option<NodeId>,
+        ms: Option<u64>,
+        called: bool,
+        election_us: Option<u64>,
     },
-    /// The order was not carried out: the victim refused it, had a newer term, or was unreachable.
+    /// This node was elected and stayed up: it was catching up, or already silenced.
     FaultRefused {
         victim: NodeId,
         reason: String,
@@ -294,6 +318,12 @@ pub enum Event {
     },
 
     // --- client (F)
+    /// A load program's clock starts, and its warm-up with it. Its first send can come up to two
+    /// think times later, as its pattern says, so that send cannot stand in for this (D182). `users`
+    /// is 0 in an open loop, which has none.
+    ClientStarted {
+        users: u32,
+    },
     ClientSent {
         request: RequestId,
         attempt: u32,
@@ -319,11 +349,12 @@ pub enum Event {
         request: RequestId,
         attempts: u32,
     },
-    /// A client connection to `node` was opened (D112).
+    /// A client connection to `node` was opened (D112). Nothing logs this since reports moved to
+    /// UDP, which has no connection (D167). Kept because the analysis reads the name in old runs.
     ClientLinkUp {
         node: NodeId,
     },
-    /// A client connection to `node` closed or stopped answering pings (D112).
+    /// A client connection to `node` closed or stopped answering pings (D112). As `client_link_up`.
     ClientLinkDown {
         node: NodeId,
         reason: String,
@@ -453,6 +484,11 @@ impl EventLog {
         }
     }
 
+    /// False for a log that writes nothing, so a caller can skip work only the log would use.
+    pub fn is_enabled(&self) -> bool {
+        self.sink.is_some()
+    }
+
     pub fn log(&self, event: Event) {
         let Some(sink) = &self.sink else { return };
         let line = Line {
@@ -535,8 +571,8 @@ pub enum MsgKind {
     Propose,
     /// A returning node asks the leader for its commit index (D76).
     ReadIndex,
-    /// The leader's scheduled fault order (D78).
-    FaultOrder,
+    /// One node's numbers in a fault election (D158).
+    FaultBid,
     Bid,
     PeerHeartbeat,
     ClientRequest,
@@ -551,7 +587,7 @@ impl MsgKind {
         MsgKind::RaftSnapshot,
         MsgKind::Propose,
         MsgKind::ReadIndex,
-        MsgKind::FaultOrder,
+        MsgKind::FaultBid,
         MsgKind::Bid,
         MsgKind::PeerHeartbeat,
         MsgKind::ClientRequest,
@@ -566,7 +602,7 @@ impl MsgKind {
             MsgKind::RaftSnapshot => "raft_snapshot",
             MsgKind::Propose => "propose",
             MsgKind::ReadIndex => "read_index",
-            MsgKind::FaultOrder => "fault_order",
+            MsgKind::FaultBid => "fault_bid",
             MsgKind::Bid => "bid",
             MsgKind::PeerHeartbeat => "peer_heartbeat",
             MsgKind::ClientRequest => "client_request",
@@ -584,7 +620,7 @@ impl MsgKind {
             PeerBody::Raft(RaftRpc::InstallSnapshot(_)) => MsgKind::RaftSnapshot,
             PeerBody::Propose(_) => MsgKind::Propose,
             PeerBody::ReadIndex => MsgKind::ReadIndex,
-            PeerBody::FaultOrder { .. } => MsgKind::FaultOrder,
+            PeerBody::FaultBid(_) => MsgKind::FaultBid,
             PeerBody::Bid(_) => MsgKind::Bid,
             PeerBody::Heartbeat => MsgKind::PeerHeartbeat,
         }
@@ -622,9 +658,108 @@ impl MessageCounters {
     }
 }
 
+/// Declares the UDP counters once, as atomics to count with and as plain numbers to log.
+macro_rules! udp_counters {
+    ($($(#[$doc:meta])* $name:ident,)*) => {
+        /// Lock-free counters of what one process's UDP sockets did (D172).
+        #[derive(Debug, Default)]
+        pub struct UdpCounters {
+            $($(#[$doc])* pub $name: AtomicU64,)*
+        }
+
+        /// [`UdpCounters`] at one moment. Field names are the analysis contract.
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+        pub struct UdpCounts {
+            $($(#[$doc])* pub $name: u64,)*
+        }
+
+        impl UdpCounters {
+            pub fn snapshot(&self) -> UdpCounts {
+                UdpCounts {
+                    $($name: self.$name.load(Ordering::Relaxed),)*
+                }
+            }
+        }
+    };
+}
+
+udp_counters! {
+    /// Every datagram read, good or bad.
+    rx_datagrams,
+    rx_bytes,
+    rx_max_bytes,
+    /// Datagrams that did not decode, reads that failed, and calls with a deadline tarpc cannot hold.
+    rx_bad,
+    /// On a client: datagrams from an address other than the node the socket talks to.
+    rx_foreign,
+    /// On a node: calls and cancels read, before the fault gate.
+    rx_requests,
+    rx_cancels,
+    /// On a node: calls the fault gate dropped.
+    rx_gate_dropped,
+    /// On a node: messages dropped because their program's queue was full.
+    rx_queue_full,
+    /// On a node: client programs seen, so one per program unless it stays idle for 60 s.
+    channels_opened,
+    /// Every datagram the kernel took.
+    tx_datagrams,
+    tx_bytes,
+    tx_max_bytes,
+    /// On a client: calls and cancels handed to the socket, including any lost below.
+    tx_requests,
+    tx_cancels,
+    /// On a node: replies handed to the socket, including any lost below.
+    tx_replies,
+    /// Messages lost because the kernel's send buffer was full.
+    tx_would_block,
+    /// Messages lost because they would not encode or did not fit one datagram.
+    tx_encode_errors,
+    /// Messages lost to any other send error, such as a pulled cable.
+    tx_errors,
+}
+
+impl UdpCounters {
+    pub fn received(&self, bytes: usize) {
+        self.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+        self.rx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.rx_max_bytes.fetch_max(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn sent(&self, bytes: usize) {
+        self.tx_datagrams.fetch_add(1, Ordering::Relaxed);
+        self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.tx_max_bytes.fetch_max(bytes as u64, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn udp_counters_log_as_flat_fields() {
+        let counters = UdpCounters::default();
+        counters.received(100);
+        counters.received(40);
+        counters.sent(70);
+        counters.tx_cancels.fetch_add(2, Ordering::Relaxed);
+        let line = Line {
+            ts_us: 1,
+            src: "client-1",
+            event: &Event::UdpCounters {
+                counts: counters.snapshot(),
+                udp_drops: Some(9),
+            },
+        };
+        let json: serde_json::Value = serde_json::to_value(&line).unwrap();
+        assert_eq!(json["ev"], "udp_counters");
+        assert_eq!(json["rx_datagrams"], 2);
+        assert_eq!(json["rx_bytes"], 140);
+        assert_eq!(json["rx_max_bytes"], 100);
+        assert_eq!(json["tx_datagrams"], 1);
+        assert_eq!(json["tx_cancels"], 2);
+        assert_eq!(json["udp_drops"], 9);
+    }
 
     #[test]
     fn writes_one_json_object_per_line() {

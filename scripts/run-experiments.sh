@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run experiment cells across the machines in a hosts file, and collect the logs (D62, D63, D130).
 #
-#   scripts/run-experiments.sh experiments/hosts quick          # 13 cells, 3 runs, about 1 hour
-#   scripts/run-experiments.sh experiments/hosts full           # 32 cells, 5 runs, about 8 hours
+#   scripts/run-experiments.sh experiments/hosts quick          # 15 cells, 3 runs, about 70 minutes
+#   scripts/run-experiments.sh experiments/hosts full           # 33 cells, 5 runs, about 8 hours
 #   scripts/run-experiments.sh experiments/hosts quick e5-faults-off e1-30-bidding
 #
 # For each run: refuses to go on while a program of ours is left over on any machine, writes one config,
@@ -13,8 +13,8 @@
 # moves the old one to runs/old/ first.
 #
 # Run scripts/lab-build.sh first, so every machine has the same commit. WARMUP, MEASURED, GAP and REPS
-# override the profile's values, and PROGRAMS_PER_PC the 10 real programs on each client machine (D181).
-# A cell's first line says how to run it:
+# override the profile's values, PROGRAMS_PER_PC the 10 real programs on each client machine (D181), and
+# STOP_WAIT_S the 10 s it lets things stop. A cell's first line says how to run it:
 #   # run: users=300 think_ms=1000 victim=leader silence_ms=15000 skew_work=0 programs=10 pattern=steady
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,6 +45,8 @@ COMMIT=$(git rev-parse HEAD)
 CTL_HOST=${CLIENT_SSH[0]}
 DROPPED_RUNS=()
 : "${PROGRAMS_PER_PC:=10}"
+# How long to let things stop, before copying logs and before refusing a run.
+: "${STOP_WAIT_S:=10}"
 
 # The value of a key on a cell's run line, or a default.
 run_value() {
@@ -81,6 +83,18 @@ wait_for_leader() {
   done
 }
 
+# A node missing its UDP firewall rule looks healthy over TCP while every report to it vanishes, so a
+# run would measure two nodes and say nothing about it (D168). Asked from a client machine, the way
+# reports travel.
+require_udp_ports() {
+  local missing
+  missing=$(ctl status | grep 'udp no answer' || true)
+  if [[ -n "$missing" ]]; then
+    echo "$missing" >&2
+    return 1
+  fi
+}
+
 # Which nodes the cell's fault silences.
 victims_of() {
   local leader follower
@@ -96,8 +110,7 @@ victims_of() {
   esac
 }
 
-# Delete this run and stop the batch, for what would spoil the next run too. A run must not stay,
-# because analysis reads every run.json it finds.
+# Delete this run and stop the batch, for what would spoil the next run too.
 abandon_run() {
   rm -rf "$1"
   echo "run dropped and batch stopped: $2" >&2
@@ -125,6 +138,24 @@ stop_all() {
   done
 }
 
+# Waits until nothing of ours runs on any machine, by path, and leaves what still does in `leftovers` if
+# that takes too long. Stopping takes a moment, and longer for a node with work queued. The brackets stop
+# pgrep finding the shell that runs this very line.
+wait_until_stopped() {
+  local pattern="$BIN/[l]oadgen|$BIN/[n]ode|$BIN/[f]rontend|$BIN/[z]onefeed"
+  local deadline=$((SECONDS + STOP_WAIT_S)) host here
+  while :; do
+    leftovers=""
+    for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
+      here=$(on_host "$host" "pgrep -af '$pattern' || true")
+      [[ -z "$here" ]] || leftovers+="$host: $here"$'\n'
+    done
+    [[ -n "$leftovers" ]] || return 0
+    ((SECONDS <= deadline)) || return 1
+    sleep 0.5
+  done
+}
+
 run_once() {
   local cell=$1 rep=$2
   local file="experiments/$cell.toml"
@@ -145,9 +176,10 @@ run_once() {
   done
 
   # Before anything is wiped. The last run's nodes were only just told to stop, so they get a moment.
-  refuse_leftovers "$ALL_PROGRAMS" 10
+  refuse_leftovers "$ALL_PROGRAMS" "$STOP_WAIT_S"
   # Logs are copied by merging, so a rerun into the same folder would keep the old run's client logs and
-  # add them to its throughput. Under runs/old/ the analysis does not see them.
+  # add them to its throughput, and its run.json would survive a run that then fails. Under runs/old/ the
+  # analysis does not see them.
   if [[ -e "$out" ]]; then
     mkdir -p runs/old
     mv "$out" "runs/old/$cell-run-$rep-$(date +%Y%m%d-%H%M%S)"
@@ -156,12 +188,16 @@ run_once() {
   local config="$out/config.toml"
   write_config "$file" "$config"
   echo "$COMMIT" >"$out/commit.txt"
-  printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s","users":%d,"programs_per_pc":%d,"client_programs_expected":%d,"pattern":"%s","think_ms":%d,"victim":"%s"}\n' \
+  # The analysis counts every run.json it finds, with throughput 0 if the logs never came, so the file
+  # gets its name only when the run is whole. A batch killed or failing anywhere leaves no half a run.
+  printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s","users":%d,"programs_per_pc":%d,"client_programs_expected":%d,"pattern":"%s","think_ms":%d,"victim":"%s","nodes":%d}\n' \
     "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" \
-    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" >"$out/run.json"
+    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" "${#NODE_IDS[@]}" >"$out/run.json.partial"
 
+  # Nothing of ours runs now, so any PID file left is stale, and stop_all must not kill what that number
+  # has become since.
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config'
+    on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config; rm -f runs-config/*.pid runs-config/*.programs'
     copy_to "$host" "$config" runs-config/run.toml
   done
   for i in "${!NODE_IDS[@]}"; do
@@ -171,6 +207,7 @@ run_once() {
   if ((skew_work > 0)); then
     ctl skew --node "${NODE_IDS[0]}" --work "$skew_work" >/dev/null
   fi
+  require_udp_ports || abandon_run "$out" "a node's UDP port does not answer"
 
   local pids=()
   for i in "${!CLIENT_IDS[@]}"; do
@@ -211,18 +248,25 @@ run_once() {
     wait "$pid" || status=$?
     if ((status > worst)); then worst=$status; fi
   done
-  # Our own load generators have ended, so any still here ran beside them and the figures are wrong.
-  refuse_leftovers "$LOAD_PROGRAMS" || abandon_run "$out" "something else was sending during the run"
+  # Our own load generators have ended, so any still here ran beside them and the figures are wrong. With
+  # a machine lost this could only say it cannot check, and the series stops below with the other logs kept.
+  if ((worst < 2)); then
+    refuse_leftovers "$LOAD_PROGRAMS" || abandon_run "$out" "something else was sending during the run"
+  fi
   ctl status >"$out/status-after.txt" || true
   stop_all
-  sleep 0.5
+  # A copy taken while a node still writes has half a line at its end and no `stopped` event.
+  wait_until_stopped || echo "  warning: still running, so its log copy may be cut short: $leftovers" >&2
+  # A machine that cannot be reached must not cost the logs of the others.
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    fetch_from "$host" runs/current "$out"
+    fetch_from "$host" runs/current "$out" || echo "  warning: cannot copy the logs from $host" >&2
   done
   local logs=$out
   if [[ -n "$no_fault" ]]; then
     set_aside "$out" "$cell" "$rep" "$no_fault"
     logs="runs/dropped/$cell-run-$rep"
+  else
+    mv "$out/run.json.partial" "$out/run.json"
   fi
   if ((worst >= 2)); then
     echo "stopping the series: a client machine ended with status $worst; see above and $logs/users-*.out" >&2
@@ -233,6 +277,9 @@ run_once() {
   sleep "$GAP"
 }
 
+# Before the trap: what this first check finds was not started by this runner, so it is not ours to stop,
+# whether that is a demo in progress or what a dead runner left behind (D186).
+refuse_leftovers "$ALL_PROGRAMS" "$STOP_WAIT_S"
 trap stop_all EXIT
 for cell in $cells; do
   [[ -f "experiments/$cell.toml" ]] || { echo "no such cell: $cell" >&2; exit 1; }

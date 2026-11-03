@@ -1,15 +1,18 @@
 # RescueMesh
 
-RescueMesh coordinates emergency response on a campus. People report incidents (a fire, a medical
-emergency, a security problem) from client devices. A small cloud of three server nodes decides which
-responder goes where and makes sure every report gets one answer, even when a server fails.
+RescueMesh coordinates emergency response on a campus. People report incidents (a blocked road, a power outage, a lab
+incident, flooding, a network outage, a request for medical or technical help) from client devices. A small cloud of three
+peer nodes decides which responder goes where and makes sure every report gets one answer, even when a node fails.
 
 ## What it does
 
-- **Takes incident reports.** A client sends each report to all three nodes at once. It never needs
-  to know which node is in charge, and it retries with the same request ID if no answer arrives.
-- **Plans the response.** A planner picks a responder for each incident from severity, age,
+- **Takes incident reports.** The client middleware sends each report to all three nodes at once: that is the group send,
+  and the application makes one call and does not know it happens (D210). It never needs to know which node is in charge, and it
+  retries with the same request ID if no answer arrives.
+- **Plans the response.** A planner picks a responder for each incident and works out its priority, from severity, age,
   distance, availability and capability.
+- **Refuses what is too old.** A report says how long it stays valid, 60 s by default. A node that gets it later answers
+  expired and sends nobody (D143).
 - **Agrees on one answer.** Nodes keep a replicated log with Raft. A result counts only once it is
   committed, and the first committed result for a request wins. Retries and duplicate work can
   never assign two different responders to one report.
@@ -18,6 +21,8 @@ responder goes where and makes sure every report gets one answer, even when a se
 - **Survives failures.** A node can disappear for up to 20 seconds. The others elect a new leader if
   needed and keep serving. When the node returns, it catches up from the leader's log before it
   serves again.
+- **Keeps the nodes as peers.** The three nodes generate requests and answer them at the same time. Client and server are only
+  the roles of one call (D212). The middleware and the application are kept apart on both sides (D211).
 - **Measures itself.** Every node and client writes timestamped events (JSON Lines) for latency,
   throughput, elections, failover and recovery analysis.
 
@@ -38,9 +43,12 @@ Phase 1 is built and passes its tests on one machine. **It has not yet run on th
 experiments have not been run there.
 
 - **Built:** Raft replication with the log on disk, load-based bidding (the default), takeover from a silent
-  winner, the planner, fault injection, rejoin, degraded mode for one server left, the client middleware, the load
-  generator, the experiment runner and the analysis.
-- **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe.
+  winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), the planner with incident priority,
+  TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
+  group communication with a who's-alive list, the client middleware, the load generator with 10 real programs per client
+  machine, a web page for each client machine, the experiment runner and the analysis.
+- **Decided, not merged yet:** clients over UDP, and any node loading the responder list (D216). The cloud side's layer files (D156).
+- **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe (D209).
 
 ## Requirements
 
@@ -81,18 +89,24 @@ cargo run --release --bin node -- --config config/local.toml --id 2
 cargo run --release --bin node -- --config config/local.toml --id 3
 ```
 
-Then inspect the cluster and generate load. `--client-id` is required, and must be unique per load generator:
+Then inspect the cluster and generate load. `--client-id` is required: use 1 to 9 by hand.
 
 ```bash
 cargo run --release --bin ctl -- status
 cargo run --release --bin loadgen -- --client-id 1 --users 20 --duration-s 30      # closed loop
 cargo run --release --bin loadgen -- --client-id 2 --rate 500 --duration-s 30      # open loop
+cargo run --release --bin ctl -- incidents --client 1 --limit 5                    # a client's newest records
+cargo run --release --bin ctl -- incidents --id 1-1762180000000123                 # one record, on every node
+cargo run --release --bin loadgen -- --client-id 3 --users 1 --duration-s 1 --ttl-ms 0   # every report refused
+bash scripts/start-users.sh --config config/local.toml --machine 1 --users 100 --duration-s 30   # 10 real programs share the users
+bash scripts/start-users.sh --stop --machine 1
 ```
 
-`ctl status` shows each node's role, term, leader, log position, state digest, and whether it is serving,
-silenced or degraded. Nodes that have applied the same log show the same digest. `loadgen` prints throughput
-and latency percentiles, with counts of retries, requests given up on, plans with no responder and provisional
-answers.
+`ctl status` shows each node's role, term, leader, log position, state digest, whether it is serving, silenced or degraded,
+and who it lists as group members. Nodes that have applied the same log show the same digest. `loadgen` prints throughput
+and latency percentiles, with counts of retries, requests given up on, plans with no responder, provisional answers and
+expired reports. `--pattern steady|random|all-at-once` sets how users wait (D182). `ctl incidents` shows each record's status,
+responder, priority, owner, category, times and log index, on every node.
 
 Requests are planned by a load-based bidding election among the nodes. The Raft leader orders the log and does
 not choose who plans (D114). `policy.assignment = "leader-dispatch"` is the baseline for comparison.
@@ -111,9 +125,10 @@ Fault injection can be switched off for no-fault baseline runs: `enabled = false
 `[faults]` in the config, or `--faults off` when starting a node (D77). `ctl silence` is then
 refused.
 
-With fault injection on, the Raft leader also injects faults by itself: every 30 to 60 s it
-silences a random node (possibly itself) for 1 to 20 s, one fault at a time. The `[faults]`
-section sets the ranges and an optional `seed` to repeat a run (D78).
+With fault injection on, the three nodes also elect one of them to fail: about every 30 to 60 s each draws a random number and sends it to the
+others, and the highest goes silent for 1 to 20 s. A node missing any of the numbers does nothing, so a node that is out stops the next election, and
+no leader is involved (D158). The `[faults]` section sets the ranges and an optional `seed`, which repeats each node's numbers per round but not the
+timing.
 
 With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled,
 uncommitted `Provisional` answers, then commits them through Raft when a peer returns. First commit wins, so a
@@ -127,8 +142,10 @@ the peer and client ports are open between machines. Use the same file everywher
 ```bash
 # on each server machine, with its own ID
 cargo run --release --bin node -- --config config/lab.toml --id 1
-# on each client machine, with its own client ID
-cargo run --release --bin loadgen -- --config config/lab.toml --client-id 1 --users 50
+# on each client machine, with its own machine number
+bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 50
+# the web page on each client machine, then open that address in its browser
+cargo run --release --bin frontend -- --config config/lab.toml --client-id 11 --listen 127.0.0.1:9001
 ```
 
 The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [docs/demo.md](docs/demo.md).
@@ -138,7 +155,7 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 ```bash
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
-scripts/run-experiments.sh experiments/hosts quick # 13 cells, about 1 hour; `full` is 31, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 33, about 8 hours
 python analysis/analyze.py runs                    # analysis/out/: summary.csv and plots
 ```
 
@@ -154,24 +171,34 @@ Every process reads one TOML file. Unknown keys are rejected, so a typo fails at
 | `timers`   | Raft heartbeat and election timeouts, bid window, client retry, timeouts     |
 | `policy`   | `assignment` (`"bidding"` or `"leader-dispatch"`), `score`, `cpu_weight`, `just_won`, `initial_service_us` |
 | `workers`  | Planner threads, queue capacity, planner cost knob                           |
-| `campus`   | Seed, zones and responders of the synthetic campus                           |
+| `campus`   | Seed, zones and responders of the synthetic campus, time on scene, how long a report stays valid (`incident_ttl_ms`) |
 | `metrics`  | Directory for event logs; leave it out to disable                            |
 | `storage`  | Directory for each node's Raft log and vote. Leave it out to keep them in memory, which is for tests only: a node then cannot survive losing power (D118) |
-| `faults`   | Fault injection on or off, the schedule's ranges and seed                    |
+| `faults`   | Fault injection on or off, the fault election's ranges and seed              |
 
 Defaults and validation live in [src/config.rs](src/config.rs).
 
 ## Logs and measurements
 
 With `metrics.dir` set, each process appends to `<dir>/node-<id>.jsonl` or
-`<dir>/client-<id>.jsonl`, one JSON object per line:
+`<dir>/client-<id>.jsonl`, or `<dir>/frontend-<id>.jsonl` for the web page's own reports, which analysis
+ignores, one JSON object per line:
 
 ```json
 {"ts_us":1792000000123456,"src":"node-1","ev":"commit","kind":"commit_result","outcome":"committed","latency_us":812,"forwarded":false,"log_index":42,"request":{"client":7,"seq":3}}
 ```
 
-Human-readable logs go to stderr. Set the level with `RUST_LOG`, for example
-`RUST_LOG=debug,openraft=info`.
+Human-readable logs go to stderr. The default filter keeps our own `info` lines and everyone's warnings, and turns off tarpc's
+per-call lines, which are costly at load (D134). `RUST_LOG` overrides it, for example `RUST_LOG=debug,openraft=info`.
+
+To watch a machine live in plain words, with no rebuild:
+
+```bash
+python3 scripts/watch_events.py runs/lab            # leader changes, draws, silences, who's alive, a summary each second
+python3 scripts/watch_events.py runs/lab --reports  # also every step of every report
+```
+
+It only reads the logs (D221), and each machine has only its own, so run it where you want to look.
 
 ## Repository layout
 
@@ -181,16 +208,16 @@ src/
   config.rs       config file format and validation
   state.rs        replicated state machine
   raft/           openraft setup, storage, network adapter
-  node/           node wiring, transport and fault gate, heartbeats, workers, rejoin, faults, degraded mode
+  node/           node wiring, transport and fault gate, heartbeats, group communication, workers, rejoin, faults, degraded mode
   bidding.rs      load score and bid selection
   planner.rs      incident planner
   campus.rs       synthetic campus
   client.rs       client middleware
   metrics.rs      event log
-  bin/            node, loadgen, ctl
+  bin/            node, loadgen, ctl, frontend (the web page; its HTML is beside it)
 tests/            multi-node scenarios run in one process
 config/           cluster configs
-scripts/          run a local cluster; build on and run experiments across the lab machines
+scripts/          run a local cluster; start a client machine's users; build on and run experiments across the lab machines
 experiments/      one config per experiment cell, hosts file example
 analysis/         Python: numbers and plots from event logs
 docs/             architecture (with diagrams), protocol, design log, runbook, demo script
@@ -201,7 +228,7 @@ docs/             architecture (with diagrams), protocol, design log, runbook, d
 - [docs/architecture.md](docs/architecture.md): deployment, components, every flow as a sequence
   diagram, state and lifecycle diagrams, each marked built, template, planned or open.
 - [docs/design-log.md](docs/design-log.md): every design decision with its options, reasoning and
-  consequences, including the open ones that still need the team.
+  consequences. None is open; D216 lists what is decided and still being built.
 - [docs/protocol.md](docs/protocol.md): messages, encodings and timers as they are in the code.
 - [docs/runbook.md](docs/runbook.md): running on the six lab machines.
 - [docs/demo.md](docs/demo.md): the Phase 1 demo, scenario by scenario.
@@ -217,6 +244,7 @@ recommendation, and records the answers in the design log before it writes code.
 
 [openraft](https://github.com/databendlabs/openraft) 0.9.25 provides Raft leader election and log
 replication. [tarpc](https://github.com/google/tarpc) 0.37 provides remote calls on the peer port (D119).
-Everything else that does distributed work (state machine, storage, network adapter, bidding, recovery, degraded
-mode, planner, client middleware, fault injection) is our own code. [AGENTS.md](AGENTS.md) records which
+Everything else that does distributed work (state machine, storage, network adapter, bidding, group communication, recovery,
+degraded mode, planner, client middleware, fault injection) is our own code (D215). openraft is under MIT or Apache-2.0 and tarpc under MIT.
+AI coding agents helped write the code and these docs. Each design decision says who decided it, in the design log. [AGENTS.md](AGENTS.md) records which
 file belongs to which part.

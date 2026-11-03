@@ -70,6 +70,12 @@ impl StateReader {
     fn write(&self) -> RwLockWriteGuard<'_, CloudState> {
         self.inner.write().unwrap_or_else(|p| p.into_inner())
     }
+
+    /// Apply one command with no log behind it, for a test that needs a state to read.
+    #[cfg(test)]
+    pub(crate) fn apply_for_tests(&self, cmd: crate::proto::Command) {
+        self.write().apply(1, &cmd);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

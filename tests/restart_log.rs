@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use common::{TestCluster, wait_until};
 use rescuemesh::node;
+use rescuemesh::node::transport::ClientPort;
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 use tracing_subscriber::EnvFilter;
@@ -51,6 +52,18 @@ async fn rebind(addr: &str) -> TcpListener {
     }
 }
 
+/// The same for the client port, which holds its number on TCP and UDP (D168).
+async fn rebind_client_port(addr: &str) -> ClientPort {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match ClientPort::bind(addr).await {
+            Ok(port) => return port,
+            Err(e) if Instant::now() > deadline => panic!("cannot bind {addr} again: {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_logs_no_error() {
     let out = Captured::default();
@@ -80,7 +93,7 @@ async fn a_restart_logs_no_error() {
 
     let me = config.node(1).unwrap();
     let peer = rebind(&me.peer_addr).await;
-    let client = rebind(&me.client_addr).await;
+    let client = rebind_client_port(&me.client_addr).await;
     let back = node::start_with(config.clone(), 1, peer, client)
         .await
         .unwrap();

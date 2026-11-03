@@ -37,7 +37,7 @@ fn cell_text(cell: &str) -> String {
 #[test]
 fn every_cell_is_a_valid_config_with_a_run_line() {
     let cells = cells();
-    assert_eq!(cells.len(), 32, "the full profile has 32 cells");
+    assert_eq!(cells.len(), 33, "the full profile has 33 cells");
     for cell in &cells {
         let text = cell_text(cell);
         assert!(text.starts_with("# run:"), "{cell} has no run line");
@@ -47,13 +47,36 @@ fn every_cell_is_a_valid_config_with_a_run_line() {
     }
 }
 
+/// The sweep below this load keeps D129's pool, so a figure must say where the pool changes.
 #[test]
-fn the_quick_profile_is_thirteen_cells_of_the_full_one() {
+fn the_top_e1_cells_have_responders_for_their_load() {
+    let responders = |cell: &str| {
+        Config::from_toml(&format!("{BASE}{}", cell_text(cell)))
+            .unwrap()
+            .campus
+            .responders
+    };
+    for users in [1000, 3000] {
+        for policy in ["bidding", "leader"] {
+            assert_eq!(responders(&format!("e1-{users}-{policy}")), 3000);
+        }
+    }
+    for users in [30, 100, 300] {
+        for policy in ["bidding", "leader"] {
+            assert_eq!(responders(&format!("e1-{users}-{policy}")), 300);
+        }
+    }
+}
+
+#[test]
+fn the_quick_profile_is_fifteen_cells_of_the_full_one() {
     let list = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/quick.list"),
     )
     .unwrap();
     let quick: BTreeSet<String> = list.lines().map(str::to_string).collect();
-    assert_eq!(quick.len(), 13);
+    assert_eq!(quick.len(), 15);
     assert!(quick.is_subset(&cells()), "{quick:?}");
+    // First, so a bug in the fault election costs one cell's time and not the whole list's (D162).
+    assert_eq!(list.lines().next(), Some("ft8-random-faults"));
 }

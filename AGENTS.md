@@ -3,7 +3,7 @@
 Working agreement for everyone who changes this repo, people and AI coding tools alike.
 Read it before your first change. If something here is wrong or missing, fix it in a PR.
 
-RescueMesh is a three-node cloud that plans incident responses for campus clients. Raft
+RescueMesh is a three-node cloud of peers that plans incident responses for campus clients. Raft
 (openraft) orders every decision. A load-based bidding election picks the node that plans each
 request. Nodes survive faults of up to 20 s and catch up when they return. The system is
 measured with JSON Lines event logs. [README.md](README.md) covers what it does and how to run it.
@@ -45,6 +45,7 @@ cargo fmt --all                               # format (CI checks this)
 cargo clippy --all-targets -- -D warnings     # lint (CI fails on any warning)
 scripts/run-local.sh / scripts/stop-local.sh  # 3-node cluster on localhost
 cargo run --bin ctl -- status                 # inspect a running cluster
+bash scripts/start-users.sh --config config/local.toml --machine 1 --users 100   # 10 real load programs
 ```
 
 On WSL, keep build output on the Linux filesystem; building onto `/mnt/c` or `/mnt/f` is slow:
@@ -63,10 +64,12 @@ six machines. Write every change so it works there:
 - **No localhost assumptions.** Every address comes from the config file. A node binds the
   `peer_addr` and `client_addr` listed for its ID, so the lab config must use each machine's real
   LAN IP (see `config/lab.example.toml`). Never hard-code `127.0.0.1` or a port outside
-  `config.rs` and the configs.
+  `config.rs` and the configs. The one exception is the frontend's `--listen`, which only a browser on the
+  same PC connects to (D199).
 - **One config file, copied to all six machines.** Every node and client must read the same file;
-  a different node list on one machine breaks Raft membership. Each load generator needs its own
-  `--client-id` so request IDs stay unique across machines.
+  a different node list on one machine breaks Raft membership. `scripts/start-users.sh` gives each load
+  program its client ID from the machine number and the batch, so each machine needs its own `--machine`. By
+  hand: `loadgen --client-id` from 1 to 9 (D184).
 - **Same build everywhere.** Each machine builds from the same commit with the toolchain pinned in
   `rust-toolchain.toml`. Mixed versions can change the wire format or the state digest.
 - **Nothing shared but the network.** No shared filesystem and no shared clock. Each machine
@@ -90,13 +93,16 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 |------|--------------------------|----------------------------------------------------------------------|-----------------------|-------|
 | A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `config.rs`                      | E5, commit latency    |       |
 | B    | Bidding election         | `bidding.rs`, `node/bids.rs`, `node/cpu.rs`                          | E1 policies, E6       |       |
-| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `node/degraded.rs`, `bin/ctl.rs` | E3 |       |
+| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `node/degraded.rs`, `node/group.rs`, `bin/ctl.rs` | E3 |       |
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
 | E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`                         | E2, CPU and queues    |       |
-| F    | Client and scale         | `client.rs`, `bin/loadgen.rs`                                        | E1 scaling sweep      |       |
-| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `bin/node.rs`, `tests/`, `docs/` | —                     |       |
+| F    | Client and scale         | `client.rs`, `bin/loadgen.rs`, `bin/frontend.rs`, `scripts/start-users.sh` | E1 scaling sweep, E7  |       |
+| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `bin/node.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
 
 Review pairs: A↔D, B↔E, C↔F.
+
+`raft/` includes `raft/proposals.rs`, the proposal queue (D133). When D156 lands, row A gains `node/service.rs`, and
+`src/middleware.rs` goes in the shared row.
 
 Files outside a finished part are templates: signatures, doc comments and placeholder bodies that
 compile and never panic. One exception: `node/transport.rs` holds minimal working plumbing
@@ -121,8 +127,10 @@ Open work is marked in the code as `TODO(<part>)`. To list one part's work:
    in the same PR. See [Design decisions](#design-decisions).
 5. **Everything goes through a pull request.** Nobody pushes to `main` directly, not even a
    one-line fix. See [Git workflow](#git-workflow).
-6. **Library code is kept apart from ours.** The report must separate them. openraft is the only
-   library doing distributed-systems work; anything new of that kind needs team agreement first.
+6. **Library code is kept apart from ours.** The report must separate them. openraft (Raft) and tarpc (remote calls)
+   are the only libraries doing distributed-systems work (D215); anything new of that kind needs team agreement first.
+7. **The docs decide.** The spec, the class notes and the recordings settle a question about what the course wants. Never
+   leave a question for the instructor in a doc, and never tell anyone to ask him (D213). State a reading with its source.
 
 ## Design decisions
 
@@ -199,7 +207,17 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Deterministic core.** `state.rs`, `bidding.rs` and `planner.rs` never touch the network,
   the clock or randomness. Pass time and inputs in as arguments. In `state.rs`, never iterate a
   `HashMap`: use `BTreeMap`/`BTreeSet`. Every node must reach exactly the same state.
-- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets.
+- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets, with two named exceptions:
+  `client.rs` (D112), and `bin/frontend.rs`, which only listens for the browser on its own PC (D200).
+- **Middleware and application stay apart, on both sides.** On the client side the application makes one `submit` call and
+  `MeshClient` does the rest. On the cloud side the incident service uses the group and Raft through their interfaces. It is
+  asked about repeatedly, so keep it visible (D211, `docs/architecture.md` section 4.3).
+- **Nodes are peers.** Client and server are the roles of one call, never of a node (D212).
+- **Pings address everyone.** Never send heartbeats through `CloudGroup::send`: two nodes that removed each other would never
+  hear each other again.
+- **A call ends by its deadline.** `PeerClient::call` enforces it, because tarpc times only what it has written (D150).
+- **Saves and heartbeats come first.** The saving to disk and the "I am alive" of a node must never be crowded out by
+  processing requests (Noor's rule, D133).
 - **Never block the async runtime.** CPU-heavy work (planning) runs through
   `node/workers.rs`. No `std::thread::sleep`, no blocking file or network I/O in async code,
   and no `std::sync::Mutex` guard held across `.await` (clippy denies `await_holding_lock`).
@@ -209,14 +227,16 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Commit, then reply.** A node replies to a client only after the result is committed and
   applied. The first committed result per request ID wins; later ones get the winner back. The one
   exception is degraded mode (D120): a node left alone answers `Provisional`, clearly labelled, and
-  replays the result through Raft when a peer returns.
+  replays the result through Raft when a peer returns. A refusal of a report too old to plan is committed
+  like any result, so it is no exception (D143).
 - **Every `Command` is idempotent.** A proposal can be retried after a leader change, so
   applying a command twice must equal applying it once.
 - **A returning node serves nothing until it is current.** It does not bid or reply until its
-  applied index reaches the leader's commit index (`NodeContext::serving`). It does not vote for
+  applied index reaches the leader's commit index (`NodeContext::serving`). This is checked again just before
+  each reply, so a handler that was waiting on a commit stays quiet too (D136). It does not vote for
   itself either, unless it has heard from no leader for 3 s (D125).
 - **The fault gate drops everything but control.** A silenced node neither sends nor receives
-  peer or client traffic. `ctl` control frames still get through.
+  peer or client traffic. Control frames, from `ctl` and from status polls, still get through.
 - **Integers in replicated data.** No floats in `Command` or `CloudState`. Use integer units
   and name them: `cost`, `latency_us`, `timeout_ms`.
 
@@ -235,7 +255,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   when its channel closes. Cap waits with `tokio::time::timeout`.
 - **Logging.** `tracing` for humans: `warn!` for unexpected but handled, `info!` for rare
   lifecycle events, `debug!` for per-request detail. Measurements go to `metrics::Event`, never
-  only to `tracing`.
+  only to `tracing`. The default filter is `DEFAULT_LOG_FILTER` in `lib.rs`. A library that logs per call must be
+  turned off there (D134).
 - **Comments.** Explain why, not what. Every file starts with a `//!` block saying what it does
   and who owns it.
 - **Dependencies.** Add one only with a design-log entry. Versions resolve through
@@ -259,7 +280,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 ## Measuring
 
 - Every event is logged with a unix-microsecond timestamp (`metrics::Event`, JSONL). Each owner
-  adds and plots their own events. Keep field names stable once a script reads them.
+  adds and plots their own events. Keep field names stable once a script reads them. To compare nodes, use
+  `state_checkpoint`, logged at fixed log indexes, not `state_digest` (D138).
 - Client latency is measured on the client clock. Durations are measured with
   `std::time::Instant`, never by subtracting wall-clock timestamps from different machines.
 - Two profiles (D63): `full` is 5 runs per cell with a 30 s warm-up and 2 min measured; `quick` is 3
@@ -323,3 +345,21 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   without a commit (D120).
 - **Provisional:** an answer given without a commit. It is replayed through Raft later, and first commit
   wins, so it can turn out to differ (D122).
+- **Fault election:** every 30 to 60 s the three nodes draw random numbers and send them to each other; the highest goes silent for 1 to 20 s. A node missing
+  any number does nothing, so a node that is out stops the next election. No leader, nothing in the log (D158).
+- **Group send:** the client middleware's send to all of the cloud nodes. The application makes one call and does not know it
+  happens (D210).
+- **Group:** the cloud nodes as one named group (`node/group.rs`). `send` goes to the view and `probe` to every configured peer. Order
+  and delivery of results come from Raft, not the group.
+- **View:** one node's list of who is in the group, the membership. A peer leaves after `degraded_after_ms` of unbroken suspicion and
+  returns when heard. It means reachable, not able to serve, and nodes do not agree on it.
+- **Incident status:** where a report stands: `Unassigned`, `Assigned`, `Resolved`, `Expired`, or `Provisional` on the client.
+  Worked out on read from the record and the hold, never stored (D142).
+- **TTL:** in this project `Incident.ttl_ms`, how long a report stays valid (D143). A report too old on arrival is not planned:
+  the node commits nobody and answers `Expired`. Not to be confused with the trim D9 dropped, the hop limit of Phase 2, or an
+  RPC's deadline.
+- **Priority:** `Plan.priority`, an integer in points, higher is more urgent, from severity, age, distance, availability and
+  capability (D148). It does not change who is sent.
+- **Program:** one real `loadgen` process on a client PC, holding one or more simulated users as tokio tasks. A client PC runs 10
+  by default (D181).
+- **Batch:** a group of programs started together through `scripts/start-users.sh` on one client PC, 0 to 9. Experiments use 0 (D184).

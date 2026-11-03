@@ -195,7 +195,7 @@ struct App {
 }
 
 impl App {
-    /// Must run inside a tokio runtime, because `MeshClient::new` starts its link tasks.
+    /// Must run inside a tokio runtime, because `MeshClient::new` starts its socket tasks.
     fn new(
         config: Config,
         config_path: PathBuf,

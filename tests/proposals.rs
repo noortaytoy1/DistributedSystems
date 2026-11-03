@@ -146,7 +146,13 @@ async fn a_follower_forwards_straight_away_into_the_leaders_one_queue() {
     let dir = std::env::temp_dir().join(format!("rescuemesh-proposals-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let logs = dir.clone();
-    let cluster = TestCluster::start_with(3, move |c| c.metrics.dir = Some(logs)).await;
+    let cluster = TestCluster::start_with(3, move |c| {
+        c.metrics.dir = Some(logs);
+        // Every node loads the campus at start (D164), through its own queue until it knows a
+        // leader. Those writes are not what this test counts.
+        c.campus.responders = 0;
+    })
+    .await;
     let leader = agreed_leader(&cluster).await;
     let follower = (1..=3).find(|id| *id != leader).unwrap();
     let term = consensus(&cluster, leader).status().term;
@@ -173,8 +179,13 @@ async fn a_follower_forwards_straight_away_into_the_leaders_one_queue() {
     .await;
     let on_the_leader = on_the_leader.unwrap();
     let after = last_io_report(&cluster, &dir, follower).unwrap();
-    // With a new leader in between, the follower may rightly have led for a moment.
-    if consensus(&cluster, leader).status().term == term {
+    // With a new vote in between, on a slow machine, the follower may rightly have had no leader
+    // to forward to for a moment. Any node's term shows it, even a vote the others refused.
+    if cluster
+        .nodes
+        .iter()
+        .all(|n| n.ctx.consensus.status().term == term)
+    {
         assert_eq!(count(&after, "writes"), count(&before, "writes"));
         assert_eq!(count(&after, "commands"), count(&before, "commands"));
     }

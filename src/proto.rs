@@ -515,21 +515,28 @@ pub enum ReplyBody {
     Rejected(String),
 }
 
-/// Frames a client (or ctl) sends to a node's client port.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClientFrame {
-    Request(ClientRequest),
-    /// Operator commands from `ctl`. These bypass the fault gate.
-    Control(ControlRequest),
+/// The remote interface a node offers clients and `ctl` (D167), through tarpc. No term argument:
+/// the term rule is for peer messages. A node serves it twice on `client_addr`: over UDP for clients
+/// (`node/datagram.rs`), and over TCP for `ctl`, so a lost silence order cannot vanish (D168).
+///
+/// `submit` is called on every node. A node that cannot answer never returns, so the caller's call
+/// stays open until it cancels or its deadline passes: a node says nothing to mean "not me" (D36).
+///
+/// The fault gate drops `submit`. All the other methods are control and pass the gate (D23), so a
+/// method added here must decide which it is.
+#[tarpc::service]
+pub trait ClientRpc {
+    async fn submit(request: ClientRequest) -> ClientReply;
+    async fn status() -> ControlReply;
+    /// Drop all traffic in and out of the node for `ms` milliseconds.
+    async fn silence(ms: u64) -> ControlReply;
+    /// Extra planner work per request on this node, to create load imbalance.
+    async fn skew_load(extra_work: u32) -> ControlReply;
+    /// Read committed incident records from this node's copy of the state (D145).
+    async fn incidents(query: IncidentQuery) -> ControlReply;
 }
 
-/// Frames a node sends back on the client port.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ServerFrame {
-    Reply(ClientReply),
-    Control(ControlReply),
-}
-
+/// What `ctl` can ask for, one for each control method of [`ClientRpc`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlRequest {
     Status,
@@ -550,8 +557,8 @@ pub enum ControlReply {
     Status(NodeStatus),
     Done,
     Error(String),
-    /// Control frames pass the fault gate, so a silenced or returning node still answers. `node`
-    /// says so: a reader must not take such a node's rows as current.
+    /// Control calls pass the fault gate, so a silenced or returning node still answers. `node` says
+    /// so: a reader must not take such a node's rows as current.
     Incidents {
         node: NodeStatus,
         rows: Vec<IncidentView>,
@@ -601,7 +608,7 @@ pub trait PeerRpc {
     ) -> PeerReply;
     async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
     async fn read_index(from: NodeId, term: Term) -> PeerReply;
-    async fn fault_order(from: NodeId, term: Term, ms: u64) -> PeerReply;
+    async fn fault_bid(from: NodeId, term: Term, bid: FaultBid) -> PeerReply;
     async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
     async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
@@ -626,12 +633,9 @@ pub enum PeerBody {
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
     /// ReadIndex, D76). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
-    /// The leader orders the receiver silent for `ms` (scheduled fault injection, D12, D78). The
-    /// envelope's term makes a stale leader's order fail the term rule. Answered with
-    /// [`PeerReply::FaultOrder`].
-    FaultOrder {
-        ms: u64,
-    },
+    /// This node's numbers for a fault election, sent to the group (D158). Answered with `Ack`.
+    /// The envelope's term applies the term rule: a dropped bid only stops the round finishing.
+    FaultBid(FaultBid),
     Bid(Bid),
     Heartbeat,
 }
@@ -658,8 +662,6 @@ pub enum PeerReply {
     Proposed(Result<Outcome, ProposeError>),
     /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
     ReadIndex(Result<Option<u64>, ProposeError>),
-    /// The victim obeyed, or why it refused (disabled, already silenced, recovering).
-    FaultOrder(Result<(), String>),
 }
 
 /// One node's bid to execute a request. Lowest score wins; ties go to the lower node ID.
@@ -672,12 +674,30 @@ pub struct Bid {
     pub score: u64,
 }
 
+/// One node's numbers in one round of the fault election (D158). The highest `ticket` goes silent,
+/// for the `ms` in its own bid; ties go to the lower node ID. A separate election from [`Bid`]: it
+/// picks a machine to fail, and it needs a bid from every node before anyone acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaultBid {
+    /// Counts rounds on this node and is lifted by any higher round it hears of. Not saved, and
+    /// nothing outside the fault election reads it (D159).
+    pub round: u64,
+    /// A random number, in `0..1_000_000`.
+    pub ticket: u64,
+    /// How long this node goes silent if it is elected.
+    pub ms: u64,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Wire encoding
 // ---------------------------------------------------------------------------------------------
 
-/// Largest frame accepted on any connection.
+/// Largest frame accepted on any TCP connection.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Largest message sent in one UDP datagram (D170): under the 1472 bytes of payload an Ethernet frame
+/// carries, so a datagram is never split on the wire, where every fragment would have to arrive.
+pub const MAX_DATAGRAM_BYTES: usize = 1_400;
 
 pub type WireError = bincode::Error;
 
@@ -685,7 +705,7 @@ fn wire() -> impl Options {
     bincode::DefaultOptions::new().with_limit(MAX_FRAME_BYTES as u64)
 }
 
-/// Encode a frame body. Every frame on every connection uses this encoding.
+/// Encode a message. UDP datagrams and the Raft log file use this; on TCP, tarpc does its own.
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, WireError> {
     wire().serialize(msg)
 }
@@ -753,15 +773,15 @@ mod tests {
     }
 
     #[test]
-    fn client_frames_round_trip() {
-        let frame = ClientFrame::Request(ClientRequest {
+    fn client_requests_round_trip() {
+        let request = ClientRequest {
             id: RequestId { client: 7, seq: 42 },
             attempt: 1,
             age_ms: 2_000,
             incident: incident(),
-        });
-        let back: ClientFrame = decode(&encode(&frame).unwrap()).unwrap();
-        assert_eq!(back, frame);
+        };
+        let back: ClientRequest = decode(&encode(&request).unwrap()).unwrap();
+        assert_eq!(back, request);
     }
 
     #[test]
@@ -865,25 +885,25 @@ mod tests {
 
     #[test]
     fn expired_replies_round_trip() {
-        let frame = ServerFrame::Reply(ClientReply {
+        let reply = ClientReply {
             id: RequestId { client: 1, seq: 2 },
             from: 3,
             body: ReplyBody::Expired(record(None, 60_000, 1_000)),
-        });
-        let back: ServerFrame = decode(&encode(&frame).unwrap()).unwrap();
-        assert_eq!(back, frame);
+        };
+        let back: ClientReply = decode(&encode(&reply).unwrap()).unwrap();
+        assert_eq!(back, reply);
     }
 
     #[test]
     fn incident_queries_and_rows_round_trip() {
-        let request = ClientFrame::Control(ControlRequest::Incidents(IncidentQuery::OfClient {
+        let request = ControlRequest::Incidents(IncidentQuery::OfClient {
             client: 3,
             limit: 10,
-        }));
-        let back: ClientFrame = decode(&encode(&request).unwrap()).unwrap();
+        });
+        let back: ControlRequest = decode(&encode(&request).unwrap()).unwrap();
         assert_eq!(back, request);
 
-        let reply = ServerFrame::Control(ControlReply::Incidents {
+        let reply = ControlReply::Incidents {
             node: NodeStatus {
                 id: 1,
                 term: 2,
@@ -911,9 +931,114 @@ mod tests {
                 expires_at_ms: Some(1_800),
                 log_index: 5,
             }],
-        });
-        let back: ServerFrame = decode(&encode(&reply).unwrap()).unwrap();
+        };
+        let back: ControlReply = decode(&encode(&reply).unwrap()).unwrap();
         assert_eq!(back, reply);
+    }
+
+    /// Every integer at its longest varint, with tarpc's own envelope around it (D170). A report or
+    /// a reply over the limit would be dropped by the sender on every send.
+    #[test]
+    fn the_largest_report_and_reply_fit_one_datagram() {
+        use std::time::{Duration, Instant};
+        use tarpc::{ClientMessage, Request, Response, context, trace};
+
+        let largest_id = RequestId {
+            client: u64::MAX,
+            seq: u64::MAX,
+        };
+        let largest = Incident {
+            owner: UserId {
+                client: u64::MAX,
+                user: u32::MAX,
+            },
+            category: Category::TechnicalAssistance,
+            zone: ZoneId::MAX,
+            location: Point {
+                x: i32::MIN,
+                y: i32::MIN,
+            },
+            severity: u8::MAX,
+            needs: Capability::Rescue,
+            reported_at_ms: u64::MAX,
+            ttl_ms: u64::MAX,
+        };
+        let mut ctx = context::current();
+        ctx.deadline = Instant::now() + Duration::from_secs(36);
+        ctx.trace_context = trace::Context {
+            trace_id: trace::TraceId::from(u128::MAX),
+            span_id: trace::SpanId::from(u64::MAX),
+            sampling_decision: trace::SamplingDecision::Sampled,
+        };
+        let report: ClientMessage<ClientRpcRequest> = ClientMessage::Request(Request {
+            context: ctx,
+            id: u64::MAX,
+            message: ClientRpcRequest::Submit {
+                request: ClientRequest {
+                    id: largest_id,
+                    attempt: u32::MAX,
+                    age_ms: u64::MAX,
+                    incident: largest.clone(),
+                },
+            },
+        });
+        let cancel: ClientMessage<ClientRpcRequest> = ClientMessage::Cancel {
+            trace_context: ctx.trace_context,
+            request_id: u64::MAX,
+        };
+        let plan = Plan {
+            responder: Some(u32::MAX),
+            cost: u64::MAX,
+            priority: u32::MAX,
+        };
+        let reply = |body| Response {
+            request_id: u64::MAX,
+            message: Ok(ClientRpcResponse::Submit(ClientReply {
+                id: largest_id,
+                from: u64::MAX,
+                body,
+            })),
+        };
+        let done = reply(ReplyBody::Done(CommittedResult {
+            request: largest_id,
+            incident: largest,
+            executor: u64::MAX,
+            term: u64::MAX,
+            plan: plan.clone(),
+            age_ms: u64::MAX,
+            assigned_at_ms: u64::MAX,
+            log_index: u64::MAX,
+        }));
+        let status = Response {
+            request_id: u64::MAX,
+            message: Ok(ClientRpcResponse::Status(ControlReply::Status(
+                NodeStatus {
+                    id: u64::MAX,
+                    term: u64::MAX,
+                    leader: Some(u64::MAX),
+                    role: "candidate".into(),
+                    last_log_index: Some(u64::MAX),
+                    last_applied: Some(u64::MAX),
+                    digest: u64::MAX,
+                    results: u64::MAX,
+                    responders: u64::MAX,
+                    silenced: true,
+                    serving: true,
+                    degraded: true,
+                    members: vec![u64::MAX; 3],
+                },
+            ))),
+        };
+        let sizes = [
+            encode(&report).unwrap().len(),
+            encode(&cancel).unwrap().len(),
+            encode(&done).unwrap().len(),
+            encode(&reply(ReplyBody::Provisional(plan))).unwrap().len(),
+            encode(&status).unwrap().len(),
+        ];
+        for size in sizes {
+            assert!(size <= MAX_DATAGRAM_BYTES, "{sizes:?}");
+        }
     }
 
     #[test]

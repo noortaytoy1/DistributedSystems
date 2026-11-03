@@ -276,3 +276,50 @@ async fn a_replaced_leader_rejoins_as_a_follower() {
     assert_eq!(cluster.node(old).ctx.consensus.status().leader, Some(new));
     cluster.shutdown().await;
 }
+
+/// The leader a returning node would ask goes silent just as it returns. It has to finish with
+/// whoever leads next, and still serves nothing until it has all that was committed (D135).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_still_rejoins_when_the_leader_goes_away_as_it_returns() {
+    let cluster = TestCluster::start(3).await;
+    let old = agreed_leader(&cluster, &[1, 2, 3]).await;
+    let returning = (1..=3).find(|id| *id != old).unwrap();
+
+    cluster.node(returning).ctx.gate.silence();
+    wait_until(WAIT, "silenced follower stops serving", || {
+        !serving(&cluster, returning)
+    })
+    .await;
+    for seq in 0..20 {
+        cluster
+            .node(old)
+            .ctx
+            .consensus
+            .propose(proposal(seq, old))
+            .await
+            .unwrap();
+    }
+
+    cluster.node(old).ctx.gate.silence();
+    cluster.node(returning).ctx.gate.restore();
+    wait_until(WAIT, "follower serving again", || {
+        serving(&cluster, returning)
+    })
+    .await;
+    assert_eq!(
+        cluster.node(returning).ctx.state.with(|s| s.result_count()),
+        20
+    );
+    assert_ne!(
+        cluster.node(returning).ctx.consensus.status().leader,
+        Some(old)
+    );
+
+    cluster.node(old).ctx.gate.restore();
+    wait_until(WAIT, "old leader serving again", || serving(&cluster, old)).await;
+    wait_until(WAIT, "identical state on every node", || {
+        same_state(&cluster)
+    })
+    .await;
+    cluster.shutdown().await;
+}

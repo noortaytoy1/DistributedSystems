@@ -14,6 +14,7 @@
 
 pub mod bids;
 pub mod cpu;
+pub mod datagram;
 pub mod degraded;
 pub mod faults;
 pub mod group;
@@ -40,27 +41,35 @@ use tokio::time::Instant;
 
 use crate::campus;
 use crate::config::{AssignmentPolicy, Config};
-use crate::metrics::{Event, EventLog, now_ms};
+use crate::metrics::{Event, EventLog, UdpCounters, now_ms};
 use crate::planner::{self, CostKnob};
 use crate::proto::{
-    ClientFrame, ClientReply, ClientRequest, Command, CommittedResult, ControlReply,
-    ControlRequest, NodeId, NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, Plan,
-    ProposeError, ReplyBody, RequestId, Responder, ResultProposal, ServerFrame,
+    ClientReply, ClientRequest, Command, CommittedResult, ControlReply, ControlRequest, NodeId,
+    NodeStatus, Outcome, PeerBody, PeerEnvelope, PeerReply, Plan, ProposeError, ReplyBody,
+    RequestId, Responder, ResultProposal,
 };
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
 use degraded::DegradedState;
+use faults::FaultElection;
 use group::CloudGroup;
 use heartbeat::Suspicion;
-use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
+use transport::{
+    ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet, ReplyTx,
+    RequestHandler,
+};
 use workers::{Overloaded, WorkerPool};
 
 /// How often a node logs its message counts and state digest.
 const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Plans per request before giving up on stale plans; the client's retry starts over.
+/// Plans per request before the node answers that nobody could be sent (D220).
 const MAX_PLAN_ATTEMPTS: u32 = 3;
+
+/// How often a node checks that the campus is registered. Small against starting three machines
+/// by hand, and nothing needs to tune it (D164).
+const CAMPUS_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Everything a node's parts share.
 pub struct NodeContext {
@@ -82,6 +91,8 @@ pub struct NodeContext {
     pub serving: AtomicBool,
     /// Bid rounds and the load figures bids are made from (bids.rs).
     pub bids: BidState,
+    /// This node's rounds of the fault election (faults.rs).
+    pub fault_election: FaultElection,
     /// Extra planner work per request, set by `ctl skew`.
     pub plan_work: AtomicU32,
     /// Whether this node is the last one left, and what it answered meanwhile (degraded.rs).
@@ -121,6 +132,8 @@ pub struct NodeHandle {
     pub ctx: Arc<NodeContext>,
     pub peer_addr: SocketAddr,
     pub client_addr: SocketAddr,
+    /// What this node's UDP socket has done (D172).
+    pub udp_counters: Arc<UdpCounters>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -145,22 +158,24 @@ pub async fn start(config: Config, id: NodeId) -> anyhow::Result<NodeHandle> {
     let peer = TcpListener::bind(&me.peer_addr)
         .await
         .with_context(|| format!("binding peer address {}", me.peer_addr))?;
-    let client = TcpListener::bind(&me.client_addr)
+    let client = ClientPort::bind(&me.client_addr)
         .await
         .with_context(|| format!("binding client address {}", me.client_addr))?;
     start_with(config, id, peer, client).await
 }
 
-/// Start a node on listeners that are already bound (tests bind port 0 first).
+/// Start a node on sockets that are already bound (tests bind port 0 first).
 pub async fn start_with(
     config: Config,
     id: NodeId,
     peer_listener: TcpListener,
-    client_listener: TcpListener,
+    client_port: ClientPort,
 ) -> anyhow::Result<NodeHandle> {
     let peer_addr = peer_listener.local_addr()?;
-    let client_addr = client_listener.local_addr()?;
+    let client_addr = client_port.local_addr()?;
     let log = EventLog::open(config.metrics.dir.as_deref(), &format!("node-{id}"))?;
+    client_port.report_buffer(&log);
+    let udp_counters = Arc::new(UdpCounters::default());
     let gate = FaultGate::default();
     // Same cooldown as openraft's retry of an unreachable peer (D32, D90).
     let reconnect_backoff = Duration::from_millis(2 * config.timers.raft_heartbeat_ms);
@@ -230,6 +245,7 @@ pub async fn start_with(
         // A node with a Raft log from an earlier run may be behind (D118).
         serving: AtomicBool::new(!restarted),
         bids: BidState::new(id, &config),
+        fault_election: FaultElection::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
         degraded: DegradedState::default(),
         config: Arc::new(config),
@@ -240,18 +256,25 @@ pub async fn start_with(
         client_addr: client_addr.to_string(),
     });
 
-    let client_handler: ClientHandler = {
+    let on_request: RequestHandler = {
         let ctx = ctx.clone();
-        Arc::new(move |frame, reply| on_client_frame(&ctx, frame, reply))
+        // In its own task, so a client's cancel cannot cut off a bid or a commit (D169). It owns
+        // itself: every wait in it is capped, so it ends without help.
+        Arc::new(move |req, reply| {
+            tokio::spawn(handle_request(ctx.clone(), req, reply));
+        })
+    };
+    let on_control: ControlHandler = {
+        let ctx = ctx.clone();
+        Arc::new(move |cmd| on_control(&ctx, cmd))
     };
     tasks.push(tokio::spawn(transport::serve_clients(
-        client_listener,
-        gate,
-        log.msgs().clone(),
-        client_handler,
+        client_port,
+        ClientServer::new(gate, log.msgs().clone(), on_request, on_control),
+        udp_counters.clone(),
     )));
     tasks.push(spawn_campus_seeding(ctx.clone()));
-    tasks.push(spawn_reporter(ctx.clone()));
+    tasks.push(spawn_reporter(ctx.clone(), udp_counters.clone()));
     tasks.extend(heartbeat::spawn(&ctx));
     tasks.extend(faults::spawn_schedule(&ctx));
     tasks.extend(rejoin::spawn(&ctx, restarted));
@@ -263,6 +286,7 @@ pub async fn start_with(
         ctx,
         peer_addr,
         client_addr,
+        udp_counters,
         tasks,
     })
 }
@@ -284,8 +308,9 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     match body {
         PeerBody::Propose(cmd) => PeerReply::Proposed(ctx.consensus.propose_local(cmd).await),
         PeerBody::ReadIndex => PeerReply::ReadIndex(ctx.consensus.read_index_local().await),
-        PeerBody::FaultOrder { ms } => {
-            PeerReply::FaultOrder(faults::on_order(&ctx, Duration::from_millis(ms)))
+        PeerBody::FaultBid(bid) => {
+            faults::on_bid(&ctx, from, bid);
+            PeerReply::Ack
         }
         PeerBody::Heartbeat => {
             lock(&ctx.suspicion).heard_from(from, Instant::now());
@@ -302,18 +327,6 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
 // ---------------------------------------------------------------------------------------------
 // Client requests
 // ---------------------------------------------------------------------------------------------
-
-fn on_client_frame(ctx: &Arc<NodeContext>, frame: ClientFrame, reply: ReplyTx) {
-    match frame {
-        ClientFrame::Request(req) => {
-            tokio::spawn(handle_request(ctx.clone(), req, reply));
-        }
-        ClientFrame::Control(cmd) => {
-            let answer = on_control(ctx, cmd);
-            reply.send(&ServerFrame::Control(answer));
-        }
-    }
-}
 
 async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, reply: ReplyTx) {
     let started = Instant::now();
@@ -387,13 +400,12 @@ enum ExecuteError {
     Overloaded(#[from] Overloaded),
     #[error(transparent)]
     Propose(#[from] ProposeError),
-    #[error("plan still stale after {MAX_PLAN_ATTEMPTS} attempts")]
-    StillStale,
     #[error("unexpected outcome {0}")]
     Unexpected(&'static str),
 }
 
-/// Plan on the worker pool and commit through Raft; plan again if the plan went stale.
+/// Plan on the worker pool and commit through Raft; plan again if the plan went stale, and after
+/// [`MAX_PLAN_ATTEMPTS`] stale plans commit that nobody could be sent (D220).
 async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResult, ExecuteError> {
     for _ in 0..MAX_PLAN_ATTEMPTS {
         let free = ctx.state.with(|s| s.free_responders());
@@ -417,7 +429,28 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             other => return Err(ExecuteError::Unexpected(other.kind())),
         }
     }
-    Err(ExecuteError::StillStale)
+    // Every plan lost the race for a responder. Say so now: silence would leave the client to its
+    // retry, which only starts the race again. A plan with no responder cannot go stale, and with no
+    // list to search and no load knob it needs no worker job.
+    let age_ms = now_ms().saturating_sub(req.incident.reported_at_ms);
+    let plan = planner::plan(&req.incident, &[], age_ms, CostKnob::default());
+    let proposal = ResultProposal {
+        request: req.id,
+        incident: req.incident.clone(),
+        executor: ctx.id,
+        term: ctx.consensus.status().term,
+        plan,
+        age_ms: req.age_ms,
+        assigned_at_ms: now_ms(),
+    };
+    match ctx
+        .consensus
+        .propose(Command::CommitResult(proposal))
+        .await?
+    {
+        Outcome::Committed(done) | Outcome::Duplicate(done) => Ok(done),
+        other => Err(ExecuteError::Unexpected(other.kind())),
+    }
 }
 
 /// Plan one request from `free` on the worker pool.
@@ -492,11 +525,11 @@ fn send_provisional(
         return;
     }
     let responder = plan.responder;
-    let sent = reply.send(&ServerFrame::Reply(ClientReply {
+    let sent = reply.send(ClientReply {
         id: request,
         from: ctx.id,
         body: ReplyBody::Provisional(plan),
-    }));
+    });
     if sent {
         ctx.log.log(Event::ProvisionalReplied {
             request,
@@ -518,11 +551,11 @@ fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started:
     } else {
         ReplyBody::Done(done)
     };
-    let sent = reply.send(&ServerFrame::Reply(ClientReply {
+    let sent = reply.send(ClientReply {
         id: request,
         from: ctx.id,
         body,
-    }));
+    });
     if sent {
         ctx.log.log(Event::Replied {
             request,
@@ -566,33 +599,40 @@ fn on_control(ctx: &Arc<NodeContext>, cmd: ControlRequest) -> ControlReply {
 // Background tasks
 // ---------------------------------------------------------------------------------------------
 
-/// Once a leader exists, it registers the campus responders through Raft (once per cluster).
+/// Any serving node registers the campus responders through the log, until the log holds them
+/// (D164). No node has to be picked for this: the command is idempotent, so the few extra entries
+/// from nodes proposing together change nothing, and the log decides the list, not one node's file.
+/// The check is the one `release.rs` uses. A node back from its log file starts not serving, so it
+/// never proposes while its state still reads empty, and a lone node could not commit anyway.
 fn spawn_campus_seeding(ctx: Arc<NodeContext>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let responders = campus::responders(&ctx.config.campus);
         if responders.is_empty() {
             return;
         }
-        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        let mut tick = tokio::time::interval(CAMPUS_CHECK_INTERVAL);
         loop {
             tick.tick().await;
             if ctx.state.with(|s| s.responder_count()) > 0 {
                 return;
             }
-            if ctx.consensus.status().leader == Some(ctx.id) {
+            if ctx.serving.load(Ordering::SeqCst) && !ctx.degraded.is_active() {
                 let cmd = Command::RegisterResponders {
                     responders: responders.clone(),
                 };
+                // Not a warning: a node started before its peers fails here until they come up,
+                // which is normal in the lab. `propose_failed` still counts it.
                 if let Err(e) = ctx.consensus.propose(cmd).await {
-                    tracing::warn!("registering responders failed: {e}");
+                    tracing::debug!("registering responders failed: {e}");
                 }
             }
         }
     })
 }
 
-/// Every `REPORT_INTERVAL`, log message counts (E5), the state digest and resource use (D128).
-fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
+/// Every `REPORT_INTERVAL`, log message counts (E5), the state digest, resource use (D128) and what
+/// the UDP socket did (D172).
+fn spawn_reporter(ctx: Arc<NodeContext>, udp_counters: Arc<UdpCounters>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REPORT_INTERVAL);
         loop {
@@ -612,8 +652,13 @@ fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
                 cpu_ticks: usage.cpu_ticks,
                 net_rx_bytes: usage.net_rx_bytes,
                 net_tx_bytes: usage.net_tx_bytes,
+                udp_drops: usage.udp_drops,
                 queued: pool.queued,
                 running: pool.running,
+            });
+            ctx.log.log(Event::UdpCounters {
+                counts: udp_counters.snapshot(),
+                udp_drops: usage.udp_drops,
             });
         }
     })
@@ -625,12 +670,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-    use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
 
     use super::testing::{ScriptedConsensus, context, log_dir, logged, until};
     use super::*;
-    use crate::proto::{self, Capability, Category, Incident, Point, UserId};
+    use crate::proto::{Capability, Category, Incident, Point, UserId};
 
     fn request() -> ClientRequest {
         ClientRequest {
@@ -650,15 +694,9 @@ mod tests {
         }
     }
 
-    fn replies(frames: &mut mpsc::UnboundedReceiver<Bytes>) -> Vec<ClientReply> {
-        let mut replies = Vec::new();
-        while let Ok(bytes) = frames.try_recv() {
-            match proto::decode(&bytes).unwrap() {
-                ServerFrame::Reply(reply) => replies.push(reply),
-                other => panic!("expected a reply, got {other:?}"),
-            }
-        }
-        replies
+    /// What has gone back to the call so far. A call takes one answer (D169).
+    fn replies(answer: &mut oneshot::Receiver<ClientReply>) -> Vec<ClientReply> {
+        answer.try_recv().into_iter().collect()
     }
 
     /// Runs one request on a leader that plans it itself, up to the moment it waits on the commit;
@@ -716,6 +754,88 @@ mod tests {
         let events = logged(&ctx.log, &dir);
         assert!(events.iter().any(|e| e["ev"] == "request_received"));
         assert!(!events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Runs one request on a state with free responders, whose first `stale` plans lose the race,
+    /// and returns what went back to the client.
+    async fn race(
+        ctx: &Arc<NodeContext>,
+        fake: &ScriptedConsensus,
+        stale: usize,
+    ) -> Vec<ClientReply> {
+        let responders = (1..=2)
+            .map(|id| Responder {
+                id,
+                zone: 0,
+                location: Point { x: 0, y: 0 },
+                capability: Capability::Medical,
+            })
+            .collect();
+        ctx.state
+            .apply_for_tests(Command::RegisterResponders { responders });
+        fake.make_stale(stale);
+        let (reply, mut answer) = ReplyTx::for_tests(ctx.gate.clone());
+        let handler = tokio::spawn(handle_request(ctx.clone(), request(), reply));
+        for _ in 0..=stale {
+            fake.proposal_arrived().await;
+            fake.commit_one();
+        }
+        handler.await.unwrap();
+        replies(&mut answer)
+    }
+
+    /// The client hears at once, and not after its retry wait, which would start the race again.
+    #[tokio::test]
+    async fn three_stale_plans_are_answered_with_nobody_sent() {
+        let dir = log_dir("three-stale-plans");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = race(&ctx, &fake, MAX_PLAN_ATTEMPTS as usize).await;
+
+        let plans = fake.proposed_plans();
+        assert_eq!(plans.len(), 4, "{plans:?}");
+        assert!(
+            plans[..3].iter().all(|p| p.responder.is_some()),
+            "{plans:?}"
+        );
+        assert_eq!(plans[3].responder, None, "{plans:?}");
+        let [
+            ClientReply {
+                body: ReplyBody::Done(done),
+                ..
+            },
+        ] = &replies[..]
+        else {
+            panic!("expected one answer, got {replies:?}");
+        };
+        assert_eq!(done.plan.responder, None);
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Nobody is only for when all three plans lost: a plan that wins on the last try keeps its
+    /// responder, and no fourth proposal follows.
+    #[tokio::test]
+    async fn a_plan_that_wins_on_its_last_try_keeps_its_responder() {
+        let dir = log_dir("stale-then-won");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = race(&ctx, &fake, MAX_PLAN_ATTEMPTS as usize - 1).await;
+
+        let plans = fake.proposed_plans();
+        assert_eq!(plans.len(), 3, "{plans:?}");
+        let [
+            ClientReply {
+                body: ReplyBody::Done(done),
+                ..
+            },
+        ] = &replies[..]
+        else {
+            panic!("expected one answer, got {replies:?}");
+        };
+        assert!(done.plan.responder.is_some(), "{done:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

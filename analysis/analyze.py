@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -24,16 +25,25 @@ import numpy as np
 from scipy import stats
 
 USER_HZ = 100  # /proc CPU ticks per second on Ubuntu
+UDP_RCVBUF_ASKED_BYTES = 8 * 1024 * 1024  # node/datagram.rs: what every UDP socket asks for (D171)
 ELECTION_AFTER_REJOIN_US = 10_000_000  # FT-6: elections this soon after a rejoin count against it
 PERCENTILES = (50, 95, 99)
 
 
 def read_events(run_dir):
-    """Every event in a run, by source name, each source's events in file order."""
+    """Every event in a run, by source name, each source's events in file order. A program killed in the
+    middle of a write leaves half a line at the end of its log: that one is dropped and named. A bad line
+    anywhere else is real damage, and raises."""
     events = {}
     for path in sorted(Path(run_dir).glob("*.jsonl")):
-        with open(path, encoding="utf-8") as lines:
-            events[path.stem] = [json.loads(line) for line in lines if line.strip()]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in text.split("\n") if line.strip()]
+        try:
+            json.loads(lines[-1] if lines else "null")
+        except json.JSONDecodeError:
+            print(f"{path}: dropped a half-written last line")
+            lines.pop()
+        events[path.stem] = [json.loads(line) for line in lines]
     return events
 
 
@@ -63,6 +73,18 @@ def latency_metrics(prefix, latencies_us):
     return metrics
 
 
+def program_start(source_events):
+    """When a program's clock started, which is what its warm-up counts from, or None if it never sent
+    anything. Its first send can come much later: up to two think times under `random`, which for a program
+    with one user would quietly shorten the measured time (D182). A log from before `client_started` has
+    only its first send to go on."""
+    sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
+    if not sent:
+        return None
+    started = [e["ts_us"] for e in source_events if e["ev"] == "client_started"]
+    return min(started or sent)
+
+
 def client_requests(events, warmup_s):
     """Each client's measured `client_done` and `client_gave_up` events: started after warm-up,
     judged on that client's own clock."""
@@ -70,15 +92,23 @@ def client_requests(events, warmup_s):
     for source, source_events in events.items():
         if not source.startswith("client-"):
             continue
-        sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
-        if not sent:
+        started = program_start(source_events)
+        if started is None:
             continue
-        measure_from = min(sent) + warmup_s * 1_000_000
+        measure_from = started + warmup_s * 1_000_000
+        # A request gives up about 30 s after it starts, so one started in the warm-up gives up well inside
+        # the measured time. Its first send says when it started, as loadgen's own count has it.
+        first_sent = {
+            e["request"]["seq"]: e["ts_us"]
+            for e in source_events
+            if e["ev"] == "client_sent" and e["attempt"] == 0
+        }
         for e in source_events:
             if e["ev"] == "client_done" and e["ts_us"] - e["latency_us"] >= measure_from:
                 done.append(e)
-            elif e["ev"] == "client_gave_up" and e["ts_us"] >= measure_from:
-                gave_up.append(e)
+            elif e["ev"] == "client_gave_up":
+                if first_sent.get(e["request"]["seq"], e["ts_us"]) >= measure_from:
+                    gave_up.append(e)
     return done, gave_up
 
 
@@ -88,14 +118,9 @@ def node_events(events):
 
 def measured_start(events, warmup_s):
     """Roughly when measuring began, for node events: machines agree only as far as NTP does."""
-    sent = [
-        e["ts_us"]
-        for s, es in events.items()
-        if s.startswith("client-")
-        for e in es
-        if e["ev"] == "client_sent"
-    ]
-    return min(sent) + warmup_s * 1_000_000 if sent else 0
+    starts = [program_start(es) for s, es in events.items() if s.startswith("client-")]
+    starts = [start for start in starts if start is not None]
+    return min(starts) + warmup_s * 1_000_000 if starts else 0
 
 
 def request_metrics(events, warmup_s, measured_s):
@@ -194,6 +219,25 @@ def election_metrics(events, start_us):
     }
 
 
+def leader_plan_share(events, start_us, metrics):
+    """Share of plans made by the node leading, or NaN unless one node led all of the measured time
+    (D166). A term with no leader counts as a change, and so does a node still reading an old leader.
+
+    Each node's last `raft_state` before the start says who it followed going in, and any inside say
+    who it followed after. `client_done` already names the winning executor, so the share needs no
+    attribution of plans to a role over time, and no correction for duplicate commits.
+    """
+    leaders = set()
+    for es in node_events(events).values():
+        states = [e for e in es if e["ev"] == "raft_state"]
+        before = [e for e in states if e["ts_us"] < start_us]
+        leaders.update(e["leader"] for e in before[-1:])
+        leaders.update(e["leader"] for e in states if e["ts_us"] >= start_us)
+    if len(leaders) != 1 or None in leaders:
+        return float("nan")
+    return metrics.get(f"share_node_{leaders.pop()}", float("nan"))
+
+
 def elections_after_rejoin(events):
     """FT-6: new Raft terms within 10 s after each `rejoined`. A returning node with a stale term
     should cause none (D5, D127)."""
@@ -218,12 +262,16 @@ def elections_after_rejoin(events):
 def client_gap_metrics(events, fault_start, fault_end):
     """E3's client-visible gap: for each client, the longest time between two answers, on its own
     clock, that overlaps the fault. This is what failover looks like from outside. Only choosing
-    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock."""
+    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock.
+
+    The client's first and last events close the two ends. Without them a client that never hears
+    again after the fault has no gap at all, and the worst run of a cell drops out of its mean."""
     longest = []
     for source, es in events.items():
-        if not source.startswith("client-"):
+        if not source.startswith("client-") or not es:
             continue
-        answered = sorted(e["ts_us"] for e in es if e["ev"] == "client_done")
+        ends = [e["ts_us"] for e in es]
+        answered = sorted([e["ts_us"] for e in es if e["ev"] == "client_done"] + [min(ends), max(ends)])
         gaps = [b - a for a, b in zip(answered, answered[1:]) if a < fault_end and b > fault_start]
         if gaps:
             longest.append(max(gaps))
@@ -328,8 +376,8 @@ def convergence_metrics(events):
     }
 
 
-def message_metrics(events, start_us, completed):
-    """Messages sent in the measured time, per answered request. Counters are cumulative."""
+def sent_in_window(events, start_us):
+    """Messages sent in the measured time, by kind. Counters are cumulative."""
     per_kind = defaultdict(int)
     for es in node_events(events).values():
         snapshots = [e for e in es if e["ev"] == "messages" and e["ts_us"] >= start_us]
@@ -338,6 +386,66 @@ def message_metrics(events, start_us, completed):
         first, last = snapshots[0]["sent"], snapshots[-1]["sent"]
         for kind, count in last.items():
             per_kind[kind] += count - first.get(kind, 0)
+    return per_kind
+
+
+def fault_election_metrics(events, start_us):
+    """The fault election (D158, D161), grouped by round from each node's `fault_election` lines.
+
+    A node that never held every number logs a null victim. Null lines are skipped in the mean, and a
+    round where no line names a victim counts as abandoned. A lagging node can reuse the number of a
+    round the others gave up on, which only merges two abandoned rounds.
+    """
+    rounds = defaultdict(list)
+    durations_us = []
+    for source, es in node_events(events).items():
+        node = int(source.split("-")[1])
+        for e in es:
+            if e["ev"] != "fault_election" or e["ts_us"] < start_us:
+                continue
+            rounds[e["round"]].append((node, e["victim"]))
+            # A joiner's figure is shorter by construction, so only the caller's says how long the
+            # election took (D161).
+            if e["called"] and e["election_us"] is not None:
+                durations_us.append(e["election_us"])
+
+    elections = abandoned = splits = not_silenced = 0
+    for lines in rounds.values():
+        named = {victim for _, victim in lines if victim is not None}
+        if not named:
+            abandoned += 1
+            continue
+        elections += 1
+        if len(named) > 1:
+            splits += 1
+        if any(node in named and victim is None for node, victim in lines):
+            not_silenced += 1
+
+    bids = sent_in_window(events, start_us).get("fault_bid", 0)
+    refused = sum(
+        1
+        for es in node_events(events).values()
+        for e in es
+        if e["ev"] == "fault_refused" and e["ts_us"] >= start_us
+    )
+    return {
+        "fault_elections": elections,
+        "fault_rounds_abandoned": abandoned,
+        "fault_election_mean_ms": float(np.mean(durations_us)) / 1000 if durations_us else float("nan"),
+        # Must be 0. Same numbers, same winner, so a split means the rule broke (bid_split_decisions
+        # is the same check for the load election, where a split is allowed and the commit settles it).
+        "fault_split_decisions": splits,
+        # The named node's own line is null: it missed a bid, so it never knew it had won.
+        "fault_elected_not_silenced": not_silenced,
+        "fault_refused": refused,
+        # Per round, because per request it would be a tiny number that says nothing.
+        "fault_bids_per_round": bids / len(rounds) if rounds else float("nan"),
+    }
+
+
+def message_metrics(events, start_us, completed):
+    """Messages sent in the measured time, per answered request."""
+    per_kind = sent_in_window(events, start_us)
     if not completed:
         return {}
     metrics = {f"msgs_{kind}_per_req": n / completed for kind, n in per_kind.items()}
@@ -380,9 +488,62 @@ def resource_metrics(events, start_us):
     }
 
 
+def udp_metrics(events, start_us, completed):
+    """What the UDP client path carried and lost in the measured time (D172). The counters are
+    cumulative per process, so each is its last value minus its first.
+
+    Cancels are outside the msgs_ figures, which count what nodes send, so this is where they show.
+    Each process's samples start at its own clock's reading of `start_us`, so the two sides of a loss
+    share cover slightly different windows. Treat it as approximate."""
+    totals = {"client": defaultdict(int), "node": defaultdict(int)}
+    drops = {"client": [], "node": []}
+    rcvbufs = []
+    for source, es in events.items():
+        side = "client" if source.startswith("client-") else "node"
+        rcvbufs += [e["rcvbuf_got_bytes"] for e in es if e["ev"] == "udp_socket"]
+        samples = [e for e in es if e["ev"] == "udp_counters" and e["ts_us"] >= start_us]
+        if len(samples) < 2:
+            continue
+        first, last = samples[0], samples[-1]
+        for field, value in last.items():
+            if field not in ("ts_us", "src", "ev", "udp_drops") and not field.endswith("_max_bytes"):
+                totals[side][field] += value - first.get(field, 0)
+        known = [e["udp_drops"] for e in samples if e.get("udp_drops") is not None]
+        if len(known) >= 2:
+            drops[side].append(known[-1] - known[0])
+    metrics = {}
+    if rcvbufs:
+        metrics["udp_rcvbuf_got_min_bytes"] = min(rcvbufs)
+    client, node = totals["client"], totals["node"]
+    if not client and not node:
+        return metrics
+    if completed:
+        metrics["udp_requests_per_req"] = client["tx_requests"] / completed
+        metrics["udp_cancels_per_req"] = client["tx_cancels"] / completed
+        metrics["udp_datagrams_per_req"] = (client["tx_datagrams"] + node["tx_datagrams"]) / completed
+    if client["tx_requests"]:
+        arrived = (node["rx_requests"] / client["tx_requests"])
+        metrics["udp_request_loss_share"] = max(1 - arrived, 0.0)
+    if client["tx_cancels"]:
+        arrived = node["rx_cancels"] / client["tx_cancels"]
+        metrics["udp_cancel_loss_share"] = max(1 - arrived, 0.0)
+    metrics["udp_gate_dropped"] = node["rx_gate_dropped"]
+    metrics["udp_queue_full"] = node["rx_queue_full"]
+    metrics["udp_bad"] = client["rx_bad"] + node["rx_bad"]
+    metrics["udp_send_lost"] = sum(
+        side["tx_would_block"] + side["tx_encode_errors"] + side["tx_errors"] for side in (client, node)
+    )
+    # Machine-wide counters. One node runs per machine, so nodes add up; on one machine, in rehearsal,
+    # each node counts all three. Many client programs share a PC, so for them only the largest means
+    # anything.
+    metrics["udp_drops_nodes"] = sum(drops["node"])
+    metrics["udp_drops_client_pc_max"] = max(drops["client"], default=0)
+    return metrics
+
+
 def commit_metrics(events, start_us):
-    latencies = [
-        e["latency_us"]
+    commits = [
+        e
         for es in node_events(events).values()
         for e in es
         if e["ev"] == "commit" and e["ts_us"] >= start_us and e["kind"] == "commit_result"
@@ -393,7 +554,11 @@ def commit_metrics(events, start_us):
         for e in es
         if e["ev"] == "bid_sent" and e["ts_us"] >= start_us
     ]
-    metrics = latency_metrics("commit_", latencies)
+    metrics = latency_metrics("commit_", [e["latency_us"] for e in commits])
+    # What a node pays for not leading: `forwarded` means this proposal went through a peer (D26, D166).
+    for path, forwarded in (("local", False), ("forwarded", True)):
+        latencies = [e["latency_us"] for e in commits if e["forwarded"] == forwarded]
+        metrics.update(latency_metrics(f"commit_{path}_", latencies))
     metrics["service_mean_us"] = float(np.mean(service)) if service else float("nan")
     return metrics
 
@@ -411,6 +576,14 @@ def client_program_metrics(events, meta):
     metrics = {"client_programs": programs}
     if meta.get("users") and programs:
         metrics["users_per_program"] = meta["users"] / programs
+    users = [
+        e["users"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_started"
+    ]
+    if users:
+        metrics["client_users"] = sum(users)
     drops = [
         e["reason"]
         for es in client_sources(events).values()
@@ -421,6 +594,24 @@ def client_program_metrics(events, meta):
     for reason in set(drops):
         metrics[f"client_link_down_{reason.replace(' ', '_')}"] = drops.count(reason)
     return metrics
+
+
+def client_script_metrics(run_dir):
+    """What each machine's start-users.sh printed about its programs (D183, D186). A program that dies
+    half way has still sent something, so only these lines show it: programs that failed, programs a
+    signal stopped early, and scripts with no totals at all, because they were killed themselves."""
+    failed = stopped_early = no_totals = 0
+    for path in Path(run_dir).glob("users-*.out"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        totals = re.findall(r"started \d+, failed (\d+)", text)
+        failed += sum(int(n) for n in totals)
+        no_totals += 0 if totals else 1
+        stopped_early += text.count("stopped by a signal")
+    return {
+        "client_programs_failed": failed,
+        "client_programs_stopped_early": stopped_early,
+        "client_scripts_with_no_totals": no_totals,
+    }
 
 
 def arrival_peak_share(times_us):
@@ -491,15 +682,20 @@ def analyse_run(run_dir):
     metrics = request_metrics(events, warmup_s, measured_s)
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
+    metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
     metrics.update(convergence_metrics(events))
+    metrics.update(fault_election_metrics(events, start))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
+    metrics.update(udp_metrics(events, start, len(done)))
     metrics.update(commit_metrics(events, start))
     metrics.update(client_program_metrics(events, meta))
+    metrics.update(client_script_metrics(run_dir))
     metrics.update(arrival_metrics(events, start))
     metrics.update(client_pc_metrics(events, start))
+    metrics["node_logs"] = len(node_events(events))
     metrics["silenced_events"] = sum(
         1 for es in node_events(events).values() for e in es if e["ev"] == "silenced"
     )
@@ -507,12 +703,22 @@ def analyse_run(run_dir):
 
 
 def run_problem(meta, metrics):
-    """Why this run must not be averaged in, or None (D186). Missing programs mean less load than the
-    cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
+    """Why this run must not be averaged in, or None (D186). Missing or dead programs mean less load than
+    the cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
     before the runner wrote these keys skips the checks."""
     expected = meta.get("client_programs_expected")
     if expected is not None and metrics["client_programs"] != expected:
         return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    if meta.get("users") and metrics.get("client_users", meta["users"]) != meta["users"]:
+        return f"{metrics['client_users']} users ran, and the cell says {meta['users']}"
+    if metrics["client_programs_failed"]:
+        return f"{metrics['client_programs_failed']} client programs failed; see users-*.out"
+    if metrics["client_programs_stopped_early"]:
+        return f"a signal stopped {metrics['client_programs_stopped_early']} client programs early"
+    if metrics["client_scripts_with_no_totals"]:
+        return f"{metrics['client_scripts_with_no_totals']} start-users.sh runs never printed their totals"
+    if meta.get("nodes") and metrics["node_logs"] != meta["nodes"]:
+        return f"{metrics['node_logs']} of {meta['nodes']} node logs were copied"
     victim = meta.get("victim", "none")
     if victim != "none" and metrics["silenced_events"] == 0:
         return f"the cell silences its {victim}, and no node logged a silence"
@@ -534,7 +740,12 @@ def summarise(root):
     """{(experiment, cell): {metric: (mean, half_width, n)}} over every run under `root`."""
     per_cell = defaultdict(list)
     for meta_path in sorted(Path(root).glob("*/*/*/run.json")):
-        meta, metrics = analyse_run(meta_path.parent)
+        try:
+            meta, metrics = analyse_run(meta_path.parent)
+        except json.JSONDecodeError as error:
+            # One run with a damaged log must not cost the summary of every other run.
+            print(f"left out {meta_path.parent}: a log is damaged ({error})")
+            continue
         problem = run_problem(meta, metrics)
         if problem:
             print(f"left out {meta_path.parent}: {problem}")
@@ -544,7 +755,7 @@ def summarise(root):
     for key, runs in per_cell.items():
         names = sorted({name for run in runs for name in run})
         summary[key] = {
-            name: confidence_interval([run.get(name, float("nan")) for run in runs])
+            name: confidence_interval([run.get(name, missing_value(name)) for run in runs])
             for name in names
         }
     return summary
@@ -562,6 +773,33 @@ def expired_warnings(summary):
                 f"warning: {experiment}/{cell}: reports_expired is {mean:g} per run, expected 0; "
                 "check how the client stamps ages before trusting this cell"
             )
+    return warnings
+
+
+def missing_value(name):
+    """What a run with no such metric counts as. A link-drop reason that did not happen in a run is 0 there,
+    and leaving that run out would average the reason over only the runs that had it."""
+    return 0 if name.startswith("client_link_down_") else float("nan")
+
+
+def udp_warnings(summary):
+    """Cells whose UDP path ran short (D171). Lost copies cost a client about 2 s, so a cell with drops
+    has retry shapes the report must explain, and a capped buffer means a machine missed the sysctl."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        got = metrics.get("udp_rcvbuf_got_min_bytes", (float("nan"),))[0]
+        if got < UDP_RCVBUF_ASKED_BYTES:
+            warnings.append(
+                f"warning: {experiment}/{cell}: a UDP receive buffer got {got:.0f} bytes of "
+                f"{UDP_RCVBUF_ASKED_BYTES} asked; net.core.rmem_max was not raised on some machine"
+            )
+        for name in ("udp_drops_nodes", "udp_drops_client_pc_max"):
+            drops = metrics.get(name, (float("nan"),))[0]
+            if drops > 0:
+                warnings.append(
+                    f"warning: {experiment}/{cell}: {name} is {drops:g} per run; "
+                    "each lost copy can cost a client a 2 s retry"
+                )
     return warnings
 
 
@@ -650,11 +888,16 @@ def plot_fairness(plt, summary, out):
     plt.close(fig)
 
 
+# Faults on a timer, one after another. Their "during" runs from the first silence to the last restore,
+# which is most of the run, so a before-and-after picture says nothing about any one fault.
+FAULTS_ON_A_TIMER = {"ft8", "e5"}
+
+
 def plot_phases(plt, summary, out):
     cells = [
         (f"{experiment}-{cell}", metrics)
         for (experiment, cell), metrics in sorted(summary.items())
-        if "during_p99_ms" in metrics
+        if "during_p99_ms" in metrics and experiment not in FAULTS_ON_A_TIMER
     ]
     if not cells:
         return
@@ -698,7 +941,7 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
-    for warning in expired_warnings(summary):
+    for warning in expired_warnings(summary) + udp_warnings(summary):
         print(warning, file=sys.stderr)
 
 
