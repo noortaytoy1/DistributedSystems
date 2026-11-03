@@ -24,6 +24,7 @@ import numpy as np
 from scipy import stats
 
 USER_HZ = 100  # /proc CPU ticks per second on Ubuntu
+UDP_RCVBUF_ASKED_BYTES = 8 * 1024 * 1024  # node/datagram.rs: what every UDP socket asks for (D171)
 ELECTION_AFTER_REJOIN_US = 10_000_000  # FT-6: elections this soon after a rejoin count against it
 PERCENTILES = (50, 95, 99)
 
@@ -299,6 +300,59 @@ def resource_metrics(events, start_us):
     }
 
 
+def udp_metrics(events, start_us, completed):
+    """What the UDP client path carried and lost in the measured time (D172). The counters are
+    cumulative per process, so each is its last value minus its first.
+
+    Cancels are outside the msgs_ figures, which count what nodes send, so this is where they show.
+    Each process's samples start at its own clock's reading of `start_us`, so the two sides of a loss
+    share cover slightly different windows. Treat it as approximate."""
+    totals = {"client": defaultdict(int), "node": defaultdict(int)}
+    drops = {"client": [], "node": []}
+    rcvbufs = []
+    for source, es in events.items():
+        side = "client" if source.startswith("client-") else "node"
+        rcvbufs += [e["rcvbuf_got_bytes"] for e in es if e["ev"] == "udp_socket"]
+        samples = [e for e in es if e["ev"] == "udp_counters" and e["ts_us"] >= start_us]
+        if len(samples) < 2:
+            continue
+        first, last = samples[0], samples[-1]
+        for field, value in last.items():
+            if field not in ("ts_us", "src", "ev", "udp_drops") and not field.endswith("_max_bytes"):
+                totals[side][field] += value - first.get(field, 0)
+        known = [e["udp_drops"] for e in samples if e.get("udp_drops") is not None]
+        if len(known) >= 2:
+            drops[side].append(known[-1] - known[0])
+    metrics = {}
+    if rcvbufs:
+        metrics["udp_rcvbuf_got_min_bytes"] = min(rcvbufs)
+    client, node = totals["client"], totals["node"]
+    if not client and not node:
+        return metrics
+    if completed:
+        metrics["udp_requests_per_req"] = client["tx_requests"] / completed
+        metrics["udp_cancels_per_req"] = client["tx_cancels"] / completed
+        metrics["udp_datagrams_per_req"] = (client["tx_datagrams"] + node["tx_datagrams"]) / completed
+    if client["tx_requests"]:
+        arrived = (node["rx_requests"] / client["tx_requests"])
+        metrics["udp_request_loss_share"] = max(1 - arrived, 0.0)
+    if client["tx_cancels"]:
+        arrived = node["rx_cancels"] / client["tx_cancels"]
+        metrics["udp_cancel_loss_share"] = max(1 - arrived, 0.0)
+    metrics["udp_gate_dropped"] = node["rx_gate_dropped"]
+    metrics["udp_queue_full"] = node["rx_queue_full"]
+    metrics["udp_bad"] = client["rx_bad"] + node["rx_bad"]
+    metrics["udp_send_lost"] = sum(
+        side["tx_would_block"] + side["tx_encode_errors"] + side["tx_errors"] for side in (client, node)
+    )
+    # Machine-wide counters. One node runs per machine, so nodes add up; on one machine, in rehearsal,
+    # each node counts all three. Many client programs share a PC, so for them only the largest means
+    # anything.
+    metrics["udp_drops_nodes"] = sum(drops["node"])
+    metrics["udp_drops_client_pc_max"] = max(drops["client"], default=0)
+    return metrics
+
+
 def commit_metrics(events, start_us):
     latencies = [
         e["latency_us"]
@@ -329,6 +383,7 @@ def analyse_run(run_dir):
     metrics.update(fault_metrics(events, done))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
+    metrics.update(udp_metrics(events, start, len(done)))
     metrics.update(commit_metrics(events, start))
     return meta, metrics
 
@@ -372,6 +427,27 @@ def expired_warnings(summary):
                 f"warning: {experiment}/{cell}: reports_expired is {mean:g} per run, expected 0; "
                 "check how the client stamps ages before trusting this cell"
             )
+    return warnings
+
+
+def udp_warnings(summary):
+    """Cells whose UDP path ran short (D171). Lost copies cost a client about 2 s, so a cell with drops
+    has retry shapes the report must explain, and a capped buffer means a machine missed the sysctl."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        got = metrics.get("udp_rcvbuf_got_min_bytes", (float("nan"),))[0]
+        if got < UDP_RCVBUF_ASKED_BYTES:
+            warnings.append(
+                f"warning: {experiment}/{cell}: a UDP receive buffer got {got:.0f} bytes of "
+                f"{UDP_RCVBUF_ASKED_BYTES} asked; net.core.rmem_max was not raised on some machine"
+            )
+        for name in ("udp_drops_nodes", "udp_drops_client_pc_max"):
+            drops = metrics.get(name, (float("nan"),))[0]
+            if drops > 0:
+                warnings.append(
+                    f"warning: {experiment}/{cell}: {name} is {drops:g} per run; "
+                    "each lost copy can cost a client a 2 s retry"
+                )
     return warnings
 
 
@@ -508,7 +584,7 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
-    for warning in expired_warnings(summary):
+    for warning in expired_warnings(summary) + udp_warnings(summary):
         print(warning, file=sys.stderr)
 
 

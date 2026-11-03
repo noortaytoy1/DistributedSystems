@@ -43,6 +43,9 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Incident priority (D148) | `priority_mean`, in priority points. 0 only for a refused report |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
+| The UDP client path (D172): what it carried | `udp_requests_per_req`, `udp_cancels_per_req`, `udp_datagrams_per_req`. Cancels are outside the `msgs_` figures, which count what nodes send |
+| The UDP client path: what it lost | `udp_request_loss_share`, `udp_cancel_loss_share`, `udp_send_lost`, `udp_queue_full`, `udp_bad`, and `udp_gate_dropped` for reports a silenced node dropped |
+| The UDP receive buffer (D171) | `udp_rcvbuf_got_min_bytes`, `udp_drops_nodes`, `udp_drops_client_pc_max`. `analyze.py` prints a warning for a capped buffer or any drops. Each lost copy can cost a client a 2 s retry |
 
 ## Conventions
 
