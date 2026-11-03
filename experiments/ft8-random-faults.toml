@@ -12,8 +12,9 @@ plan_work = 1000
 responders = 300
 
 [faults]
-# Random faults, one straight after another, over the whole run (FT-8).
+# Elected faults, one after another, over the whole run (FT-8, D158). No seed: a fixed one would
+# repeat the same numbers per round in all three runs. A run cannot be replayed; its logs hold every
+# number. About 2 elections per quick run, too few to say anything about how they are shared out.
 enabled = true
 interval_min_ms = 20000
 interval_max_ms = 30000
-seed = 2
