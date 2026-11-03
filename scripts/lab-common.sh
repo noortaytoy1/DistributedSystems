@@ -8,6 +8,9 @@
 
 REMOTE_DIR="${REMOTE_DIR:-DistributedSystems}"
 BIN="${BIN:-target/release}"
+# Never ask for a password, and notice a machine that has gone: without the keepalives, a client PC that
+# loses power leaves the runner waiting on its ssh with no end and no message.
+SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 NODE_IDS=() NODE_ADDRS=() NODE_SSH=() NODE_PEER_PORTS=() NODE_CLIENT_PORTS=()
 CLIENT_IDS=() CLIENT_SSH=()
@@ -38,6 +41,18 @@ read_hosts() {
     echo "$1 needs at least one node and one client" >&2
     return 1
   fi
+  # Two machines with one number would run programs with one client ID, and the second's log copy would
+  # overwrite the first's. Say so now, not after a series of runs that all get left out (D184).
+  if [[ -n "$(printf '%s\n' "${CLIENT_IDS[@]}" | sort | uniq -d)" ]]; then
+    echo "$1: two client machines have the same number" >&2
+    return 1
+  fi
+  for id in "${CLIENT_IDS[@]}"; do
+    if ! [[ "$id" =~ ^[1-9]$ ]]; then
+      echo "$1: a client machine's number must be 1 to 9, not $id" >&2
+      return 1
+    fi
+  done
 }
 
 # Client machine i's share of a cell's users. 100 over 3 machines is 34, 33 and 33: dividing and rounding
@@ -57,14 +72,16 @@ nodes_toml() {
   done
 }
 
-# Run a command in the repo directory on a machine.
+# Run a command in the repo directory on a machine. Not `cd X && command`: with a command that ends in
+# `&`, the whole `cd X && command` would go to the background, and what follows it would run in the home
+# directory while a subshell held the SSH session open.
 on_host() {
   local host=$1
   shift
   if [[ "$host" == local ]]; then
     bash -c "$*"
   else
-    ssh -o BatchMode=yes "$host" "cd $REMOTE_DIR && $*"
+    ssh "${SSH_OPTIONS[@]}" "$host" "cd $REMOTE_DIR || exit 1; $*"
   fi
 }
 
@@ -73,7 +90,7 @@ copy_to() {
   if [[ "$host" == local ]]; then
     cp "$from" "$to"
   else
-    scp -q -o BatchMode=yes "$from" "$host:$REMOTE_DIR/$to"
+    scp -q "${SSH_OPTIONS[@]}" "$from" "$host:$REMOTE_DIR/$to"
   fi
 }
 
@@ -83,6 +100,6 @@ fetch_from() {
   if [[ "$host" == local ]]; then
     cp -r "$from"/. "$to"/
   else
-    rsync -a -e "ssh -o BatchMode=yes" "$host:$REMOTE_DIR/$from/" "$to/"
+    rsync -a -e "ssh ${SSH_OPTIONS[*]}" "$host:$REMOTE_DIR/$from/" "$to/"
   fi
 }

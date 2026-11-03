@@ -43,6 +43,8 @@ if (($# > 0)); then cells="$*"; else cells="$default_cells"; fi
 COMMIT=$(git rev-parse HEAD)
 CTL_HOST=${CLIENT_SSH[0]}
 : "${PROGRAMS_PER_PC:=10}"
+# How long to let things stop, before copying logs and before refusing a run.
+: "${STOP_WAIT_S:=10}"
 
 # The value of a key on a cell's run line, or a default.
 run_value() {
@@ -100,26 +102,30 @@ stop_all() {
   done
 }
 
-# Anything of ours still running, on any machine, by path: a leftover keeps sending while its log is
-# wiped, and a frontend or zone feed adds traffic nobody counts. Stopping takes a moment, so it waits a
-# little before refusing. The brackets stop pgrep finding the shell that runs this very line.
-refuse_leftovers() {
+# Waits until nothing of ours runs on any machine, by path, and leaves what still does in `leftovers` if
+# that takes too long. Stopping takes a moment, and longer for a node with work queued. The brackets stop
+# pgrep finding the shell that runs this very line.
+wait_until_stopped() {
   local pattern="$BIN/[l]oadgen|$BIN/[n]ode|$BIN/[f]rontend|$BIN/[z]onefeed"
-  local deadline=$((SECONDS + 10)) host here found
+  local deadline=$((SECONDS + STOP_WAIT_S)) host here
   while :; do
-    found=""
+    leftovers=""
     for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
       here=$(on_host "$host" "pgrep -af '$pattern' || true")
-      [[ -z "$here" ]] || found+="$host: $here"$'\n'
+      [[ -z "$here" ]] || leftovers+="$host: $here"$'\n'
     done
-    [[ -n "$found" ]] || return 0
-    if ((SECONDS > deadline)); then
-      echo "programs from an earlier run are still running; stop them first:" >&2
-      echo "$found" >&2
-      exit 1
-    fi
+    [[ -n "$leftovers" ]] || return 0
+    ((SECONDS <= deadline)) || return 1
     sleep 0.5
   done
+}
+
+# A leftover keeps sending while its log is wiped, and a frontend or zone feed adds traffic nobody counts.
+refuse_leftovers() {
+  wait_until_stopped && return 0
+  echo "programs from an earlier run are still running; stop them first:" >&2
+  echo "$leftovers" >&2
+  exit 1
 }
 
 run_once() {
@@ -197,9 +203,11 @@ run_once() {
   done
   ctl status >"$out/status-after.txt" || true
   stop_all
-  sleep 0.5
+  # A copy taken while a node still writes has half a line at its end and no `stopped` event.
+  wait_until_stopped || echo "  warning: still running, so its log copy may be cut short: $leftovers" >&2
+  # A machine that cannot be reached must not cost the logs of the others.
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    fetch_from "$host" runs/current "$out"
+    fetch_from "$host" runs/current "$out" || echo "  warning: cannot copy the logs from $host" >&2
   done
   if ((worst >= 2)); then
     echo "stopping the series: a client machine ended with status $worst; see above and $out/users-*.out" >&2
@@ -210,6 +218,9 @@ run_once() {
   sleep "$GAP"
 }
 
+# Before the trap: what this first check finds was not started by this runner, so it is not ours to stop,
+# whether that is a demo in progress or what a dead runner left behind (D186).
+refuse_leftovers
 trap stop_all EXIT
 for cell in $cells; do
   [[ -f "experiments/$cell.toml" ]] || { echo "no such cell: $cell" >&2; exit 1; }
