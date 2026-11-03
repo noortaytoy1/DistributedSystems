@@ -9,12 +9,13 @@
 //! grows with what arrives, on whichever node leads, and moving the leader cannot shorten it (D228).
 //!
 //! A leader whose load has stayed at least `policy.leader_overload_ratio` times its lowest peer's
-//! mean bid for `policy.leader_overload_for_ms`, and above a small floor, goes quiet if it is safe to. Safe means
-//! it is serving and not degraded and not silenced, it has all members in its group view and suspects
-//! nobody, no node it knows of is in a silence the failure draw named, every peer bid in that second
-//! (a node that is not serving does not bid), and `policy.leader_overload_cooldown_ms` have passed
-//! since the last term change. The cooldown is what stops a storm: every node starts it again on
-//! every new term, so the cluster moves its leader this way once per cooldown at most.
+//! mean bid for `policy.leader_overload_for_ms`, and above a small floor, goes quiet if it is safe
+//! to. Safe means it is serving and not degraded and not silenced, it has all members in its group
+//! view and suspects nobody, no node it knows of is in a silence the failure draw named, every peer
+//! bid in that second (a node that is not serving does not bid), and
+//! `policy.leader_overload_cooldown_ms` have passed since the last term change. The cooldown is what
+//! stops a storm: every node starts it again on every new term, so the cluster moves its leader this
+//! way once per cooldown at most.
 //!
 //! **Going quiet** is the whole mechanism, because openraft 0.9.25 has no hand-over command and a
 //! follower refuses votes while it has heard from its leader within the lease. The leader stops its

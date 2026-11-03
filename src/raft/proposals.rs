@@ -40,11 +40,11 @@ use crate::proto::{Command, CommandGroup, Outcome, ProposeError};
 /// at 3000 users on one PC, which allows about 14,000 commands per second against about 6000 from
 /// 3000 users (one request each and a release for each, with 3000 responders). On a slow disk it is
 /// the limit: with 25 ms added to each save a round took 62 ms, which allows 3200, so proposals wait
-/// out their deadline there, and about 15 ms a save is where that starts (D228). Low enough for the
-/// wire: even `max_payload_entries` (300) full groups in one AppendEntries would be at most 7.4 MB
-/// (123 bytes per command at the longest), well under `MAX_FRAME_BYTES` (16 MiB). The test
-/// `a_full_catch_up_message_fits_in_a_frame` holds this to the real encoding, and in practice one
-/// message carries far less (`store::MAX_COMMANDS_PER_MESSAGE`).
+/// out their deadline there, and by arithmetic about 15 ms a save is where that starts (D228). Low
+/// enough for the wire: even `max_payload_entries` (300) full groups in one AppendEntries would be
+/// at most 7.4 MB (123 bytes per command at the longest), well under `MAX_FRAME_BYTES` (16 MiB). The
+/// test `a_full_catch_up_message_fits_in_a_frame` holds this to the real encoding, and in practice
+/// one message carries far less (`store::MAX_COMMANDS_PER_MESSAGE`).
 pub const GROUP_LIMIT: usize = 200;
 
 /// One proposal waiting for its write.
