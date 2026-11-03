@@ -8,7 +8,8 @@
 # For each run: writes one config, copies it to every machine, wipes storage and metrics, starts the
 # nodes, waits for a leader, starts one load generator per client machine, injects the cell's fault,
 # stops everything, and copies the logs to runs/<experiment>/<cell>/<run>/ with the config, the git
-# commit and the final `ctl status`.
+# commit and the final `ctl status`. It refuses to start a run while a program of ours is left over
+# on any machine, and keeps a run it cannot trust out of the results (D139).
 #
 # Run scripts/lab-build.sh first, so every machine has the same commit. WARMUP, MEASURED, GAP and REPS
 # override the profile's values. A cell's first line says how to run it:
@@ -40,6 +41,7 @@ if (($# > 0)); then cells="$*"; else cells="$default_cells"; fi
 
 COMMIT=$(git rev-parse HEAD)
 CTL_HOST=${CLIENT_SSH[0]}
+DROPPED_RUNS=()
 
 # The value of a key on a cell's run line, or a default.
 run_value() {
@@ -84,10 +86,33 @@ victims_of() {
   case "$1" in
     leader) echo "$leader" ;;
     follower) echo "$follower" ;;
-    # Everyone but one follower, which is left alone (D120).
-    others) printf '%s\n' "${NODE_IDS[@]}" | grep -vx "$follower" ;;
+    # Everyone but one follower, which is left alone (D120). With no follower in the table nobody can
+    # be left alone, and `grep -vx ""` would name all three.
+    others) if [[ -n "$follower" ]]; then printf '%s\n' "${NODE_IDS[@]}" | grep -vx "$follower"; fi ;;
     *) echo "unknown victim: $1" >&2; return 1 ;;
   esac
+}
+
+# Delete this run and stop the batch, for what would spoil the next run too. A run must not stay,
+# because analysis reads every run.json it finds.
+abandon_run() {
+  rm -rf "$1"
+  echo "run dropped and batch stopped: $2" >&2
+  exit 1
+}
+
+# A fault cell that never got its fault is not a result, but nothing stops the next cell from running,
+# and at the top of the sweep a few of these must not cost the rest of a batch. The logs show why it
+# happened, so they go to runs/dropped/, one level too shallow for analysis to find.
+set_aside() {
+  local out=$1 cell=$2 rep=$3 reason=$4
+  local to="runs/dropped/$cell-run-$rep"
+  echo "$reason" >"$out/dropped.txt"
+  mkdir -p runs/dropped
+  rm -rf "$to"
+  mv "$out" "$to"
+  DROPPED_RUNS+=("$cell, run $rep: $reason")
+  echo "  run set aside in $to: $reason" >&2
 }
 
 stop_all() {
@@ -109,6 +134,8 @@ run_once() {
   victim=$(run_value "$file" victim none)
   silence_ms=$(run_value "$file" silence_ms 0)
   skew_work=$(run_value "$file" skew_work 0)
+  # Before anything is wiped. The last run's nodes were only just told to stop, so they get a moment.
+  refuse_leftovers "$ALL_PROGRAMS" 10
   mkdir -p "$out"
   local config="$out/config.toml"
   write_config "$file" "$config"
@@ -123,7 +150,7 @@ run_once() {
   for i in "${!NODE_IDS[@]}"; do
     on_host "${NODE_SSH[$i]}" "nohup $BIN/node --config runs-config/run.toml --id ${NODE_IDS[$i]} >runs/current/node-${NODE_IDS[$i]}.out 2>&1 & echo \$! >runs-config/node-${NODE_IDS[$i]}.pid"
   done
-  wait_for_leader
+  wait_for_leader || abandon_run "$out" "no leader at the start"
   if ((skew_work > 0)); then
     ctl skew --node "${NODE_IDS[0]}" --work "$skew_work" >/dev/null
   fi
@@ -136,22 +163,39 @@ run_once() {
     pids+=($!)
   done
 
+  local no_fault=""
   if [[ "$victim" != none ]]; then
     # A third of the way in, so the measured time has a before, a during and an after.
     sleep $((WARMUP + MEASURED / 3))
-    local v
-    for v in $(victims_of "$victim"); do
-      ctl silence --node "$v" --ms "$silence_ms" >/dev/null
+    # `ctl status` shows a node that misses its 2 s as unreachable, so the victim can be missing from
+    # the table: a fault cell with no fault would look like a good run.
+    local v victims="" try
+    for try in 1 2 3; do
+      victims=$(victims_of "$victim")
+      [[ -z "$victims" ]] || break
+      sleep 1
+    done
+    [[ -n "$victims" ]] || no_fault="ctl status shows no $victim to silence"
+    for v in $victims; do
+      if ! silence_with_retry "$v" "$silence_ms"; then
+        no_fault="could not silence node $v"
+        break
+      fi
       echo "  silenced node $v for $silence_ms ms"
     done
   fi
   wait "${pids[@]}"
+  # Our own load generators have ended, so any still here ran beside them and the figures are wrong.
+  refuse_leftovers "$LOAD_PROGRAMS" || abandon_run "$out" "something else was sending during the run"
   ctl status >"$out/status-after.txt" || true
   stop_all
   sleep 0.5
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
     fetch_from "$host" runs/current "$out"
   done
+  if [[ -n "$no_fault" ]]; then
+    set_aside "$out" "$cell" "$rep" "$no_fault"
+  fi
   sleep "$GAP"
 }
 
@@ -163,4 +207,9 @@ for cell in $cells; do
     run_once "$cell" "$rep"
   done
 done
+if ((${#DROPPED_RUNS[@]} > 0)); then
+  echo "done, but these never got their fault: their logs are under runs/dropped, so run them again" >&2
+  printf '  %s\n' "${DROPPED_RUNS[@]}" >&2
+  exit 1
+fi
 echo "done: logs are under runs/; analyse with analysis/analyze.py runs"

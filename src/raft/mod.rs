@@ -3,8 +3,8 @@
 //! Node code talks to Raft only through the [`Consensus`] trait, so the library can be swapped
 //! for our own Raft without touching `node/`.
 //!
-//! - Every node calls `initialize` with the full membership from the config; openraft treats the
-//!   repeats as no-ops, so the cluster forms whichever nodes start first.
+//! - On its first start every node calls `initialize` with the full membership from the config;
+//!   openraft treats the repeats as no-ops, so the cluster forms whichever nodes start first.
 //! - Any node can propose. A follower forwards its proposal to the leader (`PeerBody::Propose`)
 //!   and retries across leader changes until `timers.propose_timeout_ms`. Retrying is safe
 //!   because every `Command` is idempotent.
@@ -122,7 +122,10 @@ pub trait Consensus: Send + Sync + 'static {
     fn leader_commit(&self) -> watch::Receiver<Option<u64>>;
 
     /// The leader's commit index, confirmed by a majority (Raft ReadIndex). Asks the leader over
-    /// `PeerBody::ReadIndex` when this node is not the leader (D76).
+    /// `PeerBody::ReadIndex` when this node is not the leader (D76). Nothing committed before the
+    /// call is above the answer, but a leader just elected answers with its first entry of the
+    /// term, which is not committed yet and is lost if that leader is replaced: never wait on the
+    /// answer for ever (D135).
     fn read_index(&self) -> BoxFuture<'_, Result<Option<u64>, ProposeError>>;
 
     /// `read_index` only if this node is the leader; used for queries from peers.
@@ -175,22 +178,27 @@ impl RaftNode {
         }
         .validate()?;
 
-        let (state_machine, state) = StateMachineStore::new();
+        let (state_machine, state) = StateMachineStore::new(log.clone());
         // openraft's default 500 ms backoff would delay catching up a node that just returned.
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());
         let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
         let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
-        let members: BTreeMap<NodeId, BasicNode> = config
-            .cluster
-            .nodes
-            .iter()
-            .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
-            .collect();
-        match raft.initialize(members).await {
-            Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
-            Err(e) => return Err(e.into()),
+        // A restarted node has its membership in its log file, and openraft would refuse to
+        // initialize it again and log an ERROR for it (D137). Asking also waits for Raft's first
+        // metrics, which the rest of the node reads as soon as this returns.
+        if !raft.is_initialized().await? {
+            let members: BTreeMap<NodeId, BasicNode> = config
+                .cluster
+                .nodes
+                .iter()
+                .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
+                .collect();
+            match raft.initialize(members).await {
+                Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
         let node = Arc::new(Self {

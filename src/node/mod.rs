@@ -3,7 +3,8 @@
 //! A client request goes: received → already decided? reply from state → assignment picks the
 //! executor → executor plans on the worker pool → proposes `CommitResult` through Raft →
 //! replies with the committed (winning) result. A node never replies before the commit, with one
-//! exception: a node left alone answers provisionally (degraded.rs, D120).
+//! exception: a node left alone answers provisionally (degraded.rs, D120). It never replies at all
+//! while it is not serving, whatever it was waiting on when it stopped (D136).
 //!
 //! Each part's entry point (`heartbeat::spawn`, `faults::spawn_schedule`, `rejoin::spawn`, ...)
 //! is called from here, so owners fill in their own file without editing this one.
@@ -18,6 +19,8 @@ pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
 pub mod takeover;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transport;
 pub mod usage;
 pub mod workers;
@@ -422,9 +425,30 @@ async fn plan_on_workers(
                 started.elapsed(),
             )
         })
-        .await?;
+        .await
+        .inspect_err(|_| {
+            // The client hears nothing and retries, so only this tells shed work from slow work.
+            let pool = ctx.workers.load();
+            ctx.log.log(Event::Overloaded {
+                request: req.id,
+                attempt: req.attempt,
+                queued: pool.queued,
+                running: pool.running,
+            });
+        })?;
     ctx.bids.record_service(planning);
     Ok(plan)
+}
+
+/// Whether a reply may leave now. A handler can wait on a commit for a long time, and by then the
+/// node may have been silenced and be back, still catching up: `serving` when the request arrived
+/// says nothing about now (D136). The client retries, as with any node that stays quiet (D36).
+fn may_reply(ctx: &NodeContext, request: RequestId) -> bool {
+    let serving = ctx.serving.load(Ordering::SeqCst);
+    if !serving {
+        tracing::debug!(%request, "not answered: not serving");
+    }
+    serving
 }
 
 fn send_provisional(
@@ -434,6 +458,9 @@ fn send_provisional(
     plan: Plan,
     started: Instant,
 ) {
+    if !may_reply(ctx, request) {
+        return;
+    }
     let responder = plan.responder;
     let sent = reply.send(&ServerFrame::Reply(ClientReply {
         id: request,
@@ -451,6 +478,9 @@ fn send_provisional(
 
 fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started: Instant) {
     let (request, executor) = (done.request, done.executor);
+    if !may_reply(ctx, request) {
+        return;
+    }
     let sent = reply.send(&ServerFrame::Reply(ClientReply {
         id: request,
         from: ctx.id,
@@ -543,4 +573,166 @@ fn spawn_reporter(ctx: Arc<NodeContext>) -> JoinHandle<()> {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use tokio::sync::mpsc;
+
+    use super::testing::{ScriptedConsensus, context, log_dir, logged, until};
+    use super::*;
+    use crate::proto::{self, Capability, Incident, Point};
+
+    fn request() -> ClientRequest {
+        ClientRequest {
+            id: RequestId { client: 7, seq: 1 },
+            attempt: 0,
+            incident: Incident {
+                zone: 0,
+                location: Point { x: 1, y: 2 },
+                severity: 3,
+                needs: Capability::Medical,
+                reported_at_ms: 0,
+            },
+        }
+    }
+
+    fn replies(frames: &mut mpsc::UnboundedReceiver<Bytes>) -> Vec<ClientReply> {
+        let mut replies = Vec::new();
+        while let Ok(bytes) = frames.try_recv() {
+            match proto::decode(&bytes).unwrap() {
+                ServerFrame::Reply(reply) => replies.push(reply),
+                other => panic!("expected a reply, got {other:?}"),
+            }
+        }
+        replies
+    }
+
+    /// Runs one request on a leader that plans it itself, up to the moment it waits on the commit;
+    /// `during_the_wait` then runs, the commit finishes and the handler ends.
+    async fn wait_on_a_commit(
+        ctx: &Arc<NodeContext>,
+        fake: &ScriptedConsensus,
+        during_the_wait: impl FnOnce(),
+    ) -> Vec<ClientReply> {
+        let (reply, mut frames) = ReplyTx::for_tests(ctx.gate.clone());
+        let handler = tokio::spawn(handle_request(ctx.clone(), request(), reply));
+        fake.proposal_arrived().await;
+        during_the_wait();
+        fake.commit_one();
+        handler.await.unwrap();
+        replies(&mut frames)
+    }
+
+    fn planning_leader(dir: &std::path::Path) -> (Arc<ScriptedConsensus>, Arc<NodeContext>) {
+        let fake = ScriptedConsensus::new(1);
+        fake.set_leader(Some(1));
+        let log = EventLog::to_dir(dir, "node-1").unwrap();
+        let ctx = context(fake.clone(), log, |c| {
+            c.policy.assignment = AssignmentPolicy::LeaderDispatch;
+        });
+        (fake, ctx)
+    }
+
+    #[tokio::test]
+    async fn a_serving_node_replies_once_the_commit_is_done() {
+        let dir = log_dir("reply-while-serving");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = wait_on_a_commit(&ctx, &fake, || {}).await;
+
+        assert!(matches!(replies[..], [ClientReply { from: 1, .. }]));
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The node was silenced with this request waiting on its commit, and is back, catching up. The
+    /// commit is done, but the node has not yet caught up, so it must stay quiet (AGENTS.md).
+    #[tokio::test]
+    async fn a_commit_done_while_the_node_is_not_serving_gets_no_reply() {
+        let dir = log_dir("reply-while-not-serving");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = wait_on_a_commit(&ctx, &fake, || {
+            ctx.serving.store(false, Ordering::SeqCst);
+        })
+        .await;
+
+        assert!(replies.is_empty(), "replied while not serving: {replies:?}");
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "request_received"));
+        assert!(!events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_planning_job_is_logged() {
+        let dir = log_dir("overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |c| {
+            c.workers.threads = 1;
+            c.workers.queue_capacity = 0;
+        });
+        // Keep the only worker busy until this test lets it go.
+        let (let_go, hold) = std::sync::mpsc::channel::<()>();
+        let busy = {
+            let workers = ctx.workers.clone();
+            tokio::spawn(async move { workers.run(move || hold.recv()).await })
+        };
+        until("the worker to be busy", || ctx.workers.load().running == 1).await;
+
+        let refused = plan_on_workers(&ctx, &request(), Vec::new()).await;
+
+        assert!(refused.is_err());
+        let _ = let_go.send(());
+        busy.await.unwrap().unwrap().unwrap();
+        let events = logged(&ctx.log, &dir);
+        let event = events.iter().find(|e| e["ev"] == "overloaded").unwrap();
+        assert_eq!(event["request"]["seq"], 1);
+        assert_eq!(event["attempt"], 0);
+        assert_eq!(event["queued"], 0);
+        assert_eq!(event["running"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_accepted_planning_job_logs_no_refusal() {
+        let dir = log_dir("not-overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |_| {});
+
+        assert!(plan_on_workers(&ctx, &request(), Vec::new()).await.is_ok());
+
+        let events = logged(&ctx.log, &dir);
+        assert!(!events.iter().any(|e| e["ev"] == "overloaded"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_provisional_answer_also_needs_a_serving_node() {
+        let dir = log_dir("provisional-while-not-serving");
+        let (_, ctx) = planning_leader(&dir);
+        let (reply, mut frames) = ReplyTx::for_tests(ctx.gate.clone());
+        let plan = Plan {
+            responder: None,
+            cost: 1,
+        };
+        let send = || send_provisional(&ctx, &reply, request().id, plan.clone(), Instant::now());
+
+        ctx.serving.store(false, Ordering::SeqCst);
+        send();
+        assert!(replies(&mut frames).is_empty());
+        assert!(
+            !logged(&ctx.log, &dir)
+                .iter()
+                .any(|e| e["ev"] == "provisional_replied")
+        );
+
+        ctx.serving.store(true, Ordering::SeqCst);
+        send();
+        assert_eq!(replies(&mut frames).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

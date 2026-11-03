@@ -153,14 +153,24 @@ def silent_spans(events):
 
 def election_metrics(events, start_us):
     """Raft elections: new terms seen, and how long each node had no leader, leaving out the times
-    it was silenced or catching up itself."""
+    it was silenced or catching up itself.
+
+    An election is a term above the one already running when the window opened. That term is the
+    highest logged before the window; it logs nothing inside the window unless something changes,
+    so counting the terms seen and taking one off comes out one too low. A log with nothing before
+    the window treats its first term as the running one. Node clocks agree only as far as NTP does,
+    so a term starting right at the edge can land on either side."""
     terms = set()
+    running = 0
     durations_us = []
     for es in node_events(events).values():
         spans = silent_spans(es)
         lost_at = None
         for e in es:
-            if e["ev"] != "raft_state" or e["ts_us"] < start_us:
+            if e["ev"] != "raft_state":
+                continue
+            if e["ts_us"] < start_us:
+                running = max(running, e["term"])
                 continue
             terms.add(e["term"])
             if any(a <= e["ts_us"] <= b for a, b in spans):
@@ -170,8 +180,9 @@ def election_metrics(events, start_us):
             elif e["leader"] is not None and lost_at is not None:
                 durations_us.append(e["ts_us"] - lost_at)
                 lost_at = None
+    running = running or min(terms, default=0)
     return {
-        "elections": max(len(terms) - 1, 0),
+        "elections": sum(1 for term in terms if term > running),
         "election_duration_mean_ms": float(np.mean(durations_us)) / 1000
         if durations_us
         else float("nan"),
@@ -199,6 +210,24 @@ def elections_after_rejoin(events):
     return total
 
 
+def client_gap_metrics(events, fault_start, fault_end):
+    """E3's client-visible gap: for each client, the longest time between two answers, on its own
+    clock, that overlaps the fault. This is what failover looks like from outside. Only choosing
+    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock."""
+    longest = []
+    for source, es in events.items():
+        if not source.startswith("client-"):
+            continue
+        answered = sorted(e["ts_us"] for e in es if e["ev"] == "client_done")
+        gaps = [b - a for a, b in zip(answered, answered[1:]) if a < fault_end and b > fault_start]
+        if gaps:
+            longest.append(max(gaps))
+    return {
+        "client_gap_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
+        "client_gap_max_ms": max(longest) / 1000 if longest else float("nan"),
+    }
+
+
 def fault_metrics(events, measured_requests):
     logs = node_events(events)
     def values(name, field):
@@ -210,7 +239,6 @@ def fault_metrics(events, measured_requests):
     metrics = {
         "detection_mean_ms": mean_or_nan(values("peer_suspected", "silent_ms")),
         "takeovers": len(values("takeover_started", "waited_us")),
-        "takeover_wait_mean_ms": mean_or_nan(values("takeover_started", "waited_us"), 1000),
         "recovery_mean_ms": mean_or_nan(values("rejoined", "recovery_us"), 1000),
         "rejoins": len(values("rejoined", "recovery_us")),
         "elections_after_rejoin": elections_after_rejoin(events),
@@ -221,11 +249,22 @@ def fault_metrics(events, measured_requests):
     for reason in ("lost_first_commit", "responder_taken"):
         metrics[f"conflicts_{reason}"] = sum(1 for r in values("provisional_conflict", "reason") if r == reason)
 
+    # Split by reason and kept away from the failover figures: a `backstop` takeover fires when a
+    # busy winner runs out of time, with no fault anywhere, and under overload that is nearly all
+    # of them. Only `suspected` has anything to do with a node that went away, and even that is
+    # one request's wait, not how long clients saw nothing.
+    takeovers = [e for es in logs.values() for e in es if e["ev"] == "takeover_started"]
+    for reason in ("suspected", "backstop"):
+        waits = [e["waited_us"] for e in takeovers if e["reason"] == reason]
+        metrics[f"takeovers_{reason}"] = len(waits)
+        metrics[f"takeover_wait_{reason}_mean_ms"] = mean_or_nan(waits, 1000)
+
     silenced = [e["ts_us"] for es in logs.values() for e in es if e["ev"] == "silenced"]
     restored = [e["ts_us"] for es in logs.values() for e in es if e["ev"] == "restored"]
     if not silenced or not restored:
         return metrics
     fault_start, fault_end = min(silenced), max(restored)
+    metrics.update(client_gap_metrics(events, fault_start, fault_end))
     sent_at = [e["ts_us"] - e["latency_us"] for e in measured_requests]
     if not sent_at:
         return metrics
@@ -240,6 +279,48 @@ def fault_metrics(events, measured_requests):
         seconds = (hi - lo) / 1_000_000
         metrics[f"{phase}_rps"] = len(inside) / seconds if seconds > 0 else float("nan")
     return metrics
+
+
+def refusal_metrics(events, start_us):
+    """Planning jobs a full worker pool refused (D73, D138). The client hears nothing and retries,
+    so nothing else tells shed work from slow work."""
+    metrics = {"plans_refused": 0}
+    for source, es in node_events(events).items():
+        refused = sum(1 for e in es if e["ev"] == "overloaded" and e["ts_us"] >= start_us)
+        metrics["plans_refused"] += refused
+        metrics[f"plans_refused_node_{source.split('-')[1]}"] = refused
+    return metrics
+
+
+def convergence_metrics(events):
+    """Digests at fixed log indexes (D138). A digest chains over the whole log before it, so one
+    equal digest shows that everything before it was equal too. A rejoin is confirmed by the first
+    checkpoint its node logs after `rejoined`, if another node logged that index with the same
+    digest. Over the whole run, warm-up included: state from any time counts."""
+    logs = node_events(events)
+    digests = defaultdict(set)
+    nodes = defaultdict(set)
+    for source, es in logs.items():
+        for e in es:
+            if e["ev"] == "state_checkpoint":
+                digests[e["log_index"]].add(e["digest"])
+                nodes[e["log_index"]].add(source)
+    confirmed = 0
+    for source, es in logs.items():
+        for at, e in enumerate(es):
+            if e["ev"] != "rejoined":
+                continue
+            index = next((c["log_index"] for c in es[at + 1:] if c["ev"] == "state_checkpoint"), None)
+            if index is not None and nodes[index] - {source} and len(digests[index]) == 1:
+                confirmed += 1
+    return {
+        "digest_checkpoints_compared": sum(1 for seen_by in nodes.values() if len(seen_by) > 1),
+        "digest_mismatches": sum(1 for found in digests.values() if len(found) > 1),
+        "rejoins_digest_confirmed": confirmed,
+        "rejoin_targets_lowered": sum(
+            1 for es in logs.values() for e in es if e["ev"] == "rejoin_target_lowered"
+        ),
+    }
 
 
 def message_metrics(events, start_us, completed):
@@ -322,6 +403,8 @@ def analyse_run(run_dir):
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
     metrics.update(fault_metrics(events, done))
+    metrics.update(refusal_metrics(events, start))
+    metrics.update(convergence_metrics(events))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))

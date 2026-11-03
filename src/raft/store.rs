@@ -26,10 +26,15 @@ use openraft::{
     Vote,
 };
 
+use crate::metrics::{Event, EventLog};
 use crate::proto::{NodeId, Outcome};
 use crate::raft::TypeConfig;
 use crate::raft::wal::{Record, Replayed, Wal};
 use crate::state::CloudState;
+
+/// A node logs its state digest each time it applies a log index that is a multiple of this. Every
+/// node applies every index, so the logs can be compared at the same index (D138).
+pub const CHECKPOINT_EVERY: u64 = 100;
 
 type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
@@ -223,11 +228,12 @@ pub struct StateMachineStore {
     last_membership: StoredMembership<NodeId, BasicNode>,
     current_snapshot: Arc<Mutex<Option<StoredSnapshot>>>,
     snapshot_seq: Arc<AtomicU64>,
+    log: EventLog,
 }
 
 impl StateMachineStore {
     /// An empty state machine and a reader for the rest of the node.
-    pub fn new() -> (Self, StateReader) {
+    pub fn new(log: EventLog) -> (Self, StateReader) {
         let state = StateReader::default();
         let store = Self {
             state: state.clone(),
@@ -235,6 +241,7 @@ impl StateMachineStore {
             last_membership: StoredMembership::default(),
             current_snapshot: Arc::default(),
             snapshot_seq: Arc::default(),
+            log,
         };
         (store, state)
     }
@@ -258,15 +265,24 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         let mut state = self.state.write();
         for entry in entries {
             self.last_applied = Some(entry.log_id);
+            let index = entry.log_id.index;
             let outcome = match entry.payload {
                 EntryPayload::Blank => Outcome::Applied,
-                EntryPayload::Normal(cmd) => state.apply(entry.log_id.index, &cmd),
+                EntryPayload::Normal(cmd) => state.apply(index, &cmd),
                 EntryPayload::Membership(m) => {
                     self.last_membership = StoredMembership::new(Some(entry.log_id), m);
                     Outcome::Applied
                 }
             };
             outcomes.push(outcome);
+            // Any entry counts, not only commands: a new leader's blank entry can fall on this
+            // index on every node alike, and then the digest is simply the one before it.
+            if index > 0 && index % CHECKPOINT_EVERY == 0 {
+                self.log.log(Event::StateCheckpoint {
+                    log_index: index,
+                    digest: state.digest(),
+                });
+            }
         }
         Ok(outcomes)
     }
@@ -358,7 +374,7 @@ mod tests {
 
     impl StoreBuilder<TypeConfig, LogStore, StateMachineStore> for Builder {
         async fn build(&self) -> StorageResult<((), LogStore, StateMachineStore)> {
-            let (sm, _) = StateMachineStore::new();
+            let (sm, _) = StateMachineStore::new(EventLog::disabled("test"));
             Ok(((), LogStore::default(), sm))
         }
     }
@@ -376,9 +392,82 @@ mod tests {
         }
     }
 
+    /// The digests `store` logged, by log index.
+    fn checkpoints(log: &EventLog, dir: &std::path::Path) -> BTreeMap<u64, u64> {
+        log.close();
+        let text = std::fs::read_to_string(dir.join("node-1.jsonl")).unwrap();
+        text.lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|e| e["ev"] == "state_checkpoint")
+            .map(|e| {
+                (
+                    e["log_index"].as_u64().unwrap(),
+                    e["digest"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// `last` entries from index 1: all commands, but a blank one at index 100.
+    async fn apply_log(log: EventLog, last: u64, batch: usize) -> u64 {
+        let (mut sm, reader) = StateMachineStore::new(log);
+        let entries: Vec<_> = (1..=last)
+            .map(|index| {
+                let release = Command::ReleaseResponder {
+                    responder: 1,
+                    request: crate::proto::RequestId {
+                        client: 1,
+                        seq: index,
+                    },
+                };
+                let mut entry = entry(index, release);
+                if index == CHECKPOINT_EVERY {
+                    entry.payload = EntryPayload::Blank;
+                }
+                entry
+            })
+            .collect();
+        for chunk in entries.chunks(batch) {
+            sm.apply(chunk.to_vec()).await.unwrap();
+        }
+        reader.with(|s| s.digest())
+    }
+
+    #[tokio::test]
+    async fn a_digest_is_logged_at_every_checkpoint_index_however_entries_are_batched() {
+        let dirs = ["a", "b"].map(|name| {
+            let dir = std::env::temp_dir().join(format!(
+                "rescuemesh-checkpoints-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            dir
+        });
+        let last = 2 * CHECKPOINT_EVERY + 50;
+
+        // Two nodes get the same log in different batches, as replication and catch-up give them.
+        let one_log = EventLog::to_dir(&dirs[0], "node-1").unwrap();
+        let other_log = EventLog::to_dir(&dirs[1], "node-1").unwrap();
+        let one = apply_log(one_log.clone(), last, 1).await;
+        let other = apply_log(other_log.clone(), last, 77).await;
+        assert_eq!(one, other);
+
+        let logged = checkpoints(&one_log, &dirs[0]);
+        assert_eq!(
+            logged.keys().copied().collect::<Vec<_>>(),
+            vec![CHECKPOINT_EVERY, 2 * CHECKPOINT_EVERY],
+            "a blank entry on the index still gets a line"
+        );
+        assert_ne!(logged[&CHECKPOINT_EVERY], logged[&(2 * CHECKPOINT_EVERY)]);
+        assert_eq!(logged, checkpoints(&other_log, &dirs[1]));
+        for dir in dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     #[tokio::test]
     async fn snapshot_restores_identical_state() {
-        let (mut sm, reader) = StateMachineStore::new();
+        let (mut sm, reader) = StateMachineStore::new(EventLog::disabled("test"));
         let register = Command::RegisterResponders {
             responders: vec![Responder {
                 id: 1,
@@ -396,7 +485,7 @@ mod tests {
             .unwrap();
         assert_eq!(snap.meta.last_log_id.map(|l| l.index), Some(1));
 
-        let (mut other, other_reader) = StateMachineStore::new();
+        let (mut other, other_reader) = StateMachineStore::new(EventLog::disabled("test"));
         other
             .install_snapshot(&snap.meta, snap.snapshot)
             .await

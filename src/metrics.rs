@@ -69,6 +69,13 @@ pub enum Event {
         last_applied: u64,
         digest: u64,
     },
+    /// The digest right after applying a log index that is a multiple of
+    /// `store::CHECKPOINT_EVERY`. Every node applies every index, so these can be compared between
+    /// nodes under load, which the once-a-second `state_digest` cannot (D138).
+    StateCheckpoint {
+        log_index: u64,
+        digest: u64,
+    },
     /// Cumulative message counts by type (E5).
     Messages {
         sent: BTreeMap<&'static str, u64>,
@@ -199,6 +206,16 @@ pub enum Event {
         winner_executor: Option<NodeId>,
     },
 
+    // --- planner and workers (E)
+    /// The worker pool was full and refused this planning job (D48, D73). `queued` and `running`
+    /// are the pool at that moment.
+    Overloaded {
+        request: RequestId,
+        attempt: u32,
+        queued: usize,
+        running: usize,
+    },
+
     // --- responders (E)
     /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
     /// true if the executor should have done it first and has not.
@@ -217,6 +234,12 @@ pub enum Event {
     /// The fault gate reopened; the node is catching up and does not serve yet (E4).
     RejoinStarted {
         applied: Option<u64>,
+    },
+    /// The leader's next answer was below the catch-up target, so the target was an index that was
+    /// not committed then, and may never be (D135).
+    RejoinTargetLowered {
+        from: u64,
+        to: u64,
     },
     /// The node applied the leader's commit index and serves again. `recovery_us` runs from
     /// `rejoin_started` to here, on this node's clock (E4).
