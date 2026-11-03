@@ -232,6 +232,17 @@ class ClientPrograms(unittest.TestCase):
         # Without the event, the first send is all there is.
         self.assertEqual(self.analyse("old", {"client-10000": client[1:]})["count"], 0)
 
+    def test_a_request_started_in_the_warm_up_does_not_count_when_it_gives_up_later(self):
+        def sent_as(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_sent", "request": request(seq), "attempt": 0}
+
+        def gave_up(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_gave_up", "request": request(seq), "attempts": 6}
+
+        # Warm-up is 2 s. Request 1 starts in it, and request 2 after it. Both give up after it.
+        client = [sent_as(1, 0), sent_as(2, 3), gave_up(1, 30), gave_up(2, 33)]
+        self.assertEqual(self.analyse("gave-up", {"client-10000": client})["gave_up"], 1)
+
     def test_users_that_do_not_add_up_to_the_cell_are_left_out(self):
         program = {"ts_us": T0, "ev": "client_started", "users": 33}
         m = self.analyse("users", {"client-10000": [program, sent(0)], "client-20000": [program, sent(0)]})

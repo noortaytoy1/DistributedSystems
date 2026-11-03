@@ -94,11 +94,19 @@ def client_requests(events, warmup_s):
         if started is None:
             continue
         measure_from = started + warmup_s * 1_000_000
+        # A request gives up about 30 s after it starts, so one started in the warm-up gives up well inside
+        # the measured time. Its first send says when it started, as loadgen's own count has it.
+        first_sent = {
+            e["request"]["seq"]: e["ts_us"]
+            for e in source_events
+            if e["ev"] == "client_sent" and e["attempt"] == 0
+        }
         for e in source_events:
             if e["ev"] == "client_done" and e["ts_us"] - e["latency_us"] >= measure_from:
                 done.append(e)
-            elif e["ev"] == "client_gave_up" and e["ts_us"] >= measure_from:
-                gave_up.append(e)
+            elif e["ev"] == "client_gave_up":
+                if first_sent.get(e["request"]["seq"], e["ts_us"]) >= measure_from:
+                    gave_up.append(e)
     return done, gave_up
 
 
