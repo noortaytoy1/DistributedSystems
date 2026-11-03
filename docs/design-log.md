@@ -7609,6 +7609,8 @@ them on the six PCs.
   | Slow disk, 3000 users, steady, 40 s | this | no | 62.3 / 65.4 | 2.03 / 2.12 | 2396 / 3001 | 1.12 | 2222 / 2988 |
   | Slow disk, 3000 users, steady, 30 s, the final bars | this | no | 62.7 / 67.8 | 2.06 / 2.21 | 2468 / 3001 | 1.07 | 2277 / 2992 |
   | Slow disk, 3000 users, all at once, 40 s | this | no | 64.5 / 69.0 | 2.07 / 2.20 | 2465 / 3002 | 1.25 | 2367 / 2994 |
+  | 5 ms added to each save, about 12 ms a save in all, 3000 users, 30 s: where a healthy write sits nearest the bars | this | no | 30.1 / 35.8 | 2.28 / 2.50 | 51.2 / 74.9 | 1.26 | 50.8 / 91.6 |
+  | The same, 300 users, 30 s | this | no | 24.7 / 26.8 | 2.05 / 2.13 | 40.8 / 47.4 | 1.07 | 39.3 / 57.7 |
   | Even, 300 users, 40 s | this | no | 9.2 / 11.6 | 2.16 / 2.26 | 14.3 / 18.2 | 1.09 | 14.2 / 37.7 |
   | Even, 3000 users, 40 s | this | no | 14.2 / 16.5 | 2.71 / 2.97 | 22.3 / 28.1 | 1.11 | 23.2 / 42.8 |
   | All at once, 3000 users, 30 s | this | no | 10.1 / 12.7 | 2.54 / 2.96 | 17.3 / 29.1 | 1.62 | 17.4 / 63.9 |
