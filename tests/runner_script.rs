@@ -376,6 +376,24 @@ impl Lab {
     fn in_run_folder(&self, file: &str) -> PathBuf {
         self.root.join(RUN_FOLDER).join(file)
     }
+
+    /// From here on `ctl silence` fails on the machine that runs `ctl`, the first client.
+    fn refuse_every_silence(&self) {
+        let ctl = self
+            .root
+            .join("pc4/DistributedSystems")
+            .join(&self.bin)
+            .join("ctl");
+        fs::remove_file(&ctl).unwrap();
+        let real = env!("CARGO_BIN_EXE_ctl");
+        let script = format!(
+            "#!/usr/bin/env bash\n\
+             if [[ \"$*\" == *silence* ]]; then echo 'no answer within 2 s'; exit 1; fi\n\
+             exec '{real}' \"$@\"\n"
+        );
+        fs::write(&ctl, script).unwrap();
+        fs::set_permissions(&ctl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 impl Drop for Lab {
@@ -426,6 +444,7 @@ fn a_whole_cell_runs_over_ssh_and_stops_everything_it_started() {
     ] {
         assert!(lab.in_run_folder(file).exists(), "no {file}: {run:?}");
     }
+    assert!(!lab.in_run_folder("run.json.partial").exists());
     let silenced = (1..=3)
         .filter(|n| {
             fs::read_to_string(lab.in_run_folder(&format!("node-{n}.jsonl")))
@@ -455,4 +474,36 @@ fn a_whole_cell_runs_over_ssh_and_stops_everything_it_started() {
         r#"refuse_leftovers "$ALL_PROGRAMS" 10"#,
     );
     assert!(stopped.status.success(), "{stopped:?}");
+}
+
+/// The analysis counts every run.json it finds, so a batch that stops halfway must leave none, not
+/// even the one an earlier run left in that folder.
+#[test]
+fn a_batch_that_stops_halfway_leaves_no_run_for_the_analysis() {
+    let lab = Lab::new();
+    fs::create_dir_all(lab.root.join(RUN_FOLDER)).unwrap();
+    fs::write(lab.in_run_folder("run.json"), "{}").unwrap();
+
+    let run = lab.run_the_cell(&[("FAKE_SCP_FAILS", "1")]);
+
+    assert!(!run.status.success(), "{run:?}");
+    assert!(!lab.in_run_folder("run.json").exists(), "{run:?}");
+}
+
+/// A run that never got its fault costs only itself: its logs stay out of the analysis's reach, the
+/// batch goes on to its end and then says so.
+#[test]
+fn a_run_that_never_got_its_fault_is_set_aside() {
+    let lab = Lab::new();
+    lab.refuse_every_silence();
+
+    let run = lab.run_the_cell(&[]);
+
+    assert!(!run.status.success(), "{run:?}");
+    assert!(stderr(&run).contains("never got their fault"), "{run:?}");
+    let aside = lab.root.join("control/runs/dropped/e9-try-run-1");
+    assert!(aside.join("dropped.txt").exists(), "{run:?}");
+    assert!(aside.join("node-1.jsonl").exists(), "{run:?}");
+    assert!(!aside.join("run.json").exists(), "{run:?}");
+    assert!(!lab.root.join(RUN_FOLDER).exists(), "{run:?}");
 }

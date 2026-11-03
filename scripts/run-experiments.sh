@@ -93,8 +93,7 @@ victims_of() {
   esac
 }
 
-# Delete this run and stop the batch, for what would spoil the next run too. A run must not stay,
-# because analysis reads every run.json it finds.
+# Delete this run and stop the batch, for what would spoil the next run too.
 abandon_run() {
   rm -rf "$1"
   echo "run dropped and batch stopped: $2" >&2
@@ -136,12 +135,16 @@ run_once() {
   skew_work=$(run_value "$file" skew_work 0)
   # Before anything is wiped. The last run's nodes were only just told to stop, so they get a moment.
   refuse_leftovers "$ALL_PROGRAMS" 10
+  # An older run in this folder would keep its run.json and its logs through a run that then fails.
+  rm -rf "$out"
   mkdir -p "$out"
   local config="$out/config.toml"
   write_config "$file" "$config"
   echo "$COMMIT" >"$out/commit.txt"
+  # The analysis counts every run.json it finds, with throughput 0 if the logs never came, so the file
+  # gets its name only when the run is whole. A batch killed or failing anywhere leaves no half a run.
   printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s"}\n' \
-    "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" >"$out/run.json"
+    "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" >"$out/run.json.partial"
 
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
     on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config'
@@ -195,6 +198,8 @@ run_once() {
   done
   if [[ -n "$no_fault" ]]; then
     set_aside "$out" "$cell" "$rep" "$no_fault"
+  else
+    mv "$out/run.json.partial" "$out/run.json"
   fi
   sleep "$GAP"
 }
