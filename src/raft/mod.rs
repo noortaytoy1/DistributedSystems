@@ -3,8 +3,8 @@
 //! Node code talks to Raft only through the [`Consensus`] trait, so the library can be swapped
 //! for our own Raft without touching `node/`.
 //!
-//! - Every node calls `initialize` with the full membership from the config; openraft treats the
-//!   repeats as no-ops, so the cluster forms whichever nodes start first.
+//! - On its first start every node calls `initialize` with the full membership from the config;
+//!   openraft treats the repeats as no-ops, so the cluster forms whichever nodes start first.
 //! - Any node can propose. A follower forwards its proposal to the leader (`PeerBody::Propose`)
 //!   and retries across leader changes until `timers.propose_timeout_ms`. Retrying is safe
 //!   because every `Command` is idempotent.
@@ -185,15 +185,20 @@ impl RaftNode {
         let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
         let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
-        let members: BTreeMap<NodeId, BasicNode> = config
-            .cluster
-            .nodes
-            .iter()
-            .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
-            .collect();
-        match raft.initialize(members).await {
-            Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
-            Err(e) => return Err(e.into()),
+        // A restarted node has its membership in its log file, and openraft would refuse to
+        // initialize it again and log an ERROR for it (D137). Asking also waits for Raft's first
+        // metrics, which the rest of the node reads as soon as this returns.
+        if !raft.is_initialized().await? {
+            let members: BTreeMap<NodeId, BasicNode> = config
+                .cluster
+                .nodes
+                .iter()
+                .map(|n| (n.id, BasicNode::new(&n.peer_addr)))
+                .collect();
+            match raft.initialize(members).await {
+                Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
         let node = Arc::new(Self {
