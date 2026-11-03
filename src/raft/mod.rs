@@ -114,6 +114,16 @@ pub struct ConsensusStatus {
     pub last_applied: Option<u64>,
 }
 
+/// What this node's proposal queue has done so far, for the busy-leader check (D218).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogWork {
+    /// Proposals answered, and the time they took from entering the queue. Both cumulative.
+    pub answered: u64,
+    pub answered_us: u64,
+    /// Proposals in the queue now.
+    pub waiting: usize,
+}
+
 /// What node code needs from consensus.
 pub trait Consensus: Send + Sync + 'static {
     /// Commit `cmd` and return its outcome once applied. Forwards to the leader and retries
@@ -155,6 +165,9 @@ pub trait Consensus: Send + Sync + 'static {
     /// proposal queue instead. This changes no election timer and no vote rule: the followers'
     /// timers just run out, as they would for a leader that failed (D218).
     fn set_quiet(&self, quiet: bool);
+
+    /// How long the log has been taking on this node.
+    fn log_work(&self) -> LogWork;
 
     fn shutdown(&self) -> BoxFuture<'_, ()>;
 }
@@ -284,6 +297,8 @@ impl RaftNode {
             commands: queue.commands.load(Ordering::Relaxed),
             expired: queue.expired.load(Ordering::Relaxed),
             write_timeouts: queue.write_timeouts.load(Ordering::Relaxed),
+            answered: queue.answered.load(Ordering::Relaxed),
+            answered_us: queue.answered_us.load(Ordering::Relaxed),
             syncs: saved.syncs.load(Ordering::Relaxed),
             sync_us: saved.sync_us.load(Ordering::Relaxed),
             max_sync_us: saved.max_sync_us.swap(0, Ordering::Relaxed),
@@ -534,9 +549,19 @@ impl Consensus for RaftNode {
         self.raft.runtime_config().elect(enabled);
     }
 
+    // Both switches live in this process only, so a restarted node starts with heartbeats on.
     fn set_quiet(&self, quiet: bool) {
         self.raft.runtime_config().heartbeat(!quiet);
         self.queue.hold(quiet);
+    }
+
+    fn log_work(&self) -> LogWork {
+        let stats = self.queue.stats();
+        LogWork {
+            answered: stats.answered.load(Ordering::Relaxed),
+            answered_us: stats.answered_us.load(Ordering::Relaxed),
+            waiting: stats.waiting.load(Ordering::Relaxed),
+        }
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {

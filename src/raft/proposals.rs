@@ -65,6 +65,10 @@ pub struct QueueStats {
     pub expired: AtomicU64,
     /// Writes that outlasted the write cap and stopped being waited for.
     pub write_timeouts: AtomicU64,
+    /// Proposals answered, and the time they took from entering the queue to being answered: how
+    /// long this node's log is taking, in the same unit as the bids (D218).
+    pub answered: AtomicU64,
+    pub answered_us: AtomicU64,
 }
 
 /// See the module docs. Dropping it stops the queue's task.
@@ -120,6 +124,7 @@ impl ProposalQueue {
         command: Command,
         deadline: Instant,
     ) -> Result<Outcome, ProposeError> {
+        let started = Instant::now();
         let (reply, answer) = oneshot::channel();
         self.stats.waiting.fetch_add(1, Ordering::Relaxed);
         let waiting = Waiting {
@@ -131,12 +136,17 @@ impl ProposalQueue {
             self.stats.waiting.fetch_sub(1, Ordering::Relaxed);
             return Err(stopped());
         }
-        match tokio::time::timeout_at(deadline, answer).await {
+        let result = match tokio::time::timeout_at(deadline, answer).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(stopped()),
             // Dropping `answer` closes the reply channel, which takes this proposal off the queue.
             Err(_) => Err(ProposeError::Timeout),
-        }
+        };
+        self.stats.answered.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .answered_us
+            .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        result
     }
 
     pub fn stats(&self) -> &QueueStats {
@@ -144,6 +154,7 @@ impl ProposalQueue {
     }
 
     /// Start no new write until this is called with false (D218). A write in flight finishes.
+    /// The hold lives in this object and in no file, so a restarted node starts unheld.
     pub fn hold(&self, held: bool) {
         self.held.send_replace(held);
     }
@@ -525,6 +536,38 @@ mod tests {
         assert_eq!(raft.groups(), vec![vec![command(1)]]);
         assert_eq!(q.stats().expired.load(Ordering::SeqCst), 1);
         assert_eq!(q.stats().waiting.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_answer_counts_the_time_it_took_from_entering_the_queue() {
+        let raft = Arc::new(FakeRaft::default());
+        let q = queue(100, &raft);
+        q.hold(true);
+        let first = submit(&q, 0, LONG);
+        wait_until("it to wait", || {
+            q.stats().waiting.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        assert_eq!(q.stats().answered.load(Ordering::SeqCst), 0);
+        let held_for = Instant::now();
+        wait_until("some time to pass", || {
+            held_for.elapsed() >= Duration::from_millis(30)
+        })
+        .await;
+
+        q.hold(false);
+        raft.permits.add_permits(1);
+        first.await.unwrap().unwrap();
+        assert_eq!(q.stats().answered.load(Ordering::SeqCst), 1);
+        let took = q.stats().answered_us.load(Ordering::SeqCst);
+        assert!(took >= 30_000, "{took} us");
+
+        // One that leaves at its deadline took all of that time too: it is the strongest sign.
+        q.hold(true);
+        let late = submit(&q, 1, Duration::from_millis(20));
+        assert_eq!(late.await.unwrap(), Err(ProposeError::Timeout));
+        assert_eq!(q.stats().answered.load(Ordering::SeqCst), 2);
+        assert!(q.stats().answered_us.load(Ordering::SeqCst) >= took + 20_000);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

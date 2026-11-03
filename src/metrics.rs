@@ -82,6 +82,10 @@ pub enum Event {
         expired: u64,
         /// Writes that outlasted the write cap (`propose_timeout_ms`).
         write_timeouts: u64,
+        /// Proposals answered, and the time they took from entering the queue: mean log wait over
+        /// a second is the change in `answered_us` over the change in `answered` (D218).
+        answered: u64,
+        answered_us: u64,
         /// Writes to the log file that waited for the disk, and the time they took.
         syncs: u64,
         sync_us: u64,
@@ -95,10 +99,14 @@ pub enum Event {
         max_leader_gap_us: u64,
     },
     /// This Raft leader found itself overloaded and went quiet, so that a normal vote picks a new
-    /// leader (D218). `score` is its own newest bid, `peer_scores` the peers' newest bids.
+    /// leader (D218). All from the last second: `score` is its own mean bid, `log_wait_us` the mean
+    /// time its log took per proposal, `load` what the rule compared (the score, or the log wait if
+    /// that is over its floor and higher), and `peer_scores` the peers' mean bids.
     LeaderSteppedAside {
         term: u64,
         score: u64,
+        log_wait_us: u64,
+        load: u64,
         peer_scores: BTreeMap<NodeId, u64>,
     },
     /// How that ended. `outcome` is `changed` (another node leads), `re_elected` (this node won the
@@ -836,12 +844,16 @@ mod tests {
         let aside = Event::LeaderSteppedAside {
             term: 4,
             score: 9_000,
+            log_wait_us: 12_000,
+            load: 9_000,
             peer_scores: BTreeMap::from([(2, 1_500), (3, 2_000)]),
         };
         let text = serde_json::to_string(&aside).unwrap();
         assert!(text.contains(r#""ev":"leader_stepped_aside""#), "{text}");
         assert!(text.contains(r#""term":4"#), "{text}");
         assert!(text.contains(r#""score":9000"#), "{text}");
+        assert!(text.contains(r#""log_wait_us":12000"#), "{text}");
+        assert!(text.contains(r#""load":9000"#), "{text}");
         assert!(
             text.contains(r#""peer_scores":{"2":1500,"3":2000}"#),
             "{text}"

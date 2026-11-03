@@ -28,7 +28,7 @@ use crate::proto::{
     Command, CommittedResult, NodeId, Outcome, PeerReply, Plan, ProposeError, RaftRpc, StaleReason,
 };
 use crate::raft::store::StateReader;
-use crate::raft::{Consensus, ConsensusStatus, Role};
+use crate::raft::{Consensus, ConsensusStatus, LogWork, Role};
 
 const THREE_NODES: &str = r#"
 [[cluster.nodes]]
@@ -51,6 +51,7 @@ pub(crate) struct ScriptedConsensus {
     term: AtomicU64,
     leader: Mutex<Option<NodeId>>,
     quiet: AtomicBool,
+    log_work: Mutex<LogWork>,
     answers: Mutex<VecDeque<Result<Option<u64>, ProposeError>>>,
     questions: AtomicUsize,
     /// As a Raft that has stopped: every wait fails at once.
@@ -74,6 +75,7 @@ impl ScriptedConsensus {
             term: AtomicU64::new(1),
             leader: Mutex::new(None),
             quiet: AtomicBool::new(false),
+            log_work: Mutex::new(LogWork::default()),
             answers: Mutex::new(VecDeque::new()),
             questions: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
@@ -92,6 +94,14 @@ impl ScriptedConsensus {
 
     pub(crate) fn set_term(&self, term: u64) {
         self.term.store(term, Ordering::SeqCst);
+    }
+
+    /// Adds answered proposals, as if a write had finished, and says how many wait now.
+    pub(crate) fn add_log_work(&self, answered: u64, each_us: u64, waiting: usize) {
+        let mut work = lock(&self.log_work);
+        work.answered += answered;
+        work.answered_us += answered * each_us;
+        work.waiting = waiting;
     }
 
     /// What the last `set_quiet` said.
@@ -249,6 +259,10 @@ impl Consensus for ScriptedConsensus {
 
     fn set_quiet(&self, quiet: bool) {
         self.quiet.store(quiet, Ordering::SeqCst);
+    }
+
+    fn log_work(&self) -> LogWork {
+        *lock(&self.log_work)
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {

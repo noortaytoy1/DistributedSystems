@@ -1,13 +1,17 @@
 //! A busy leader steps aside, so that an ordinary vote picks another one (D218).
 //!
 //! Every result passes through the Raft leader, so an overloaded leader machine slows every commit,
-//! and the bid can move planning away from it but not the ordering. Once a second each node looks
-//! at the bids of the last second. A leader whose mean bid has stayed at least
-//! `policy.leader_overload_ratio` times its lowest peer's for `policy.leader_overload_for_ms`, and
-//! above a small floor, goes quiet if it is safe to. Safe means it is serving and not degraded, it
-//! has all members in its group view and suspects nobody, and `policy.leader_overload_cooldown_ms`
-//! have passed since the last term change. The cooldown is what stops a storm: every node starts it
-//! again on every new term, so the cluster moves its leader this way once per cooldown at most.
+//! and the bid can move planning away from it but not the ordering. Once a second the leader looks
+//! at the last second. Its load is its mean bid, or the mean time its log took per proposal if that
+//! is over [`LOG_WAIT_FLOOR`] and higher: the bid sees planning, and the log wait sees a machine too
+//! busy to keep the log, which the bid can miss. A leader whose load has stayed at least
+//! `policy.leader_overload_ratio` times its lowest peer's mean bid for
+//! `policy.leader_overload_for_ms`, and above a small floor, goes quiet if it is safe to. Safe means
+//! it is serving and not degraded and not silenced, it has all members in its group view and suspects
+//! nobody, no node it knows of is in a silence the failure draw named, every peer bid in that second
+//! (a node that is not serving does not bid), and `policy.leader_overload_cooldown_ms` have passed
+//! since the last term change. The cooldown is what stops a storm: every node starts it again on
+//! every new term, so the cluster moves its leader this way once per cooldown at most.
 //!
 //! **Going quiet** is the whole mechanism, because openraft 0.9.25 has no hand-over command and a
 //! follower refuses votes while it has heard from its leader within the lease. The leader stops its
@@ -21,7 +25,8 @@
 //! within [`QUIET_LIMIT`] it ends its quiet anyway, carries on, says why, and waits a full cooldown.
 //!
 //! No new message: the leader reads the bids it already receives, so nothing here can reach a
-//! silenced node or get past the fault gate.
+//! silenced node or get past the fault gate. This is middleware: the incident service never knows
+//! it happened (D156, `tests/layers.rs`).
 //!
 //! Owner: A (Raft and replication).
 
@@ -37,7 +42,7 @@ use super::{NodeContext, lock};
 use crate::config::{AssignmentPolicy, Policy, ScoreName};
 use crate::metrics::Event;
 use crate::proto::{NodeId, Term};
-use crate::raft::ConsensusStatus;
+use crate::raft::{ConsensusStatus, LogWork};
 
 /// How often a node looks at the bids. Also how much of them one reading covers.
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -48,6 +53,11 @@ pub const QUIET_LIMIT: Duration = Duration::from_secs(3);
 
 /// How often a quiet leader looks for a higher term.
 const WATCH_INTERVAL: Duration = Duration::from_millis(20);
+
+/// A mean log wait at or below this says nothing about the leader. A healthy log takes tens of
+/// milliseconds, because it is one disk save and one round to a follower, and grouping keeps that
+/// nearly flat under load (D133). See D218 for the numbers this was chosen from.
+pub const LOG_WAIT_FLOOR: Duration = Duration::from_millis(100);
 
 /// A node at or below this score is never overloaded, so that tiny numbers on an idle cluster cannot
 /// make a large ratio. In the score's own unit: 1 ms of expected wait, jobs or permille of CPU.
@@ -60,15 +70,42 @@ fn floor(score: ScoreName) -> u64 {
 }
 
 /// The deciding rule: at least `ratio` times the lowest peer, and above the floor. Never with no
-/// peers to compare with, and never at ratio 0, which is off.
-fn overloaded(score: u64, peer_scores: &[u64], ratio: u64, floor: u64) -> bool {
-    if ratio == 0 || score <= floor {
+/// peers to compare with, and never at ratio 0, which is off. Comparing with a peer is what keeps a
+/// cluster overloaded everywhere from moving its leader for nothing.
+fn overloaded(load: u64, peer_scores: &[u64], ratio: u64, floor: u64) -> bool {
+    if ratio == 0 || load <= floor {
         return false;
     }
     let Some(&lowest) = peer_scores.iter().min() else {
         return false;
     };
-    score >= ratio.saturating_mul(lowest)
+    load >= ratio.saturating_mul(lowest)
+}
+
+/// What the rule compares with the peers' bids: this node's bid, or how long its log is taking if
+/// that is over `LOG_WAIT_FLOOR` and higher. Only a score that is itself a time can be compared with
+/// a time, so a score counted in jobs or in permille of CPU is left as it is.
+fn leader_load(score: u64, log_wait_us: u64, kind: ScoreName) -> u64 {
+    let same_unit = matches!(kind, ScoreName::ExpectedWait | ScoreName::ExpectedWaitCpu);
+    if same_unit && log_wait_us > LOG_WAIT_FLOOR.as_micros() as u64 {
+        score.max(log_wait_us)
+    } else {
+        score
+    }
+}
+
+/// The mean time per proposal between two readings of the log's counters, `over` apart. A reading
+/// with proposals waiting and none answered took at least all of `over`: without this, a leader too
+/// slow to finish one write in a second would have no log wait at all.
+fn mean_log_wait_us(before: LogWork, now: LogWork, over: Duration) -> u64 {
+    let answered = now.answered.saturating_sub(before.answered);
+    if answered > 0 {
+        now.answered_us.saturating_sub(before.answered_us) / answered
+    } else if now.waiting > 0 {
+        over.as_micros() as u64
+    } else {
+        0
+    }
 }
 
 /// This node's score and each peer's, if every one of them bid in this reading. A peer that is
@@ -96,6 +133,8 @@ struct Safety {
     /// Every configured node is in this node's group view.
     whole_view: bool,
     peer_suspected: bool,
+    /// A node the failure draw named is still meant to be silent.
+    drawn_silence: bool,
     /// Since the last term change, or the end of the last try.
     calm_for: Duration,
 }
@@ -108,6 +147,7 @@ impl Safety {
             && !self.silenced
             && self.whole_view
             && !self.peer_suspected
+            && !self.drawn_silence
             && self.calm_for >= cooldown
     }
 }
@@ -175,7 +215,8 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
 /// Runs on every node, so that each one knows when the term last changed if it becomes leader, and
 /// reads each second's bids away whether it leads or not.
 async fn run(ctx: Arc<NodeContext>, policy: Policy) {
-    let (ratio, floor) = (policy.leader_overload_ratio, floor(policy.score));
+    let (ratio, kind) = (policy.leader_overload_ratio, policy.score);
+    let floor = floor(kind);
     let (wanted, cooldown) = (
         policy.leader_overload_for(),
         policy.leader_overload_cooldown(),
@@ -184,36 +225,51 @@ async fn run(ctx: Arc<NodeContext>, policy: Policy) {
     let mut term = ctx.consensus.status().term;
     let mut calm_since = Instant::now();
     let mut in_a_row = InARow::default();
+    let mut last_work = ctx.consensus.log_work();
     let mut tick = tokio::time::interval(CHECK_INTERVAL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
         let scores = ctx.bids.take_mean_scores();
+        let work = ctx.consensus.log_work();
+        let log_wait_us = mean_log_wait_us(last_work, work, CHECK_INTERVAL);
+        last_work = work;
         let status = ctx.consensus.status();
         let now = Instant::now();
         if status.term != term {
             term = status.term;
             calm_since = now;
         }
-        let safe = safety(&ctx, &status, now.saturating_duration_since(calm_since));
+        let safe = safety(
+            &ctx,
+            &status,
+            now.saturating_duration_since(calm_since),
+            now,
+        );
         let over = split_scores(ctx.id, &peers, &scores).filter(|(score, peer_scores)| {
             let peer_scores: Vec<u64> = peer_scores.values().copied().collect();
-            safe.holds(cooldown) && overloaded(*score, &peer_scores, ratio, floor)
+            let load = leader_load(*score, log_wait_us, kind);
+            safe.holds(cooldown) && overloaded(load, &peer_scores, ratio, floor)
         });
         let held_long_enough = in_a_row.observe(over.is_some(), wanted, now);
         let (true, Some((score, peer_scores))) = (held_long_enough, over) else {
             continue;
         };
+        let load = leader_load(score, log_wait_us, kind);
         tracing::info!(
             node = ctx.id,
             term,
             score,
+            log_wait_us,
+            load,
             ?peer_scores,
             "overloaded: going quiet"
         );
         ctx.log.log(Event::LeaderSteppedAside {
             term,
             score,
+            log_wait_us,
+            load,
             peer_scores,
         });
         step_aside(&ctx, term, QUIET_LIMIT).await;
@@ -221,10 +277,11 @@ async fn run(ctx: Arc<NodeContext>, policy: Policy) {
         term = ctx.consensus.status().term;
         calm_since = Instant::now();
         in_a_row = InARow::default();
+        last_work = ctx.consensus.log_work();
     }
 }
 
-fn safety(ctx: &NodeContext, status: &ConsensusStatus, calm_for: Duration) -> Safety {
+fn safety(ctx: &NodeContext, status: &ConsensusStatus, calm_for: Duration, now: Instant) -> Safety {
     Safety {
         leads: status.leader == Some(ctx.id),
         serving: ctx.serving.load(Ordering::SeqCst),
@@ -232,6 +289,7 @@ fn safety(ctx: &NodeContext, status: &ConsensusStatus, calm_for: Duration) -> Sa
         silenced: ctx.gate.is_silenced(),
         whole_view: ctx.group.view().members.len() == ctx.config.cluster.nodes.len(),
         peer_suspected: !lock(&ctx.suspicion).suspected().is_empty(),
+        drawn_silence: ctx.fault_election.drawn_silence_going_on(now),
         calm_for,
     }
 }
@@ -315,6 +373,7 @@ mod tests {
             silenced: false,
             whole_view: true,
             peer_suspected: false,
+            drawn_silence: false,
             calm_for: COOLDOWN,
         }
     }
@@ -369,6 +428,59 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_log_counts_only_over_its_floor_and_only_for_a_score_that_is_a_time() {
+        let floor = LOG_WAIT_FLOOR.as_micros() as u64;
+        // A healthy log: the bid alone decides.
+        assert_eq!(leader_load(2_000, floor, ScoreName::ExpectedWait), 2_000);
+        // A slow log on a leader whose bids look fine.
+        assert_eq!(
+            leader_load(2_000, floor + 1, ScoreName::ExpectedWait),
+            floor + 1
+        );
+        assert_eq!(
+            leader_load(2_000, floor + 1, ScoreName::ExpectedWaitCpu),
+            floor + 1
+        );
+        // The higher of the two.
+        assert_eq!(
+            leader_load(9 * floor, floor + 1, ScoreName::ExpectedWait),
+            9 * floor
+        );
+        // Jobs and permille are not microseconds.
+        assert_eq!(leader_load(5, floor + 1, ScoreName::QueueOnly), 5);
+        assert_eq!(leader_load(700, floor + 1, ScoreName::CpuOnly), 700);
+    }
+
+    /// This is what the log wait is for: bids even, and a leader that cannot keep the log.
+    #[test]
+    fn a_slow_log_is_overloaded_against_idle_peers_but_not_against_busy_ones() {
+        let slow_log = 300_000;
+        let load = leader_load(2_000, slow_log, ScoreName::ExpectedWait);
+        assert!(overloaded(load, &[2_000, 2_500], RATIO, FLOOR));
+        assert!(!overloaded(2_000, &[2_000, 2_500], RATIO, FLOOR));
+        // Everyone is overloaded, so moving the leader would help nobody.
+        assert!(!overloaded(load, &[200_000, 150_000], RATIO, FLOOR));
+    }
+
+    #[test]
+    fn the_mean_log_wait_is_of_this_reading_only() {
+        let at = |answered, answered_us, waiting| LogWork {
+            answered,
+            answered_us,
+            waiting,
+        };
+        let over = Duration::from_secs(1);
+        assert_eq!(mean_log_wait_us(at(10, 500, 0), at(14, 900, 0), over), 100);
+        // Nothing asked for.
+        assert_eq!(mean_log_wait_us(at(10, 500, 0), at(10, 500, 0), over), 0);
+        // Waiting and nothing answered: at least the whole reading.
+        assert_eq!(
+            mean_log_wait_us(at(10, 500, 0), at(10, 500, 7), over),
+            1_000_000
+        );
+    }
+
+    #[test]
     fn each_score_kind_has_a_floor_in_its_own_unit() {
         assert_eq!(floor(ScoreName::ExpectedWait), 1_000);
         assert_eq!(floor(ScoreName::ExpectedWaitCpu), 1_000);
@@ -417,6 +529,10 @@ mod tests {
             },
             Safety {
                 peer_suspected: true,
+                ..safe()
+            },
+            Safety {
+                drawn_silence: true,
                 ..safe()
             },
             Safety {
@@ -566,6 +682,50 @@ mod tests {
         assert!(spawn(&dispatch).is_none());
     }
 
+    /// A leader whose bids look fine and whose log does not: the same loop, on the log wait alone.
+    #[tokio::test]
+    async fn the_loop_steps_aside_on_a_slow_log_too() {
+        let dir = log_dir("step-aside-slow-log");
+        let fake = ScriptedConsensus::new(1);
+        fake.set_leader(Some(1));
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(fake.clone(), log, |c| {
+            c.policy.leader_overload_for_ms = 1;
+            c.policy.leader_overload_cooldown_ms = 3_000;
+        });
+        let task = spawn(&ctx).unwrap();
+        let busy = {
+            let (ctx, fake) = (ctx.clone(), fake.clone());
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_millis(20));
+                loop {
+                    tick.tick().await;
+                    ctx.bids.saw_bid(1, 2_000);
+                    ctx.bids.saw_bid(2, 2_000);
+                    ctx.bids.saw_bid(3, 2_000);
+                    fake.add_log_work(1, 300_000, 0);
+                }
+            })
+        };
+
+        until("the quiet", || fake.is_quiet()).await;
+        fake.set_term(2);
+        fake.set_leader(Some(2));
+        until("the quiet to end", || !fake.is_quiet()).await;
+        busy.abort();
+        task.abort();
+
+        let events = logged(&ctx.log, &dir);
+        let aside = events
+            .iter()
+            .find(|e| e["ev"] == "leader_stepped_aside")
+            .expect("logged");
+        assert_eq!(aside["score"], 2_000);
+        assert_eq!(aside["log_wait_us"], 300_000);
+        assert_eq!(aside["load"], 300_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The whole loop, on a leader whose bids say it is overloaded: it goes quiet once, and logs the
     /// mean scores of the second that decided it.
     #[tokio::test]
@@ -607,6 +767,8 @@ mod tests {
         assert_eq!(aside.len(), 1, "{aside:?}");
         assert_eq!(aside[0]["term"], 1);
         assert_eq!(aside[0]["score"], 9_000);
+        assert_eq!(aside[0]["load"], 9_000);
+        assert_eq!(aside[0]["log_wait_us"], 0);
         assert_eq!(aside[0]["peer_scores"]["2"], 1_000);
         assert_eq!(aside[0]["peer_scores"]["3"], 2_000);
         let _ = std::fs::remove_dir_all(dir);
