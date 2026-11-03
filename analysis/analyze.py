@@ -242,6 +242,48 @@ def fault_metrics(events, measured_requests):
     return metrics
 
 
+def refusal_metrics(events, start_us):
+    """Planning jobs a full worker pool refused (D73, D138). The client hears nothing and retries,
+    so nothing else tells shed work from slow work."""
+    metrics = {"plans_refused": 0}
+    for source, es in node_events(events).items():
+        refused = sum(1 for e in es if e["ev"] == "overloaded" and e["ts_us"] >= start_us)
+        metrics["plans_refused"] += refused
+        metrics[f"plans_refused_node_{source.split('-')[1]}"] = refused
+    return metrics
+
+
+def convergence_metrics(events):
+    """Digests at fixed log indexes (D138). A digest chains over the whole log before it, so one
+    equal digest shows that everything before it was equal too. A rejoin is confirmed by the first
+    checkpoint its node logs after `rejoined`, if another node logged that index with the same
+    digest. Over the whole run, warm-up included: state from any time counts."""
+    logs = node_events(events)
+    digests = defaultdict(set)
+    nodes = defaultdict(set)
+    for source, es in logs.items():
+        for e in es:
+            if e["ev"] == "state_checkpoint":
+                digests[e["log_index"]].add(e["digest"])
+                nodes[e["log_index"]].add(source)
+    confirmed = 0
+    for source, es in logs.items():
+        for at, e in enumerate(es):
+            if e["ev"] != "rejoined":
+                continue
+            index = next((c["log_index"] for c in es[at + 1:] if c["ev"] == "state_checkpoint"), None)
+            if index is not None and nodes[index] - {source} and len(digests[index]) == 1:
+                confirmed += 1
+    return {
+        "digest_checkpoints_compared": sum(1 for seen_by in nodes.values() if len(seen_by) > 1),
+        "digest_mismatches": sum(1 for found in digests.values() if len(found) > 1),
+        "rejoins_digest_confirmed": confirmed,
+        "rejoin_targets_lowered": sum(
+            1 for es in logs.values() for e in es if e["ev"] == "rejoin_target_lowered"
+        ),
+    }
+
+
 def message_metrics(events, start_us, completed):
     """Messages sent in the measured time, per answered request. Counters are cumulative."""
     per_kind = defaultdict(int)
@@ -322,6 +364,8 @@ def analyse_run(run_dir):
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
     metrics.update(fault_metrics(events, done))
+    metrics.update(refusal_metrics(events, start))
+    metrics.update(convergence_metrics(events))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))

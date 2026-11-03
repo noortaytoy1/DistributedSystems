@@ -178,7 +178,7 @@ impl RaftNode {
         }
         .validate()?;
 
-        let (state_machine, state) = StateMachineStore::new();
+        let (state_machine, state) = StateMachineStore::new(log.clone());
         // openraft's default 500 ms backoff would delay catching up a node that just returned.
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());

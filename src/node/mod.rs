@@ -425,7 +425,17 @@ async fn plan_on_workers(
                 started.elapsed(),
             )
         })
-        .await?;
+        .await
+        .inspect_err(|_| {
+            // The client hears nothing and retries, so only this tells shed work from slow work.
+            let pool = ctx.workers.load();
+            ctx.log.log(Event::Overloaded {
+                request: req.id,
+                attempt: req.attempt,
+                queued: pool.queued,
+                running: pool.running,
+            });
+        })?;
     ctx.bids.record_service(planning);
     Ok(plan)
 }
@@ -570,7 +580,7 @@ mod tests {
     use bytes::Bytes;
     use tokio::sync::mpsc;
 
-    use super::testing::{ScriptedConsensus, context, log_dir, logged};
+    use super::testing::{ScriptedConsensus, context, log_dir, logged, until};
     use super::*;
     use crate::proto::{self, Capability, Incident, Point};
 
@@ -654,6 +664,49 @@ mod tests {
         let events = logged(&ctx.log, &dir);
         assert!(events.iter().any(|e| e["ev"] == "request_received"));
         assert!(!events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_planning_job_is_logged() {
+        let dir = log_dir("overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |c| {
+            c.workers.threads = 1;
+            c.workers.queue_capacity = 0;
+        });
+        // Keep the only worker busy until this test lets it go.
+        let (let_go, hold) = std::sync::mpsc::channel::<()>();
+        let busy = {
+            let workers = ctx.workers.clone();
+            tokio::spawn(async move { workers.run(move || hold.recv()).await })
+        };
+        until("the worker to be busy", || ctx.workers.load().running == 1).await;
+
+        let refused = plan_on_workers(&ctx, &request(), Vec::new()).await;
+
+        assert!(refused.is_err());
+        let _ = let_go.send(());
+        busy.await.unwrap().unwrap().unwrap();
+        let events = logged(&ctx.log, &dir);
+        let event = events.iter().find(|e| e["ev"] == "overloaded").unwrap();
+        assert_eq!(event["request"]["seq"], 1);
+        assert_eq!(event["attempt"], 0);
+        assert_eq!(event["queued"], 0);
+        assert_eq!(event["running"], 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_accepted_planning_job_logs_no_refusal() {
+        let dir = log_dir("not-overloaded");
+        let log = EventLog::to_dir(&dir, "node-1").unwrap();
+        let ctx = context(ScriptedConsensus::new(1), log, |_| {});
+
+        assert!(plan_on_workers(&ctx, &request(), Vec::new()).await.is_ok());
+
+        let events = logged(&ctx.log, &dir);
+        assert!(!events.iter().any(|e| e["ev"] == "overloaded"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

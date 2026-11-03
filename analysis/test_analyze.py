@@ -50,9 +50,12 @@ def synthetic_run():
 
     node1 = [
         {"ts_us": T0 + 3 * S, "ev": "raft_state", "term": 2, "leader": 1, "role": "leader", "last_applied": 1},
+        {"ts_us": T0 + 4 * S, "ev": "state_checkpoint", "log_index": 100, "digest": 1111},
         {"ts_us": T0 + 5 * S, "ev": "silenced", "ms": 2000},
         {"ts_us": T0 + 7 * S, "ev": "restored"},
+        {"ts_us": T0 + 7 * S, "ev": "rejoin_target_lowered", "from": 9, "to": 5},
         {"ts_us": T0 + 7 * S, "ev": "rejoined", "leader_commit": 5, "applied": 5, "recovery_us": 40_000},
+        {"ts_us": T0 + 8 * S, "ev": "state_checkpoint", "log_index": 200, "digest": 2222},
         {"ts_us": T0 + 3 * S, "ev": "resource_usage", "rss_kb": 2048, "cpu_ticks": 100,
          "net_rx_bytes": 0, "net_tx_bytes": 0, "queued": 2, "running": 1},
         {"ts_us": T0 + 4 * S, "ev": "resource_usage", "rss_kb": 4096, "cpu_ticks": 150,
@@ -68,8 +71,14 @@ def synthetic_run():
         {"ts_us": T0 + 3 * S, "ev": "bid_round_closed", "request": request(1), "attempt": 0, "winner": 2,
          "i_won": True, "bids_seen": 3, "my_score": 1, "window_us": 20_000},
         {"ts_us": T0 + 7 * S + 100_000, "ev": "raft_state", "term": 4, "leader": 2, "role": "leader", "last_applied": 1},
+        {"ts_us": T0 + 4 * S, "ev": "state_checkpoint", "log_index": 100, "digest": 1111},
+        {"ts_us": T0 + 6 * S, "ev": "state_checkpoint", "log_index": 200, "digest": 2222},
+        {"ts_us": T0 + 9 * S, "ev": "state_checkpoint", "log_index": 300, "digest": 3333},
     ]
     node3 = [
+        {"ts_us": T0 + 1 * S, "ev": "overloaded", "request": request(0), "attempt": 0, "queued": 64, "running": 4},
+        {"ts_us": T0 + 4 * S, "ev": "overloaded", "request": request(2), "attempt": 0, "queued": 64, "running": 4},
+        {"ts_us": T0 + 5 * S, "ev": "overloaded", "request": request(3), "attempt": 1, "queued": 64, "running": 4},
         {"ts_us": T0 + 3 * S, "ev": "bid_round_closed", "request": request(1), "attempt": 0, "winner": 3,
          "i_won": True, "bids_seen": 2, "my_score": 1, "window_us": 40_000},
         {"ts_us": T0 + 4 * S, "ev": "bid_round_closed", "request": request(2), "attempt": 0, "winner": 2,
@@ -156,6 +165,33 @@ class OneRun(unittest.TestCase):
 
     def test_an_election_right_after_a_rejoin_counts_against_it(self):
         self.assertEqual(self.m["elections_after_rejoin"], 1)  # term 4, 100 ms after
+
+    def test_refused_planning_jobs_count_in_the_measured_time_per_node(self):
+        self.assertEqual(self.m["plans_refused"], 2)  # the third is in the warm-up
+        self.assertEqual(self.m["plans_refused_node_3"], 2)
+        self.assertEqual(self.m["plans_refused_node_1"], 0)
+
+    def test_digests_are_compared_at_the_same_index(self):
+        self.assertEqual(self.m["digest_checkpoints_compared"], 2)  # 300 has one node's word only
+        self.assertEqual(self.m["digest_mismatches"], 0)
+        self.assertEqual(self.m["rejoins_digest_confirmed"], 1)
+        self.assertEqual(self.m["rejoin_targets_lowered"], 1)
+
+    def test_a_different_digest_at_an_index_is_a_mismatch_and_confirms_no_rejoin(self):
+        events = synthetic_run()
+        for e in events["node-1"]:
+            if e["ev"] == "state_checkpoint" and e["log_index"] == 200:
+                e["digest"] = 9999
+        metrics = analyze.convergence_metrics(events)
+        self.assertEqual(metrics["digest_mismatches"], 1)
+        self.assertEqual(metrics["rejoins_digest_confirmed"], 0)
+
+    def test_a_rejoin_with_no_checkpoint_after_it_is_not_confirmed(self):
+        events = synthetic_run()
+        events["node-1"] = [
+            e for e in events["node-1"] if not (e["ev"] == "state_checkpoint" and e["log_index"] == 200)
+        ]
+        self.assertEqual(analyze.convergence_metrics(events)["rejoins_digest_confirmed"], 0)
 
     def test_conflicts_by_reason(self):
         self.assertEqual(self.m["conflicts_responder_taken"], 1)

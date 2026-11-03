@@ -69,6 +69,13 @@ pub enum Event {
         last_applied: u64,
         digest: u64,
     },
+    /// The digest right after applying a log index that is a multiple of
+    /// `store::CHECKPOINT_EVERY`. Every node applies every index, so these can be compared between
+    /// nodes under load, which the once-a-second `state_digest` cannot (D138).
+    StateCheckpoint {
+        log_index: u64,
+        digest: u64,
+    },
     /// Cumulative message counts by type (E5).
     Messages {
         sent: BTreeMap<&'static str, u64>,
@@ -197,6 +204,16 @@ pub enum Event {
         responder: Option<ResponderId>,
         winner_responder: Option<ResponderId>,
         winner_executor: Option<NodeId>,
+    },
+
+    // --- planner and workers (E)
+    /// The worker pool was full and refused this planning job (D48, D73). `queued` and `running`
+    /// are the pool at that moment.
+    Overloaded {
+        request: RequestId,
+        attempt: u32,
+        queued: usize,
+        running: usize,
     },
 
     // --- responders (E)

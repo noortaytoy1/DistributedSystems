@@ -36,7 +36,8 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Load distribution and fairness | `share_node_<n>`, `fairness_jain`; plot `fairness.png` |
 | Before, during and after a failure | `before_*`, `during_*`, `after_*`; plot `fault_phases.png` |
 | Failover, recovery, convergence | `detection_mean_ms`, `takeover_wait_mean_ms`, `recovery_mean_ms`, `elections_after_rejoin` (FT-6) |
-| CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean` |
+| Convergence after a rejoin (D138) | `digest_checkpoints_compared`, `digest_mismatches` (must be 0), `rejoins_digest_confirmed` against `rejoins`, `rejoin_targets_lowered` (D135) |
+| CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean`; shed work as `plans_refused`, `plans_refused_node_<n>` (D138) |
 | Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers` |
 | Plans with no responder (D111) | `no_responder_share` |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
