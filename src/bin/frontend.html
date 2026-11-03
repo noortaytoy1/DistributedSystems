@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RescueMesh client</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --ink: #1c2230;
+  --muted: #5d6677;
+  --line: #d9dde5;
+  --accent: #1f5fbf;
+  --accent-ink: #ffffff;
+  --amber-bg: #ffe9b0;
+  --amber-ink: #5c3d00;
+  --red-bg: #fbd9d6;
+  --red-ink: #7a1610;
+  --green-ink: #17693a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d;
+    --panel: #1d2129;
+    --ink: #e6e9ef;
+    --muted: #9aa3b5;
+    --line: #333946;
+    --accent: #5b9bf0;
+    --accent-ink: #0d1420;
+    --amber-bg: #5c4400;
+    --amber-ink: #ffe9b0;
+    --red-bg: #5e1e1a;
+    --red-ink: #fbd9d6;
+    --green-ink: #6fd39a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  flex-wrap: wrap;
+}
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 0 0 6px; }
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 8px 8px;
+  min-height: 0;
+}
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
+form { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end; margin-bottom: 6px; }
+label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 11px; }
+input, select, button { font: inherit; color: var(--ink); }
+input, select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 5px;
+  height: 26px;
+}
+input[type="number"] { width: 84px; }
+button {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+button.quiet { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+.line { min-height: 1.35em; }
+.banner { padding: 3px 8px; border-radius: 4px; font-weight: 600; }
+.banner.amber { background: var(--amber-bg); color: var(--amber-ink); }
+.banner.red { background: var(--red-bg); color: var(--red-ink); }
+.card {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin-bottom: 6px;
+}
+.card .banner { margin-bottom: 4px; }
+.card p { margin: 1px 0; }
+.card .main-line { font-weight: 600; }
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 7px;
+  margin-right: 6px;
+  font-size: 11px;
+}
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 2px 5px; text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 11px; position: sticky; top: 0; background: var(--panel); }
+td.mono, pre { font-family: var(--mono); font-size: 11px; }
+pre { margin: 0; white-space: pre-wrap; }
+tr.down td { color: var(--red-ink); background: var(--red-bg); }
+tr.stale td { color: var(--muted); }
+.yes { color: var(--green-ink); font-weight: 600; }
+.warn { color: var(--red-ink); font-weight: 600; }
+.chip {
+  display: inline-block;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 9px;
+  padding: 0 8px;
+  margin-right: 4px;
+}
+.update { border-bottom: 1px solid var(--line); padding: 2px 0; }
+[hidden] { display: none !important; }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  body { display: block; }
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  section { max-height: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>RescueMesh</h1>
+  <span id="whoami" class="muted"></span>
+  <div id="local-banner" class="banner red" hidden>Local program not answering. Node state unknown.</div>
+</header>
+<main>
+  <section id="report-panel" aria-label="Report an incident">
+    <h2>Report an incident</h2>
+    <form id="report-form">
+      <label>Zone <select id="report-zone"></select></label>
+      <label>Severity <select id="report-severity"></select></label>
+      <label>Help needed <select id="report-needs"></select></label>
+      <label>Who sent it (user no.) <input id="report-who" type="number" min="0" step="1" value="1" required></label>
+      <label>Valid for (s) <input id="report-valid" type="number" min="1" step="1" value="60" required></label>
+      <button id="report-send" type="submit">Send</button>
+    </form>
+    <div id="report-wait" class="muted small line"></div>
+    <div id="cards" class="scroll"></div>
+  </section>
+
+  <section id="nodes-panel" aria-label="Cloud nodes">
+    <h2>Cloud nodes</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Node</th><th>Role</th><th>Term</th><th>Leader</th><th>Log</th><th>Applied</th>
+          <th>Digest</th><th>Serving</th><th>Silenced</th><th>Degraded</th><th>Members</th>
+        </tr></thead>
+        <tbody id="nodes-body"></tbody>
+      </table>
+    </div>
+    <div class="muted small">The leader only orders the log; there is at most one leader per term. Equal digests at equal applied numbers mean the same state.</div>
+  </section>
+
+  <section id="load-panel" aria-label="User load">
+    <h2>User load</h2>
+    <form id="load-form">
+      <label>How many user processes <input id="load-users" type="number" min="1" step="1" required></label>
+      <label>Pattern <select id="load-pattern"></select></label>
+      <label>Wait between reports (ms) <input id="load-think" type="number" min="1" step="1" required></label>
+      <label>Duration (s) <input id="load-duration" type="number" min="1" step="1" required></label>
+      <button id="load-start" type="submit">Start</button>
+      <button id="load-stop" type="button" class="quiet">Stop</button>
+    </form>
+    <div id="load-plan" class="muted small line"></div>
+    <div id="load-error" class="warn small" hidden></div>
+    <div id="load-totals" class="small line"></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Program</th><th>PID</th><th>Users</th><th>Pattern</th><th>State</th><th>Exit</th><th>Printed summary</th></tr></thead>
+        <tbody id="load-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="zones-panel" aria-label="Zone updates">
+    <h2>Zone updates</h2>
+    <form id="zones-form">
+      <label>Zone <select id="zones-zone"></select></label>
+      <button id="zones-register" type="submit">Register</button>
+      <button id="zones-clear" type="button" class="quiet">Clear</button>
+      <span id="zones-chips"></span>
+    </form>
+    <div id="zones-note" class="muted small line"></div>
+    <div id="zones-list" class="scroll"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const MAX_CARDS = 10;
+const MAX_UPDATES_SHOWN = 50;
+const STATUS_TIMEOUT_MS = 2000;
+const STATUS_PAUSE_MS = 500;
+const UNREACHABLE_AFTER_MS = 3000;
+const LOAD_POLL_MS = 1000;
+const ZONES_POLL_MS = 500;
+
+const $ = (id) => document.getElementById(id);
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function setOptions(select, options) {
+  select.replaceChildren(...options.map(([value, label]) => {
+    const option = el("option", "", label);
+    option.value = String(value);
+    return option;
+  }));
+}
+
+// Every value is digits or an enum name, and each API path answers JSON whatever its status.
+async function call(method, path, params, timeoutMs) {
+  const search = new URLSearchParams(params || {}).toString();
+  const controller = new AbortController();
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(search ? path + "?" + search : path, { method, signal: controller.signal });
+    return await response.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
+}
+
+function setHidden(node, hidden) {
+  node.hidden = hidden;
+}
+
+// --- report form and cards
+
+const cards = [];
+let sending = false;
+
+function responderLine(r) {
+  if (r.responder === null) return "No responder free right now";
+  return "Responder " + r.responder + " (" + r.responder_capability + ", zone " + r.responder_zone + "), " + r.cost_m + " m";
+}
+
+function renderCard(r) {
+  const card = el("article", "card");
+  if (!r.ok) {
+    card.append(el("div", "banner red", r.error));
+    return card;
+  }
+  if (r.provisional) {
+    card.append(el("div", "banner amber", "PROVISIONAL: not committed, may change when peers return"));
+  }
+  if (r.expired) {
+    card.append(el("div", "banner red", "EXPIRED: too old when it reached the cloud, nobody was sent"));
+  }
+  card.append(el("p", "main-line", r.expired ? "Nobody sent" : responderLine(r)));
+  const tags = el("p");
+  tags.append(el("span", "pill", "Status: " + r.status));
+  tags.append(el("span", "pill", "Priority: " + (r.priority === null ? "not available yet" : r.priority)));
+  card.append(tags);
+  card.append(el("p", "", "Planned by node " + r.planned_by + ", answered by node " + r.answered_by));
+  if (r.request !== null) {
+    card.append(el("p", "", "Request " + r.request + ". Committed at log index " + r.log_index + ", proposed in term " + r.term));
+  }
+  card.append(el("p", "muted small", (r.latency_us / 1000).toFixed(1) + " ms, " + plural(r.attempts, "attempt")
+    + ". Zone " + r.zone + ", severity " + r.severity + ", " + r.needs + ", from user " + r.who + ", valid for " + r.valid_for_s + " s"));
+  if (r.not_carried.length > 0) {
+    card.append(el("p", "muted small", "Not available yet: the cloud does not carry " + r.not_carried.join(" or ") + " on this build, so they show here only"));
+  }
+  return card;
+}
+
+function addCard(result) {
+  cards.unshift(renderCard(result));
+  cards.length = Math.min(cards.length, MAX_CARDS);
+  $("cards").replaceChildren(...cards);
+}
+
+async function sendReport(event) {
+  event.preventDefault();
+  if (sending) return;
+  sending = true;
+  $("report-send").disabled = true;
+  const started = performance.now();
+  const showWait = () => {
+    $("report-wait").textContent = "Waiting for the first answer: " + ((performance.now() - started) / 1000).toFixed(1) + " s";
+  };
+  showWait();
+  const ticker = setInterval(showWait, 100);
+  try {
+    addCard(await call("POST", "/api/report", {
+      zone: $("report-zone").value,
+      severity: $("report-severity").value,
+      needs: $("report-needs").value,
+      who: $("report-who").value,
+      valid_for_s: $("report-valid").value,
+    }));
+  } catch (error) {
+    addCard({ ok: false, error: "Local program not answering; the report may or may not have gone out." });
+  } finally {
+    clearInterval(ticker);
+    $("report-wait").textContent = "";
+    $("report-send").disabled = false;
+    sending = false;
+  }
+}
+
+// --- node table
+
+const nodeMemory = new Map();
+
+function yesNo(value, goodWhenTrue) {
+  return el("td", value === goodWhenTrue ? "yes" : (value ? "warn" : ""), value ? "yes" : "no");
+}
+
+function shown(value) {
+  return value === null || value === undefined ? "-" : value;
+}
+
+function renderNodeRow(node, now) {
+  const memory = nodeMemory.get(node.id) || { good: null, firstMiss: null };
+  if (node.reachable) {
+    memory.good = node;
+    memory.firstMiss = null;
+  } else if (memory.firstMiss === null) {
+    memory.firstMiss = now;
+  }
+  nodeMemory.set(node.id, memory);
+
+  const row = el("tr");
+  row.append(el("td", "", node.id));
+  const missedFor = node.reachable ? 0 : now - memory.firstMiss;
+  if (!node.reachable && missedFor >= UNREACHABLE_AFTER_MS) {
+    // Told by the local program across polls spanning 3 s, so a slow page cannot fake an outage.
+    row.className = "down";
+    const cell = el("td", "", "unreachable: " + node.error);
+    cell.colSpan = 10;
+    row.append(cell);
+    return row;
+  }
+  const data = memory.good;
+  if (data === null) {
+    const cell = el("td", "muted", "no answer yet");
+    cell.colSpan = 10;
+    row.append(cell);
+    return row;
+  }
+  if (!node.reachable) row.className = "stale";
+  // A silenced node still reports its role, but it hears nobody, so these may be out of date.
+  const lastKnown = data.silenced ? " (last known)" : "";
+  row.append(el("td", "", data.role + lastKnown));
+  row.append(el("td", "", data.term + lastKnown));
+  row.append(el("td", "", shown(data.leader) + lastKnown));
+  row.append(el("td", "", shown(data.last_log_index)));
+  row.append(el("td", "", shown(data.last_applied)));
+  row.append(el("td", "mono", data.digest));
+  row.append(yesNo(data.serving, true));
+  row.append(yesNo(data.silenced, false));
+  row.append(yesNo(data.degraded, false));
+  let members = "not available yet";
+  if (data.members !== null) members = data.silenced ? "-" : data.members.join(",");
+  row.append(el("td", data.members === null ? "muted small" : "", members));
+  return row;
+}
+
+async function pollStatus() {
+  try {
+    const data = await call("GET", "/api/status", null, STATUS_TIMEOUT_MS);
+    const now = performance.now();
+    $("nodes-body").replaceChildren(...data.nodes.map((node) => renderNodeRow(node, now)));
+    setHidden($("local-banner"), true);
+  } catch (error) {
+    setHidden($("local-banner"), false);
+  } finally {
+    setTimeout(pollStatus, STATUS_PAUSE_MS);
+  }
+}
+
+// --- load box
+
+let lastLoad = "";
+
+// Same split as the server: at most ten programs, and the first ones take the remainder.
+function splitLine(users) {
+  if (!Number.isInteger(users) || users < 1) return "";
+  const programs = Math.min(users, 10);
+  const each = Math.floor(users / programs);
+  const extra = users % programs;
+  const shares = extra === 0
+    ? programs + " x " + plural(each, "user")
+    : extra + " x " + plural(each + 1, "user") + " + " + (programs - extra) + " x " + plural(each, "user");
+  return "Runs as " + plural(programs, "real background program") + ": " + shares + ".";
+}
+
+function renderLoad(data) {
+  const text = JSON.stringify(data);
+  if (text === lastLoad) return;
+  lastLoad = text;
+  $("load-totals").textContent = data.running_users + " users running in " + plural(data.running_programs, "program") + ".";
+  $("load-body").replaceChildren(...data.rows.map((row) => {
+    const tr = el("tr");
+    tr.append(el("td", "mono", row.client_id));
+    tr.append(el("td", "mono", shown(row.pid)));
+    tr.append(el("td", "", row.users));
+    tr.append(el("td", "", row.pattern));
+    const stateNote = row.state === "stopped" && row.summary === null ? "stopped early" : row.state;
+    tr.append(el("td", row.state === "failed" ? "warn" : "", stateNote));
+    tr.append(el("td", "", shown(row.exit_code)));
+    const summary = el("td");
+    summary.style.whiteSpace = "normal";
+    summary.append(el("pre", "", row.summary === null ? "" : row.summary));
+    tr.append(summary);
+    return tr;
+  }));
+}
+
+async function pollLoad() {
+  try {
+    renderLoad(await call("GET", "/api/load", null, STATUS_TIMEOUT_MS));
+  } catch (error) {
+    // The status poll owns the banner for a silent local program.
+  } finally {
+    setTimeout(pollLoad, LOAD_POLL_MS);
+  }
+}
+
+function loadError(message) {
+  $("load-error").textContent = message || "";
+  setHidden($("load-error"), !message);
+}
+
+async function startLoad(event) {
+  event.preventDefault();
+  $("load-start").disabled = true;
+  try {
+    const answer = await call("POST", "/api/load/start", {
+      users: $("load-users").value,
+      pattern: $("load-pattern").value,
+      think_ms: $("load-think").value,
+      duration_s: $("load-duration").value,
+    });
+    loadError(answer.ok ? "" : answer.error);
+    renderLoad(await call("GET", "/api/load", null, STATUS_TIMEOUT_MS));
+  } catch (error) {
+    loadError("Local program not answering.");
+  } finally {
+    $("load-start").disabled = false;
+  }
+}
+
+async function stopLoad() {
+  try {
+    const answer = await call("POST", "/api/load/stop");
+    loadError(answer.ok ? "" : answer.error);
+  } catch (error) {
+    loadError("Local program not answering.");
+  }
+}
+
+// --- zone updates
+
+let lastZoneSeq = 0;
+let zoneRows = [];
+
+function updateLine(u) {
+  const plan = u.responder === null
+    ? "no responder free"
+    : "responder " + u.responder + " (" + u.responder_capability + ", zone " + u.responder_zone + "), " + u.cost_m + " m";
+  return "Zone " + u.zone + ": severity " + u.severity + ", needs " + u.needs + ". Plan: " + plan
+    + ", planned by node " + u.planned_by + ", log " + u.log_index;
+}
+
+function renderChips(zones) {
+  $("zones-chips").replaceChildren(...zones.map((zone) => el("span", "chip", "Zone " + zone)));
+}
+
+async function pollZones() {
+  try {
+    const data = await call("GET", "/api/zones", { after: lastZoneSeq }, STATUS_TIMEOUT_MS);
+    renderChips(data.zones);
+    if (data.unavailable) {
+      $("zones-note").textContent = data.unavailable;
+    } else {
+      $("zones-note").textContent = data.note || (data.zones.length ? "Listening. New reports and plans appear here." : "Register a zone to follow its new reports and plans.");
+    }
+    if (data.updates.length > 0) {
+      zoneRows = data.updates.slice().reverse().map((u) => el("div", "update", updateLine(u))).concat(zoneRows);
+      zoneRows.length = Math.min(zoneRows.length, MAX_UPDATES_SHOWN);
+      $("zones-list").replaceChildren(...zoneRows);
+    }
+    lastZoneSeq = data.last_seq;
+  } catch (error) {
+    // The status poll owns the banner for a silent local program.
+  } finally {
+    setTimeout(pollZones, ZONES_POLL_MS);
+  }
+}
+
+async function registerZone(event) {
+  event.preventDefault();
+  $("zones-register").disabled = true;
+  try {
+    const answer = await call("POST", "/api/zones/register", { zone: $("zones-zone").value });
+    $("zones-note").textContent = answer.ok ? "Registered." : answer.error;
+  } catch (error) {
+    $("zones-note").textContent = "Local program not answering.";
+  } finally {
+    $("zones-register").disabled = false;
+  }
+}
+
+async function clearZones() {
+  try {
+    await call("POST", "/api/zones/clear");
+    zoneRows = [];
+    $("zones-list").replaceChildren();
+  } catch (error) {
+    $("zones-note").textContent = "Local program not answering.";
+  }
+}
+
+// --- start
+
+async function start() {
+  let info;
+  try {
+    info = await call("GET", "/api/info", null, STATUS_TIMEOUT_MS);
+  } catch (error) {
+    setHidden($("local-banner"), false);
+    setTimeout(start, 1000);
+    return;
+  }
+  setHidden($("local-banner"), true);
+  $("whoami").textContent = "client " + info.client_id + ". Reports go to all nodes; no node is chosen here.";
+
+  const zones = [];
+  for (let zone = 0; zone < info.zones; zone += 1) zones.push([zone, "Zone " + zone]);
+  setOptions($("report-zone"), zones);
+  setOptions($("zones-zone"), zones);
+  setOptions($("report-severity"), info.severities.map((s) => [s.value, s.value + " " + s.label]));
+  $("report-severity").value = "3";
+  setOptions($("report-needs"), info.capabilities.map((c) => [c, c]));
+  setOptions($("load-pattern"), info.patterns.map((p) => [p.name, p.available ? p.label : p.label + " (not available yet)"]));
+  $("report-who").value = info.defaults.who;
+  $("report-valid").value = info.defaults.valid_for_s;
+  $("report-valid").min = info.limits.valid_for_s_min;
+  $("report-valid").max = info.limits.valid_for_s_max;
+  $("load-users").value = info.defaults.users;
+  $("load-users").max = info.limits.running_users;
+  $("load-think").value = info.defaults.think_ms;
+  $("load-think").min = info.limits.think_ms_min;
+  $("load-duration").value = info.defaults.duration_s;
+  $("load-duration").max = info.limits.duration_s_max;
+
+  const planLine = () => {
+    $("load-plan").textContent = splitLine(Number($("load-users").value));
+  };
+  planLine();
+  $("load-users").addEventListener("input", planLine);
+  $("report-form").addEventListener("submit", sendReport);
+  $("load-form").addEventListener("submit", startLoad);
+  $("load-stop").addEventListener("click", stopLoad);
+  $("zones-form").addEventListener("submit", registerZone);
+  $("zones-clear").addEventListener("click", clearZones);
+
+  pollStatus();
+  pollLoad();
+  pollZones();
+}
+
+start();
+</script>
+</body>
+</html>
