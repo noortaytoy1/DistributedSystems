@@ -15,7 +15,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use rescuemesh::client::control;
 use rescuemesh::config::Config;
-use rescuemesh::proto::{ControlReply, ControlRequest};
+use rescuemesh::proto::{ControlReply, ControlRequest, NodeStatus};
 
 #[derive(Parser)]
 #[command(about = "Inspect and inject faults into a RescueMesh cluster")]
@@ -28,7 +28,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show term, leader, log position and state digest of every node.
+    /// Show term, leader, log position, state digest and group members of every node.
     Status,
     /// Drop all traffic in and out of a node for a while.
     Silence {
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn status(config: &Config) -> anyhow::Result<()> {
     println!(
-        "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8}",
+        "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8} {:>7}",
         "node",
         "role",
         "term",
@@ -77,12 +77,13 @@ async fn status(config: &Config) -> anyhow::Result<()> {
         "results",
         "serving",
         "silenced",
-        "degraded"
+        "degraded",
+        "members"
     );
     for n in &config.cluster.nodes {
         match control(&n.client_addr, ControlRequest::Status, TIMEOUT).await {
             Ok(ControlReply::Status(s)) => println!(
-                "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8}",
+                "{:>4} {:>10} {:>6} {:>6} {:>8} {:>8} {:>18} {:>8} {:>7} {:>8} {:>8} {:>7}",
                 s.id,
                 s.role,
                 s.term,
@@ -93,7 +94,8 @@ async fn status(config: &Config) -> anyhow::Result<()> {
                 s.results,
                 s.serving,
                 s.silenced,
-                s.degraded
+                s.degraded,
+                members_column(&s)
             ),
             Ok(other) => println!("{:>4} unexpected reply: {other:?}", n.id),
             Err(e) => println!("{:>4} unreachable: {e}", n.id),
@@ -118,4 +120,43 @@ async fn send(config: &Config, node: u64, request: ControlRequest) -> anyhow::Re
 
 fn opt<T: ToString>(v: Option<T>) -> String {
     v.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+}
+
+/// `1,3`, or `-` while silenced: the list is frozen then, and must not read as a live one (D155).
+fn members_column(status: &NodeStatus) -> String {
+    if status.silenced {
+        return "-".into();
+    }
+    let members: Vec<String> = status.members.iter().map(ToString::to_string).collect();
+    members.join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(silenced: bool, members: Vec<u64>) -> NodeStatus {
+        NodeStatus {
+            id: 1,
+            term: 1,
+            leader: Some(1),
+            role: "leader".into(),
+            last_log_index: None,
+            last_applied: None,
+            digest: 0,
+            results: 0,
+            responders: 0,
+            silenced,
+            serving: !silenced,
+            degraded: false,
+            members,
+        }
+    }
+
+    #[test]
+    fn members_print_as_a_list_and_as_a_dash_while_silenced() {
+        assert_eq!(members_column(&status(false, vec![1, 3])), "1,3");
+        assert_eq!(members_column(&status(false, vec![3])), "3");
+        assert_eq!(members_column(&status(true, vec![1, 2, 3])), "-");
+    }
 }

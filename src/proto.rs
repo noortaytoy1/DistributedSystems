@@ -301,6 +301,9 @@ pub struct NodeStatus {
     pub serving: bool,
     /// True while this node answers without a commit, with every peer gone (D121).
     pub degraded: bool,
+    /// Who this node lists in the group: reachable, not able to serve, and this node's opinion
+    /// only (D155). Frozen while the node is silenced.
+    pub members: Vec<NodeId>,
 }
 
 // ---------------------------------------------------------------------------------------------

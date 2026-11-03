@@ -165,6 +165,13 @@ pub enum Event {
         peer: NodeId,
         down_ms: u64,
     },
+    /// This node's list of who is in the group, once at start and once per change (D152, D155).
+    /// `view` counts this process's changes only, so it means nothing across nodes, and it starts
+    /// again at 1 in the same file after a restart.
+    GroupView {
+        view: u64,
+        members: Vec<NodeId>,
+    },
     /// This node lost the round and plans the request instead of `winner` (D110). `rank` is its
     /// place in the round's ranking (1 = runner-up); `reason` is `suspected` or `backstop`.
     /// `waited_us` runs from the round closing to here: E3 takeover time.

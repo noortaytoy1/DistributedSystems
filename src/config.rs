@@ -70,6 +70,7 @@ pub struct Timers {
     /// Timeout for one non-Raft peer RPC (bid, heartbeat, forwarded proposal attempt).
     pub peer_rpc_timeout_ms: u64,
     /// Every peer suspected for this long, and a serving node answers without a commit (D121).
+    /// One peer suspected for this long leaves this node's group member list (D153).
     pub degraded_after_ms: u64,
 }
 
