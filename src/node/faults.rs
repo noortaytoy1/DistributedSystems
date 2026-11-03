@@ -422,9 +422,10 @@ async fn run_schedule(ctx: Arc<NodeContext>, seed: u64) {
             }
             Step::Ended(end) => {
                 log_round(&ctx, &end);
-                let silence = end
-                    .elected
-                    .map_or(Duration::ZERO, |e| Duration::from_millis(e.ms));
+                // Usually a peer's number. No value of it may be able to stop the schedule.
+                let silence = end.elected.map_or(Duration::ZERO, |e| {
+                    Duration::from_millis(e.ms).min(MAX_FAULT)
+                });
                 let wait = between(&mut waits, faults.interval());
                 lock(&election.rounds).set_next_call(Instant::now() + silence + wait);
                 if matches!(end.elected, Some(e) if e.victim == ctx.id) {
