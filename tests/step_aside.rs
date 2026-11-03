@@ -14,10 +14,13 @@ use common::{TestCluster, wait_until};
 use rescuemesh::client::{MeshClient, control};
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::metrics::{EventLog, now_ms};
+use rescuemesh::node::transport::ClientPort;
+use rescuemesh::node::{self, NodeHandle};
 use rescuemesh::proto::{
     Capability, Category, ControlReply, ControlRequest, Incident, NodeId, Point, Term, UserId,
 };
 use serde_json::Value;
+use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
@@ -437,6 +440,171 @@ async fn a_silenced_peer_stops_it_until_that_peer_is_back() {
     assert_eq!(all_events(&cluster, &dir, "leader_stepped_aside").len(), 1);
     load.finish().await;
     wait_for_equal_state(&cluster).await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// With nobody able to take over, the leader stays quiet long enough to be silenced in the middle of
+/// it. Its try must end at once, and it must come back keeping its followers' timers from running out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_silenced_while_quiet_comes_back_with_heartbeats_on() {
+    let dir = log_dir("silenced-while-quiet");
+    let cluster = TestCluster::start_with(3, |c| config(c, &dir, 3_000)).await;
+    let (leader, term) = agreed_leader(&cluster).await;
+    let followers: Vec<NodeId> = (1..=3).filter(|id| *id != leader).collect();
+    for id in &followers {
+        cluster.node(*id).ctx.consensus.set_elect(false);
+    }
+    let load = Load::start(&cluster, 4);
+    load.wait_for_answers(20).await;
+    skew(&cluster, leader, SKEW).await;
+
+    wait_until(WAIT, "the leader to go quiet", || {
+        !events(&cluster, &dir, leader, "leader_stepped_aside").is_empty()
+    })
+    .await;
+    cluster.node(leader).ctx.gate.silence();
+    wait_until(WAIT, "the try to end", || {
+        !events(&cluster, &dir, leader, "leader_step_aside_ended").is_empty()
+    })
+    .await;
+    let ended = events(&cluster, &dir, leader, "leader_step_aside_ended");
+    assert_eq!(ended[0]["outcome"], "stopped", "{ended:?}");
+    assert!(ended[0]["waited_ms"].as_u64().unwrap() < 3_000, "{ended:?}");
+
+    cluster.node(leader).ctx.gate.restore();
+    skew(&cluster, leader, 0).await;
+    wait_until(WAIT, "the leader to serve again", || {
+        cluster.node(leader).ctx.serving.load(Ordering::SeqCst)
+    })
+    .await;
+    // Held writes went out, and nobody had to give up on the way.
+    load.wait_for_answers(20).await;
+    load.finish().await;
+
+    // With no writes left to hide them, only heartbeats now keep the followers from standing.
+    for id in &followers {
+        cluster.node(*id).ctx.consensus.set_elect(true);
+    }
+    stays(&cluster, leader, term, SETTLE).await;
+    wait_for_equal_state(&cluster).await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Bind a port a stopped node just gave up, which may take a moment.
+async fn restarted(config: &Config, id: NodeId) -> NodeHandle {
+    let me = config.node(id).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let peer = loop {
+        match TcpListener::bind(&me.peer_addr).await {
+            Ok(listener) => break listener,
+            Err(e) if Instant::now() > deadline => panic!("cannot bind again: {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+    let client = loop {
+        match ClientPort::bind(&me.client_addr).await {
+            Ok(port) => break port,
+            Err(e) if Instant::now() > deadline => panic!("cannot bind again: {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+    node::start_with(config.clone(), id, peer, client)
+        .await
+        .unwrap()
+}
+
+/// Killed in the middle of going quiet, with nobody able to take over, so the same node leads again
+/// after its restart: openraft resumes from its saved vote, in the same term. Going quiet lives only
+/// in the process, so it must lead with heartbeats on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_killed_while_quiet_leads_with_heartbeats_on_after_a_restart() {
+    let dir = log_dir("killed-while-quiet");
+    let saved = dir.join("saved");
+    let mut cluster = TestCluster::start_with(3, |c| {
+        config(c, &dir, 3_000);
+        c.storage.dir = Some(saved.clone());
+    })
+    .await;
+    let (leader, term) = agreed_leader(&cluster).await;
+    let followers: Vec<NodeId> = (1..=3).filter(|id| *id != leader).collect();
+    for id in &followers {
+        cluster.node(*id).ctx.consensus.set_elect(false);
+    }
+    let load = Load::start(&cluster, 4);
+    load.wait_for_answers(20).await;
+    skew(&cluster, leader, SKEW).await;
+
+    wait_until(WAIT, "the leader to go quiet", || {
+        !events(&cluster, &dir, leader, "leader_stepped_aside").is_empty()
+    })
+    .await;
+    let at = (leader - 1) as usize;
+    let killed = cluster.nodes.remove(at);
+    killed.shutdown().await;
+    let config = cluster.config.clone();
+    let back = restarted(&config, leader).await;
+    cluster.nodes.insert(at, back);
+
+    let mut new_term = term;
+    wait_until(WAIT, "every node to follow it again", || {
+        let views: Vec<_> = cluster
+            .nodes
+            .iter()
+            .map(|n| n.ctx.consensus.status())
+            .collect();
+        new_term = views[0].term;
+        new_term >= term
+            && views
+                .iter()
+                .all(|s| s.leader == Some(leader) && s.term == new_term)
+    })
+    .await;
+    wait_until(WAIT, "it to serve again", || {
+        cluster.node(leader).ctx.serving.load(Ordering::SeqCst)
+    })
+    .await;
+    load.wait_for_answers(20).await;
+    // The old process took its counters with it, and the client saw no answer lost for good.
+    load.finish().await;
+
+    for id in &followers {
+        cluster.node(*id).ctx.consensus.set_elect(true);
+    }
+    stays(&cluster, leader, new_term, SETTLE).await;
+    wait_for_equal_state(&cluster).await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every node that closes a round learns the silence it named, whichever node goes silent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_node_knows_of_a_drawn_silence_until_it_is_over() {
+    let dir = log_dir("drawn-silence");
+    let cluster = TestCluster::start_with(3, |c| {
+        config(c, &dir, 3_000);
+        c.faults.enabled = true;
+        c.faults.interval_min_ms = 3_000;
+        c.faults.interval_max_ms = 4_000;
+        c.faults.silence_min_ms = 2_000;
+        c.faults.silence_max_ms = 3_000;
+    })
+    .await;
+    wait_until(WAIT, "a draw that named a node", || {
+        cluster
+            .nodes
+            .iter()
+            .all(|n| n.ctx.fault_election.drawn_silence_going_on(Instant::now()))
+    })
+    .await;
+    wait_until(WAIT, "the silence to be over", || {
+        cluster
+            .nodes
+            .iter()
+            .any(|n| !n.ctx.fault_election.drawn_silence_going_on(Instant::now()))
+    })
+    .await;
     cluster.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }
