@@ -464,8 +464,9 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(self.m["udp_datagrams_per_req"], 6.0)
 
     def test_udp_losses_and_drops(self):
-        self.assertAlmostEqual(self.m["udp_request_loss_share"], 1 - 30 / 33)
-        self.assertAlmostEqual(self.m["udp_cancel_loss_share"], 1 - 20 / 22)
+        # Over the whole log, so the last counts: 63 calls and 42 cancels sent, 40 and 28 read.
+        self.assertAlmostEqual(self.m["udp_request_loss_share"], 1 - 40 / 63)
+        self.assertAlmostEqual(self.m["udp_cancel_loss_share"], 1 - 28 / 42)
         self.assertEqual(self.m["udp_gate_dropped"], 3)
         self.assertEqual(self.m["udp_queue_full"], 2)
         self.assertEqual(self.m["udp_bad"], 1)
@@ -473,6 +474,25 @@ class OneRun(unittest.TestCase):
         self.assertEqual(self.m["udp_drops_nodes"], 5)
         self.assertEqual(self.m["udp_drops_client_pc_max"], 2)
         self.assertEqual(self.m["udp_rcvbuf_got_min_bytes"], 425984)
+
+    def test_nothing_lost_reads_as_nothing_lost_whenever_each_process_samples(self):
+        # The node's first sample in the measured time comes most of a second after the client's. Measured
+        # from there, the client seems to have sent 2700 and the node to have read 2430: 10 percent "lost".
+        client = [udp_counters(T0 + S, tx_requests=300, tx_cancels=200),
+                  udp_counters(T0 + 10 * S, tx_requests=3000, tx_cancels=2000)]
+        node = [udp_counters(T0 + S + S // 10 * 9, rx_requests=570, rx_cancels=380),
+                udp_counters(T0 + 11 * S, rx_requests=3000, rx_cancels=2000)]
+        m = analyze.udp_metrics({"client-1": client, "node-1": node}, T0 + S // 2, 100)
+        self.assertEqual(m["udp_request_loss_share"], 0.0)
+        self.assertEqual(m["udp_cancel_loss_share"], 0.0)
+
+    def test_a_restarted_node_counts_every_life_in_the_udp_loss_share(self):
+        # Its counters start again from 0 after the restart, in the same log.
+        client = [udp_counters(T0, tx_requests=100), udp_counters(T0 + 9 * S, tx_requests=1000)]
+        node = [udp_counters(T0, rx_requests=100), udp_counters(T0 + 3 * S, rx_requests=400),
+                udp_counters(T0 + 6 * S, rx_requests=100), udp_counters(T0 + 9 * S, rx_requests=500)]
+        m = analyze.udp_metrics({"client-1": client, "node-1": node}, T0, 100)
+        self.assertAlmostEqual(m["udp_request_loss_share"], 1 - 900 / 1000)
 
     def test_a_cell_short_of_udp_buffer_gets_a_warning(self):
         warnings = analyze.udp_warnings({("e1", "c"): {

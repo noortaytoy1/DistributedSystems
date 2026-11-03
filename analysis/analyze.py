@@ -488,19 +488,45 @@ def resource_metrics(events, start_us):
     }
 
 
-def udp_metrics(events, start_us, completed):
-    """What the UDP client path carried and lost in the measured time (D172). The counters are
-    cumulative per process, so each is its last value minus its first.
+def whole_log_counts(samples, fields):
+    """What a process's cumulative counters add up to over its whole log. A node killed and restarted
+    counts from 0 again in the same file, so a counter that falls ends one life and starts the next."""
+    totals = defaultdict(int)
+    previous = {}
+    for sample in samples:
+        for field in fields:
+            value = sample.get(field, 0)
+            if value < previous.get(field, 0):
+                totals[field] += previous[field]
+            previous[field] = value
+    for field, value in previous.items():
+        totals[field] += value
+    return totals
 
-    Cancels are outside the msgs_ figures, which count what nodes send, so this is where they show.
-    Each process's samples start at its own clock's reading of `start_us`, so the two sides of a loss
-    share cover slightly different windows. Treat it as approximate."""
+
+def udp_metrics(events, start_us, completed):
+    """What the UDP client path carried and lost (D172). The counters are cumulative per process.
+
+    What it carried is per answered request, so it is over the measured time: each counter's last value
+    minus its first. Cancels are outside the msgs_ figures, which count what nodes send, so this is where
+    they show.
+
+    What it lost is over each process's whole log, warm-up included. Each process samples on its own
+    second, so over the measured time one side's count starts up to a second later than the other's, and
+    that read as 1 to 4 percent lost in a run where the kernel dropped nothing."""
     totals = {"client": defaultdict(int), "node": defaultdict(int)}
+    whole_log = {"client": defaultdict(int), "node": defaultdict(int)}
     drops = {"client": [], "node": []}
     rcvbufs = []
     for source, es in events.items():
         side = "client" if source.startswith("client-") else "node"
         rcvbufs += [e["rcvbuf_got_bytes"] for e in es if e["ev"] == "udp_socket"]
+        counts = whole_log_counts(
+            (e for e in es if e["ev"] == "udp_counters"),
+            ("tx_requests", "tx_cancels", "rx_requests", "rx_cancels"),
+        )
+        for field, value in counts.items():
+            whole_log[side][field] += value
         samples = [e for e in es if e["ev"] == "udp_counters" and e["ts_us"] >= start_us]
         if len(samples) < 2:
             continue
@@ -521,12 +547,11 @@ def udp_metrics(events, start_us, completed):
         metrics["udp_requests_per_req"] = client["tx_requests"] / completed
         metrics["udp_cancels_per_req"] = client["tx_cancels"] / completed
         metrics["udp_datagrams_per_req"] = (client["tx_datagrams"] + node["tx_datagrams"]) / completed
-    if client["tx_requests"]:
-        arrived = (node["rx_requests"] / client["tx_requests"])
-        metrics["udp_request_loss_share"] = max(1 - arrived, 0.0)
-    if client["tx_cancels"]:
-        arrived = node["rx_cancels"] / client["tx_cancels"]
-        metrics["udp_cancel_loss_share"] = max(1 - arrived, 0.0)
+    sent, read = whole_log["client"], whole_log["node"]
+    if sent["tx_requests"]:
+        metrics["udp_request_loss_share"] = max(1 - read["rx_requests"] / sent["tx_requests"], 0.0)
+    if sent["tx_cancels"]:
+        metrics["udp_cancel_loss_share"] = max(1 - read["rx_cancels"] / sent["tx_cancels"], 0.0)
     metrics["udp_gate_dropped"] = node["rx_gate_dropped"]
     metrics["udp_queue_full"] = node["rx_queue_full"]
     metrics["udp_bad"] = client["rx_bad"] + node["rx_bad"]

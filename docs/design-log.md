@@ -285,6 +285,7 @@ table below in sync.
 | D224 | The client gap counts a client that never hears again | C | Implemented, amends D138 |
 | D225 | A Raft that has stopped is not asked in a tight loop | D | Implemented, amends D135 |
 | D226 | The split as built: what D156 left to settle | all | Implemented |
+| D227 | The UDP loss shares count over each process's whole log | F, all | Implemented, amends D172 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7519,6 +7520,46 @@ them on the six PCs.
 
 ---
 
+### D227 · The UDP loss shares count over each process's whole log
+
+- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented, amends D172 · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** **One-PC rehearsal, never six-PC results.** In the rehearsal of the final code, `8bb244e`, `analyze.py` read `udp_request_loss_share` as
+  2.4 to 2.9% in steady and random cells where nothing was lost: the kernel's counters in the run's own network namespace said every datagram
+  sent was received, with `RcvbufErrors` at 0, and the nodes had read every request the clients sent. In the two cells with a `kill -9` it read 23.8 and
+  24.4%, where the true figure was 4.2 and 4.4%, all of it copies sent to the node while it was off. There are two causes. Each process
+  samples its counters on its own second, so over the measured time the clients' count can start up to a second before the nodes', and with 25 s
+  measured that is up to 4% of loss from nothing. And a restarted node counts from 0 again in the same log, so its last value minus its first
+  misses all it read before the restart. D172's comment said to treat the share as approximate, but a number in a table gets read,
+  and this one is what the lab would look at to judge UDP.
+- **Options considered.**
+  1. *Over each process's whole log, adding up every life of a restarted node (chosen).* Exact on both sides, because the counters are cumulative.
+     About 15 lines. It takes in the warm-up, which does not matter for a share lost.
+  2. *Keep the measured time, and interpolate each counter at the edges.* Keeps the meaning of "measured", but it is more code, still an estimate, and
+     a restart needs handling all the same.
+  3. *Leave it and print a note.* No code. Then every table with a 2.6% beside 0 drops needs a sentence to explain it, and the report could still get it wrong.
+  4. *Report only the kernel's `UdpRcvbufErrors`.* `udp_drops_nodes` and `udp_drops_client_pc_max` already do. They do not see a datagram lost on the
+     network between two machines, which is what the share is there for.
+- **Decision.** Option 1, for `udp_request_loss_share` and `udp_cancel_loss_share`: clients' `tx_requests` and `tx_cancels` against nodes' `rx_requests` and
+  `rx_cancels`. The `udp_*_per_req` figures stay over the measured time, because they divide by the requests answered in it.
+- **Why.** A loss figure that reads 2 to 3% with nothing lost hides a real 2 to 3%. The kernel's counters gave the exact answer to check against, and
+  the whole log gives the same answer.
+- **Consequences.**
+  - A node that is off reads nothing, so a cell with a `kill -9` reads above 0 with no network at fault: about a third of the copies, times the share of the run it was off.
+    The README says so.
+  - A node logs its counters once a second and not as it stops. If it stops within a second of the last send, that last traffic is missing from its side: at
+    most one second out of the whole run, and the runner stops nodes well after the clients.
+  - `ctl status` checks a node's UDP port with real calls, which nodes count in `rx_requests` and no client counts. It is a handful per run. The share cannot go below 0.
+  - D167's rows and any earlier figures were measured the old way. They stay as they are, as measured then.
+- **Where.** `analysis/analyze.py::whole_log_counts` and `udp_metrics`. `analysis/test_analyze.py::test_nothing_lost_reads_as_nothing_lost_whenever_each_process_samples`
+  and `test_a_restarted_node_counts_every_life_in_the_udp_loss_share`. `test_udp_losses_and_drops` keeps its strictness, with the fixture's whole-log counts in place of its measured-time ones.
+- **How we check it.** `python analysis/test_analyze.py`. On real logs, one PC, the old and new code read the same two short runs. With no fault: old 1.08%, new 0, and
+  the kernel said 34944 datagrams sent and 34944 received. With a `kill -9` and 6 s off out of 30: old 23.66%, new 6.57%, and all of the difference
+  in the kernel's count is `NoPorts`, copies sent to the closed port.
+- **Report notes.** Quote the share with `udp_drops_nodes` and `udp_drops_client_pc_max`, and say it is over the whole run.
+
+---
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -7601,6 +7642,7 @@ These add to older entries without changing their text. An entry can have more t
 | D139 | A failed `cd` no longer reads as clean, and a run's `run.json` is written last (D222, D223). See the corrections in D222 |
 | D143 | A report no longer waits in a client's send queue, because there is none, so the limit D143 stated about a frame keeping a young stamp while off the network goes away: a datagram goes now or never (D167) |
 | D162 | The timed scene's values are now comments in `config/lab.example.toml` (D165) |
+| D172 | `udp_request_loss_share` and `udp_cancel_loss_share` are now over each process's whole log, not the measured time (D227) |
 | D182 | Warm-up no longer shifts with the first send: it counts from `client_started` (D191) |
 | D183 | The script also stops what a killed run left, and programs ignore HUP (D190). Its title names the web page, but the page starts `loadgen` itself (D202) |
 | D185 | `client_started` joins `machine_usage` as a new client event (D191) |
