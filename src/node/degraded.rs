@@ -29,8 +29,9 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use super::service::{MAX_PLAN_ATTEMPTS, plan_on_workers};
 use super::workers::Overloaded;
-use super::{MAX_PLAN_ATTEMPTS, NodeContext, lock, plan_on_workers};
+use super::{NodeContext, lock};
 use crate::metrics::{Event, now_ms};
 use crate::proto::{
     ClientRequest, Command, Incident, Outcome, Plan, RequestId, Responder, ResponderId,
@@ -290,12 +291,16 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
             request,
             incident: incident.clone(),
             executor: ctx.id,
-            term: ctx.consensus.status().term,
+            term: ctx.group.term(),
             plan: plan.clone(),
             age_ms,
             assigned_at_ms,
         };
-        let outcome = match ctx.consensus.propose(Command::CommitResult(proposal)).await {
+        let outcome = match ctx
+            .group
+            .send_ordered(Command::CommitResult(proposal))
+            .await
+        {
             Ok(outcome) => outcome,
             Err(e) => {
                 tracing::debug!(%request, "provisional result not committed yet: {e}");

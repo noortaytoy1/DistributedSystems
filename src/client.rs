@@ -5,6 +5,10 @@
 //! [`MeshClient`] holds one tarpc stub per node, each on its own UDP socket, shared by all simulated
 //! users through `Arc` (D53, D167). tarpc matches each reply to its call.
 //!
+//! - **The group send (D126, D210).** `MeshClient::group_send` is the client middleware's send to
+//!   all of the cloud nodes: one source, many recipients, driven by the sender. It is private, so
+//!   user code cannot call it and does not know it happens. User code calls `submit`, which it gets
+//!   from `src/middleware.rs`, and `tests/layers.rs` holds that line.
 //! - **One submit, one set of calls (D169).** Each attempt adds one call per node to the same set.
 //!   Calls from earlier attempts stay open, so a late answer still counts. They share one deadline
 //!   for the whole submit. Returning drops the set, and tarpc sends one cancel per call still open:
@@ -156,7 +160,8 @@ impl MeshClient {
         self.counters.snapshot()
     }
 
-    /// Submit an incident and wait for the first reply. Latency counts from now.
+    /// Submit an incident and wait for the first reply. Latency counts from now. This is the one
+    /// call user code makes: the copies, the retries and the first answer winning are behind it.
     pub async fn submit(&self, incident: Incident) -> Result<Submitted, ClientError> {
         self.submit_from(incident, Instant::now()).await
     }
@@ -217,8 +222,10 @@ impl MeshClient {
         Err(ClientError::GaveUp { attempts })
     }
 
-    /// The group send (D126): the application made one call, and each node gets its own copy from
-    /// this layer. Best effort and unordered: the retry covers a lost copy, and Raft orders results.
+    /// The group send (D126, D210): the client middleware's send to all of the cloud nodes. The
+    /// application made one call, and each node gets its own copy from this layer. Best effort and
+    /// unordered: the retry covers a lost copy, and Raft orders results. Always every configured
+    /// node, never the cloud's who's-alive list, so a report can reach a node that is coming back.
     fn group_send(
         &self,
         deadline: std::time::Instant,

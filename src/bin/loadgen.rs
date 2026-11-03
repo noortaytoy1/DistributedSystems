@@ -2,6 +2,9 @@
 //! one shared client. For real load use `scripts/start-users.sh`, which shares the users out over
 //! several of these programs (D181).
 //!
+//! This is the application layer on the client side (D211). A user calls `MeshClient::submit`, which
+//! comes from `rescuemesh::middleware`, and never names a node or sees the copies behind that call.
+//!
 //! ```text
 //! cargo run --release --bin loadgen -- --client-id 1 --users 20 --duration-s 30
 //! cargo run --release --bin loadgen -- --client-id 1 --users 20 --think-ms 1000 --pattern random
@@ -29,9 +32,9 @@ use clap::{Parser, ValueEnum};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
-use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{self, Event, EventLog, now_ms};
+use rescuemesh::middleware::{ClientError, MeshClient, Submitted};
 use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;

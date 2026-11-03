@@ -1,12 +1,39 @@
 //! RescueMesh: fault-tolerant incident coordination on a three-node Raft cloud.
 //!
 //! See README.md for what the system does and AGENTS.md for how the code is organised.
+//!
+//! The middleware and the application are kept apart on both sides (D156, D211):
+//!
+//! ```text
+//! layer        client PC                        cloud node
+//! -----------  -------------------------------  -------------------------------------------------
+//! application  bin/loadgen.rs: the users        node/service.rs: the incident service
+//!              bin/frontend.rs: the web page    node/release.rs, planner.rs, state.rs: its rules
+//!              campus.rs                        campus.rs
+//! -----------  middleware.rs, the one interface the application may use  ------------------------
+//! middleware   client.rs: MeshClient, with      node/group.rs: CloudGroup, the who's-alive list
+//!              the group send behind submit     bidding.rs, node/bids.rs, node/cpu.rs: election
+//!                                               node/heartbeat.rs, takeover.rs, rejoin.rs,
+//!                                               degraded.rs, faults.rs: faults and recovery
+//!                                               node/workers.rs: where planning runs
+//!                                               node/transport.rs, datagram.rs: remote calls
+//!                                               raft/: the order, on openraft
+//!                                               node/mod.rs: the wiring
+//! libraries    tarpc                            tarpc, openraft
+//! ```
+//!
+//! Beside both layers: `proto.rs`, the contract, and `config.rs`, `metrics.rs` and `node/usage.rs`.
+//! `bin/node.rs` starts a node, and `bin/ctl.rs` is an operator's tool. `tests/layers.rs` fails if
+//! application code reaches past `middleware.rs`.
+//!
+//! Owner: shared.
 
 pub mod bidding;
 pub mod campus;
 pub mod client;
 pub mod config;
 pub mod metrics;
+pub mod middleware;
 pub mod node;
 pub mod planner;
 pub mod proto;

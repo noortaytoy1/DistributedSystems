@@ -11,7 +11,9 @@
 //! ```
 //!
 //! - **It is a client.** A report goes through [`MeshClient::submit`] only, so the page cannot name
-//!   a node. The status table uses `client::control`, as `ctl` does, and is an operator's view.
+//!   a node. The status table uses `middleware::control`, as `ctl` does, and is an operator's view.
+//!   This is the application layer on the client side (D211): both calls come from
+//!   `rescuemesh::middleware`, and `tests/layers.rs` holds it to that.
 //! - **Sockets (D200).** This file is a named exception to the rule that only `node/` and
 //!   `raft/network.rs` open sockets: it only listens for the browser on its own PC and carries no
 //!   cloud traffic.
@@ -38,9 +40,9 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::join_all;
 use rescuemesh::campus;
-use rescuemesh::client::{ClientError, MeshClient, Submitted, control};
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{EventLog, now_ms};
+use rescuemesh::middleware::{ClientError, MeshClient, Submitted, control};
 use rescuemesh::proto::{
     Capability, ClientId, ControlReply, ControlRequest, Incident, IncidentStatus, NodeStatus,
     Responder, ResponderId, UserId, ZoneId,
