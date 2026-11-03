@@ -2,7 +2,8 @@
 #
 # Hosts file, one machine per line (see experiments/hosts.example):
 #   node   <id> <address> <ssh target> [peer port] [client port]
-#   client <id> <address> <ssh target>
+#   client <machine number, 1 to 9> <address> <ssh target>
+# A client machine's number is the first digit of its programs' client IDs (D184).
 # The ssh target `local` runs the command here, for trying the scripts on one machine.
 
 REMOTE_DIR="${REMOTE_DIR:-DistributedSystems}"
