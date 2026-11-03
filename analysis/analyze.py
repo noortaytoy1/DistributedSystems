@@ -312,6 +312,90 @@ def commit_metrics(events, start_us):
     return metrics
 
 
+def client_sources(events):
+    return {s: es for s, es in events.items() if s.startswith("client-")}
+
+
+def client_program_metrics(events, meta):
+    """How the load was shaped (D181, D186): real programs that sent anything, users per program, and
+    client connections dropped, by reason. Link events exist only while clients hold connections."""
+    programs = sum(
+        1 for es in client_sources(events).values() if any(e["ev"] == "client_sent" for e in es)
+    )
+    metrics = {"client_programs": programs}
+    if meta.get("users") and programs:
+        metrics["users_per_program"] = meta["users"] / programs
+    drops = [
+        e["reason"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_link_down"
+    ]
+    metrics["client_link_down"] = len(drops)
+    for reason in set(drops):
+        metrics[f"client_link_down_{reason.replace(' ', '_')}"] = drops.count(reason)
+    return metrics
+
+
+def arrival_peak_share(times_us):
+    """The share of arrivals in the busiest 100 ms of their second, over all the seconds given. Even
+    arrivals give a tenth, and a whole second's users sending together give 1. Client machines agree
+    only as far as NTP does, which is good enough at this width. Seconds with few arrivals read high."""
+    seconds = defaultdict(lambda: defaultdict(int))
+    for ts in times_us:
+        seconds[ts // 1_000_000][ts // 100_000] += 1
+    if not seconds:
+        return float("nan")
+    peaks = sum(max(buckets.values()) for buckets in seconds.values())
+    return peaks / len(times_us)
+
+
+def arrival_metrics(events, start_us):
+    """Do first sends clump (D182)? At the very start, over the measured time, and after a fault, when
+    waiting users can come back together."""
+    sends = sorted(
+        e["ts_us"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_sent" and e["attempt"] == 0
+    )
+    if not sends:
+        return {}
+    metrics = {
+        "arrival_peak_100ms_share_first_s": arrival_peak_share(
+            [ts - sends[0] for ts in sends if ts < sends[0] + 1_000_000]
+        ),
+        "arrival_peak_100ms_share": arrival_peak_share([ts for ts in sends if ts >= start_us]),
+    }
+    restored = [e["ts_us"] for es in node_events(events).values() for e in es if e["ev"] == "restored"]
+    if restored:
+        fault_end = max(restored)
+        metrics["arrival_peak_100ms_share_after_fault"] = arrival_peak_share(
+            [ts for ts in sends if ts >= fault_end]
+        )
+    return metrics
+
+
+def client_pc_metrics(events, start_us):
+    """The client PCs' own CPU and memory (D185): a saturated client PC reads as cloud latency."""
+    busy, available = [], []
+    for es in client_sources(events).values():
+        samples = [e for e in es if e["ev"] == "machine_usage" and e["ts_us"] >= start_us]
+        for before, after in zip(samples, samples[1:]):
+            if None in (before["cpu_total_ticks"], after["cpu_total_ticks"]):
+                continue
+            total = after["cpu_total_ticks"] - before["cpu_total_ticks"]
+            if total > 0:
+                busy.append((after["cpu_busy_ticks"] - before["cpu_busy_ticks"]) / total)
+        available += [e["mem_available_kb"] for e in samples if e["mem_available_kb"] is not None]
+    metrics = {}
+    if busy:
+        metrics["client_pc_cpu_busy_p95"] = nearest_rank(sorted(busy), 95)
+    if available:
+        metrics["client_pc_mem_available_min_mb"] = min(available) / 1024
+    return metrics
+
+
 def analyse_run(run_dir):
     meta = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
     warmup_s, measured_s = meta["warmup_s"], meta["measured_s"]
@@ -325,7 +409,26 @@ def analyse_run(run_dir):
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))
+    metrics.update(client_program_metrics(events, meta))
+    metrics.update(arrival_metrics(events, start))
+    metrics.update(client_pc_metrics(events, start))
+    metrics["silenced_events"] = sum(
+        1 for es in node_events(events).values() for e in es if e["ev"] == "silenced"
+    )
     return meta, metrics
+
+
+def run_problem(meta, metrics):
+    """Why this run must not be averaged in, or None (D186). Missing programs mean less load than the
+    cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
+    before the runner wrote these keys skips the checks."""
+    expected = meta.get("client_programs_expected")
+    if expected is not None and metrics["client_programs"] != expected:
+        return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    victim = meta.get("victim", "none")
+    if victim != "none" and metrics["silenced_events"] == 0:
+        return f"the cell silences its {victim}, and no node logged a silence"
+    return None
 
 
 def confidence_interval(values):
@@ -344,6 +447,10 @@ def summarise(root):
     per_cell = defaultdict(list)
     for meta_path in sorted(Path(root).glob("*/*/*/run.json")):
         meta, metrics = analyse_run(meta_path.parent)
+        problem = run_problem(meta, metrics)
+        if problem:
+            print(f"left out {meta_path.parent}: {problem}")
+            continue
         per_cell[(meta["experiment"], meta["cell"])].append(metrics)
     summary = {}
     for key, runs in per_cell.items():
