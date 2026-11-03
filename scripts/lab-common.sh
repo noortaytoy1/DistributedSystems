@@ -2,7 +2,8 @@
 #
 # Hosts file, one machine per line (see experiments/hosts.example):
 #   node   <id> <address> <ssh target> [peer port] [client port]
-#   client <id> <address> <ssh target>
+#   client <machine number, 1 to 9> <address> <ssh target>
+# A client machine's number is the first digit of its programs' client IDs (D184).
 # The ssh target `local` runs the command here, for trying the scripts on one machine.
 
 REMOTE_DIR="${REMOTE_DIR:-DistributedSystems}"
@@ -37,6 +38,13 @@ read_hosts() {
     echo "$1 needs at least one node and one client" >&2
     return 1
   fi
+}
+
+# Client machine i's share of a cell's users. 100 over 3 machines is 34, 33 and 33: dividing and rounding
+# down would quietly run a smaller cell than its name says (D186).
+users_on_machine() {
+  local i=$1 users=$2 machines=${#CLIENT_IDS[@]}
+  echo $((users / machines + (i < users % machines ? 1 : 0)))
 }
 
 # The [[cluster.nodes]] tables, so all six machines read the same node list.

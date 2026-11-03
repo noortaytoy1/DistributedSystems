@@ -89,10 +89,10 @@ def synthetic_run():
     return {"client-1": client, "node-1": node1, "node-2": node2, "node-3": node3}
 
 
-def write_run(directory, events, run):
+def write_run(directory, events, run, **extra):
     directory.mkdir(parents=True)
     (directory / "run.json").write_text(json.dumps({
-        "experiment": "e9", "cell": "synthetic", "run": run, "warmup_s": 2, "measured_s": 10,
+        "experiment": "e9", "cell": "synthetic", "run": run, "warmup_s": 2, "measured_s": 10, **extra,
     }))
     for source, lines in events.items():
         (directory / f"{source}.jsonl").write_text("\n".join(json.dumps(e) for e in lines) + "\n")
@@ -290,6 +290,102 @@ class OneRun(unittest.TestCase):
         out = self.root / "summary.csv"
         analyze.write_csv(summary, out)
         self.assertIn("e9,synthetic,mean_ms,2,82.5", out.read_text())
+
+
+def sent(at_us, attempt=0):
+    return {"ts_us": T0 + at_us, "ev": "client_sent", "request": request(0), "attempt": attempt}
+
+
+def machine(at_s, busy, total, available_kb):
+    return {"ts_us": T0 + at_s * S, "ev": "machine_usage", "cpu_busy_ticks": busy,
+            "cpu_total_ticks": total, "mem_available_kb": available_kb}
+
+
+class ClientPrograms(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def analyse(self, name, events, **extra):
+        directory = self.root / "e9" / name / "run-1"
+        write_run(directory, events, 1, **extra)
+        return analyze.analyse_run(directory)[1]
+
+    def test_three_client_logs_count_as_three_programs(self):
+        events = {f"client-{i}": [sent(0)] for i in (10000, 10001, 20000)}
+        # A program that never sent anything did not take part.
+        events["client-30000"] = [{"ts_us": T0, "ev": "client_link_up", "node": 1}]
+        m = self.analyse("three", events, users=30)
+        self.assertEqual(m["client_programs"], 3)
+        self.assertAlmostEqual(m["users_per_program"], 10.0)
+
+    def test_a_run_missing_programs_is_left_out_of_the_summary(self):
+        events = synthetic_run()
+        write_run(self.root / "e9" / "whole" / "run-1", events, 1, client_programs_expected=1)
+        write_run(self.root / "e9" / "whole" / "run-2", events, 2, client_programs_expected=2)
+        summary = analyze.summarise(self.root)
+        self.assertEqual(summary[("e9", "synthetic")]["mean_ms"][2], 1)
+        _, m = analyze.analyse_run(self.root / "e9" / "whole" / "run-2")
+        self.assertIn("1 of 2", analyze.run_problem({"client_programs_expected": 2}, m))
+
+    def test_a_victim_with_no_silenced_event_is_left_out(self):
+        quiet = {"client-1": [sent(0)], "node-1": []}
+        m = self.analyse("quiet", quiet)
+        self.assertIn("no node logged a silence", analyze.run_problem({"victim": "leader"}, m))
+        self.assertIsNone(analyze.run_problem({"victim": "none"}, m))
+        loud = {"client-1": [sent(0)], "node-1": [{"ts_us": T0, "ev": "silenced", "ms": 1}]}
+        self.assertIsNone(analyze.run_problem({"victim": "leader"}, self.analyse("loud", loud)))
+
+    def test_a_run_json_without_the_new_keys_skips_the_checks(self):
+        m = self.analyse("old", {"client-1": [], "node-1": []})
+        self.assertIsNone(analyze.run_problem({}, m))
+
+    def test_link_drops_are_counted_by_reason(self):
+        down = [{"ts_us": T0, "ev": "client_link_down", "node": 1, "reason": reason}
+                for reason in ("closed by the node", "no answer to pings", "closed by the node")]
+        m = self.analyse("links", {"client-1": [sent(0)] + down})
+        self.assertEqual(m["client_link_down"], 3)
+        self.assertEqual(m["client_link_down_closed_by_the_node"], 2)
+        self.assertEqual(m["client_link_down_no_answer_to_pings"], 1)
+        self.assertEqual(self.analyse("no-links", {"client-1": [sent(0)]})["client_link_down"], 0)
+
+    def test_arrival_peak_share_is_a_tenth_when_even_and_one_when_all_together(self):
+        even = [i * 10_000 for i in range(1000)]  # one every 10 ms for ten seconds
+        self.assertAlmostEqual(analyze.arrival_peak_share(even), 0.1)
+        together = [5 * S + i for i in range(100)]
+        self.assertEqual(analyze.arrival_peak_share(together), 1.0)
+        self.assertTrue(math.isnan(analyze.arrival_peak_share([])))
+
+    def test_arrivals_are_read_at_the_start_in_the_measured_time_and_after_a_fault(self):
+        # Warm-up 2 s. A first wave of 100 together, then even arrivals, and retries not counted.
+        client = [sent(i) for i in range(100)]
+        client += [sent(1 * S + i * 10_000) for i in range(600)]
+        client += [sent(2 * S, attempt=1) for _ in range(500)]
+        # After the fault, at 7 s, everyone comes back within one 100 ms.
+        client += [sent(7 * S + 500_000 + i) for i in range(100)]
+        node = [{"ts_us": T0 + 7 * S, "ev": "restored"}]
+        m = self.analyse("arrivals", {"client-1": client, "node-1": node})
+        self.assertEqual(m["arrival_peak_100ms_share_first_s"], 1.0)
+        self.assertGreater(m["arrival_peak_100ms_share"], 0.1)
+        self.assertEqual(m["arrival_peak_100ms_share_after_fault"], 1.0)
+
+    def test_machine_usage_gives_cpu_p95_and_memory_min(self):
+        # Busy shares of 10, 20 and 50 percent, then a sample with nothing readable.
+        samples = [machine(3, 100, 1000, 9000), machine(4, 110, 1100, 8000),
+                   machine(5, 130, 1200, 4096), machine(6, 180, 1300, 7000),
+                   machine(7, None, None, None)]
+        m = self.analyse("usage", {"client-10000": [sent(0)] + samples})
+        self.assertAlmostEqual(m["client_pc_cpu_busy_p95"], 0.5)
+        self.assertAlmostEqual(m["client_pc_mem_available_min_mb"], 4.0)
+        # Samples from the warm-up do not count.
+        early = [machine(0, 0, 0, 1)]
+        m = self.analyse("early", {"client-10000": [sent(0)] + early + samples})
+        self.assertAlmostEqual(m["client_pc_mem_available_min_mb"], 4.0)
+        # A run with no samples has no such metric: nothing pretends the PC was idle.
+        self.assertNotIn("client_pc_cpu_busy_p95", self.analyse("none", {"client-1": [sent(0)]}))
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ fn cell_text(cell: &str) -> String {
 #[test]
 fn every_cell_is_a_valid_config_with_a_run_line() {
     let cells = cells();
-    assert_eq!(cells.len(), 31, "the full profile has 31 cells");
+    assert_eq!(cells.len(), 32, "the full profile has 32 cells");
     for cell in &cells {
         let text = cell_text(cell);
         assert!(text.starts_with("# run:"), "{cell} has no run line");

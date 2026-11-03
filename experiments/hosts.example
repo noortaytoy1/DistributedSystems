@@ -1,5 +1,6 @@
 # Copy to experiments/hosts and set the real addresses (ignored by git).
 # role   id  address     ssh target          [peer port] [client port]
+# A client's id is its machine number, 1 to 9: the first digit of its programs' client IDs (D184).
 node     1   10.0.0.11   ubuntu@10.0.0.11
 node     2   10.0.0.12   ubuntu@10.0.0.12
 node     3   10.0.0.13   ubuntu@10.0.0.13
