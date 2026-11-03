@@ -163,6 +163,65 @@ class OneRun(unittest.TestCase):
         self.assertEqual(self.m["detection_mean_ms"], 150)
         self.assertEqual(self.m["recovery_mean_ms"], 40.0)
 
+    def test_a_term_running_before_the_window_is_not_an_election_and_a_new_one_is(self):
+        # Term 2 started before the window and logged nothing inside it, so the window sees only
+        # terms 3 and 4. Taking one off what it saw would say 1.
+        events = synthetic_run()
+        before_the_window = {"ts_us": T0, "ev": "raft_state", "term": 2, "leader": 1, "role": "leader", "last_applied": 1}
+        events["node-1"] = [before_the_window] + [
+            e for e in events["node-1"] if not (e["ev"] == "raft_state" and e["term"] == 2)
+        ]
+        events["node-2"] = [e for e in events["node-2"] if not (e["ev"] == "raft_state" and e["term"] == 2)]
+        metrics = analyze.election_metrics(events, T0 + 2 * S)
+        self.assertEqual(metrics["elections"], 2)
+
+    def test_the_running_term_logged_again_inside_the_window_is_not_counted_twice(self):
+        events = synthetic_run()
+        before_the_window = {"ts_us": T0, "ev": "raft_state", "term": 2, "leader": 1, "role": "leader", "last_applied": 1}
+        events["node-1"] = [before_the_window] + events["node-1"]
+        metrics = analyze.election_metrics(events, T0 + 2 * S)
+        self.assertEqual(metrics["elections"], 2)  # 3 and 4; the one running is 2
+
+    def test_no_new_term_means_no_election(self):
+        events = {"node-1": [
+            {"ts_us": T0, "ev": "raft_state", "term": 5, "leader": 1, "role": "leader", "last_applied": 1},
+        ]}
+        self.assertEqual(analyze.election_metrics(events, T0 + 2 * S)["elections"], 0)
+        self.assertEqual(analyze.election_metrics({"node-1": []}, T0)["elections"], 0)
+
+    def test_takeovers_are_split_by_reason_and_none_is_called_failover(self):
+        events = synthetic_run()
+        takeover = {"ev": "takeover_started", "request": request(1), "attempt": 0, "winner": 1, "rank": 1}
+        events["node-2"] += [
+            {**takeover, "ts_us": T0 + 5 * S, "reason": "suspected", "waited_us": 150_000},
+            {**takeover, "ts_us": T0 + 6 * S, "reason": "backstop", "waited_us": 200_000},
+            {**takeover, "ts_us": T0 + 6 * S, "reason": "backstop", "waited_us": 400_000},
+        ]
+        metrics = analyze.fault_metrics(events, [])
+        self.assertEqual(metrics["takeovers"], 3)
+        self.assertEqual(metrics["takeovers_suspected"], 1)
+        self.assertEqual(metrics["takeovers_backstop"], 2)
+        self.assertAlmostEqual(metrics["takeover_wait_suspected_mean_ms"], 150.0)
+        self.assertAlmostEqual(metrics["takeover_wait_backstop_mean_ms"], 300.0)
+        self.assertNotIn("takeover_wait_mean_ms", metrics)
+
+    def test_the_client_gap_is_the_longest_silence_that_overlaps_the_fault(self):
+        # Answers at 3.01 ... 7.6 s every half second or so; the fault runs from 5 s to 7 s.
+        def answer(at_s):
+            return {"ts_us": T0 + int(at_s * S), "ev": "client_done"}
+
+        events = {
+            "client-1": [answer(4), answer(4.5), answer(8), answer(8.1)],
+            "client-2": [answer(4.9), answer(6), answer(9), answer(20)],
+        }
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        # Client 1: 3.5 s across the fault. Client 2: 3 s; its 11 s gap starts after the fault ended.
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 3500.0)
+        self.assertAlmostEqual(metrics["client_gap_mean_ms"], 3250.0)
+
+    def test_a_run_with_a_fault_reports_the_client_gap(self):
+        self.assertGreater(self.m["client_gap_max_ms"], 0)
+
     def test_an_election_right_after_a_rejoin_counts_against_it(self):
         self.assertEqual(self.m["elections_after_rejoin"], 1)  # term 4, 100 ms after
 
