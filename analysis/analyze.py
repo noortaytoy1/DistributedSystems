@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -28,11 +29,19 @@ PERCENTILES = (50, 95, 99)
 
 
 def read_events(run_dir):
-    """Every event in a run, by source name, each source's events in file order."""
+    """Every event in a run, by source name, each source's events in file order. A program killed in the
+    middle of a write leaves half a line at the end of its log: that one is dropped and named. A bad line
+    anywhere else is real damage, and raises."""
     events = {}
     for path in sorted(Path(run_dir).glob("*.jsonl")):
-        with open(path, encoding="utf-8") as lines:
-            events[path.stem] = [json.loads(line) for line in lines if line.strip()]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in text.split("\n") if line.strip()]
+        try:
+            json.loads(lines[-1] if lines else "null")
+        except json.JSONDecodeError:
+            print(f"{path}: dropped a half-written last line")
+            lines.pop()
+        events[path.stem] = [json.loads(line) for line in lines]
     return events
 
 
@@ -337,6 +346,24 @@ def client_program_metrics(events, meta):
     return metrics
 
 
+def client_script_metrics(run_dir):
+    """What each machine's start-users.sh printed about its programs (D183, D186). A program that dies
+    half way has still sent something, so only these lines show it: programs that failed, programs a
+    signal stopped early, and scripts with no totals at all, because they were killed themselves."""
+    failed = stopped_early = no_totals = 0
+    for path in Path(run_dir).glob("users-*.out"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        totals = re.findall(r"started \d+, failed (\d+)", text)
+        failed += sum(int(n) for n in totals)
+        no_totals += 0 if totals else 1
+        stopped_early += text.count("stopped by a signal")
+    return {
+        "client_programs_failed": failed,
+        "client_programs_stopped_early": stopped_early,
+        "client_scripts_with_no_totals": no_totals,
+    }
+
+
 def arrival_peak_share(times_us):
     """The share of arrivals in the busiest 100 ms of their second, over all the seconds given. Even
     arrivals give a tenth, and a whole second's users sending together give 1. Client machines agree
@@ -410,6 +437,7 @@ def analyse_run(run_dir):
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))
     metrics.update(client_program_metrics(events, meta))
+    metrics.update(client_script_metrics(run_dir))
     metrics.update(arrival_metrics(events, start))
     metrics.update(client_pc_metrics(events, start))
     metrics["silenced_events"] = sum(
@@ -419,12 +447,18 @@ def analyse_run(run_dir):
 
 
 def run_problem(meta, metrics):
-    """Why this run must not be averaged in, or None (D186). Missing programs mean less load than the
-    cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
+    """Why this run must not be averaged in, or None (D186). Missing or dead programs mean less load than
+    the cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
     before the runner wrote these keys skips the checks."""
     expected = meta.get("client_programs_expected")
     if expected is not None and metrics["client_programs"] != expected:
         return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    if metrics["client_programs_failed"]:
+        return f"{metrics['client_programs_failed']} client programs failed; see users-*.out"
+    if metrics["client_programs_stopped_early"]:
+        return f"a signal stopped {metrics['client_programs_stopped_early']} client programs early"
+    if metrics["client_scripts_with_no_totals"]:
+        return f"{metrics['client_scripts_with_no_totals']} start-users.sh runs never printed their totals"
     victim = meta.get("victim", "none")
     if victim != "none" and metrics["silenced_events"] == 0:
         return f"the cell silences its {victim}, and no node logged a silence"
@@ -446,7 +480,12 @@ def summarise(root):
     """{(experiment, cell): {metric: (mean, half_width, n)}} over every run under `root`."""
     per_cell = defaultdict(list)
     for meta_path in sorted(Path(root).glob("*/*/*/run.json")):
-        meta, metrics = analyse_run(meta_path.parent)
+        try:
+            meta, metrics = analyse_run(meta_path.parent)
+        except json.JSONDecodeError as error:
+            # One run with a damaged log must not cost the summary of every other run.
+            print(f"left out {meta_path.parent}: a log is damaged ({error})")
+            continue
         problem = run_problem(meta, metrics)
         if problem:
             print(f"left out {meta_path.parent}: {problem}")
@@ -456,10 +495,16 @@ def summarise(root):
     for key, runs in per_cell.items():
         names = sorted({name for run in runs for name in run})
         summary[key] = {
-            name: confidence_interval([run.get(name, float("nan")) for run in runs])
+            name: confidence_interval([run.get(name, missing_value(name)) for run in runs])
             for name in names
         }
     return summary
+
+
+def missing_value(name):
+    """What a run with no such metric counts as. A link-drop reason that did not happen in a run is 0 there,
+    and leaving that run out would average the reason over only the runs that had it."""
+    return 0 if name.startswith("client_link_down_") else float("nan")
 
 
 def write_csv(summary, path):
