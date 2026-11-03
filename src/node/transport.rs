@@ -12,8 +12,7 @@
 //!   matched by request ID.
 //!
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
-//! frames, so an operator can still query and restore a silenced node, and the "ok" answering
-//! the fault order that silenced it (D78).
+//! frames, so an operator can still query a silenced node (D23, D160).
 //!
 //! Owner: C (faults and failover). The plumbing here was written with Part A because Raft cannot
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
@@ -39,7 +38,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog, MessageCounters, MsgKind};
 use crate::proto::{
-    self, Bid, ClientFrame, Command, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc,
+    self, Bid, ClientFrame, Command, FaultBid, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc,
     PeerRpcClient, RaftRpc, ServerFrame, Term,
 };
 
@@ -359,7 +358,7 @@ async fn invoke(
         }
         PeerBody::Propose(command) => client.propose(ctx, from, term, command).await,
         PeerBody::ReadIndex => client.read_index(ctx, from, term).await,
-        PeerBody::FaultOrder { ms } => client.fault_order(ctx, from, term, ms).await,
+        PeerBody::FaultBid(bid) => client.fault_bid(ctx, from, term, bid).await,
         PeerBody::Bid(bid) => client.bid(ctx, from, term, bid).await,
         PeerBody::Heartbeat => client.heartbeat(ctx, from, term).await,
     }
@@ -516,10 +515,8 @@ impl PeerServer {
         let Ok(reply) = tokio::spawn(work).await else {
             return std::future::pending().await;
         };
-        // Obeying a fault order closes the gate; its "ok" is the victim's last word, so the
-        // leader can tell an obeyed order from an unreachable victim (D78).
-        let last_word = matches!(reply, PeerReply::FaultOrder(Ok(())));
-        if self.gate.is_silenced() && !last_word {
+        // The gate may have closed while the handler ran. No reply leaves a silenced node (D160).
+        if self.gate.is_silenced() {
             return std::future::pending().await;
         }
         reply
@@ -574,14 +571,14 @@ impl PeerRpc for PeerServer {
         self.deliver(from, term, PeerBody::ReadIndex).await
     }
 
-    async fn fault_order(
+    async fn fault_bid(
         self,
         _: tarpc::context::Context,
         from: NodeId,
         term: Term,
-        ms: u64,
+        bid: FaultBid,
     ) -> PeerReply {
-        self.deliver(from, term, PeerBody::FaultOrder { ms }).await
+        self.deliver(from, term, PeerBody::FaultBid(bid)).await
     }
 
     async fn bid(
@@ -828,6 +825,32 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(reply, PeerReply::StaleTerm { current: 2 }));
+    }
+
+    /// The fault gate has no exception: a handler that closes the gate before it returns, as a node
+    /// that elects itself could, must not get its answer out (D160).
+    #[tokio::test]
+    async fn no_reply_leaves_a_node_whose_gate_closes_mid_call() {
+        let gate = FaultGate::default();
+        let closes = gate.clone();
+        let handler: PeerHandler = Arc::new(move |_| {
+            let gate = closes.clone();
+            Box::pin(async move {
+                gate.silence();
+                PeerReply::Ack
+            })
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(serve_peers(listener, gate.clone(), Arc::default(), handler));
+        let client = peer_client(addr, FaultGate::default(), Duration::from_millis(100));
+
+        let err = client
+            .call(heartbeat(1), Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransportError::Timeout(_)), "{err}");
+        assert!(gate.is_silenced());
     }
 
     #[tokio::test]
