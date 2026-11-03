@@ -48,8 +48,8 @@ bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 20 --du
 
 1. Terminal 1 shows one Raft leader and equal digests. Under load the digest column can differ between refreshes; to show equal
    state, compare `state_checkpoint` lines on two nodes at the same `log_index` (D138). Point out that node 3 leads and that wins show on all three: the leader orders the log and
-   has no say in who plans (D163), and that the nodes are peers: client and server are the roles of one call (D212). The wins are the evidence that the election follows load. The leader does not
-   change with load, and a steady term is the healthy result (D217).
+   has no say in who plans (D163), and that the nodes are peers: client and server are the roles of one call (D212). The wins are the evidence that the election follows load. Under even load the leader
+   stays put, and a steady term is the healthy result (D217, D218).
 2. Run the win count on each node machine twice, a few seconds apart.
 3. Raise the load: press Start again on one client machine with more users, or a second batch by hand,
    `bash scripts/start-users.sh --config config/lab.toml --machine 1 --batch 1 --users <N> --duration-s 300`, with N inside the highest
@@ -85,6 +85,16 @@ target/release/ctl --config config/lab.toml skew --node <follower> --work 5000
 **Expect** that node's win count to grow more slowly than the others', because its plans take longer and its bids
 rise. Then put it back with `skew --node <follower> --work 1000`. Do not use `--work 0`: skew replaces `plan_work`, so 0 makes that node the fastest (D165). On the page, the next cards should
 move off that node (read from the code, not run).
+
+### 2b. A busy leader steps aside
+
+*Raise the load on the leader itself, and show a normal vote move it (D218).* Keep the users running, because the leader reads its peers' bids. It cannot happen in the first 65 s after a start or a leader change, so if scene 3 has just run, wait a minute.
+
+```bash
+target/release/ctl --config config/lab.toml skew --node <leader> --work 20000
+```
+
+**Expect** within about 20 s (7 s at 300 users and 11 to 17 s at 60 on one PC, because the skew shows only once that node has won a round with it on, D228), `python3 scripts/watch_events.py runs/lab` on that machine to print `TOO BUSY TO LEAD` and then `STEPPED ASIDE`. Within about a second terminal 1 shows another leader and a term one higher, nobody gives up, and the term stays there for the next 60 s. The wins move off that node as well. **Say this out loud:** the node chose to go quiet, the vote is an ordinary Raft vote, and no timer or vote rule changed. Put it back afterwards with `skew --node <that node> --work 1000`. A skew of 5000, as in scene 2, moves the work but not the leader (measured on one PC, D218).
 
 ## 3. Server failure
 
@@ -243,8 +253,7 @@ Every answer here comes from the spec, the class notes or the recordings, and no
 - **"Is the leader a coordinator?"** No node decides for another. One elected, replaceable node orders the log: it numbers entries, sends the copies and answers one read. `docs/architecture.md` section 2 has a table, row by row, of who decides what.
   Bidding picks who plans (D114), all three draw who fails (D158), any serving node loads the responders (D164), and you saw the leader go silent and come back as an ordinary node. What remains, and we say it: every commit passes through one elected node, and arrival
   order at it settles a race. Only replacing Raft would remove that, and we rejected that as a rewrite a day before the deadline (D163). `leader_plan_share` is the number beside the baseline (D166). The reading is ours, and the report states it as a reading.
-- **"Does the leader change when it is busy?"** No, and that is Noor's decision (D217). There are two elections. The bid picks who plans each report, by load, so a busy node loses bids and work moves away from it. The Raft vote picks who orders the log, and it runs only when the
-  others stop hearing from the leader. Each change of leader costs about 0.8 s with no answers (one-PC rehearsal, not a six-PC result).
+- **"Does the leader change when it is busy?"** Yes, if it stays overloaded (D218, amending D217). Noor decided this on a teammate's report that Dr Amr asked for it in class. The written notes and Lectures 8 and 9 do not say it, and we say so. There are two elections. The bid picks who plans each report, by load, so a busy node loses bids and work moves away from it. The Raft vote picks who orders the log, and every result passes through that node. So a leader whose load stays at least 3 times its lowest peer's bid for 5 s stops its heartbeats and holds its writes, the followers' timers run out, and a normal vote picks a new leader. Raft's safety is not touched, because all it can cause is an election. The cooldown stops a storm: at most once a minute. Scene 2b shows it.
 - **"Is this client-server?"** No. The cloud nodes are peers that update each other's state, detect failures, share out work and tell each
   other their load. Client and server are the roles of one call, not of a node (D212, `docs/architecture.md` section 3.1).
 - **"Where is the middleware, and where is the application?"** On both sides, drawn in `docs/architecture.md` section 4.3. Client side: the page and

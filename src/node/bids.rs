@@ -4,6 +4,7 @@
 //!
 //! Owner: B (bidding election).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -25,6 +26,8 @@ pub struct BidState {
     rounds: Mutex<BidRounds>,
     service: Mutex<ServiceTime>,
     cpu_permille: AtomicU32,
+    /// Each node's bids since the last reading, this node's included: their sum and count (D218).
+    seen: Mutex<BTreeMap<NodeId, (u64, u64)>>,
 }
 
 impl BidState {
@@ -33,6 +36,7 @@ impl BidState {
             rounds: Mutex::new(BidRounds::new(id, config.timers.bid_window())),
             service: Mutex::new(ServiceTime::new(config.policy.initial_service_us)),
             cpu_permille: AtomicU32::new(0),
+            seen: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -48,6 +52,22 @@ impl BidState {
     /// Reads the rounds under the lock, for takeover and tests.
     pub fn with_rounds<T>(&self, f: impl FnOnce(&BidRounds) -> T) -> T {
         f(&lock(&self.rounds))
+    }
+
+    pub(super) fn saw_bid(&self, node: NodeId, score: u64) {
+        let mut seen = lock(&self.seen);
+        let (sum, count) = seen.entry(node).or_default();
+        *sum = sum.saturating_add(score);
+        *count += 1;
+    }
+
+    /// Each node's mean bid since the last call, and starts the next reading. A node that got no
+    /// requests, or does not serve, made no bids, so it is simply not here.
+    pub fn take_mean_scores(&self) -> BTreeMap<NodeId, u64> {
+        std::mem::take(&mut *lock(&self.seen))
+            .into_iter()
+            .map(|(node, (sum, count))| (node, sum / count.max(1)))
+            .collect()
     }
 }
 
@@ -78,6 +98,7 @@ pub async fn run_round(ctx: &NodeContext, req: &ClientRequest) -> bool {
         cpu_permille,
     };
     let score = load_score(&inputs, policy.score_variant());
+    ctx.bids.saw_bid(ctx.id, score);
     let status = lock(&ctx.bids.rounds).add_bid(key, ctx.id, score, opened);
     if status != BidStatus::Accepted {
         return false;
@@ -130,6 +151,7 @@ pub async fn run_round(ctx: &NodeContext, req: &ClientRequest) -> bool {
 
 /// A peer's bid arrived. It may come before the request; the round then waits for it.
 pub fn on_bid(ctx: &NodeContext, from: NodeId, bid: &Bid) {
+    ctx.bids.saw_bid(from, bid.score);
     lock(&ctx.bids.rounds).add_bid((bid.request, bid.attempt), from, bid.score, Instant::now());
 }
 

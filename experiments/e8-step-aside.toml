@@ -1,0 +1,24 @@
+# run: users=300 think_ms=1000 skew_work=20000
+# The first node is skewed before the load starts, and with default timers it is usually the leader
+# (D115). Compare with e2e6-skew-expected-wait, where a busy leader stays leader and the skew is only
+# 5000, which would not move it anyway (D218).
+
+[policy]
+assignment = "bidding"
+score = "expected-wait"
+cpu_weight = 1
+leader_overload_ratio = 3
+leader_overload_for_ms = 5000
+leader_overload_cooldown_ms = 60000
+
+[workers]
+plan_work = 1000
+
+[campus]
+responders = 300
+
+[faults]
+# Faults only as the run line orders them: the schedule never fires within a run.
+enabled = true
+interval_min_ms = 100000000
+interval_max_ms = 100000000

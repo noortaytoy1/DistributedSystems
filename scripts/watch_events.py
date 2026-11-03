@@ -47,6 +47,23 @@ def rare(e):
         leader = e.get("leader")
         who = f"leader is node {leader}" if leader is not None else "no leader right now"
         return f"RAFT: term {e.get('term')}, I am {e.get('role')}, {who}"
+    if ev == "leader_stepped_aside":
+        peers = ", ".join(f"node {k} bids {v}" for k, v in sorted(e.get("peer_scores", {}).items()))
+        return (
+            f"TOO BUSY TO LEAD term {e.get('term')}: my load is {e.get('load')} "
+            f"(my bid {e.get('score')}, one log write takes {ms(e.get('write_us'))} with disk saves of {ms(e.get('save_us'))}), and {peers}. "
+            "Going quiet, so a normal vote picks another leader"
+        )
+    if ev == "leader_step_aside_ended":
+        outcome = e.get("outcome")
+        waited = f"{e.get('waited_ms')} ms"
+        if outcome == "changed":
+            return f"STEPPED ASIDE: node {e.get('new_leader')} leads term {e.get('new_term')} after {waited}. Heartbeats back on"
+        if outcome == "re_elected":
+            return f"STEP-ASIDE DID NOT MOVE IT: the vote picked me again, term {e.get('new_term')}, after {waited}. Heartbeats back on"
+        if outcome == "timed_out":
+            return f"STEP-ASIDE GAVE UP: nobody took over in {waited}. Heartbeats back on, I carry on, and I wait a full cooldown before trying again"
+        return f"STEP-ASIDE STOPPED after {waited}: I went silent, stopped serving or went degraded. Heartbeats back on"
     if ev == "fault_election":
         v = e.get("victim")
         who = "called it" if e.get("called") else "joined it"

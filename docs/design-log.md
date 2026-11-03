@@ -28,7 +28,7 @@ something. When in doubt, log it. Small entries are fine; missing entries are no
 **IDs.** `D1`–`D13` are the decisions of the Phase 1 architecture document (27 Oct 2026), kept
 with their original numbers so the report can cite them. `D14` onwards are decisions taken in the
 code or since. IDs are never reused: a changed decision gets a new entry, and the old one is marked
-`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 is kept free for a possible leader step-aside: see D217.
+`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 was kept free for a leader step-aside, and now holds it.
 
 **Status values.**
 
@@ -276,7 +276,8 @@ table below in sync.
 | D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs |
 | D215 | The library boundary names tarpc | all | Implemented in the docs |
 | D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, built |
-| D217 | The Raft leader does not change with load | A, B | Decided |
+| D217 | The Raft leader does not change with load | A, B | Decided, amended by D218 |
+| D218 | A busy leader steps aside, and a normal vote picks another | A, B, C | Implemented, amends D217, amended by D228 |
 | D219 | 3000 responders in the top E1 cells | E, F | Implemented, amends D129 |
 | D220 | After three stale plans, commit that nobody could be sent | A, E | Implemented, amends D35, D36 |
 | D221 | A live log viewer that only reads the event logs | all | Implemented |
@@ -286,6 +287,7 @@ table below in sync.
 | D225 | A Raft that has stopped is not asked in a tight loop | D | Implemented, amends D135 |
 | D226 | The split as built: what D156 left to settle | all | Implemented |
 | D227 | The UDP loss shares count over each process's whole log | F, all | Implemented, amends D172 |
+| D228 | A busy leader's log is read as one write, not as a queue | A | Implemented, amends D218 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7225,7 +7227,7 @@ line changes.
 
 ### D217 · The Raft leader does not change with load
 
-- **Date:** 2026-11-03 · **Part:** A, B · **Status:** Decided · **Decided by:** Noor Hany Emam
+- **Date:** 2026-11-03 · **Part:** A, B · **Status:** Decided, amended by D218 · **Decided by:** Noor Hany Emam
 - **Context.** A teammate read the requirement as: if the leader is busy and the other nodes are not, a new election should happen. The spec asks for the cloud peers to elect which peer performs the work, with load among the criteria (spec lines 142-144), and to show different peers elected as load changes (spec line 245). It does not name the Raft leader. There are two elections in this system and they are easy to mix up: the bid for each report, and the Raft vote for the leader.
 - **Options considered.**
   1. *Keep it as it is.* The bid picks the worker by load for every report. The Raft leader changes only when the others stop hearing from it.
@@ -7238,6 +7240,73 @@ line changes.
 - **Where.** `src/bidding.rs`, `src/node/bids.rs`, `src/raft/mod.rs`.
 - **How we check it.** Wins per node across load changes and under `ctl skew`; terms staying steady under load.
 - **Report notes.** Answer this question directly in the section on how the leader is chosen and how the worker is chosen.
+
+### D218 · A busy leader steps aside, and a normal vote picks another
+
+- **Date:** 2026-11-03 · **Part:** A, with B and C · **Status:** Implemented, amends D217, amended by D228 · **Decided by:** Noor Hany Emam, on a teammate's report that Dr Amr asked for it in
+  class. The written notes and Lectures 8 and 9 do not contain it, and the report must say so. Noor's reason, their words: "maybe the raft leader would be too busy to organize". The smaller
+  choices inside it (the signal, the numbers, what counts as safe) were picked by the agent on Noor's instruction to take the best choice and not ask, and Noor can overrule any of them.
+- **Context.** D217 kept the leader where it is under load, because the bid already moves planning away from a busy node. Later that evening a teammate reported that Dr Amr had said an overloaded
+  Raft leader should change through a new election. We searched the class notes, the spec and Lectures 8 and 9, and none of them says this. The recordings are not on hand. Noor decided to build it. The reason holds without
+  the report: every result passes through the leader, so an overloaded leader machine slows every commit, and the bid can move planning off it but not the ordering. D217 had this part wrong.
+  The hard part is that openraft 0.9.25 has no hand-over command (`trigger()` offers elect, heartbeat, snapshot and purge_log), and followers refuse votes while the leader's lease holds.
+- **Options considered: how the leader moves.**
+  1. *Go quiet (chosen).* The leader turns its heartbeats off through `runtime_config` and holds new writes in the proposal queue. Nothing then resets the followers' timers, and an ordinary vote picks the new leader. No message, timer or vote rule changes.
+  2. *Tell a follower to stand, with `trigger().elect()`.* Rejected: it needs a new message, so a wire change, and the third node still refuses votes while its lease holds, so the leader would have to go quiet anyway.
+  3. *Make timers or votes follow load, so the least busy node wins.* Rejected: this changes Raft's own rules, and the ranges in D115 are what stops split votes. Letting the fastest timer win is simple and already tested.
+  4. *Shut down the leader's Raft and start it again.* Rejected: it loses writes in flight and costs a catch-up, where going quiet costs about a second and nothing else.
+  5. *Take the leader out of the membership and put it back.* Rejected: two log entries for each move, and D25 keeps all three as voters. A crash in the middle would leave two voters.
+  6. *Stay with D217.* Rejected by Noor.
+- **Options considered: what "overloaded" reads.** One-PC rehearsal numbers are in the table below.
+  1. *The bid alone (first draft).* Rejected: it can miss the case that matters. A leader starved of CPU never reached 3 times its peers' bids, at most 2.51 (2.46 in another run), although every commit got about 10 times slower. Bids even out, because a loaded node loses rounds, and a slow log also fills the peers' workers, so their bids rise with it.
+  2. *The queue's length.* Rejected: it does not tell the cases apart. `waiting` was at most 148 at high even load and at most 70 with a starved leader, and it drains in bursts, because grouping sends everything at once.
+  3. *The machine's CPU, `cpu_permille`.* Rejected: a leader has only its own number unless a new field goes on the wire, and a machine busy with its own planning is what the bid already covers.
+  4. *A new wire field with each peer's log wait.* Rejected: a wire change a day before the deadline, and a follower has no queue to compare.
+  5. *The log wait, mean per proposal, compared with the peers' bids (chosen).* A proposal's time from entering the queue to being answered. It is one counter, in the same unit as the bid, and it sees a slow CPU and a slow disk alike.
+  6. *The log wait over a fixed floor alone.* Rejected: a healthy wait is 3 to 4.3 disk saves on any disk (3.1 at 300 users, 4.3 at 3000), so on a slow lab disk of 25 ms it would be about 80 to 110 ms, over any floor low enough to catch the starved leader, and the leader would move once a minute for nothing. So the wait must pass 40 ms and also 5 of the node's own saves.
+  7. *A floor of 100 ms.* Rejected, tried first: a starved leader's mean wait ran from 45 to 230 ms, mostly under 100, so a run of 5 s in a row never came. Longest run: 2 s.
+- **Decision.** Option 1 for how, option 5 with the two bars for what.
+  - **Who and when.** Only the leader acts. Once a second it reads the last second: each node's mean bid, and its own log wait and disk save. A small pure function decides (`overloaded`, `leader_load`, `Safety::holds`).
+  - **Overloaded.** Its load is its mean bid, or its log wait if that is higher and over both bars (40 ms and 5 saves). Under `queue-only` and `cpu-only` the score is not a time, so the bid alone counts. Overloaded means load at least `leader_overload_ratio` times the lowest peer's mean bid, and over a floor (1 ms, 8 jobs or 500 permille), for `leader_overload_for_ms` without a break. Only this second's bids count, so a stale score cannot decide it, and a second with no bid from any node breaks the run.
+  - **Safe.** Serving, not degraded, not silenced, all members in the group view, no peer suspected, no silence the failure draw named still going on, every peer bid in that second (a node that is not serving does not bid), and at least `leader_overload_cooldown_ms` since the last term change.
+  - **How.** Log `leader_stepped_aside`, heartbeats off, queue held. Bids and pings go on. The old leader sees the higher term, steps down, and turns heartbeats back on at once. If no new leader appears within `QUIET_LIMIT`, 3 s, it turns them back on, carries on, warns why and waits a full cooldown. It logs `leader_step_aside_ended` with `changed`, `re_elected`, `timed_out` or `stopped`.
+  - **Keys, in `[policy]`.** `leader_overload_ratio` 3, 0 turns it off, otherwise at least 2. `leader_overload_for_ms` 5000. `leader_overload_cooldown_ms` 60000, at least 3000. Under leader dispatch there are no bids, so it does not run.
+  - **Where it is on.** `config/local.toml` and `config/lab.example.toml`. Off in every experiment cell, so measurements stay comparable, except the new `e8-step-aside`. `tests/experiment_cells.rs` holds both to that.
+  - **No wire change.** `proto.rs` is untouched: the leader reads the bids it already receives and only stops sending.
+- **Why.** It meets the requirement with no change to Raft's safety: all it can cause is an election, and one can happen at any time. The numbers: at even load the leader's bid was at most 1.10 times its lowest peer's, and at high even load at most 1.20, so 3 is clear of both. A short burst does not move it, because it needs 5 s without a break. A move costs about a second with no commits, so a 60 s cooldown limits that to under 2% of the time in the worst case, and it is what stops a storm: every node starts it again on every new term. The peers' bids are what keeps a cluster overloaded everywhere from moving: at 3000 users the log wait was at most 91 ms against peer bids near 50 ms, so the ratio was nowhere near.
+- **Measured.** **One-PC rehearsal, never six-PC results.** Three nodes on their own 4 cores each and three load generators on one PC, with other work on the PC, loopback, disk saves on, `plan_work` 1000, think 1000 ms, reports over UDP, one run each, on commit `437ca9f`. 300 users means three sets of 100, with 300 responders.
+
+  | Run (all with disk saves on, one run each) | Leader moved | Gave up | Commit p50 / p99, ms | Answer p50 / p99, ms | Leader's log wait per second, ms: p50 / p90 / max | Its disk save, ms | Its bid over the lowest peer's: p50 / max | Seconds at 3 times or more: bid alone / bid or log wait |
+  |-------|--------|--------|--------|--------|--------|--------|--------|--------|
+  | (a) Even, 300 users, 60 s, cooldown 5 s so the rule is armed nearly all of it | no, the term stays | 0 | 7.5 / 12.4 | 31.0 / 45.7 | 7.5 / 8.1 / 10.1 | 2.4 | 1.02 / 1.10 | 0 / 0 |
+  | (d) Even, 3000 users, 3000 responders (D219), 60 s, cooldown 5 s | no, the term stays | 0 | 19.7 / 39.1 | 91.5 / 2317 | 18.4 / 20.6 / 29.7 | 4.3 | 1.00 / 1.16 | 0 / 0 |
+  | (d) The same with 300 responders | no, the term stays | 43, from the small pool (D219) | 19.1 / 34.9 | 369 / 14205 | 17.7 / 19.9 / 21.2 | 4.3 | 1.00 / 1.20 | 0 / 0 |
+  | (b) Skew 20000 on the leader, every default, 140 s: before | | | 17.5 / 93.3 | 41.5 / 123.6 | 16.8 / 26.7 / 72.3 | 5.3 | 1.02 / 1.11 | 0 / 2 |
+  | (b) Skewed, not moved yet | | | 16.6 / 23.7 | 40.8 / 80.2 | 15.8 / 16.2 / 16.2 | 5.1 | 3.71 / 3.93 | 8 / 8 |
+  | (b) After the move | once | 0 | 12.4 / 28.6 | 37.0 / 105.3 | 8.8 / 17.4 / 20.7 | 2.7 | 1.00 / 1.07 | 0 / 0 |
+  | (c) 32 busy loops on the leader's 4 cores, cooldown 15 s, 70 s: before | | | 8.3 / 18.6 | 32.3 / 55.5 | 7.9 / 12.1 / 15.4 | 2.6 | 1.02 / 1.47 | 0 / 0 |
+  | (c) Starved, not moved yet, 6 s | | | 86.3 / 357.9 | 146 / 722 | 94.0 / 153 / 153 | 10.7 | 1.48 / 2.51 | 0 / 6 |
+  | (c) After the move, node 1 still starved | once | 0 | 12.0 / 61.3 | 38.4 / 245 | 11.6 / 33.2 / 45.1 | 3.3 | 0.99 / 1.03 | 0 / 0 |
+  | (c) The same with ratio 0, so it never moved | no | 0 | 73.3 / 300.5 | 125 / 648 | 64.5 / 119.7 / 158.2 | 10.0 | 1.56 / 1.98 | 0 / 34 |
+
+  **(a) and (d).** No step-aside and no new term. Digests equal at the end of every run. An earlier run of the 3000-user case, with more other work on the PC, had a log wait of 24.4 / 36.4 / 91.3 ms, and still no change, because the peers' bids were near 50 ms.
+
+  **(b).** The skew came at +70 s, past the 60 s cooldown. The leader went quiet about 8.5 s later, since it takes a second or two for the skewed plans to show in the bid. Node 2 led term 3 after 759 ms. The longest time with no answer anywhere was 771 ms. Nobody gave up, 26 reports were retried, and the digests were equal. The term stayed at 3 for the 60 s left. Wins moved away: node 1 won 6771 of 20057 before the skew, and 16 of 20031 after it. Commit latency hardly changes in this case, because a skew slows planning and not the log: it shows the mechanism, and (c) shows the benefit. The 2 seconds over before the skew are a stall from other work on the PC, and they show why it needs 5 s in a row.
+
+  **(c).** Does commit latency improve after the change? Yes. p50 went from 8.3 ms to 86.3 ms when the leader's cores were starved, and back to 12.0 ms once node 2 led, with node 1 still starved. p99 went from 18.6 to 357.9 and back to 61.3 ms. Left where it was, the leader stayed at 73.3 and 300.5 ms. The leader went quiet about 6 s after the busy loops started. Node 2 led after 876 ms, the longest time with no answer was 733 ms, 4 reports were retried, nobody gave up, and the digests were equal. The bid alone would never have fired here: 0 seconds. A smaller skew does not fire either: at 5000, in a 45 s run, the bid moved the work (node 1 won 341 of 7159 after it, against 1963 of 5889 before), and the leader's bid stayed about 2 times its peers', at most 2.05, so it stayed leader.
+
+  **Why these bars, from the table.** A healthy wait stayed under 40 ms in every second of (a) and of (d) with 3000 responders, and came to 3.1 and 4.3 saves. A starved leader's wait stayed over 40 ms and over 5 saves for the 6 s that decided it. The mildest of those seconds was 44.3 ms with saves of 5.8 ms. That margin is thin, and a dip below it only starts the count over, so a less starved leader stays put. That is the safer way to be wrong.
+- **Consequences.**
+  - D217's "the leader does not change with load" no longer holds under overload. A steady term under *even* load is still the healthy result, and wins per node are still the evidence that the election follows load.
+  - The vote knows nothing of load. The follower whose timer ends first wins, so node 2 takes over from node 1, and node 1 from anyone else (D115). If two machines are busy the leadership can move between them, once per cooldown at most.
+  - The log wait cannot tell whose machine is slow: if both followers are starved and the leader is not, the wait rises too. The peers' bids usually rise with it, and the cost is capped at one move per cooldown.
+  - The first 60 s after a start or a leader change cannot move it, and neither can a time with no users, because no bids means no reading.
+  - A leader killed while quiet leaves nothing behind: going quiet lives only in the process, so after a restart heartbeats are on. A leader silenced while quiet ends its try at once.
+  - A step-aside shows once in the followers' `max_leader_gap_us`, for about as long as the move took.
+  - `raft_io` gains `answered` and `answered_us`. `analysis/analyze.py` does not read the two new events yet, and `elections` already counts the new term.
+- **Where.** `src/node/step_aside.rs`, `src/raft/mod.rs` (`set_quiet`, `log_work`), `src/raft/proposals.rs` (`hold`, the answered counters), `src/node/bids.rs` (`saw_bid`, `take_mean_scores`), `src/node/faults.rs` (`drawn_silence_going_on`), `src/config.rs`, `src/metrics.rs`, `scripts/watch_events.py`, `experiments/e8-step-aside.toml`. It sits in the middleware: `tests/layers.rs` keeps it out of the application.
+- **How we check it.** Unit tests of the rule in `node/step_aside.rs`. `tests/step_aside.rs`: `ctl skew` on the leader changes it once; even load changes nothing; ratio 0 is off; the cooldown holds back a second change; a try nobody answers times out and the leader carries on; a silenced peer stops it until that peer is back; a leader silenced while quiet, and one killed while quiet and restarted, both go on with heartbeats on; every node knows of a drawn silence until it is over. `tests/experiment_cells.rs` for the cells and configs. The rehearsal above. It has not run on the six machines.
+- **Report notes.** Say plainly that this rests on a teammate's report of what Dr Amr said, that the written notes and Lectures 8 and 9 do not contain it, and that D217 said otherwise first. There are two elections: the bid for each report, and the vote for the leader, and this entry only touches when the second one runs. Show the table above as a one-PC rehearsal. The honest limit is that the new leader is whoever's timer ends first, not the least busy node.
 
 ### D219 · 3000 responders in the top E1 cells
 
@@ -7559,6 +7628,51 @@ them on the six PCs.
 - **Report notes.** Quote the share with `udp_drops_nodes` and `udp_drops_client_pc_max`, and say it is over the whole run.
 
 ---
+### D228 · A busy leader's log is read as one write, not as a queue
+
+- **Date:** 2026-11-04 · **Part:** A · **Status:** Implemented, amends D218 · **Decided by:** the agent on its recommendation, on Noor's instruction to take the best choice and not ask. Noor can overrule it.
+- **Context.** A review tried to break D218, and did. D218's second signal, the log wait, is a proposal's time from entering the queue to its answer. That is the queue as well as the log, so it grows with what arrives. On a disk with 25 ms added to each save, at 3000 users, every node had the same disk and the same load, and the leader's bid was 1.02 times its lowest peer's. A write took 2 saves, 62 ms, so 16 writes a second of at most 200 commands (`GROUP_LIMIT`) carried about 3200 commands a second against about 6000 asked for. Proposals waited up to their 3 s deadline. The rule read 3 s of log wait against peer bids of a few ms and moved the leader every time the cooldown let it: 4 moves in 50 s with a 5 s cooldown, term 2 to term 6, steady and all at once alike. With the default cooldown that is, by arithmetic, one move every 65 s or so. Moving cannot help, because the next leader has the same disk and the same queue, and the numbers were no better for the moves. It was also close on a healthy disk: all at once at 3000 users with `plan_work` 0 reached 37 ms against the 40 ms bar, and 8 saves against D218's "3 to 4.3 on any disk".
+- **Options considered.**
+  1. *Read one write's time, from `client_write` to its answer (chosen).* One save here, one on a follower and the work around them. It does not grow with the queue, because a group carries whatever waited. It rises when this machine cannot keep up, which is the case the signal is for.
+  2. *Keep the log wait and leave out seconds whose groups are full.* Rejected: all at once inflates the wait with groups of about 60 of 200, so a second with no full group can still read a queue.
+  3. *Raise the bars on the log wait.* Rejected: the wait rises to the 3 s deadline on a log at its limit, on any disk, so no bar a starved leader's 45 to 230 ms can pass tells them apart.
+  4. *Compare with the peers' log over a new wire field.* Rejected, as in D218: a wire change a day before the deadline, and a follower has no queue.
+  5. *Drop the log half and keep the bid alone.* Rejected: a leader starved of CPU never reaches 3 times its peers' bids (D218), and that is the case that slows every commit.
+- **Decision.** The load is the mean bid, or the mean time of one write if that is higher and slow. Slow means over 20 ms (`WRITE_FLOOR`) and over 2.5 of this node's own disk saves (`WRITE_SAVES_TENTHS`). A write in flight through a whole reading counts as that whole reading. Everything else in D218 stays: the ratio, the time in a row, the safety conditions, the cooldown, going quiet. `leader_stepped_aside` gains `write_us` and keeps `log_wait_us` to read beside it. `raft_io` gains `writes_done` and `write_us`. The rule no longer reads `answered` or `answered_us`.
+- **Why these bars.** A healthy write stays under the floor (at most 16.5 ms here), and past the floor it is about 2 saves on any disk (at most 2.21). A starved leader's write came to 21.8 to 48.0 ms at 2.65 to 5.1 of its own saves, which also grow when it is starved. A floor of 25 ms or a bar of 3 saves let the same run break before 5 s in a row, and one such run never moved at all in 30 s. That margin is thin: a dip below the bars only starts the count over, so a less starved leader stays put, which is the safer way to be wrong.
+- **Measured.** **One-PC rehearsal, never six-PC results.** Three nodes on their own 4 cores each, three load generators, loopback, disk saves on, `plan_work` 1000 unless it says otherwise, 3000 responders at 3000 users and 300 at 300, think 1000 ms, other work on the PC, one run each. The cooldown is 5 s, so the rule is armed nearly all the time, except where it says. A slow disk is 25 ms added to every `fdatasync` on all three nodes, with an `LD_PRELOAD` shim.
+
+  | Run | Rule | Leader moved | Mean write, ms: p50 / max | In saves: p50 / max | Log wait, ms: p50 / max | Highest ratio of the bid | Commit p50 / p99, ms |
+  |-----|------|--------------|--------|--------|--------|--------|--------|
+  | Slow disk, 3000 users, steady, 40 s | D218 | 4 times, term 2 to 6 | | | 2367 / 3001 | | 2466 / 2988 |
+  | Slow disk, 3000 users, all at once, 40 s | D218 | 4 times, term 2 to 6 | | | 2250 / 2997 | | 2282 / 2991 |
+  | Slow disk, 3000 users, steady, 40 s | this | no | 62.3 / 65.4 | 2.03 / 2.12 | 2396 / 3001 | 1.12 | 2222 / 2988 |
+  | Slow disk, 3000 users, steady, 30 s, the final bars | this | no | 62.7 / 67.8 | 2.06 / 2.21 | 2468 / 3001 | 1.07 | 2277 / 2992 |
+  | Slow disk, 3000 users, all at once, 40 s | this | no | 64.5 / 69.0 | 2.07 / 2.20 | 2465 / 3002 | 1.25 | 2367 / 2994 |
+  | 5 ms added to each save, about 12 ms a save in all, 3000 users, 30 s: where a healthy write sits nearest the bars | this | no | 30.1 / 35.8 | 2.28 / 2.50 | 51.2 / 74.9 | 1.26 | 50.8 / 91.6 |
+  | The same, 300 users, 30 s | this | no | 24.7 / 26.8 | 2.05 / 2.13 | 40.8 / 47.4 | 1.07 | 39.3 / 57.7 |
+  | Even, 300 users, 40 s | this | no | 9.2 / 11.6 | 2.16 / 2.26 | 14.3 / 18.2 | 1.09 | 14.2 / 37.7 |
+  | Even, 3000 users, 40 s | this | no | 14.2 / 16.5 | 2.71 / 2.97 | 22.3 / 28.1 | 1.11 | 23.2 / 42.8 |
+  | All at once, 3000 users, 30 s | this | no | 10.1 / 12.7 | 2.54 / 2.96 | 17.3 / 29.1 | 1.62 | 17.4 / 63.9 |
+  | All at once, 3000 users, `plan_work` 0, 30 s | this | no | 8.8 / 11.0 | 2.32 / 3.12 | 20.6 / 38.2 | 2.07 | 27.6 / 103.8 |
+  | 1500 users, a follower silenced for 20 s, then for 300 ms every 2 s, six times, 55 s | this | no | 10.0 / 11.8 | 2.22 / 2.81 | 16.5 / 20.0 | 1.43 | 15.9 / 33.0 |
+  | 300 users, failure draws every 25 to 30 s, 90 s | this | only by a draw that silenced the leader | 7.7 / 11.3 | 2.15 / 2.28 | 11.6 / 17.2 | 3.87, one second | 11.6 / 190.4 |
+  | `ctl skew` 20000 on a follower, 300 users, 30 s | this | no | 8.4 / 10.3 | 2.16 / 2.25 | 13.5 / 15.4 | 1.05 | 13.2 / 23.6 |
+  | `ctl skew` 20000 on the leader, 300 users, 35 s | this | once, quiet about 7 s after the skew, a new leader 779 ms later | 9.1 / 11.1 | 2.19 / 2.34 | 13.8 / 22.3 | 4.48 | 14.3 / 428.2 |
+  | `ctl skew` 20000 on the leader, 60 users, 35 s, two runs | this | once each, quiet about 11 s and 17 s after the skew, a new leader 714 and 736 ms later | 8.3 / 9.3, 8.8 / 11.5 | 2.21 / 2.34, 2.21 / 2.51 | 11.7 / 17.5, 13.1 / 25.4 | 3.85, 4.51 | 11.0 / 443.1, 12.0 / 419.4 |
+  | The demo's order at 60 users, 70 s, cooldown 15 s: skew 20000 on the leader, then put back at +30 s, then the new leader silenced for 5 s, so the first leader leads again | this | once, for the skew. No second time: its bid came back to its peers' | 5.9 / 9.7 | 2.11 / 2.31 | 8.7 / 13.4 | 3.84 | 9.1 / 619.1 |
+  | 32 busy loops on the leader's 4 cores at +20 s, 300 users, 50 s, cooldown 15 s, three runs | this | once each, quiet about 6, 8 and 8 s after the loops, a new leader 858, 833 and 732 ms later. Figures here from the first run | 21.8 to 48.0 starved, 8 to 11 after the move | 2.65 to 5.1 starved | 46.7 to 107 starved | 11.75 | 14.5 / 531.1 for the whole run |
+
+  At 3000 users on the slow disk the clients waited about 4.8 s at p50 and 20 s at p95, moved or not. That comes from the log's limit, not from this mechanism, and `GROUP_LIMIT`'s comment, which said a slow disk would never reach it, is corrected. By arithmetic, a disk slower than about 15 ms a save limits the top E1 cells: 6000 commands a second at 200 a write needs a write every 33 ms. Only the 30 ms case was run.
+- **Consequences.**
+  - A log at its limit no longer moves the leader, and the cluster stays as slow as that disk makes it. `elections` stays 0 on such a run. `raft_io` tells the two apart afterwards: a long wait with a short write is the queue, and a long write is the machine.
+  - The write time still cannot tell whose machine is slow. A leader with a fast disk and two followers with disks over 20 ms moves once, onto a slower disk, where its bar is higher and it stays. The cost is capped at one move per cooldown.
+  - With all three nodes on one starved machine the write time rises on whichever leads, so on one PC under that much pressure the leader can move once per cooldown for nothing. On six machines a node is starved alone.
+  - With `plan_work` 0 the peers' bids are near nothing, so the comparison with them says little and the two bars do the work. `config/local.toml` has that and no disk saves, and its writes took under 1 ms at 3000 users on 4 shared cores.
+  - `tests/step_aside.rs` found a second thing on 2 CPUs: a skew reaches a bid only through a job the node plans. With few users rounds do not overlap, so the node with the lowest planning time wins them all and the others' averages stay as they were. A leader won 0 of about 2100 rounds in 40 s, its bid stuck at 10 µs, and the test timed out. So the test now sets the average as well as the skew. At the demo's 60 users the skew did reach the bid, in both runs, 11 s and 17 s after it, later than at 300 users because the leader wins fewer rounds, so the demo script now says about 20 s.
+- **Where.** `src/raft/proposals.rs` (`writes_done`, `write_us`), `src/raft/mod.rs` (`LogWork`), `src/node/step_aside.rs` (`LogReading`, `WRITE_FLOOR`, `WRITE_SAVES_TENTHS`), `src/metrics.rs`, `scripts/watch_events.py`, `tests/step_aside.rs`.
+- **How we check it.** `step_aside.rs::a_full_queue_with_writes_of_the_usual_length_is_not_a_slow_log` and `a_slow_disk_is_not_a_slow_log_and_a_starved_leader_is` hold the rule to the numbers above. `proposals.rs::a_write_counts_its_own_time_and_not_the_time_its_proposals_queued`. `tests/step_aside.rs::a_skewed_follower_moves_nothing`. The rehearsal above. None of it has run on the six machines, where a real disk replaces the shim.
+- **Report notes.** Say that D218's first version passed every run it was tried on and still moved the leader for nothing on a slow disk, what showed it, and how the signal changed. Keep the two ideas apart: a queue says how much is arriving, a write says how fast this machine is.
 
 ### Notes on older entries
 
@@ -7617,6 +7731,7 @@ These add to older entries without changing their text. An entry can have more t
 | D112 | No pings, send queues or reconnects on the client path. Its reasoning about half-open TCP still explains D119's rule between nodes (D167) |
 | D113 | IDs stay required and unique; the script now gives them out (D184) |
 | D114 | "The leader only sequences the log" is now the table in D163: three mechanical duties, and it orders every command, not only results. Its rule about E1 stays |
+| D115 | D218 relies on this: the follower with the shortest range takes over from a leader that goes quiet. No range changed |
 | D116 | The fault schedule no longer stays with the leader. Raft staying is unchanged (item 1 of Noor's decisions). Its closing line about showing someone the argument is replaced by D158: nothing waits on an answer |
 | D116 | The leader's role is settled by D163. Its old text stays, and D213's row for it still stands |
 | D119 | In its list of methods, `fault_order` is now `fault_bid` (D158) |
@@ -7636,6 +7751,7 @@ These add to older entries without changing their text. An entry can have more t
 | D130 | The runner could not start a node over ssh, and now writes `run.json` last (D222, D223). It works through a stand-in `ssh` (D188). It has still not run on the lab machines, so "to confirm" stays |
 | D132 | `ctl incidents` reads results, not the Raft log, so it does not bring back `ctl log` (D145) |
 | D132 | The demo's load lines move to the script (D183) |
+| D133 | The proposal queue can now be held, by a leader stepping aside, and it counts how long its answers take (D218). Everything else about it is unchanged |
 | D135 | The wait is paced even when Raft has stopped (D225). A later test, `tests/rejoin.rs::a_node_still_rejoins_when_the_leader_goes_away_as_it_returns`, has the leader go silent just as a node returns, on real Raft, and the node still serves nothing until it has all that was committed. It passes without D135 too, so it does not replace the scripted tests: it covers the plain leader change, not a lost index |
 | D137 | A restart no longer prints `Can not initialize`, but "no `ERROR`" was too strong: see the corrections in D222 |
 | D138 | The client gap closes its ends with the client's first and last events (D224) |
@@ -7649,3 +7765,5 @@ These add to older entries without changing their text. An entry can have more t
 | D186 | "It never kills" and "finishes this run's log copy" are now true of the code. More reasons to leave a run out (D189, D191) |
 | D200 | `client.rs`'s exception to the sockets rule ended with D175, so the frontend's listener is the only one left |
 | D205 | D165 keeps the same values and text, and adds the load rule, the start order and the fault timers |
+| D216 | Row 16 is settled: Noor said yes, and the step-aside is built (D218) |
+| D218 | The log half of the rule now reads one write's time, with its own two bars, and not the log wait. "A slow disk alone does not pass for a busy leader" and "the peers' bids keep a cluster overloaded everywhere from moving" did not hold for a log at its limit (D228) |

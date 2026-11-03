@@ -19,7 +19,7 @@
 //! middleware    MeshClient, client.rs             CloudGroup, node/group.rs
 //!                  submit makes one call to          bidding, the detector, takeover,
 //!                  group_send, which makes           rejoin, degraded mode
-//!                  one copy per node
+//!                  one copy per node                 and a busy leader stepping aside
 //!                  |                                 |
 //! libraries     tarpc over UDP                    tarpc over TCP, openraft
 //! ```

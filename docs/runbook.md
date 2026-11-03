@@ -126,6 +126,8 @@ slow a node enough to cost it its leader (D134).
 
 To see what a machine is doing in plain words, with no rebuild: `python3 scripts/watch_events.py runs/lab`, and add `--reports` for every step of every report (D221). It only reads that machine's logs, so use one terminal per machine.
 
+**A busy leader can step aside.** `config/lab.example.toml` has it on, with a ratio of 3, 5 s in a row and a 60 s cooldown (D218). If a leader moves with no fault, `watch_events.py` on that machine prints `TOO BUSY TO LEAD` and why. Every experiment cell but `e8-step-aside` has it off, whatever `lab.toml` says, because the cells do not read `lab.toml`.
+
 **The fault draw ships off.** `config/lab.example.toml` has `faults.enabled = true` and both interval keys at `100000000`: `ctl silence` works, and no fault election ever runs, so only you cause faults, and forgetting an
 edit cannot silence a node in the middle of a scene (D165). To turn the draw on, so that the three nodes elect one of them to go silent about every 30 to 60 s, replace the two interval lines as the comments in the file show,
 copy the file to all six machines, and restart the nodes:
@@ -145,7 +147,7 @@ First check the disk on each node machine, because every figure depends on a sta
 mkdir -p data/raft && dd if=/dev/zero of=data/raft/.t bs=512 count=1000 oflag=dsync && rm data/raft/.t
 ```
 
-`dd` prints how long 1000 synced writes took. Note the number for each node machine in the report. Then the same machines' `raft_io` lines give the real figure under load (D133).
+`dd` prints how long 1000 synced writes took. Note the number for each node machine in the report. Then the same machines' `raft_io` lines give the real figure under load (D133). Over about 15 ms a save the log reaches its limit at 3000 users, on any leader: commits take seconds with nothing wrong, and that is the disk (D228).
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick e1-300-bidding
@@ -175,7 +177,7 @@ One leader-dispatch run at the demo's load gives the number beside `leader_plan_
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick      # 15 cells, about 70 minutes
-scripts/run-experiments.sh experiments/hosts full       # 33 cells, about 8 hours
+scripts/run-experiments.sh experiments/hosts full       # 34 cells, about 8 hours
 ```
 
 `quick` runs `ft8-random-faults` and `ft8-election-rate` first, because they are the first real logs the fault-election analysis sees: a bug
@@ -277,6 +279,8 @@ so it is a lower limit on the outage and not a time to recover (D224).
 | `analyze.py` prints `left out ...` | the line says why: programs missing, failed or stopped early, users that do not add up, a node log not copied, a damaged log, or a fault that never fired. Rerun that run |
 | `analyze.py` prints `dropped a half-written last line` | a program or node was killed in mid-write. Harmless by itself; the run is left out only if another check catches it |
 | Elections keep happening with no fault | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
+| One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, how long one log write took and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
+| `leader_step_aside_ended` says `timed_out` | nobody took over within 3 s, so that leader carried on and waits a full cooldown. Check that the followers are serving and can reach each other (D218) |
 | `ctl` errors, or reports vanish while every row looks healthy | a stale binary on one machine: an old client and a new node fail quietly (D155, D175). Rebuild all six from one commit |
 | `members` shows `-` | that node is silenced; its list is frozen and not worth reading |
 | `members` differs between nodes | normal for a moment: each list is one node's opinion. Lasting differences with everyone serving point at a network problem between two nodes |
