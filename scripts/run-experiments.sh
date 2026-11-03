@@ -76,6 +76,19 @@ wait_for_leader() {
   done
 }
 
+# A node missing its UDP firewall rule looks healthy over TCP while every report to it vanishes, so a
+# run would measure two nodes and say nothing about it (D168). Asked from a client machine, the way
+# reports travel.
+require_udp_ports() {
+  local missing
+  missing=$(ctl status | grep 'udp no answer' || true)
+  if [[ -n "$missing" ]]; then
+    echo "$missing" >&2
+    echo "batch stopped: a node's UDP port does not answer" >&2
+    return 1
+  fi
+}
+
 # Which nodes the cell's fault silences.
 victims_of() {
   local leader follower
@@ -127,6 +140,7 @@ run_once() {
   if ((skew_work > 0)); then
     ctl skew --node "${NODE_IDS[0]}" --work "$skew_work" >/dev/null
   fi
+  require_udp_ports || { rm -rf "$out"; exit 1; }
 
   local pids=()
   local per_client=$((users / ${#CLIENT_IDS[@]}))
