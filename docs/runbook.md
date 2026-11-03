@@ -279,7 +279,7 @@ so it is a lower limit on the outage and not a time to recover (D224).
 | `analyze.py` prints `left out ...` | the line says why: programs missing, failed or stopped early, users that do not add up, a node log not copied, a damaged log, or a fault that never fired. Rerun that run |
 | `analyze.py` prints `dropped a half-written last line` | a program or node was killed in mid-write. Harmless by itself; the run is left out only if another check catches it |
 | Elections keep happening with no fault | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
-| One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, its log wait and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
+| One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, how long one log write took and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
 | `leader_step_aside_ended` says `timed_out` | nobody took over within 3 s, so that leader carried on and waits a full cooldown. Check that the followers are serving and can reach each other (D218) |
 | `ctl` errors, or reports vanish while every row looks healthy | a stale binary on one machine: an old client and a new node fail quietly (D155, D175). Rebuild all six from one commit |
 | `members` shows `-` | that node is silenced; its list is frozen and not worth reading |

@@ -1278,8 +1278,9 @@ table is in D133. The real code then ran 17 sweep cells on one PC, up to 3000 re
 
 Every result passes through the leader, so an overloaded leader machine slows every commit, and the bid can move planning away from it but
 not the ordering. So once a second the leader looks at the last second. It is overloaded when its load is at least `leader_overload_ratio` times
-the lowest peer's mean bid, and over a small floor. Its load is its own mean bid, or the mean time its log took per proposal if that is higher and
-slow: over 40 ms, and over 5 of its own disk saves. The log wait is there because bids even out, so the bid alone can miss a leader that is too busy to keep the log (D218).
+the lowest peer's mean bid, and over a small floor. Its load is its own mean bid, or the mean time one log write took if that is higher and
+slow: over 20 ms, and over 2.5 of its own disk saves. The write time is there because bids even out, so the bid alone can miss a leader that is too busy to keep the log (D218). It is one write and not the time
+a proposal waited, because a queue grows with what arrives, on whichever node leads, and moving the leader cannot shorten it (D228).
 A peer with no bid in that second makes the second not count, so an old number cannot decide it, and a peer that is not serving does not bid.
 
 openraft 0.9.25 has no hand-over command, and followers refuse votes while they have heard from their leader within the lease. So the leader
@@ -1325,7 +1326,7 @@ sequenceDiagram
 The vote knows nothing of load: the follower whose timer ends first wins, so node 2 takes over from node 1, and node 1 from anyone else (D115). If a busy node does not lead, nothing happens, because
 the rule only looks at the leader. If two nodes are busy, the leadership can move between them, once per cooldown at most. A leader silenced while quiet ends its try at once, and going quiet lives only in the process, so a leader killed while quiet restarts with heartbeats on.
 
-**One-PC rehearsal, never six-PC results, one run each (the whole table is in D218).** Three nodes with disk saves on, three load generators, think 1000 ms, reports over UDP, with other work on the PC.
+**One-PC rehearsal, never six-PC results, one run each (the whole tables are in D218 and D228).** Three nodes with disk saves on, three load generators, think 1000 ms, reports over UDP, with other work on the PC.
 
 | Case | What happened | Commit p50 / p99, ms |
 |------|---------------|----------------------|
@@ -1333,6 +1334,7 @@ the rule only looks at the leader. If two nodes are busy, the leadership can mov
 | Even, 3000 users, 60 s | no step-aside, the term stays. At most 1.20 times, and its log wait was about 20 ms against peer bids near 50 ms | 19.7 / 39.1 |
 | `ctl skew` 20000 on the leader | quiet about 8.5 s later, a new leader 759 ms after that, nobody gave up, digests equal, no second change in the 60 s left, and node 1's wins fell from 6771 to 16 | 16.6 / 23.7 before the move, 12.4 / 28.6 after |
 | 32 busy loops on the leader's 4 cores | its bid reached at most 2.51 times, so the bid alone would never fire. Its log wait was 94 ms against 8 ms. Quiet about 6 s later, a new leader 876 ms after that, nobody gave up, digests equal | 8.3 / 18.6 before, 86.3 / 357.9 starved, 12.0 / 61.3 after the move. Never moved: 73.3 / 300.5 |
+| Even, 3000 users, with 25 ms added to each disk save, steady or all at once (D228) | no step-aside, the term stays. A write took 62 ms, 2.06 saves, and proposals waited up to 3 s, because the log is at its limit on any leader. Read as a log wait, the same load moved the leader 4 times in 50 s with a 5 s cooldown | 2277 / 2992 |
 
 
 ---
@@ -1674,7 +1676,7 @@ would make the client wait out its retries and give up on a report the cloud had
 | Any peer, for the group | Every other node | The peer detector above, without a break for `degraded_after_ms`; logs `group_view` (D153). A fault under about 2.2 s never shows here | about 2.15–2.2 s | built |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, `degraded`, `members`, role, term, digest per node | on demand        | built |
 | A node's UDP port closed (firewall) | The operator | `ctl status`: `node N: udp no answer` | on demand | built (D168) |
-| An overloaded leader | The leader itself | Once a second, its load against its peers' bids, for `leader_overload_for_ms` without a break (D218). The load is its bid, or its log wait if that is slow | 6 to 9 s, once the cooldown is over | built |
+| An overloaded leader | The leader itself | Once a second, its load against its peers' bids, for `leader_overload_for_ms` without a break (D218). The load is its bid, or its write time if that is slow (D228) | 6 to 17 s on one PC, once the cooldown is over | built |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
 extra election, never two committed results or two leaders in one term. A client detects nothing: UDP has no connection, it

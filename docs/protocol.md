@@ -252,7 +252,7 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 
 A leader that stays overloaded goes quiet, and a normal vote picks another (D218). No message and no field on the wire changes. Two events say what happened, on that leader's own log:
 
-- `leader_stepped_aside { term, score, log_wait_us, save_us, load, peer_scores }`: this leader went quiet. `score` is its mean bid in the last second, `log_wait_us` the mean time its log took per proposal, `save_us` its mean disk save, `load` what the rule compared, and `peer_scores` the peers' mean bids.
+- `leader_stepped_aside { term, score, write_us, log_wait_us, save_us, load, peer_scores }`: this leader went quiet. `score` is its mean bid in the last second, `write_us` the mean time one log write took, `log_wait_us` the mean time per proposal with the queue in it, which the rule does not read (D228), `save_us` its mean disk save, `load` what the rule compared, and `peer_scores` the peers' mean bids.
 - `leader_step_aside_ended { term, outcome, new_term, new_leader, waited_ms }`: `outcome` is `changed`, `re_elected`, `timed_out` or `stopped`, and `term` is the term it went quiet in.
 
 `raft_io` gains `answered` and `answered_us`, both cumulative: the proposals this node's queue answered, and the time they took from entering it.
@@ -301,7 +301,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `step_aside.rs::CHECK_INTERVAL` | 1 s | how often a node reads the bids of the last second (D218) |
 | `step_aside.rs::QUIET_LIMIT` | 3 s | how long a leader stays quiet waiting for a new leader; the same as `propose_timeout_ms` by default (D218) |
 | `step_aside.rs::floor` | 1000 µs, 8 jobs or 500 permille, by score kind | a leader at or below this is never overloaded, so tiny numbers on an idle cluster cannot make a large ratio (D218) |
-| `step_aside.rs::LOG_WAIT_FLOOR`, `LOG_WAIT_SAVES` | 40 ms, 5 saves | a leader's mean log wait counts only above both, so a slow disk cannot pass for a busy leader (D218) |
+| `step_aside.rs::WRITE_FLOOR`, `WRITE_SAVES_TENTHS` | 20 ms, 2.5 saves | a leader's mean write time counts only above both, so a slow disk cannot pass for a busy leader (D228) |
 | `node/mod.rs::MAX_PLAN_ATTEMPTS` | 3 | plans of one request before the executor commits that nobody could be sent (D35, D220) |
 | `node/mod.rs::CAMPUS_CHECK_INTERVAL` | 200 ms | how often a node checks that the campus is registered, and proposes it if it may (D164) |
 | `degraded.rs::REPLAY_INTERVAL`, `REPLAY_BATCH` | 100 ms, 64 | how fast provisional answers are replayed (D122) |

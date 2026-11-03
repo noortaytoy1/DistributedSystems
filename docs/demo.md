@@ -94,7 +94,7 @@ move off that node (read from the code, not run).
 target/release/ctl --config config/lab.toml skew --node <leader> --work 20000
 ```
 
-**Expect** within about 10 s, `python3 scripts/watch_events.py runs/lab` on that machine to print `TOO BUSY TO LEAD` and then `STEPPED ASIDE`. Within about a second terminal 1 shows another leader and a term one higher, nobody gives up, and the term stays there for the next 60 s. The wins move off that node as well. **Say this out loud:** the node chose to go quiet, the vote is an ordinary Raft vote, and no timer or vote rule changed. Put it back afterwards with `skew --node <that node> --work 1000`. A skew of 5000, as in scene 2, moves the work but not the leader (measured on one PC, D218).
+**Expect** within about 20 s (7 s at 300 users and 11 to 17 s at 60 on one PC, because the skew shows only once that node has won a round with it on, D228), `python3 scripts/watch_events.py runs/lab` on that machine to print `TOO BUSY TO LEAD` and then `STEPPED ASIDE`. Within about a second terminal 1 shows another leader and a term one higher, nobody gives up, and the term stays there for the next 60 s. The wins move off that node as well. **Say this out loud:** the node chose to go quiet, the vote is an ordinary Raft vote, and no timer or vote rule changed. Put it back afterwards with `skew --node <that node> --work 1000`. A skew of 5000, as in scene 2, moves the work but not the leader (measured on one PC, D218).
 
 ## 3. Server failure
 
