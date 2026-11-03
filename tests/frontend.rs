@@ -201,6 +201,38 @@ async fn a_loadgen_that_reaches_its_duration_shows_its_summary() {
     cluster.shutdown().await;
 }
 
+/// Every name the page offers is one the real program takes (D182): an unknown one would make it
+/// exit at once, and the row would say failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_real_loadgen_takes_every_pattern_the_page_offers() {
+    let cluster = ready_cluster().await;
+    let page = Page::start(&cluster.config, "patterns").await;
+    let (_, info) = page.json("GET", "/api/info").await;
+    let names: Vec<&str> = info["patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 3);
+    for name in &names {
+        let target = format!("/api/load/start?users=1&think_ms=500&duration_s=1&pattern={name}");
+        let (status, answer) = page.json("POST", &target).await;
+        assert_eq!(status, 200, "{name}: {answer}");
+    }
+    let rows = page
+        .wait_for_rows("every program to end", |rows| {
+            rows.len() == names.len() && rows.iter().all(|r| r["state"] != "running")
+        })
+        .await;
+    for (row, name) in rows.iter().zip(&names) {
+        assert_eq!(row["pattern"], *name);
+        assert_eq!(row["state"], "finished", "{name}: {row}");
+    }
+    drop(page);
+    cluster.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn load_start_runs_real_loadgens_and_stop_ends_them() {
     let cluster = ready_cluster().await;

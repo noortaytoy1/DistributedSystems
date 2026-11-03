@@ -1,5 +1,5 @@
 //! The web page on a client PC: report an incident and read its plan, start real user programs,
-//! watch the nodes, and follow a zone. One frontend per client PC, driving only that PC (D197).
+//! and watch the nodes. One frontend per client PC, driving only that PC (D197).
 //!
 //! ```text
 //! browser --HTTP on this PC--> frontend --MeshClient--> node 1, 2, 3
@@ -23,12 +23,11 @@
 //! - **The page (`frontend.html`).** One embedded file with plain JavaScript that writes through
 //!   `textContent` only and has no outside links, because the lab network may have no internet.
 //!
-//! Numbered `SWITCH-ON` stubs right below mark every API other lanes are still building. Each stub
-//! answers "not available yet" and has its real body beside it in a comment.
+//! There is no panel for following a zone: that is publish-subscribe, which is Phase 2.
 //!
 //! Owner: F (client and scale).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -41,136 +40,18 @@ use futures::future::join_all;
 use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted, control};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{EventLog, now_us};
+use rescuemesh::metrics::{EventLog, now_ms};
 use rescuemesh::proto::{
-    Capability, ClientId, CommittedResult, ControlReply, ControlRequest, Incident, NodeId,
-    NodeStatus, Plan, Responder, ResponderId, ZoneId,
+    Capability, ClientId, ControlReply, ControlRequest, Incident, IncidentStatus, NodeStatus,
+    Responder, ResponderId, UserId, ZoneId,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
-
-// ---------------------------------------------------------------------------------------------
-// SWITCH-ON stubs. One per API that is not on this branch yet. To switch one on after its lane
-// merges: delete the stub lines, uncomment the REAL lines, and flip the tests marked with the same
-// SWITCH-ON number.
-// ---------------------------------------------------------------------------------------------
-
-/// SWITCH-ON 1 (lane-wire, gap-15). `Incident` gains `owner`, `category` and `ttl_ms`.
-///
-/// Returns what the cloud could not carry, for the card to say so. Called after `needs` is set,
-/// because the category must be one of that capability: the form asks for the help needed, and
-/// `Capability::categories` lists what fits it.
-fn fill_report_fields(
-    incident: &mut Incident,
-    form: &ReportForm,
-    client: ClientId,
-) -> Vec<&'static str> {
-    // REAL:
-    // incident.owner = rescuemesh::proto::UserId { client, user: form.who };
-    // if let Some(category) = form.needs.categories().first() {
-    //     incident.category = *category;
-    // }
-    // incident.ttl_ms = form.valid_for_s.saturating_mul(1000);
-    // Vec::new()
-    let _ = (incident, form, client);
-    vec!["who sent it", "the valid-for time"]
-}
-
-/// SWITCH-ON 2 (lane-wire, gap-15). `campus` draws gain an owner argument.
-fn draw_incident(cfg: &CampusConfig, client: ClientId, who: u32, now_ms: u64) -> Incident {
-    // REAL:
-    // campus::unseeded_incident(cfg, rescuemesh::proto::UserId { client, user: who }, now_ms)
-    let _ = (client, who);
-    campus::unseeded_incident(cfg, now_ms)
-}
-
-/// SWITCH-ON 3 (lane-wire, gap-15). `Submitted` gains `status: IncidentStatus`, which is the only
-/// source of `Expired`. Until then the status follows from what the answer holds.
-fn reply_status(done: &Submitted) -> &'static str {
-    // REAL:
-    // done.status.as_str()
-    if done.provisional {
-        "provisional"
-    } else if done.plan.responder.is_some() {
-        "assigned"
-    } else {
-        "unassigned"
-    }
-}
-
-/// SWITCH-ON 4 (lane-wire, gap-15 with priority). The plan gains the incident's priority. `None`
-/// makes the card say "not available yet".
-fn plan_priority(plan: &Plan) -> Option<u32> {
-    // REAL:
-    // Some(plan.priority)
-    let _ = plan;
-    None
-}
-
-/// SWITCH-ON 5 (lane-load, gap-16). `loadgen --pattern steady|random|all-at-once`. On this branch an
-/// unknown flag would make loadgen exit at once, so only steady runs, which needs no flag: it is
-/// what loadgen does today.
-fn loadgen_pattern_args(pattern: Pattern) -> Result<Vec<String>, String> {
-    // REAL:
-    // Ok(vec!["--pattern".to_string(), pattern.name().to_string()])
-    match pattern {
-        Pattern::Steady => Ok(Vec::new()),
-        Pattern::Random | Pattern::AllAtOnce => Err(format!(
-            "the {} pattern is not available yet: this build's loadgen has no --pattern flag",
-            pattern.label()
-        )),
-    }
-}
-
-/// SWITCH-ON 6 (lane-peer, gap-13). `NodeStatus` gains `members`. `None` makes the table say "not
-/// available yet".
-fn node_members(status: &NodeStatus) -> Option<Vec<NodeId>> {
-    // REAL:
-    // Some(status.members.clone())
-    let _ = status;
-    None
-}
-
-/// SWITCH-ON 7 (lane-wire, gap-14). Publish-subscribe: why the zone panel cannot work yet.
-fn zone_updates_unavailable() -> Option<&'static str> {
-    // REAL:
-    // None
-    Some("Zone updates are not available yet: this build has no publish-subscribe in its client.")
-}
-
-/// SWITCH-ON 7. REAL: `struct ZoneFeed(rescuemesh::client::Subscription);`
-struct ZoneFeed;
-
-/// SWITCH-ON 7. `MeshClient::subscribe`.
-async fn zone_subscribe(client: &MeshClient, zones: &[ZoneId]) -> Result<ZoneFeed, String> {
-    // REAL:
-    // client.subscribe(zones).await.map(ZoneFeed).map_err(|e| e.to_string())
-    let _ = (client, zones);
-    Err(zone_updates_unavailable()
-        .unwrap_or("not available yet")
-        .to_string())
-}
-
-/// SWITCH-ON 7. `Subscription::next`. A `GaveUp` means no node has answered for a while; the feed
-/// resumes by itself.
-async fn zone_next(feed: &mut ZoneFeed) -> Result<CommittedResult, ClientError> {
-    // REAL:
-    // feed.0.next().await
-    let _ = feed;
-    std::future::pending().await
-}
-
-/// SWITCH-ON 7. `Subscription::unsubscribe`.
-fn zone_unsubscribe(feed: ZoneFeed) {
-    // REAL:
-    // feed.0.unsubscribe();
-    let _ = feed;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Limits. Constants, as in D112: no experiment varies them, so `Config` stays unchanged.
@@ -196,7 +77,7 @@ const SEVERITY_LABELS: [(u8, &str); 5] = [
 const DEFAULT_WHO: u32 = 1;
 /// Noor's item 5: longer than the client's 30 s of retries.
 const DEFAULT_VALID_FOR_S: u64 = 60;
-/// 0 would be expired before it left, which a person typing a report never means (gap-15).
+/// 0 would be expired before it left, which a person typing a report never means (D143).
 const MIN_VALID_FOR_S: u64 = 1;
 const MAX_VALID_FOR_S: u64 = 3600;
 
@@ -216,17 +97,12 @@ const MAX_DURATION_S: u64 = 900;
 /// its machine 1, batch 1, program 1, and two programs would share one ID and one log.
 const PROGRAM_ID_BASE: u64 = 10_000;
 const MAX_PROGRAM_NUMBER: u64 = PROGRAM_ID_BASE - 1;
-/// `n = 0`: the zone panel's own client. Programs start at 1.
-const ZONE_PANEL_NUMBER: u64 = 0;
 /// Rows kept for the page; the oldest ended ones go first.
 const MAX_PROGRAM_ROWS: usize = 60;
 const MAX_SUMMARY_BYTES: usize = 4096;
-/// After TERM. A loadgen that handles TERM (gap-16) prints its summary in this time; one that does
-/// not is already gone, and anything else is killed.
+/// After TERM. loadgen prints its summary in this time (D183); anything still running is killed.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const TERM_TIMEOUT: Duration = Duration::from_secs(1);
-/// Zone updates kept for the page to poll.
-const MAX_ZONE_UPDATES: usize = 200;
 
 const PAGE: &str = include_str!("frontend.html");
 
@@ -239,9 +115,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("/api/load", "GET"),
     ("/api/load/start", "POST"),
     ("/api/load/stop", "POST"),
-    ("/api/zones", "GET"),
-    ("/api/zones/register", "POST"),
-    ("/api/zones/clear", "POST"),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -315,15 +188,10 @@ struct App {
     config: Config,
     config_path: PathBuf,
     client_id: ClientId,
-    /// Reports only. The zone panel has its own, so a burst of updates cannot delay a report.
     client: MeshClient,
-    log: EventLog,
-    responders: Arc<BTreeMap<ResponderId, Responder>>,
+    responders: BTreeMap<ResponderId, Responder>,
     loadgen: PathBuf,
     load: Arc<Mutex<LoadBox>>,
-    zones: Arc<Mutex<ZonePanel>>,
-    /// The panel's client, made on first use. Also makes registering one at a time.
-    zone_client: tokio::sync::Mutex<Option<Arc<MeshClient>>>,
 }
 
 impl App {
@@ -335,7 +203,7 @@ impl App {
         log: EventLog,
         loadgen: PathBuf,
     ) -> Self {
-        let client = MeshClient::new(client_id, &config, log.clone());
+        let client = MeshClient::new(client_id, &config, log);
         let responders = campus::responders(&config.campus)
             .into_iter()
             .map(|r| (r.id, r))
@@ -345,16 +213,13 @@ impl App {
             config_path,
             client_id,
             client,
-            log,
-            responders: Arc::new(responders),
+            responders,
             loadgen,
             load: Arc::default(),
-            zones: Arc::default(),
-            zone_client: tokio::sync::Mutex::default(),
         }
     }
 
-    /// End every program and the zone feed. Runs after the last connection is gone.
+    /// End every program. Runs after the last connection is gone.
     async fn shutdown(&self) {
         let mut tasks = {
             let mut load = lock(&self.load);
@@ -370,10 +235,6 @@ impl App {
         }
         // Dropping the set aborts what is left, and that drops the child, which kills it.
         drop(tasks);
-        let feed = lock(&self.zones).feed.take();
-        if let Some(feed) = feed {
-            feed.end().await;
-        }
     }
 }
 
@@ -654,9 +515,6 @@ async fn route(app: &App, request: &Request) -> Response {
             .map(|()| Response::json(200, &lock(&app.load).to_json())),
         "/api/load/start" => load_start(app, &query),
         "/api/load/stop" => query.only(&[]).map(|()| load_stop(app)),
-        "/api/zones" => zones_list(app, &query),
-        "/api/zones/register" => zones_register(app, &query).await,
-        "/api/zones/clear" => zones_clear(app, &query).await,
         _ => Ok(Response::error(404, "no such path")),
     };
     answered.unwrap_or_else(|refused| refused)
@@ -670,7 +528,6 @@ fn info(app: &App) -> Response {
             json!({
                 "name": p.name(),
                 "label": p.label(),
-                "available": loadgen_pattern_args(p).is_ok(),
             })
         })
         .collect();
@@ -705,7 +562,6 @@ fn info(app: &App) -> Response {
                 "duration_s_max": MAX_DURATION_S,
                 "programs_per_click": PROGRAMS_PER_CLICK,
             },
-            "zone_updates_unavailable": zone_updates_unavailable(),
         }),
     )
 }
@@ -779,32 +635,38 @@ fn draw_in_zone(
         .find(|incident| incident.zone == zone)
 }
 
-fn build_incident(app: &App, form: &ReportForm) -> Option<(Incident, Vec<&'static str>)> {
+fn draw_incident(cfg: &CampusConfig, client: ClientId, who: u32, now_ms: u64) -> Incident {
+    campus::unseeded_incident(cfg, UserId { client, user: who }, now_ms)
+}
+
+fn build_incident(app: &App, form: &ReportForm) -> Option<Incident> {
     let campus = &app.config.campus;
     let mut incident = draw_in_zone(form.zone, campus.zones, || {
-        draw_incident(campus, app.client_id, form.who, now_us() / 1000)
+        draw_incident(campus, app.client_id, form.who, now_ms())
     })?;
     incident.severity = form.severity;
     incident.needs = form.needs;
-    let not_carried = fill_report_fields(&mut incident, form, app.client_id);
-    Some((incident, not_carried))
+    // After `needs`, because the category must be one of that capability: the form asks for the
+    // help needed, and `Capability::categories` lists what fits it.
+    if let Some(category) = form.needs.categories().first() {
+        incident.category = *category;
+    }
+    incident.ttl_ms = form.valid_for_s.saturating_mul(1000);
+    Some(incident)
 }
 
 async fn report(app: &App, query: &Query<'_>) -> Result<Response, Response> {
     let form = parse_report(query, &app.config.campus)?;
-    let Some((incident, not_carried)) = build_incident(app, &form) else {
+    let Some(incident) = build_incident(app, &form) else {
         return Err(Response::error(500, "could not draw a place in that zone"));
     };
     // One click is one submit: the middleware copies it to the nodes and retries it. Never resent
     // from here, because a new ID would be a second incident.
     match app.client.submit(incident).await {
-        Ok(done) => {
-            let status = reply_status(&done);
-            Ok(Response::json(
-                200,
-                &report_json(&done, &form, &app.responders, status, &not_carried),
-            ))
-        }
+        Ok(done) => Ok(Response::json(
+            200,
+            &report_json(&done, &form, &app.responders),
+        )),
         Err(ClientError::GaveUp { attempts }) => Ok(Response::json(
             504,
             &json!({
@@ -834,8 +696,6 @@ fn report_json(
     done: &Submitted,
     form: &ReportForm,
     responders: &BTreeMap<ResponderId, Responder>,
-    status: &str,
-    not_carried: &[&str],
 ) -> Value {
     let committed = done.committed.as_ref();
     let (responder_zone, responder_capability) = responder_fields(done.plan.responder, responders);
@@ -848,10 +708,10 @@ fn report_json(
         "responder_zone": responder_zone,
         "responder_capability": responder_capability,
         "cost_m": done.plan.cost,
-        "status": status,
-        "priority": plan_priority(&done.plan),
+        "status": done.status.as_str(),
+        "priority": done.plan.priority,
         "provisional": done.provisional,
-        "expired": status == "expired",
+        "expired": done.status == IncidentStatus::Expired,
         "log_index": committed.map(|c| c.log_index),
         "term": committed.map(|c| c.term),
         "latency_us": u64::try_from(done.latency.as_micros()).unwrap_or(u64::MAX),
@@ -861,7 +721,6 @@ fn report_json(
         "needs": capability_name(&form.needs),
         "who": form.who,
         "valid_for_s": form.valid_for_s,
-        "not_carried": not_carried,
     })
 }
 
@@ -907,7 +766,7 @@ fn node_json(status: &NodeStatus) -> Value {
         "silenced": status.silenced,
         "serving": status.serving,
         "degraded": status.degraded,
-        "members": node_members(status),
+        "members": status.members,
     })
 }
 
@@ -1133,7 +992,6 @@ fn load_start(app: &App, query: &Query<'_>) -> Result<Response, Response> {
         duration_s: query.number("duration_s")?.unwrap_or(DEFAULT_DURATION_S),
         pattern,
     };
-    let pattern_args = loadgen_pattern_args(pattern).map_err(|why| Response::error(501, why))?;
 
     let mut load = lock(&app.load);
     load.check_limits(&request)
@@ -1143,7 +1001,7 @@ fn load_start(app: &App, query: &Query<'_>) -> Result<Response, Response> {
     for users in split_users(request.users) {
         load.last_number += 1;
         let client_id = app.client_id * PROGRAM_ID_BASE + load.last_number;
-        if start_program(app, &mut load, client_id, users, &request, &pattern_args) {
+        if start_program(app, &mut load, client_id, users, &request) {
             started += 1;
         } else {
             failed += 1;
@@ -1170,16 +1028,8 @@ fn start_program(
     client_id: ClientId,
     users: u32,
     request: &LoadRequest,
-    pattern_args: &[String],
 ) -> bool {
-    let mut command = program_command(
-        &app.loadgen,
-        &app.config_path,
-        client_id,
-        users,
-        request,
-        pattern_args,
-    );
+    let mut command = program_command(&app.loadgen, &app.config_path, client_id, users, request);
     let mut row = ProgramRow {
         client_id,
         pid: None,
@@ -1216,7 +1066,6 @@ fn program_command(
     client_id: ClientId,
     users: u32,
     request: &LoadRequest,
-    pattern_args: &[String],
 ) -> Command {
     let mut command = Command::new(loadgen);
     command
@@ -1233,8 +1082,10 @@ fn program_command(
         // One seed per program: a shared seed would make their users report the same incidents.
         .arg("--seed")
         .arg(client_id.to_string())
-        .args(pattern_args)
-        // Otherwise each of up to ten programs starts one runtime thread per core (gap-16).
+        .arg("--pattern")
+        .arg(request.pattern.name())
+        // Otherwise each of up to ten programs starts one runtime thread per core, as in
+        // scripts/start-users.sh.
         .env("TOKIO_WORKER_THREADS", worker_threads(request.users))
         .stdin(Stdio::null())
         // Read to the end by wait_with_output, so a program can never block on a full pipe.
@@ -1277,7 +1128,7 @@ async fn watch_program(
 }
 
 /// `kill -TERM`, by process ID. tokio only offers SIGKILL, unsafe is forbidden and libc is not a
-/// direct dependency. A loadgen that handles TERM (gap-16) prints its summary before it goes.
+/// direct dependency. loadgen prints its summary before it goes (D183).
 async fn ask_to_end(pid: Option<u32>) {
     let Some(pid) = pid else { return };
     let term = Command::new("kill")
@@ -1344,182 +1195,6 @@ fn load_stop(app: &App) -> Response {
     Response::json(200, &json!({ "ok": true, "stopping": stopping }))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Zone updates panel (Noor's item 6)
-// ---------------------------------------------------------------------------------------------
-
-/// The page's view of the feed: a bounded list it polls. Only updates arrive here, once per commit.
-#[derive(Default)]
-struct ZonePanel {
-    zones: BTreeSet<ZoneId>,
-    updates: VecDeque<(u64, Value)>,
-    last_seq: u64,
-    note: Option<String>,
-    feed: Option<FeedTask>,
-}
-
-impl ZonePanel {
-    /// While a register swaps feeds both may deliver one commit, so the log index decides.
-    fn push(&mut self, mut update: Value) {
-        let seen = |(_, old): &(u64, Value)| old["log_index"] == update["log_index"];
-        if self.updates.iter().any(seen) {
-            return;
-        }
-        self.last_seq += 1;
-        update["seq"] = json!(self.last_seq);
-        self.updates.push_back((self.last_seq, update));
-        if self.updates.len() > MAX_ZONE_UPDATES {
-            self.updates.pop_front();
-        }
-        self.note = None;
-    }
-
-    fn to_json(&self, after: u64) -> Value {
-        let updates: Vec<&Value> = self
-            .updates
-            .iter()
-            .filter(|(seq, _)| *seq > after)
-            .map(|(_, update)| update)
-            .collect();
-        json!({
-            "ok": true,
-            "unavailable": zone_updates_unavailable(),
-            "zones": self.zones,
-            "note": self.note,
-            "last_seq": self.last_seq,
-            "updates": updates,
-        })
-    }
-}
-
-struct FeedTask {
-    stop: oneshot::Sender<()>,
-    task: JoinHandle<()>,
-}
-
-impl FeedTask {
-    /// The task unsubscribes on its way out.
-    async fn end(self) {
-        let _ = self.stop.send(());
-        let mut task = self.task;
-        if timeout(TERM_TIMEOUT, &mut task).await.is_err() {
-            task.abort();
-        }
-    }
-}
-
-/// One update for the page: a new report and its plan, as committed.
-fn update_json(result: &CommittedResult, responders: &BTreeMap<ResponderId, Responder>) -> Value {
-    let (responder_zone, responder_capability) =
-        responder_fields(result.plan.responder, responders);
-    json!({
-        "request": result.request.to_string(),
-        "zone": result.incident.zone,
-        "severity": result.incident.severity,
-        "needs": capability_name(&result.incident.needs),
-        "responder": result.plan.responder,
-        "responder_zone": responder_zone,
-        "responder_capability": responder_capability,
-        "cost_m": result.plan.cost,
-        "priority": plan_priority(&result.plan),
-        "planned_by": result.executor,
-        "term": result.term,
-        "log_index": result.log_index,
-    })
-}
-
-/// Owns one subscription until told to stop, and keeps its client alive for as long as that takes.
-async fn run_zone_feed(
-    client: Arc<MeshClient>,
-    panel: Arc<Mutex<ZonePanel>>,
-    responders: Arc<BTreeMap<ResponderId, Responder>>,
-    mut feed: ZoneFeed,
-    mut stop: oneshot::Receiver<()>,
-) {
-    loop {
-        tokio::select! {
-            _ = &mut stop => break,
-            update = zone_next(&mut feed) => match update {
-                Ok(result) => lock(&panel).push(update_json(&result, &responders)),
-                // The feed resumes by itself, so this is a note and not an end.
-                Err(_) => lock(&panel).note = Some("No node is answering; waiting.".to_string()),
-            },
-        }
-    }
-    zone_unsubscribe(feed);
-    drop(client);
-}
-
-fn zones_list(app: &App, query: &Query<'_>) -> Result<Response, Response> {
-    query.only(&["after"])?;
-    let after = query.number("after")?.unwrap_or(0);
-    Ok(Response::json(200, &lock(&app.zones).to_json(after)))
-}
-
-/// Subscribing again with the longer list is how a zone is added: gap-14 has no change in place.
-/// The new feed starts before the old one ends, so no update falls between them.
-async fn zones_register(app: &App, query: &Query<'_>) -> Result<Response, Response> {
-    query.only(&["zone"])?;
-    let zone: ZoneId = query.required_number("zone")?;
-    if zone >= app.config.campus.zones {
-        return Err(Response::error(
-            400,
-            format!("zone must be below {}", app.config.campus.zones),
-        ));
-    }
-    if let Some(why) = zone_updates_unavailable() {
-        return Err(Response::error(501, why));
-    }
-    let mut slot = app.zone_client.lock().await;
-    let client = slot
-        .get_or_insert_with(|| {
-            let id = app.client_id * PROGRAM_ID_BASE + ZONE_PANEL_NUMBER;
-            Arc::new(MeshClient::new(id, &app.config, app.log.clone()))
-        })
-        .clone();
-    let mut wanted = lock(&app.zones).zones.clone();
-    wanted.insert(zone);
-    let list: Vec<ZoneId> = wanted.iter().copied().collect();
-    let feed = zone_subscribe(&client, &list)
-        .await
-        .map_err(|why| Response::error(502, format!("could not register: {why}")))?;
-    let (stop, stopped) = oneshot::channel();
-    let task = tokio::spawn(run_zone_feed(
-        client,
-        app.zones.clone(),
-        app.responders.clone(),
-        feed,
-        stopped,
-    ));
-    let old = {
-        let mut panel = lock(&app.zones);
-        panel.zones = wanted;
-        panel.note = None;
-        panel.feed.replace(FeedTask { stop, task })
-    };
-    if let Some(old) = old {
-        old.end().await;
-    }
-    tracing::info!(?list, "zone panel registered");
-    Ok(Response::json(200, &json!({ "ok": true, "zones": list })))
-}
-
-async fn zones_clear(app: &App, query: &Query<'_>) -> Result<Response, Response> {
-    query.only(&[])?;
-    let _one_at_a_time = app.zone_client.lock().await;
-    let old = {
-        let mut panel = lock(&app.zones);
-        panel.zones.clear();
-        panel.updates.clear();
-        panel.note = None;
-        panel.feed.take()
-    };
-    if let Some(old) = old {
-        old.end().await;
-    }
-    Ok(Response::json(200, &json!({ "ok": true })))
-}
-
 #[cfg(test)]
 #[path = "../../tests/common/mod.rs"]
 mod common;
@@ -1530,8 +1205,9 @@ mod tests {
     use std::sync::OnceLock;
 
     use rescuemesh::config::AssignmentPolicy;
-    use rescuemesh::proto::{Point, RequestId};
+    use rescuemesh::proto::{Category, CommittedResult, Plan, Point, RequestId};
     use tokio::io::AsyncWriteExt;
+    use tokio::task::JoinHandle;
     use tokio::time::Instant;
 
     use super::common::{TestCluster, wait_until};
@@ -1718,14 +1394,23 @@ mod tests {
         assert!(draw_in_zone(9, 6, || draw_incident(&campus, 11, 1, 5)).is_none());
     }
 
-    /// SWITCH-ON 3: gap-15 adds `id` and `status` to this literal.
     fn submitted(committed: Option<CommittedResult>, plan: Plan) -> Submitted {
+        let status = match (&committed, plan.responder) {
+            (None, _) => IncidentStatus::Provisional,
+            (Some(_), Some(_)) => IncidentStatus::Assigned,
+            (Some(_), None) => IncidentStatus::Unassigned,
+        };
         Submitted {
+            id: RequestId {
+                client: 11,
+                seq: u64::MAX - 1,
+            },
             from: 2,
             executor: 3,
             plan,
             provisional: committed.is_none(),
             committed,
+            status,
             latency: Duration::from_millis(30),
             attempts: 1,
         }
@@ -1741,18 +1426,22 @@ mod tests {
         }
     }
 
-    /// SWITCH-ON 1: gap-15 adds fields to this literal.
     fn incident() -> Incident {
         Incident {
+            owner: UserId {
+                client: 11,
+                user: 7,
+            },
+            category: Category::MedicalAssistance,
             zone: 2,
             location: Point { x: 10, y: 20 },
             severity: 4,
             needs: Capability::Medical,
             reported_at_ms: 5,
+            ttl_ms: 60_000,
         }
     }
 
-    /// SWITCH-ON 1: gap-15 adds fields to this literal.
     fn committed(plan: Plan) -> CommittedResult {
         CommittedResult {
             // Far above 2^53: as a JSON number it would come out rounded in the browser.
@@ -1764,6 +1453,8 @@ mod tests {
             executor: 3,
             term: 8,
             plan,
+            age_ms: 0,
+            assigned_at_ms: 6,
             log_index: 41,
         }
     }
@@ -1775,18 +1466,18 @@ mod tests {
             .collect()
     }
 
-    /// SWITCH-ON 4: gap-15 with priority adds a field to this literal.
     fn plan() -> Plan {
         Plan {
             responder: Some(9),
             cost: 340,
+            priority: 460,
         }
     }
 
     #[test]
     fn provisional_json_has_no_index_or_request() {
         let done = submitted(None, plan());
-        let json = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
+        let json = report_json(&done, &form(), &some_responders());
         assert_eq!(json["provisional"], true);
         assert_eq!(json["status"], "provisional");
         assert_eq!(json["expired"], false);
@@ -1801,13 +1492,14 @@ mod tests {
     #[test]
     fn committed_json_names_everything_and_the_id_is_text() {
         let done = submitted(Some(committed(plan())), plan());
-        let json = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
+        let json = report_json(&done, &form(), &some_responders());
         assert_eq!(json["provisional"], false);
         assert_eq!(json["status"], "assigned");
         assert_eq!(json["request"], format!("11-{}", u64::MAX - 1));
         assert_eq!(json["log_index"], 41);
         assert_eq!(json["term"], 8);
         assert_eq!(json["cost_m"], 340);
+        assert_eq!(json["priority"], 460);
         assert_eq!(json["latency_us"], 30_000);
         let responder = some_responders()[&9].clone();
         assert_eq!(json["responder_zone"], responder.zone);
@@ -1822,18 +1514,22 @@ mod tests {
         let nobody = Plan {
             responder: None,
             cost: 0,
+            priority: 0,
         };
         let done = submitted(Some(committed(nobody.clone())), nobody);
-        let free = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
+        let free = report_json(&done, &form(), &some_responders());
         assert_eq!(free["status"], "unassigned");
         assert_eq!(free["expired"], false);
         assert!(free["responder"].is_null());
-        // After gap-15 this status comes from `Submitted::status`.
-        let late = report_json(&done, &form(), &some_responders(), "expired", &[]);
+        let refused = Submitted {
+            status: IncidentStatus::Expired,
+            ..done
+        };
+        let late = report_json(&refused, &form(), &some_responders());
         assert_eq!(late["expired"], true);
+        assert_eq!(late["status"], "expired");
     }
 
-    /// SWITCH-ON 6: gap-13 adds `members` to this literal, and the null assertion goes.
     #[test]
     fn digest_is_text_and_survives_above_two_to_the_53() {
         let status = NodeStatus {
@@ -1849,12 +1545,13 @@ mod tests {
             silenced: false,
             serving: true,
             degraded: false,
+            members: vec![1, 3],
         };
         let json = node_json(&status);
         assert_eq!(json["digest"], "fedcba9876543211");
         assert!(json["last_applied"].is_null());
         assert_eq!(json["reachable"], true);
-        assert!(json["members"].is_null());
+        assert_eq!(json["members"], json!([1, 3]));
 
         let small = NodeStatus {
             digest: 255,
@@ -1952,47 +1649,6 @@ mod tests {
     }
 
     #[test]
-    fn the_zone_list_is_bounded_and_read_after_a_number() {
-        let mut panel = ZonePanel::default();
-        let responders = some_responders();
-        let update = |log_index| {
-            update_json(
-                &CommittedResult {
-                    log_index,
-                    ..committed(plan())
-                },
-                &responders,
-            )
-        };
-        panel.push(update(1));
-        panel.push(update(2));
-        // Two feeds overlap during a register: one commit shows once.
-        panel.push(update(2));
-        let all = panel.to_json(0);
-        assert_eq!(all["last_seq"], 2);
-        assert_eq!(all["updates"].as_array().unwrap().len(), 2);
-        assert_eq!(all["updates"][0]["zone"], 2);
-        assert_eq!(all["updates"][0]["needs"], "Medical");
-        assert_eq!(all["updates"][0]["responder"], 9);
-        assert_eq!(all["updates"][0]["planned_by"], 3);
-        assert_eq!(all["updates"][0]["request"], format!("11-{}", u64::MAX - 1));
-        assert_eq!(panel.to_json(1)["updates"][0]["log_index"], 2);
-        assert!(panel.to_json(2)["updates"].as_array().unwrap().is_empty());
-
-        panel.note = Some("waiting".to_string());
-        for i in 3..MAX_ZONE_UPDATES as u64 + 10 {
-            panel.push(update(i));
-        }
-        assert!(panel.note.is_none(), "an update clears the note");
-        assert_eq!(panel.updates.len(), MAX_ZONE_UPDATES);
-        let last = panel.last_seq;
-        assert_eq!(
-            panel.to_json(last - 1)["updates"].as_array().unwrap().len(),
-            1
-        );
-    }
-
-    #[test]
     fn the_page_has_no_outside_links_and_writes_text_only() {
         for banned in [
             "innerHTML",
@@ -2016,17 +1672,19 @@ mod tests {
             "report-panel",
             "load-panel",
             "nodes-panel",
-            "zones-panel",
             "PROVISIONAL",
             "EXPIRED",
             "How many user processes",
             "Who sent it",
             "Valid for",
             "unreachable",
-            "not available yet",
             "Local program not answering",
         ] {
             assert!(PAGE.contains(needed), "the page must have {needed}");
+        }
+        // Publish-subscribe is Phase 2, and every API the page uses now exists.
+        for gone in ["zones-panel", "/api/zones", "not available yet"] {
+            assert!(!PAGE.contains(gone), "the page must not have {gone}");
         }
     }
 
@@ -2087,7 +1745,6 @@ mod tests {
             .map(|p| p["name"].as_str().unwrap())
             .collect();
         assert_eq!(patterns, ["steady", "random", "all-at-once"]);
-        assert_eq!(info["patterns"][0]["available"], true);
         page.end().await;
     }
 
@@ -2112,8 +1769,6 @@ mod tests {
             "/api/load/start?users=lots",
             "/api/load/start?users=10&pattern=wave",
             "/api/load/stop?now=1",
-            "/api/zones/register?zone=6",
-            "/api/zones/register",
         ] {
             let (status, answer) = http(page.addr, "POST", target).await;
             assert_eq!(status, 400, "{target}: {answer}");
@@ -2121,8 +1776,8 @@ mod tests {
             assert!(answer["error"].is_string(), "{target}");
         }
         assert_eq!(http(page.addr, "GET", "/?x=1").await.0, 400);
-        assert_eq!(http(page.addr, "GET", "/api/zones?after=soon").await.0, 400);
         assert_eq!(http(page.addr, "GET", "/nope").await.0, 404);
+        assert_eq!(http(page.addr, "GET", "/api/zones").await.0, 404);
         assert_eq!(http(page.addr, "GET", "/api/report").await.0, 405);
         assert_eq!(http(page.addr, "POST", "/api/status").await.0, 405);
         let (status, head, _) = raw_http(
@@ -2179,39 +1834,29 @@ mod tests {
         page.end().await;
     }
 
-    /// SWITCH-ON 5, 7: these answers change when the lanes land. The panel and the box must say
-    /// "not available yet" clearly, and never pretend.
+    /// The page's names are the ones `loadgen --pattern` takes (D182). `tests/frontend.rs` runs a
+    /// real loadgen with them.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn what_other_lanes_build_says_not_available_yet() {
-        let page = start_page(dead_config(), no_program()).await;
+    async fn every_pattern_reaches_the_program() {
+        let page = start_page(dead_config(), fake_loadgen()).await;
         for pattern in ["random", "all-at-once"] {
-            let target = format!("/api/load/start?users=10&pattern={pattern}");
+            let target = format!("/api/load/start?users=1&duration_s=1&pattern={pattern}");
             let (status, answer) = http(page.addr, "POST", &target).await;
-            assert_eq!(status, 501, "{pattern}");
+            assert_eq!(status, 200, "{answer}");
+        }
+        let rows = wait_for_rows(page.addr, "two finished programs", |rows| {
+            rows.len() == 2 && rows.iter().all(|r| r["state"] == "finished")
+        })
+        .await;
+        for (row, pattern) in rows.iter().zip(["random", "all-at-once"]) {
+            assert_eq!(row["pattern"], pattern);
+            let summary = row["summary"].as_str().unwrap();
             assert!(
-                answer["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("not available yet")
+                summary.ends_with(&format!("--pattern {pattern}")),
+                "{summary}"
             );
         }
-        let (status, answer) = http(page.addr, "POST", "/api/zones/register?zone=1").await;
-        assert_eq!(status, 501);
-        assert!(
-            answer["error"]
-                .as_str()
-                .unwrap()
-                .contains("not available yet")
-        );
-        let (status, zones) = http(page.addr, "GET", "/api/zones").await;
-        assert_eq!(status, 200);
-        assert!(
-            zones["unavailable"]
-                .as_str()
-                .unwrap()
-                .contains("not available yet")
-        );
-        assert_eq!(http(page.addr, "POST", "/api/zones/clear").await.0, 200);
         page.end().await;
     }
 
@@ -2248,9 +1893,7 @@ mod tests {
         assert!(card["responder"].is_u64());
         assert!(card["log_index"].is_u64());
         assert!(card["term"].is_u64());
-        // SWITCH-ON 1, 4: the cloud cannot carry these yet, and the card must say so.
-        assert!(card["priority"].is_null());
-        assert_eq!(card["not_carried"].as_array().unwrap().len(), 2);
+        assert!(card["priority"].as_u64().unwrap() > 0);
 
         // What was typed is what the cloud recorded.
         let request = card["request"].as_str().unwrap();
@@ -2270,6 +1913,23 @@ mod tests {
         assert_eq!(stored.incident.zone, 2);
         assert_eq!(stored.incident.severity, 4);
         assert_eq!(stored.incident.needs, Capability::Medical);
+        assert_eq!(
+            stored.incident.owner,
+            UserId {
+                client: 11,
+                user: 7
+            }
+        );
+        assert_eq!(stored.incident.ttl_ms, 60_000);
+        assert!(
+            Capability::Medical
+                .categories()
+                .contains(&stored.incident.category)
+        );
+        assert_eq!(
+            card["priority"].as_u64(),
+            Some(u64::from(stored.plan.priority))
+        );
         assert_eq!(card["planned_by"].as_u64(), Some(stored.executor));
         assert_eq!(card["log_index"].as_u64(), Some(stored.log_index));
 
@@ -2415,7 +2075,7 @@ mod tests {
                 summary,
                 format!(
                     "args: --config the-config.toml --client-id {id} --users 100 --think-ms 1000 \
-                     --duration-s 1 --seed {id}"
+                     --duration-s 1 --seed {id} --pattern steady"
                 )
             );
         }

@@ -128,15 +128,6 @@ tr.down td { color: var(--red-ink); background: var(--red-bg); }
 tr.stale td { color: var(--muted); }
 .yes { color: var(--green-ink); font-weight: 600; }
 .warn { color: var(--red-ink); font-weight: 600; }
-.chip {
-  display: inline-block;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  border-radius: 9px;
-  padding: 0 8px;
-  margin-right: 4px;
-}
-.update { border-bottom: 1px solid var(--line); padding: 2px 0; }
 [hidden] { display: none !important; }
 @media (max-width: 900px) {
   html, body { height: auto; }
@@ -202,28 +193,15 @@ tr.stale td { color: var(--muted); }
     </div>
   </section>
 
-  <section id="zones-panel" aria-label="Zone updates">
-    <h2>Zone updates</h2>
-    <form id="zones-form">
-      <label>Zone <select id="zones-zone"></select></label>
-      <button id="zones-register" type="submit">Register</button>
-      <button id="zones-clear" type="button" class="quiet">Clear</button>
-      <span id="zones-chips"></span>
-    </form>
-    <div id="zones-note" class="muted small line"></div>
-    <div id="zones-list" class="scroll"></div>
-  </section>
 </main>
 
 <script>
 "use strict";
 const MAX_CARDS = 10;
-const MAX_UPDATES_SHOWN = 50;
 const STATUS_TIMEOUT_MS = 2000;
 const STATUS_PAUSE_MS = 500;
 const UNREACHABLE_AFTER_MS = 3000;
 const LOAD_POLL_MS = 1000;
-const ZONES_POLL_MS = 500;
 
 const $ = (id) => document.getElementById(id);
 
@@ -288,7 +266,7 @@ function renderCard(r) {
   card.append(el("p", "main-line", r.expired ? "Nobody sent" : responderLine(r)));
   const tags = el("p");
   tags.append(el("span", "pill", "Status: " + r.status));
-  tags.append(el("span", "pill", "Priority: " + (r.priority === null ? "not available yet" : r.priority)));
+  tags.append(el("span", "pill", "Priority: " + r.priority));
   card.append(tags);
   card.append(el("p", "", "Planned by node " + r.planned_by + ", answered by node " + r.answered_by));
   if (r.request !== null) {
@@ -296,9 +274,6 @@ function renderCard(r) {
   }
   card.append(el("p", "muted small", (r.latency_us / 1000).toFixed(1) + " ms, " + plural(r.attempts, "attempt")
     + ". Zone " + r.zone + ", severity " + r.severity + ", " + r.needs + ", from user " + r.who + ", valid for " + r.valid_for_s + " s"));
-  if (r.not_carried.length > 0) {
-    card.append(el("p", "muted small", "Not available yet: the cloud does not carry " + r.not_carried.join(" or ") + " on this build, so they show here only"));
-  }
   return card;
 }
 
@@ -390,9 +365,7 @@ function renderNodeRow(node, now) {
   row.append(yesNo(data.serving, true));
   row.append(yesNo(data.silenced, false));
   row.append(yesNo(data.degraded, false));
-  let members = "not available yet";
-  if (data.members !== null) members = data.silenced ? "-" : data.members.join(",");
-  row.append(el("td", data.members === null ? "muted small" : "", members));
+  row.append(el("td", "", data.silenced ? "-" : data.members.join(",")));
   return row;
 }
 
@@ -490,68 +463,6 @@ async function stopLoad() {
   }
 }
 
-// --- zone updates
-
-let lastZoneSeq = 0;
-let zoneRows = [];
-
-function updateLine(u) {
-  const plan = u.responder === null
-    ? "no responder free"
-    : "responder " + u.responder + " (" + u.responder_capability + ", zone " + u.responder_zone + "), " + u.cost_m + " m";
-  return "Zone " + u.zone + ": severity " + u.severity + ", needs " + u.needs + ". Plan: " + plan
-    + ", planned by node " + u.planned_by + ", log " + u.log_index;
-}
-
-function renderChips(zones) {
-  $("zones-chips").replaceChildren(...zones.map((zone) => el("span", "chip", "Zone " + zone)));
-}
-
-async function pollZones() {
-  try {
-    const data = await call("GET", "/api/zones", { after: lastZoneSeq }, STATUS_TIMEOUT_MS);
-    renderChips(data.zones);
-    if (data.unavailable) {
-      $("zones-note").textContent = data.unavailable;
-    } else {
-      $("zones-note").textContent = data.note || (data.zones.length ? "Listening. New reports and plans appear here." : "Register a zone to follow its new reports and plans.");
-    }
-    if (data.updates.length > 0) {
-      zoneRows = data.updates.slice().reverse().map((u) => el("div", "update", updateLine(u))).concat(zoneRows);
-      zoneRows.length = Math.min(zoneRows.length, MAX_UPDATES_SHOWN);
-      $("zones-list").replaceChildren(...zoneRows);
-    }
-    lastZoneSeq = data.last_seq;
-  } catch (error) {
-    // The status poll owns the banner for a silent local program.
-  } finally {
-    setTimeout(pollZones, ZONES_POLL_MS);
-  }
-}
-
-async function registerZone(event) {
-  event.preventDefault();
-  $("zones-register").disabled = true;
-  try {
-    const answer = await call("POST", "/api/zones/register", { zone: $("zones-zone").value });
-    $("zones-note").textContent = answer.ok ? "Registered." : answer.error;
-  } catch (error) {
-    $("zones-note").textContent = "Local program not answering.";
-  } finally {
-    $("zones-register").disabled = false;
-  }
-}
-
-async function clearZones() {
-  try {
-    await call("POST", "/api/zones/clear");
-    zoneRows = [];
-    $("zones-list").replaceChildren();
-  } catch (error) {
-    $("zones-note").textContent = "Local program not answering.";
-  }
-}
-
 // --- start
 
 async function start() {
@@ -569,11 +480,10 @@ async function start() {
   const zones = [];
   for (let zone = 0; zone < info.zones; zone += 1) zones.push([zone, "Zone " + zone]);
   setOptions($("report-zone"), zones);
-  setOptions($("zones-zone"), zones);
   setOptions($("report-severity"), info.severities.map((s) => [s.value, s.value + " " + s.label]));
   $("report-severity").value = "3";
   setOptions($("report-needs"), info.capabilities.map((c) => [c, c]));
-  setOptions($("load-pattern"), info.patterns.map((p) => [p.name, p.available ? p.label : p.label + " (not available yet)"]));
+  setOptions($("load-pattern"), info.patterns.map((p) => [p.name, p.label]));
   $("report-who").value = info.defaults.who;
   $("report-valid").value = info.defaults.valid_for_s;
   $("report-valid").min = info.limits.valid_for_s_min;
@@ -593,12 +503,9 @@ async function start() {
   $("report-form").addEventListener("submit", sendReport);
   $("load-form").addEventListener("submit", startLoad);
   $("load-stop").addEventListener("click", stopLoad);
-  $("zones-form").addEventListener("submit", registerZone);
-  $("zones-clear").addEventListener("click", clearZones);
 
   pollStatus();
   pollLoad();
-  pollZones();
 }
 
 start();
