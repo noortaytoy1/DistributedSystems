@@ -145,14 +145,17 @@ async fn catch_up(ctx: &NodeContext, gate: &mut watch::Receiver<bool>) {
 ///
 /// A wait that runs out asks again and keeps the lowest answer. Every answer covers all that was
 /// committed when it was given, so the lowest still covers everything committed before the first
-/// question, and a commit index that rises under load cannot keep moving the finish line. A node
-/// with no leader to answer it goes back to waiting: it may still reach the target it has.
+/// question, and a commit index that rises under load cannot keep moving the finish line.
+///
+/// One question per wait: the leader confirms itself with a round of heartbeats for each one, and
+/// retrying as `learn_target` does would add about 20 rounds a second to a cluster that is already
+/// struggling. A question that fails changes nothing: the target it has may still be reached.
 async fn reach_target(
     ctx: &NodeContext,
     commits: &mut watch::Receiver<Option<u64>>,
 ) -> Option<u64> {
-    let mut contacted = false;
-    let mut target = learn_target(ctx, commits, &mut contacted).await?;
+    let rpc_timeout = ctx.config.timers.peer_rpc_timeout();
+    let mut target = learn_target(ctx, commits).await?;
     let mut last_warning = Instant::now();
     loop {
         if ctx.consensus.wait_applied(target, ASK_AGAIN_AFTER).await {
@@ -166,10 +169,9 @@ async fn reach_target(
                 "rejoin: still applying the leader's log"
             );
         }
-        let asked = learn_target(ctx, commits, &mut contacted);
-        match tokio::time::timeout(ASK_AGAIN_AFTER, asked).await {
-            Ok(None) => return None,
-            Ok(Some(answer)) if answer < target => {
+        match tokio::time::timeout(rpc_timeout, ctx.consensus.read_index()).await {
+            Ok(Ok(None)) => return None,
+            Ok(Ok(Some(answer))) if answer < target => {
                 tracing::warn!(node = ctx.id, target, answer, "rejoin: target lowered");
                 ctx.log.log(Event::RejoinTargetLowered {
                     from: target,
@@ -177,7 +179,7 @@ async fn reach_target(
                 });
                 target = answer;
             }
-            Ok(Some(_)) | Err(_) => {}
+            _ => {}
         }
     }
 }
@@ -191,13 +193,13 @@ async fn reach_target(
 async fn learn_target(
     ctx: &NodeContext,
     commits: &mut watch::Receiver<Option<u64>>,
-    contacted: &mut bool,
 ) -> Option<u64> {
     let retry = Duration::from_millis(ctx.config.timers.raft_heartbeat_ms);
     let rpc_timeout = ctx.config.timers.peer_rpc_timeout();
+    let mut contacted = false;
     let mut last_warning = Instant::now();
     loop {
-        if *contacted || ctx.consensus.status().leader == Some(ctx.id) {
+        if contacted || ctx.consensus.status().leader == Some(ctx.id) {
             if let Ok(Ok(target)) =
                 tokio::time::timeout(rpc_timeout, ctx.consensus.read_index()).await
             {
@@ -208,14 +210,14 @@ async fn learn_target(
             last_warning = Instant::now();
             tracing::warn!(
                 node = ctx.id,
-                contacted = *contacted,
+                contacted,
                 "rejoin: no commit index from a leader yet"
             );
         }
         tokio::select! {
             changed = commits.changed() => {
                 if changed.is_ok() {
-                    *contacted = true;
+                    contacted = true;
                 } else {
                     // Consensus is shutting down; the node is going away.
                     std::future::pending::<()>().await;
