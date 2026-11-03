@@ -223,6 +223,22 @@ class ClientPrograms(unittest.TestCase):
         self.assertEqual(m["client_programs"], 3)
         self.assertAlmostEqual(m["users_per_program"], 10.0)
 
+    def test_warm_up_counts_from_the_programs_start_and_not_its_first_send(self):
+        # A random pattern's only user waited 1.5 s before its first send. Warm-up is 2 s, on the program's
+        # clock, so a request sent 2.5 s in is measured. Counting from the first send would drop it.
+        started = {"ts_us": T0, "ev": "client_started", "users": 1}
+        client = [started, sent(int(1.5 * S)), done(1.5, 10, 1), sent(int(2.5 * S)), done(2.5, 10, 1)]
+        self.assertEqual(self.analyse("late", {"client-10000": client})["count"], 1)
+        # Without the event, the first send is all there is.
+        self.assertEqual(self.analyse("old", {"client-10000": client[1:]})["count"], 0)
+
+    def test_users_that_do_not_add_up_to_the_cell_are_left_out(self):
+        program = {"ts_us": T0, "ev": "client_started", "users": 33}
+        m = self.analyse("users", {"client-10000": [program, sent(0)], "client-20000": [program, sent(0)]})
+        self.assertEqual(m["client_users"], 66)
+        self.assertIn("66 users ran", analyze.run_problem({"users": 100}, m))
+        self.assertIsNone(analyze.run_problem({"users": 66}, m))
+
     def test_a_run_missing_programs_is_left_out_of_the_summary(self):
         events = synthetic_run()
         write_run(self.root / "e9" / "whole" / "run-1", events, 1, client_programs_expected=1)

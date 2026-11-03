@@ -481,6 +481,10 @@ fn a_real_start_gives_one_log_per_program() {
         .collect();
     assert_eq!(logs, expected);
     assert_eq!(scratch.programs_that_sent(), 5);
+    // Each program says when its clock started and how many users it has: what the analysis counts on.
+    let started = scratch.events("client_started");
+    assert_eq!(started.len(), 5);
+    assert!(started.iter().all(|e| e["users"] == 1));
     // Only program 0 of batch 0 samples the machine, and that sample is real on Linux.
     let samples = scratch.events("machine_usage");
     assert!(!samples.is_empty());

@@ -31,7 +31,7 @@ use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{self, EventLog, now_us};
+use rescuemesh::metrics::{self, Event, EventLog, now_us};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -331,6 +331,9 @@ async fn main() -> anyhow::Result<()> {
         .then(|| tokio::spawn(sample_machine(log.clone())));
 
     let start = Instant::now();
+    log.log(Event::ClientStarted {
+        users: args.rate.map_or(args.users, |_| 0),
+    });
     let measure_from = start + Duration::from_secs(args.warmup_s);
     let stop_at = start + Duration::from_secs(args.duration_s);
     let (shared, campus) = (stats.clone(), config.campus);
@@ -369,14 +372,12 @@ async fn main() -> anyhow::Result<()> {
     };
     let text = summary(args.client_id, &mut lock(&stats), measured, stopped_early);
     drop(client);
-    tokio::task::spawn_blocking(move || log.close())
-        .await
-        .context("closing the event log")?;
-    // Last, and no panic if it fails: `print!` panics when the reader has gone or the disk is full, and
-    // that must not cost the log or count as a failed run. The script says how many programs reported.
+    let closed = tokio::task::spawn_blocking(move || log.close()).await;
+    // After the log, and no panic if it fails: `print!` panics when the reader has gone or the disk is
+    // full, which must not cost the log or count as a failed run. The script says who reported.
     let mut out = std::io::stdout();
     let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-    Ok(())
+    closed.context("closing the event log")
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

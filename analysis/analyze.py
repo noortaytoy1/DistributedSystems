@@ -71,6 +71,18 @@ def latency_metrics(prefix, latencies_us):
     return metrics
 
 
+def program_start(source_events):
+    """When a program's clock started, which is what its warm-up counts from, or None if it never sent
+    anything. Its first send can come much later: up to two think times under `random`, which for a program
+    with one user would quietly shorten the measured time (D182). A log from before `client_started` has
+    only its first send to go on."""
+    sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
+    if not sent:
+        return None
+    started = [e["ts_us"] for e in source_events if e["ev"] == "client_started"]
+    return min(started or sent)
+
+
 def client_requests(events, warmup_s):
     """Each client's measured `client_done` and `client_gave_up` events: started after warm-up,
     judged on that client's own clock."""
@@ -78,10 +90,10 @@ def client_requests(events, warmup_s):
     for source, source_events in events.items():
         if not source.startswith("client-"):
             continue
-        sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
-        if not sent:
+        started = program_start(source_events)
+        if started is None:
             continue
-        measure_from = min(sent) + warmup_s * 1_000_000
+        measure_from = started + warmup_s * 1_000_000
         for e in source_events:
             if e["ev"] == "client_done" and e["ts_us"] - e["latency_us"] >= measure_from:
                 done.append(e)
@@ -96,14 +108,9 @@ def node_events(events):
 
 def measured_start(events, warmup_s):
     """Roughly when measuring began, for node events: machines agree only as far as NTP does."""
-    sent = [
-        e["ts_us"]
-        for s, es in events.items()
-        if s.startswith("client-")
-        for e in es
-        if e["ev"] == "client_sent"
-    ]
-    return min(sent) + warmup_s * 1_000_000 if sent else 0
+    starts = [program_start(es) for s, es in events.items() if s.startswith("client-")]
+    starts = [start for start in starts if start is not None]
+    return min(starts) + warmup_s * 1_000_000 if starts else 0
 
 
 def request_metrics(events, warmup_s, measured_s):
@@ -334,6 +341,14 @@ def client_program_metrics(events, meta):
     metrics = {"client_programs": programs}
     if meta.get("users") and programs:
         metrics["users_per_program"] = meta["users"] / programs
+    users = [
+        e["users"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_started"
+    ]
+    if users:
+        metrics["client_users"] = sum(users)
     drops = [
         e["reason"]
         for es in client_sources(events).values()
@@ -453,6 +468,8 @@ def run_problem(meta, metrics):
     expected = meta.get("client_programs_expected")
     if expected is not None and metrics["client_programs"] != expected:
         return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    if meta.get("users") and metrics.get("client_users", meta["users"]) != meta["users"]:
+        return f"{metrics['client_users']} users ran, and the cell says {meta['users']}"
     if metrics["client_programs_failed"]:
         return f"{metrics['client_programs_failed']} client programs failed; see users-*.out"
     if metrics["client_programs_stopped_early"]:
