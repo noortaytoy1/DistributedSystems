@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -46,7 +46,9 @@ client_addr = "c:2"
 /// A [`Consensus`] whose every answer the test decides.
 pub(crate) struct ScriptedConsensus {
     id: NodeId,
+    term: AtomicU64,
     leader: Mutex<Option<NodeId>>,
+    quiet: AtomicBool,
     answers: Mutex<VecDeque<Result<Option<u64>, ProposeError>>>,
     questions: AtomicUsize,
     applied: watch::Sender<Option<u64>>,
@@ -61,7 +63,9 @@ impl ScriptedConsensus {
     pub(crate) fn new(id: NodeId) -> Arc<Self> {
         Arc::new(Self {
             id,
+            term: AtomicU64::new(1),
             leader: Mutex::new(None),
+            quiet: AtomicBool::new(false),
             answers: Mutex::new(VecDeque::new()),
             questions: AtomicUsize::new(0),
             applied: watch::channel(None).0,
@@ -73,6 +77,15 @@ impl ScriptedConsensus {
 
     pub(crate) fn set_leader(&self, leader: Option<NodeId>) {
         *lock(&self.leader) = leader;
+    }
+
+    pub(crate) fn set_term(&self, term: u64) {
+        self.term.store(term, Ordering::SeqCst);
+    }
+
+    /// What the last `set_quiet` said.
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.quiet.load(Ordering::SeqCst)
     }
 
     /// What `read_index` answers, one per question. The last answer repeats; with none it fails.
@@ -147,7 +160,7 @@ impl Consensus for ScriptedConsensus {
         let applied = *self.applied.borrow();
         ConsensusStatus {
             id: self.id,
-            term: 1,
+            term: self.term.load(Ordering::SeqCst),
             leader,
             role: if leader == Some(self.id) {
                 Role::Leader
@@ -191,6 +204,10 @@ impl Consensus for ScriptedConsensus {
     }
 
     fn set_elect(&self, _enabled: bool) {}
+
+    fn set_quiet(&self, quiet: bool) {
+        self.quiet.store(quiet, Ordering::SeqCst);
+    }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})

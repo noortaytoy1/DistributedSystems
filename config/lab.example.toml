@@ -34,6 +34,13 @@ cpu_weight = 10
 just_won = "won-and-leading"
 # Planning time a node assumes until its first job finishes. Low, so an untried node gets tried.
 initial_service_us = 1
+# A Raft leader whose mean bid stays at least this many times its lowest peer's goes quiet, so that a
+# normal vote picks another leader (D218). 0 turns it off. A new leader costs about 1 s with no commits.
+leader_overload_ratio = 3
+# How long that must hold without a break.
+leader_overload_for_ms = 5000
+# No step-aside until this long after the last term change. This is what stops a storm of elections.
+leader_overload_cooldown_ms = 60000
 
 [workers]
 # The demo runs E1's values, because at the defaults idle nodes tie and node 1 plans every typed

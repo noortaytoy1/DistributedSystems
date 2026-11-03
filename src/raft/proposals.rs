@@ -17,6 +17,9 @@
 //!   new write for each of those would pile up inside openraft after all. Only a write that outlasts
 //!   the write cap (a leader without a majority) stops being waited for. If it commits after its
 //!   proposals have left that is harmless, because every command is idempotent.
+//! - **Holding.** A leader stepping aside holds the queue, because every write it sends resets the
+//!   followers' election timers (D218). A write in flight finishes and no new one starts. Whatever
+//!   waits keeps its deadline, and when the hold ends it is written, or told who leads now.
 //!
 //! Owner: A (Raft and replication).
 
@@ -25,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -69,6 +72,7 @@ pub struct ProposalQueue {
     tx: mpsc::UnboundedSender<Waiting>,
     stats: Arc<QueueStats>,
     worker: JoinHandle<()>,
+    held: watch::Sender<bool>,
 }
 
 impl std::fmt::Debug for ProposalQueue {
@@ -89,8 +93,21 @@ impl ProposalQueue {
     {
         let (tx, rx) = mpsc::unbounded_channel();
         let stats = Arc::new(QueueStats::default());
-        let worker = tokio::spawn(run(rx, limit.max(1), write_cap, write, stats.clone()));
-        Self { tx, stats, worker }
+        let (held, held_rx) = watch::channel(false);
+        let worker = tokio::spawn(run(
+            rx,
+            limit.max(1),
+            write_cap,
+            write,
+            stats.clone(),
+            held_rx,
+        ));
+        Self {
+            tx,
+            stats,
+            worker,
+            held,
+        }
     }
 
     /// Wait until `command` is committed and applied, or until `deadline`.
@@ -126,6 +143,11 @@ impl ProposalQueue {
         &self.stats
     }
 
+    /// Start no new write until this is called with false (D218). A write in flight finishes.
+    pub fn hold(&self, held: bool) {
+        self.held.send_replace(held);
+    }
+
     /// Stop now. Proposals still waiting get `ProposeError::Fatal`.
     pub fn stop(&self) {
         self.worker.abort();
@@ -149,12 +171,15 @@ async fn run<W, F>(
     write_cap: Duration,
     write: W,
     stats: Arc<QueueStats>,
+    mut held: watch::Receiver<bool>,
 ) where
     W: Fn(CommandGroup) -> F,
     F: Future<Output = Result<Vec<Outcome>, ProposeError>>,
 {
     let mut taken = Vec::with_capacity(limit);
     while rx.recv_many(&mut taken, limit).await > 0 {
+        // The deadlines below are read after this, and each caller leaves by its own deadline.
+        let _ = held.wait_for(|held| !*held).await;
         stats.waiting.fetch_sub(taken.len(), Ordering::Relaxed);
         let now = Instant::now();
         let mut commands = Vec::with_capacity(taken.len());
@@ -436,6 +461,70 @@ mod tests {
         wait_until("the next write", || raft.groups().len() == 2).await;
         raft.permits.add_permits(1);
         assert_eq!(next.await.unwrap().unwrap(), echo(&command(1)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_queue_starts_no_write_until_it_is_released() {
+        let raft = Arc::new(FakeRaft::default());
+        let q = queue(100, &raft);
+        q.hold(true);
+        let waiting: Vec<_> = (0..5).map(|n| submit(&q, n, LONG)).collect();
+        wait_until("all five waiting", || {
+            q.stats().waiting.load(Ordering::SeqCst) == 5
+        })
+        .await;
+        assert!(raft.groups().is_empty(), "held: {:?}", raft.groups());
+
+        q.hold(false);
+        raft.permits.add_permits(5);
+        for (n, task) in (0..5).zip(waiting) {
+            assert_eq!(task.await.unwrap().unwrap(), echo(&command(n)));
+        }
+        assert_eq!(q.stats().waiting.load(Ordering::SeqCst), 0);
+        assert_eq!(raft.most_in_flight.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn holding_lets_the_write_in_flight_finish() {
+        let raft = Arc::new(FakeRaft::default());
+        let q = queue(100, &raft);
+        let first = submit(&q, 0, LONG);
+        wait_until("the first write", || raft.in_flight() == 1).await;
+
+        q.hold(true);
+        let next = submit(&q, 1, LONG);
+        raft.permits.add_permits(2);
+        assert_eq!(first.await.unwrap().unwrap(), echo(&command(0)));
+        wait_until("the next to wait", || {
+            q.stats().waiting.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        assert_eq!(raft.groups().len(), 1, "no new write while held");
+
+        q.hold(false);
+        assert_eq!(next.await.unwrap().unwrap(), echo(&command(1)));
+        assert_eq!(raft.groups().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_proposal_still_leaves_at_its_deadline_and_is_never_written() {
+        let raft = Arc::new(FakeRaft::default());
+        let q = queue(100, &raft);
+        q.hold(true);
+        let late = submit(&q, 0, Duration::from_millis(20));
+        assert_eq!(late.await.unwrap(), Err(ProposeError::Timeout));
+
+        let next = submit(&q, 1, LONG);
+        wait_until("the next to wait", || {
+            q.stats().waiting.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        q.hold(false);
+        raft.permits.add_permits(1);
+        assert_eq!(next.await.unwrap().unwrap(), echo(&command(1)));
+        assert_eq!(raft.groups(), vec![vec![command(1)]]);
+        assert_eq!(q.stats().expired.load(Ordering::SeqCst), 1);
+        assert_eq!(q.stats().waiting.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

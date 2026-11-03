@@ -31,13 +31,14 @@ a first line saying how to run it, then the config sections that differ. The run
 | P-2 | bid window | split decisions | B | `p2-window-<n>ms` |
 | D120 | load, with two nodes silent | provisional answers, conflicts, replay | C | `degraded-<users>` |
 | E7 | one program per machine against 10 | whether the number of programs changes latency, client machine CPU or arrivals; compare with `e1-300-bidding` | F | `e7-p1-300` |
+| E8 | a busy first node with the step-aside on (D218) | whether and when the leader moves (`leader_stepped_aside`, `leader_step_aside_ended`, `elections`), and commit latency either side; compare with `e2e6-skew-expected-wait`. Only meaningful in runs where the first node led | A | `e8-step-aside` |
 
 ## Profiles (D63)
 
 | Profile | Cells | Runs per cell | One run | Time in all |
 |---------|-------|---------------|---------|-------------|
 | `quick` | the 15 in `quick.list` | 3 | 15 s warm-up + 60 s measured + 15 s restart | about 70 minutes |
-| `full` | all 33 | 5 | 30 s warm-up + 2 min measured + 15 s restart | about 8 hours |
+| `full` | all 34 | 5 | 30 s warm-up + 2 min measured + 15 s restart | about 8 hours |
 
 `quick` starts with the `ft8` cells, so a bug in the fault election costs one cell and not the hour. To leave them out, pass an explicit cell
 list; `lab.toml` does not reach the cells.
@@ -74,6 +75,9 @@ much, change it in every cell, and say so in the report.
 **The leader must hold.** Final data must come from a build with the proposal queue (D133) and the group view in: load figures
 from before the queue cannot be compared with figures from after it, and `msgs_bid_per_req` falls in fault cells compared with any
 older run (D154).
+
+A busy leader stepping aside is off in every cell but `e8-step-aside`: `leader_overload_ratio = 0`, because the code's default is on,
+and a leader change in the middle of a run would make those runs differ from the ones they are compared with (D218).
 
 No cell has anything to do with the TTL (D147). The runner never passes `--ttl-ms`, and with the 60 s default a report cannot
 be refused in a run, because the client's retries end first. So `reports_expired` must be 0 in every cell, and `analyze.py`

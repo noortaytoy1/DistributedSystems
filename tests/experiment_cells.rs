@@ -37,13 +37,28 @@ fn cell_text(cell: &str) -> String {
 #[test]
 fn every_cell_is_a_valid_config_with_a_run_line() {
     let cells = cells();
-    assert_eq!(cells.len(), 33, "the full profile has 33 cells");
+    assert_eq!(cells.len(), 34, "the full profile has 34 cells");
     for cell in &cells {
         let text = cell_text(cell);
         assert!(text.starts_with("# run:"), "{cell} has no run line");
         // The runner adds the nodes, metrics and storage, exactly as here.
         Config::from_toml(&format!("{BASE}{text}"))
             .unwrap_or_else(|e| panic!("{cell} is not a valid config: {e}"));
+    }
+}
+
+/// The code's default is on, and a leader change in a run would make it differ from the runs it is
+/// compared with. Only the cell that tests it may turn it on (D218).
+#[test]
+fn a_busy_leader_stays_leader_in_every_cell_but_the_one_that_tests_it() {
+    for cell in cells() {
+        let config = Config::from_toml(&format!("{BASE}{}", cell_text(&cell))).unwrap();
+        let ratio = config.policy.leader_overload_ratio;
+        if cell == "e8-step-aside" {
+            assert!(ratio > 0, "{cell} tests it, so it must be on");
+        } else {
+            assert_eq!(ratio, 0, "{cell} must keep the leader where it is");
+        }
     }
 }
 

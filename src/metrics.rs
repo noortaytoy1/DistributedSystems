@@ -94,6 +94,24 @@ pub enum Event {
         /// election it came.
         max_leader_gap_us: u64,
     },
+    /// This Raft leader found itself overloaded and went quiet, so that a normal vote picks a new
+    /// leader (D218). `score` is its own newest bid, `peer_scores` the peers' newest bids.
+    LeaderSteppedAside {
+        term: u64,
+        score: u64,
+        peer_scores: BTreeMap<NodeId, u64>,
+    },
+    /// How that ended. `outcome` is `changed` (another node leads), `re_elected` (this node won the
+    /// vote), `timed_out` (no new leader in time, and this node carries on if it still leads) or
+    /// `stopped` (this node was silenced, stopped serving or went degraded). `term` is the term it
+    /// went quiet in, and `waited_ms` runs from then to here, on this node's clock.
+    LeaderStepAsideEnded {
+        term: u64,
+        outcome: &'static str,
+        new_term: u64,
+        new_leader: Option<NodeId>,
+        waited_ms: u64,
+    },
     /// Periodic state fingerprint; equal digests at equal indexes mean identical state.
     StateDigest {
         last_applied: u64,
@@ -682,6 +700,37 @@ mod tests {
             "MemTotal:       16000000 kB\nMemFree:  1000 kB\nMemAvailable:    8000000 kB\n";
         assert_eq!(parse_mem_available_kb(meminfo), Some(8_000_000));
         assert_eq!(parse_mem_available_kb("MemTotal: 1 kB\n"), None);
+    }
+
+    #[test]
+    fn step_aside_events_keep_their_field_names() {
+        let aside = Event::LeaderSteppedAside {
+            term: 4,
+            score: 9_000,
+            peer_scores: BTreeMap::from([(2, 1_500), (3, 2_000)]),
+        };
+        let text = serde_json::to_string(&aside).unwrap();
+        assert!(text.contains(r#""ev":"leader_stepped_aside""#), "{text}");
+        assert!(text.contains(r#""term":4"#), "{text}");
+        assert!(text.contains(r#""score":9000"#), "{text}");
+        assert!(
+            text.contains(r#""peer_scores":{"2":1500,"3":2000}"#),
+            "{text}"
+        );
+
+        let ended = Event::LeaderStepAsideEnded {
+            term: 4,
+            outcome: "changed",
+            new_term: 5,
+            new_leader: Some(2),
+            waited_ms: 700,
+        };
+        let text = serde_json::to_string(&ended).unwrap();
+        assert!(text.contains(r#""ev":"leader_step_aside_ended""#), "{text}");
+        assert!(text.contains(r#""outcome":"changed""#), "{text}");
+        assert!(text.contains(r#""new_term":5"#), "{text}");
+        assert!(text.contains(r#""new_leader":2"#), "{text}");
+        assert!(text.contains(r#""waited_ms":700"#), "{text}");
     }
 
     #[test]

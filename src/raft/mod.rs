@@ -11,6 +11,8 @@
 //! - On the leader every proposal, its own or forwarded, goes through one queue (proposals.rs): one
 //!   `client_write` at a time, carrying everything that waited as one log entry, so that disk saves
 //!   cannot stop the heartbeats (D133).
+//! - A busy leader can go quiet: no heartbeats, and the queue held. Nothing then resets the
+//!   followers' election timers, so they start an ordinary vote (node/step_aside.rs, D218).
 //! - Each finished proposal logs a `commit` event with its latency, and every term, leader or role
 //!   change logs a `raft_state` event (E5).
 //! - Once a second each node logs a one-line summary of the Raft heartbeats it sent and received
@@ -147,6 +149,11 @@ pub trait Consensus: Send + Sync + 'static {
     /// Allow or forbid this node to start elections. Off while a node is not serving, so a
     /// returning node does not raise its term and depose a healthy leader (D5, D75).
     fn set_elect(&self, enabled: bool);
+
+    /// Go quiet, or stop being quiet: no Raft heartbeats, and no new log writes, which wait in the
+    /// proposal queue instead. This changes no election timer and no vote rule: the followers'
+    /// timers just run out, as they would for a leader that failed (D218).
+    fn set_quiet(&self, quiet: bool);
 
     fn shutdown(&self) -> BoxFuture<'_, ()>;
 }
@@ -524,6 +531,11 @@ impl Consensus for RaftNode {
 
     fn set_elect(&self, enabled: bool) {
         self.raft.runtime_config().elect(enabled);
+    }
+
+    fn set_quiet(&self, quiet: bool) {
+        self.raft.runtime_config().heartbeat(!quiet);
+        self.queue.hold(quiet);
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {

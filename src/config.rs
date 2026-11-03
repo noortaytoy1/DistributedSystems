@@ -152,6 +152,15 @@ pub struct Policy {
     pub just_won: JustWonMode,
     /// Planning time a node assumes until its first job finishes.
     pub initial_service_us: u64,
+    /// A Raft leader whose load score stays at least this many times its lowest peer's goes quiet,
+    /// so that a normal vote picks a new leader (D218). 0 turns this off. Under bidding only: it
+    /// reads the bids.
+    pub leader_overload_ratio: u64,
+    /// How long that must hold without a break.
+    pub leader_overload_for_ms: u64,
+    /// No step-aside until this long after the last term change or the last try. This is what stops
+    /// a storm of elections.
+    pub leader_overload_cooldown_ms: u64,
 }
 
 impl Default for Policy {
@@ -162,6 +171,9 @@ impl Default for Policy {
             cpu_weight: 10,
             just_won: JustWonMode::default(),
             initial_service_us: 1,
+            leader_overload_ratio: 3,
+            leader_overload_for_ms: 5_000,
+            leader_overload_cooldown_ms: 60_000,
         }
     }
 }
@@ -176,6 +188,12 @@ impl Policy {
             ScoreName::QueueOnly => ScoreVariant::QueueOnly,
             ScoreName::CpuOnly => ScoreVariant::CpuOnly,
         }
+    }
+    pub fn leader_overload_for(&self) -> Duration {
+        Duration::from_millis(self.leader_overload_for_ms)
+    }
+    pub fn leader_overload_cooldown(&self) -> Duration {
+        Duration::from_millis(self.leader_overload_cooldown_ms)
     }
 }
 
@@ -343,6 +361,25 @@ impl Config {
         if self.policy.initial_service_us == 0 {
             return invalid("policy: initial_service_us must be above 0".into());
         }
+        let p = &self.policy;
+        if p.leader_overload_ratio > 0 {
+            // At 1 the busiest of three even nodes would count as overloaded.
+            if p.leader_overload_ratio < 2 {
+                return invalid(
+                    "policy: leader_overload_ratio must be 0 (off) or at least 2".into(),
+                );
+            }
+            if p.leader_overload_for_ms == 0 {
+                return invalid("policy: leader_overload_for_ms must be > 0".into());
+            }
+            // A cooldown shorter than one try would let the next try start as this one ends.
+            let quiet_ms = crate::node::step_aside::QUIET_LIMIT.as_millis() as u64;
+            if p.leader_overload_cooldown_ms < quiet_ms {
+                return invalid(format!(
+                    "policy: leader_overload_cooldown_ms must be at least {quiet_ms}"
+                ));
+            }
+        }
         let t = &self.timers;
         if t.raft_heartbeat_ms == 0 || t.raft_heartbeat_ms >= t.election_timeout_min_ms {
             return invalid("timers: need 0 < raft_heartbeat_ms < election_timeout_min_ms".into());
@@ -433,6 +470,37 @@ mod tests {
             ScoreVariant::ExpectedWait
         );
         assert_eq!(Policy::default().just_won, JustWonMode::WonAndLeading);
+    }
+
+    #[test]
+    fn a_busy_leader_steps_aside_by_default_and_ratio_0_is_off() {
+        let policy = Policy::default();
+        assert_eq!(policy.leader_overload_ratio, 3);
+        assert_eq!(policy.leader_overload_for(), Duration::from_secs(5));
+        assert_eq!(policy.leader_overload_cooldown(), Duration::from_secs(60));
+
+        let node = "[[cluster.nodes]]\nid = 1\npeer_addr = \"a:1\"\nclient_addr = \"a:2\"\n";
+        let with = |lines: &str| Config::from_toml(&format!("{node}[policy]\n{lines}\n"));
+        let set = with(
+            "leader_overload_ratio = 4\nleader_overload_for_ms = 100\n\
+             leader_overload_cooldown_ms = 3000",
+        )
+        .unwrap();
+        assert_eq!(set.policy.leader_overload_ratio, 4);
+        assert_eq!(set.policy.leader_overload_for_ms, 100);
+        assert_eq!(set.policy.leader_overload_cooldown_ms, 3_000);
+
+        // Off, so the other two keys do not matter.
+        assert!(
+            with(
+                "leader_overload_ratio = 0\nleader_overload_for_ms = 0\n\
+                 leader_overload_cooldown_ms = 0"
+            )
+            .is_ok()
+        );
+        assert!(with("leader_overload_ratio = 1").is_err());
+        assert!(with("leader_overload_for_ms = 0").is_err());
+        assert!(with("leader_overload_cooldown_ms = 2999").is_err());
     }
 
     #[test]

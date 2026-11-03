@@ -2,7 +2,7 @@
 # Run experiment cells across the machines in a hosts file, and collect the logs (D62, D63, D130).
 #
 #   scripts/run-experiments.sh experiments/hosts quick          # 15 cells, 3 runs, about 70 minutes
-#   scripts/run-experiments.sh experiments/hosts full           # 33 cells, 5 runs, about 8 hours
+#   scripts/run-experiments.sh experiments/hosts full           # 34 cells, 5 runs, about 8 hours
 #   scripts/run-experiments.sh experiments/hosts quick e5-faults-off e1-30-bidding
 #
 # For each run: refuses to go on while a program of ours is left over on any machine, writes one config,

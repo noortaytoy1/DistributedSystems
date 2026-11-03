@@ -20,6 +20,7 @@ pub mod group;
 pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
+pub mod step_aside;
 pub mod takeover;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -262,6 +263,7 @@ pub async fn start_with(
     tasks.extend(bids::spawn(&ctx));
     tasks.push(release::spawn(&ctx));
     tasks.extend(degraded::spawn(&ctx));
+    tasks.extend(step_aside::spawn(&ctx));
 
     Ok(NodeHandle {
         ctx,

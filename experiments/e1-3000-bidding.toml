@@ -1,6 +1,8 @@
 # run: users=3000 think_ms=1000
 
 [policy]
+# A busy leader stays leader here, so runs stay comparable (D218).
+leader_overload_ratio = 0
 assignment = "bidding"
 score = "expected-wait"
 cpu_weight = 1
