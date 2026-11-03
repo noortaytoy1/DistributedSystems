@@ -9,6 +9,9 @@
 //! - [`CloudGroup::probe`] addresses every configured peer, in the view or not. Heartbeats use it:
 //!   if they followed the list, two nodes that removed each other would never hear each other
 //!   again, and a 20 s fault would last for ever (D154).
+//! - [`CloudGroup::send_ordered`] reaches every replica in one agreed order, for anything that must
+//!   be agreed. Raft does all of that, so it is a plain pass-through: the application gets one
+//!   interface, and there is no ordering code of ours (D126, D156).
 //!
 //! **The view (D153).** A peer leaves after `timers.degraded_after_ms` of unbroken suspicion and
 //! comes back the moment it is heard, so a one-tick false alarm changes nothing, and a fault under
@@ -26,11 +29,13 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
+
 use super::lock;
 use super::transport::{PeerSet, TransportError};
 use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog};
-use crate::proto::{NodeId, PeerBody, PeerReply};
+use crate::proto::{Command, NodeId, Outcome, PeerBody, PeerReply, ProposeError};
 use crate::raft::Consensus;
 
 /// This node's list of who is in the group.
@@ -113,6 +118,21 @@ impl CloudGroup {
     ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
         let term = self.consensus.status().term;
         self.peers.broadcast(term, timeout, body).await
+    }
+
+    /// One command to every replica, in one agreed order. Each call is exactly a Raft proposal, so
+    /// the order and the delivery are openraft's and none of them are ours (D126, D156).
+    ///
+    /// `Ok` means committed and applied on this node: every replica gets it at the same place in
+    /// the log. `Err` means unknown, because a command that timed out may still commit, which is
+    /// why every `Command` is idempotent. It ends within `timers.propose_timeout_ms` (D133).
+    pub fn send_ordered(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
+        self.consensus.propose(cmd)
+    }
+
+    /// The Raft term this node is in now, for a record that carries one.
+    pub fn term(&self) -> u64 {
+        self.consensus.status().term
     }
 
     /// Logs the view everyone starts in. Called from the heartbeat loop and not from `new`, which

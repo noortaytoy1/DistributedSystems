@@ -8,22 +8,23 @@ design-log entry (see AGENTS.md). Sequence diagrams for every flow that uses the
 
 ## Connections and framing
 
-Each node listens on two TCP ports from the config. Noor has decided that client PCs move to UDP; that is not on a branch yet, so
-this page describes the TCP path that runs today (D216).
+Each node has two port numbers from the config:
 
-| Port          | Who connects       | Pattern                                               |
-|---------------|--------------------|-------------------------------------------------------|
-| `peer_addr`   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr` | clients and `ctl`  | one-way frames both ways, replies matched by request ID |
+| Port               | Who uses it        | Pattern                                               |
+|--------------------|--------------------|-------------------------------------------------------|
+| `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
+| `client_addr`, UDP | clients            | tarpc remote calls (`proto::ClientRpc`), one datagram per message (D167, D170) |
+| `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
-Every frame is a 4-byte big-endian length followed by the body (`tokio_util`
-`LengthDelimitedCodec`), at most 16 MiB (`MAX_FRAME_BYTES`). Client port bodies are encoded with
-`proto::encode`: bincode with varint integers and no trailing bytes. Peer port bodies are tarpc
-messages in tarpc's bincode format. Malformed frames close the connection.
+On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
+(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is set on
+every connection.
 
-`TCP_NODELAY` is set on every connection.
+On UDP, one datagram is one tarpc message, encoded with `proto::encode`: bincode with varint integers and no trailing bytes, at
+most 1,400 bytes (`MAX_DATAGRAM_BYTES`). A bad datagram, an ICMP error or a failed send counts as a lost message: no error ever
+reaches tarpc, because it would end every call on that channel (D170). The largest report and reply fit, and a test holds that.
 
-**Reconnecting.** A node connects to a peer lazily on the first call and reuses the connection.
+**Reconnecting, between nodes only.** A node connects to a peer lazily on the first call and reuses the connection.
 If a connect fails (refused, or not done before the call's deadline), every call to that peer
 fails at once with `TransportError::Backoff` until `2 × raft_heartbeat_ms` has passed; then the
 next call connects again. The node logs `peer_unreachable` once when the outage starts and
@@ -32,15 +33,18 @@ trigger this: its listener stays up, so connects succeed and calls time out inst
 
 ## Client protocol
 
+Reports travel through tarpc over UDP (`ClientRpc::submit`). The picture is one attempt:
+
 ```
 client                          every node
-  │── ClientFrame::Request ──────▶│  (same frame to all nodes)
+  │── submit(request) ───────────▶│  (one tarpc call per node, one datagram each)
   │                               │  executor plans, commits through Raft, then replies
-  │◀─────── ServerFrame::Reply ───│  (first reply wins; later replies for the ID are ignored)
+  │◀──────── one datagram ────────│  (first reply wins)
+  │── cancel ────────────────────▶│  (to each node whose call is still open)
 ```
 
-This send to all the nodes is the group send, and the application does not know it happens: it makes one `submit` call
-(D210, and [architecture.md](architecture.md) section 5.1a).
+This send to all the nodes is the group send, and the application does not know it happens: it makes one `submit` call, and
+`MeshClient::group_send` makes the copies (D210, and [architecture.md](architecture.md) section 5.1a).
 
 - `ClientRequest { id, attempt, age_ms, incident }`. `id = (client, seq)` is unique per client process.
   A retry reuses `id` and increments `attempt`. `age_ms` is how old the report is at this send: one wall-clock
@@ -49,7 +53,7 @@ This send to all the nodes is the group send, and the application does not know 
   to 23 zone feeds (Phase 2), five-digit IDs from `scripts/start-users.sh`, and six-digit IDs for a frontend's programs.
 - The client resends with the same ID up to `client_max_retries` times. The wait starts at
   `client_retry_ms` and doubles up to `client_retry_max_ms`, with ±20% random jitter (D52).
-- `ClientReply { id, from, body }`. `body` is `Done(CommittedResult)`, `Expired(CommittedResult)`, `Provisional(Plan)` or
+- `ClientReply { id, from, body }`, as `submit`'s return. `body` is `Done(CommittedResult)`, `Expired(CommittedResult)`, `Provisional(Plan)` or
   `Rejected(reason)`. Every `Done` or `Expired` reply for one ID carries the same committed result, whichever node
   sends it, and the record decides which of the two it is.
 - `Expired(CommittedResult)` means the report was too old to plan: `age_ms >= ttl_ms` when it reached the node that would
@@ -63,21 +67,30 @@ This send to all the nodes is the group send, and the application does not know 
   the record answers `Expired` to a retry.
 - A node that already has a committed result for an ID answers a retry straight from its state.
 
-**Connections (D112).** A client keeps one connection per node and pings on it with
-`Control(Status)` every 1 s. Nothing received for 3 s replaces the connection. A silenced node still
-answers, so it keeps its connection.
+**A call's life (D169).** `MeshClient` holds one stub and one unconnected UDP socket per node, shared by all users in the program.
+Each attempt adds one call per node to one set, and every call has the same deadline, 1.2 × the sum of all waits (36 s at the
+defaults). Calls from earlier attempts stay open, so a late answer still counts. A node that cannot answer sends nothing: the call
+stays open until the client's cancel or its deadline (D36). Returning from `submit` sends one cancel per call still open. A
+first-attempt answer is therefore 3 requests, 1 reply and 2 cancels. Nothing on this path holds a connection, so a node that returns
+on its address just answers.
+
+**Channels.** A node splits datagrams by source address into one tarpc channel per client program. A program with no traffic for 60 s
+loses its channel, because UDP has no close. So channels are programs, not clients: do not count them as clients.
+
+**Loss.** A copy lost on the way to one node costs nothing if another node answers. All three lost, or the one reply lost, costs one
+wait of about 2 s. A lost cancel parks a call on the node for up to 36 s (D173). `udp_counters` counts all of it (D172).
 
 ## Control protocol (`ctl`, and the frontend's status polls)
 
-Sent on the client port as `ClientFrame::Control`, answered with `ServerFrame::Control`. Control
-frames bypass the fault gate.
+Calls on the same trait, `ClientRpc`, through tarpc over TCP on the client port (D168, D175). Control methods skip the fault gate
+on both transports (D23, D174). `ctl` builds a `ControlRequest`, and `client::control` maps it to a method.
 
-| Request                    | Effect                                             | Reply             |
+| Method                     | Effect                                             | Reply             |
 |----------------------------|----------------------------------------------------|-------------------|
-| `Status`                   | none                                               | `Status(NodeStatus)`, whose last field is `members`, this node's group view (D155) |
-| `Incidents(IncidentQuery)` | none. `One(id)` reads one record; `OfClient { client, limit }` reads that client's newest first, at most 20 | `Incidents { node: NodeStatus, rows: Vec<IncidentView> }`. Control frames bypass the gate, so a silenced or returning node answers too: discard its rows unless `node.serving && !node.silenced` (D145) |
-| `Silence { ms }`           | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range, the node is already silenced (D74), or fault injection is disabled (D77) |
-| `SkewLoad { extra_work }`  | set this node's planner work per request. It replaces `plan_work`, so to put a node back set it to `plan_work` again (D205) | `Done`            |
+| `status()`                 | none. `ctl status` also calls it over UDP, up to 3 tries in 2 s, and prints `node N: udp ok` or `node N: udp no answer` under its table, so a closed port shows (D168) | `Status(NodeStatus)`, whose last field is `members`, this node's group view (D155) |
+| `incidents(query)`         | none. `One(id)` reads one record; `OfClient { client, limit }` reads that client's newest first, at most 20 | `Incidents { node: NodeStatus, rows: Vec<IncidentView> }`. Control skips the gate, so a silenced or returning node answers too: discard its rows unless `node.serving && !node.silenced` (D145) |
+| `silence(ms)`              | drop all peer and client traffic for `ms` (1 to 20000) | `Done`, or `Error` if `ms` is out of range, the node is already silenced (D74), or fault injection is disabled (D77) |
+| `skew_load(extra_work)`    | set this node's planner work per request. It replaces `plan_work`, so to put a node back set it to `plan_work` again (D205) | `Done`            |
 
 ## Peer protocol
 
@@ -149,12 +162,13 @@ yields none. Results of one group share a `log_index` (D133).
 
 | Command                                   | Effect                                                                 | Outcome |
 |-------------------------------------------|------------------------------------------------------------------------|---------|
-| `RegisterResponders { responders }`       | adds unknown responders; known ones are untouched                      | `Applied` |
+| `RegisterResponders { responders }`       | adds unknown responders; known ones are untouched. Any serving node proposes it at start until its state holds responders, so a log can hold several (D164) | `Applied` |
 | `CommitResult(ResultProposal)`            | first result per request ID wins and holds its responder               | `Committed`, `Duplicate(winner)` or `Stale` |
 | `ReleaseResponder { responder, request }` | frees the responder if `request` holds it. Proposed by the executor after the service time, by other nodes after twice that (D39) | `Applied` |
 
 `Stale` means the plan's responder is held by another request or unknown. Nothing is recorded,
-and the executor plans again with fresh state.
+and the executor plans again with fresh state. After 3 stale plans it commits a plan with nobody on it, which cannot be stale, and
+replies from what commits (D220).
 
 Every command is idempotent, so a proposal retried after a leader change is harmless.
 
@@ -199,7 +213,7 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 
 ## Request lifecycle
 
-1. The client multicasts `Request`. Every serving node receives it.
+1. The client calls `submit` on every node, one datagram each. Every serving node receives it.
 2. If a result is already committed for the ID, any node replies with it.
 3. Assignment picks one executor: the bidding winner, or the leader under `leader-dispatch`.
 4. The executor plans on its worker pool from its local copy of the state, and works out the priority. If the report's
@@ -211,7 +225,9 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
    old on arrival, otherwise `Done`. A node that is not serving at that moment stays quiet and the client's retry gets the
    result from a serving node (D136).
    A node in degraded mode skips steps 3 and 5 and replies `Provisional` straight after planning (D120).
-7. If the client hears nothing within `client_retry_ms`, it resends with the same ID.
+7. If the client hears nothing within `client_retry_ms`, it calls again with the same ID, leaving the earlier calls open.
+8. The first answer ends the submit, and the client cancels the calls still open. That stops the wait on the node, not its
+   work (D169).
 
 ## Errors, and what each caller sees
 
@@ -225,10 +241,11 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 | `TransportError::Timeout`, `Closed` | no answer by the call's deadline, or the connection closed | unknown: it may have arrived. Bids and pings do not retry. A proposal retries, and that is safe (D27) |
 | `TransportError::UnknownPeer`, `Wire` | a node ID not in the config, or a body that does not encode | a bug or a mixed build |
 | `Overloaded` | the worker pool, when `threads` are busy and `queue_capacity` jobs wait | logs `overloaded`, no reply, the client's retry takes over (D48, D138) |
-| `Outcome::Stale` | the state machine: the plan's responder is held or unknown | the executor plans again, at most 3 times, then stays quiet (D35, D36) |
+| `Outcome::Stale` | the state machine: the plan's responder is held or unknown | the executor plans again, at most 3 times, then commits a plan with nobody on it and replies (D35, D220) |
 | `ClientError::GaveUp { attempts }` | `MeshClient`, when its retries run out | `submit` returns the error and `client_gave_up` is logged |
-| `ClientError::Connect`, `Timeout`, `Closed`, `Wire` | `client::control`, for `ctl` and the frontend's polls | the tool says that node is unreachable |
-| A malformed frame | the receiver | the connection closes (D16) |
+| `ClientError::Connect`, `Timeout`, `Closed` | `client::control`, for `ctl` and the frontend's polls | the tool says that node is unreachable |
+| A malformed TCP frame | the receiver | the connection closes (D16) |
+| A bad datagram, an ICMP error or a failed send | the datagram adapter | counted and dropped; no error reaches tarpc, and the client's retry covers it (D170) |
 | `ReplyBody::Rejected(reason)` | defined, never sent (D36) | none |
 
 ## Timers
@@ -250,9 +267,10 @@ Defaults from `config.rs`, tuned for a LAN:
 | `peer_rpc_timeout_ms`         | 500          | one non-Raft peer call (bid, heartbeat, read index). A forwarded proposal instead waits up to `propose_timeout_ms` (D133) |
 | `degraded_after_ms`           | 2000         | every peer suspected this long, and a serving node answers without a commit (D121); one peer suspected this long leaves this node's group view (D153) |
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
+| (derived) client call deadline | 1.2 × the sum of all waits, 36 s | one per submit (D169) |
 | `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `campus.incident_ttl_ms`      | 60000        | how long a client says its reports stay valid. A node refuses an older one. Above the client's retries: 30 s, at most 36 s with jitter (D143). `loadgen --ttl-ms` sets it for one run. 0 is refused in the config |
-| `faults.interval_min_ms`      | 30000        | each node waits at least this long, from the end of the last round and any silence it elected; the first to finish calls the next round |
+| `faults.interval_min_ms`      | 30000        | each node waits at least this long, from the end of the last round and any silence it elected; the first to finish calls the next round. `config/lab.example.toml` ships 100000000 here and in `interval_max_ms`, so no timer fires (D165) |
 | `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`, or rounds cannot finish) |
 | `faults.silence_min_ms`       | 1000         | shortest silence a node draws                              |
 | `faults.silence_max_ms`       | 20000        | longest silence a node draws (at most 20000)               |
@@ -269,10 +287,14 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `rejoin.rs::NO_LEADER_ELECT_AFTER` | 3 s | a returning node that hears no leader this long may stand itself (D125) |
 | `rejoin.rs::ASK_AGAIN_AFTER` | 1 s | how long a returning node waits on one target before it asks the leader again (D135) |
 | `rejoin.rs::WAIT_WARNING` | 5 s | how often a node still catching up warns |
-| `node/mod.rs::MAX_PLAN_ATTEMPTS` | 3 | plans of one request before the executor stops and stays quiet (D35) |
+| `node/mod.rs::MAX_PLAN_ATTEMPTS` | 3 | plans of one request before the executor commits that nobody could be sent (D35, D220) |
+| `node/mod.rs::CAMPUS_CHECK_INTERVAL` | 200 ms | how often a node checks that the campus is registered, and proposes it if it may (D164) |
 | `degraded.rs::REPLAY_INTERVAL`, `REPLAY_BATCH` | 100 ms, 64 | how fast provisional answers are replayed (D122) |
 | `transport.rs::STALE_CONNECTION` | 1 s | a peer connection whose calls have gone unanswered this long is replaced (D119) |
-| client ping | every 1 s; 3 s with nothing received replaces the connection | D112 |
+| `datagram.rs::CHANNEL_IDLE` | 60 s | a client program with no traffic for this long loses its channel on the node (D170) |
+| `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
+| `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message on UDP, so it is never split on an Ethernet path (D170) |
+| `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
 
 ## The frontend's local page API
 

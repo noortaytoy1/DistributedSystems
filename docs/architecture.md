@@ -43,8 +43,8 @@ Section 13 lists the hooks we leave for them (D69, D209).
 
 | Requirement (project description)                         | Mechanism                                                               | Status   | Decisions |
 |-----------------------------------------------------------|-------------------------------------------------------------------------|----------|-----------|
-| Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built | D6, D17, D53, D112 |
-| An election picks the node that orders results             | Raft leader election (openraft). The leader only orders results (D114). Picking who fails moved to all nodes (D158); loading the responder list on any node is planned (D216) | built | D1, D14, D114, D158, D216 |
+| Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built | D6, D53, D167 |
+| An election picks the node that orders the log             | Raft leader election (openraft). That node numbers entries, sends the copies and answers one read, and decides nothing. The table below says who decides what. The role moves when its holder stops being heard, not with load: the bid follows load (D217) | built | D1, D14, D114, D158, D163, D164, D217 |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | built | D2, D3, D45, D114 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built    | D13, D41, D42, D110, D158 |
 | The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
@@ -57,14 +57,64 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | The leader stays up under load, and saves are never skipped | Our own queue in front of Raft, one write in flight, grouped saves | built; measured as a prototype on one PC only | D133 |
 | One server left still handles the clients                  | Degraded mode: labelled provisional answers, replayed through Raft on return | built | D120–D125 |
 | A machine physically off comes back                        | Raft log and vote on disk, then the same catch-up as a silence           | built; rehearsed on one PC with a killed process behind a dropped link; **a real power cut is still to do** | D118, D137, D214 |
-| Remote invocation through a ready-made RPC                 | tarpc on the peer port, typed methods                                    | built | D119, D150 |
+| Remote invocation through a ready-made RPC                 | tarpc on both paths: `PeerRpc` between nodes, `ClientRpc` from clients, typed methods, no hand-written request and reply left | built | D119, D150, D167, D175, D176 |
 | Group communication                                        | The client middleware's send to all nodes is the group send, and the application does not know it happens. The cloud's who's-alive list (`CloudGroup`'s view) is the membership. Raft for total order | built | D126, D152–D155, D157, D210 |
-| Middleware and application kept apart, on both sides       | Section 4.3. Client side in the code today; the cloud side's file split is D156 | client side built; cloud file split planned | D156, D211 |
+| Middleware and application kept apart, on both sides       | Section 4.3. `src/middleware.rs` is the line, and `tests/layers.rs` fails if application code reaches past it | built | D156, D211 |
 | Cloud nodes are peers; client and server are roles per transaction | Section 3.1                                                     | built | D212 |
-| Client PCs reach the cloud over UDP                        | Noor's decision, reverses D17. TCP is what runs today                    | planned | D216 |
-| A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved | built | D158–D162 |
+| Clients send to the cloud over UDP                         | `submit` through tarpc on a small datagram adapter; `ctl` on tarpc over TCP. Noor's decision, reverses D17 | built; **only on loopback so far: real switches and network cards are untested, and no run has had the buffer raised** | D167, D168, D170, D171 |
+| A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
 | Publish-subscribe                                          | Phase 2, by Lecture 9. In the design only, section 13                    | planned | D131, D209 |
+
+### Who decides what (built, D163)
+
+The class notes ask for peers with no coordinator. Our reading, stated as a reading: no node decides for another, and one elected, replaceable node orders the
+log. The test is whether one node decides for another, not whether any node is ever elected.
+
+| Question | Who decides | What the leader adds | Library or ours | Decisions | Where |
+|----------|-------------|----------------------|-----------------|-----------|-------|
+| Who plans a report | All serving nodes: the lowest bid | Nothing. A term change can split a round, and the first commit settles it | Ours | D2, D114 | `node/bids.rs::run_round` |
+| Who takes over from a silent winner | Any node that lost the round | Nothing | Ours | D42, D110 | `node/takeover.rs` |
+| Is a peer alive | Each node for itself | Nothing | Ours | D41, D79, D153 | `node/heartbeat.rs`, `node/group.rs` |
+| Does a plan stand | All three state machines: the same rule on the same log | Nothing in the rule. Which of two racing plans reaches it first commits first | Ours | D27, D28 | `state.rs::commit_result` |
+| When a responder is freed | The executor, then any node | Orders the entry | Ours | D39, D111 | `node/release.rs` |
+| Who fails next | All three, by the draw | Nothing. It can be drawn like anyone | Ours | D158, D159 | `node/faults.rs` |
+| Loading the responders | Any serving node. No selection, because it is idempotent | Orders the entry | Ours | D164 | `node/mod.rs::spawn_campus_seeding` |
+| Answering alone | The lone node | Nothing | Ours | D120, D121 | `node/degraded.rs` |
+| A retry of a decided request | Any node, from its own copy | Nothing | Ours | D27 | `node/service.rs::handle_request` |
+| Is a returning node current | The node's own gate | Answers one read | openraft and ours | D75, D76, D135 | `node/rejoin.rs` |
+| Who orders the log and sends the copies | Whichever node a majority elected. Every node stores, and 2 of 3 commit | These are its duties | openraft | D1, D14, D115 | `raft/` |
+
+**What the leader cannot do:** pick a planner; change a plan (`write_local` hands the command to `client_write` unread); commit without 2 of 3; silence anyone.
+
+**The leader does not change with load (Noor's decision, D217).** The bid already elects the worker by load for every report, and a busy node loses bids. So the evidence that the
+election reacts to load is wins per node, not Raft terms, and a steady term under load is the healthy result. D218 is kept free in case the team later says Dr Amr asked for the leader itself to change.
+
+**Limits, said openly.** Every commit still passes through one elected node, so a strict reader can still call it a coordinator; only replacing Raft removes that, and that was
+rejected as a rewrite a day before the deadline (D163). Which of two racing plans reaches the leader first commits first. A cut-off leader can still read `leader` in an old term
+until it hears otherwise, and the others replace it. Plans come from a node's local state and the leader applies first, so a follower's plans may go stale more often (not measured).
+
+What the leader adds to one report. Node 3 leads here, and the node that plans is node 2:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant N1 as Node 1
+    participant N2 as Node 2
+    participant N3 as Node 3 (leads now)
+    Note over N1,N3: All three bid on load. The leader's bid counts the same as any other
+    N1->>N2: Bid 2000
+    N2->>N3: Bid 1000
+    N3->>N1: Bid 1010
+    Note over N1,N3: Lowest bid wins, on every node's own view: node 2. Node 3 had no say in it
+    N2->>N2: plan: responder 5
+    N2->>N3: Propose(CommitResult), once
+    N3->>N3: give it the next log slot, 812, without reading it
+    N3->>N1: AppendEntries [812]
+    N3->>N2: AppendEntries [812]
+    Note over N1,N3: 2 of 3 stored: committed
+    Note over N1,N3: Each state machine runs the same rule on slot 812: responder 5 free? yes, so it is held
+```
 
 ### System model
 
@@ -113,14 +163,14 @@ read the same config file (D59, D60).
 flowchart TB
     subgraph CM["Client machines (3): Ubuntu, each runs scripts/start-users.sh --machine M"]
         direction LR
-        K1["Client machine 1<br/>start-users.sh --machine 1<br/>10 loadgen programs, IDs 10000 to 10009<br/>each: users as tokio tasks, one MeshClient, 3 TCP connections<br/>writes client-10000.jsonl to client-10009.jsonl, users-1-0.out"]
+        K1["Client machine 1<br/>start-users.sh --machine 1<br/>10 loadgen programs, IDs 10000 to 10009<br/>each: users as tokio tasks, one MeshClient, one stub and one UDP socket per node<br/>writes client-10000.jsonl to client-10009.jsonl, users-1-0.out"]
         K2["Client machine 2<br/>IDs 20000 to 20009"]
         K3["Client machine 3<br/>IDs 30000 to 30009"]
         FE["Each client machine also: frontend --client-id 11, 12 or 13<br/>web page for its own browser only<br/>reports through MeshClient, status through client::control<br/>starts up to 10 loadgen programs per click<br/>writes frontend-11.jsonl"]
     end
     subgraph CL["Cloud (3 equal peers): Ubuntu, each runs node --id N"]
         direction LR
-        N1["Node 1<br/>peer port 7001, client port 8001<br/>Raft member, bids, plans<br/>writes node-1.jsonl"]
+        N1["Node 1<br/>peer port 7001 (TCP), client port 8001 (UDP and TCP)<br/>Raft member, bids, plans<br/>writes node-1.jsonl"]
         N2["Node 2<br/>peer port 7001, client port 8001<br/>writes node-2.jsonl"]
         N3["Node 3<br/>peer port 7001, client port 8001<br/>writes node-3.jsonl"]
         N1 <-->|"TCP peer link<br/>Raft, Propose, Bid, Heartbeat"| N2
@@ -128,25 +178,27 @@ flowchart TB
         N1 <-->|"TCP peer link"| N3
     end
     OP["Operator (any machine)<br/>ctl status, incidents, silence, skew"]
-    CM -->|"TCP to every node's client port<br/>same request to all 3 nodes"| CL
-    CL -->|"reply on the same connection<br/>first reply wins"| CM
-    OP -->|"Control frames on the client port<br/>pass through the fault gate"| CL
+    CM -->|"tarpc over UDP to every node's client port<br/>one datagram per message, same report to all 3 nodes"| CL
+    CL -->|"one datagram back from the node that answers<br/>first reply wins, the client cancels the other two calls"| CM
+    OP -->|"tarpc over TCP on the client port<br/>control passes the fault gate"| CL
 ```
 
 | Machine        | Process                | Listens on                                   | Writes                    |
 |----------------|------------------------|----------------------------------------------|---------------------------|
-| Cloud 1–3      | `node --config lab.toml --id N` | `peer_addr` (TCP, default port 7001) and `client_addr` (TCP, default port 8001), from the config | `runs/<..>/node-N.jsonl`, stderr log |
-| Client 1–3     | `bash scripts/start-users.sh --config lab.toml --machine M --users N`, which runs 10 `loadgen --client-id <M*10000+B*1000+k>` | nothing (outgoing connections only) | `runs/<..>/client-<id>.jsonl` per program, `users-M-B.out` per machine and batch |
+| Cloud 1–3      | `node --config lab.toml --id N` | `peer_addr` (TCP, default port 7001), and `client_addr` on UDP and TCP (default port 8001), from the config | `runs/<..>/node-N.jsonl`, stderr log |
+| Client 1–3     | `bash scripts/start-users.sh --config lab.toml --machine M --users N`, which runs 10 `loadgen --client-id <M*10000+B*1000+k>` | nothing fixed: each program has one UDP socket per node, on a port the kernel picks | `runs/<..>/client-<id>.jsonl` per program, `users-M-B.out` per machine and batch |
 | Client 1–3     | `frontend --config lab.toml --client-id 11 --listen 127.0.0.1:9001` | `--listen` only, for the browser on that PC; carries no cloud traffic (D199, D200) | `runs/<..>/frontend-11.jsonl`; its programs write `client-110001.jsonl` and so on |
 | Any            | `ctl --config lab.toml status` | nothing                               | stdout                    |
 
-**Network requirements.** Peer ports must be reachable between the three node machines, client
-ports from the client machines and the operator (`sudo ufw allow 7001/tcp`, `sudo ufw allow
-8001/tcp`). NTP on all six machines. Same git commit and toolchain everywhere (D15).
+**Network requirements.** Peer ports must be reachable over TCP between the three node machines. Client ports must be
+reachable from the client machines and the operator, over both UDP (reports) and TCP (`ctl`): `sudo ufw allow 7001/tcp`,
+`sudo ufw allow 8001/udp`, `sudo ufw allow 8001/tcp`. `sudo sysctl -w net.core.rmem_max=8388608` on all six machines, or the
+kernel caps the UDP receive buffer (D171). `ctl status` checks the UDP path (D168). NTP on all six machines. Same git commit
+and toolchain everywhere (D15).
 
-**Changes from the Phase 1 document.** Clients use TCP instead of UDP (D17), and Noor has decided to go back to
-UDP for the client PCs, which is not on a branch yet (D216); two ports per node instead of three, with `ctl` on the
-client port (D18); events are JSON Lines instead of CSV (D55).
+**Changes from the Phase 1 document.** Clients use UDP, as Phase 1 planned, now through tarpc (D167, after a time on TCP,
+D17); two ports per node instead of three, with `ctl` on the client port over TCP (D18, D168); events are JSON Lines instead
+of CSV (D55).
 
 ### 3.1 Peers, and roles per transaction (built, D212)
 
@@ -203,14 +255,14 @@ kept so the report can refer to it; the table maps each to its module, owner and
 flowchart TB
     subgraph TR["Transport layer"]
         direction LR
-        C1["C1 Network endpoint<br/>node/transport.rs<br/>framing, PeerClient, servers<br/>built"]
+        C1["C1 Network endpoint<br/>node/transport.rs, node/datagram.rs<br/>PeerClient, peer and client ports<br/>built"]
         C10["C10 Fault gate + injector<br/>FaultGate, silence_for, fault election: built"]
         HB["Peer heartbeats<br/>node/heartbeat.rs<br/>built"]
         GRP["Cloud group: who is alive<br/>node/group.rs<br/>built"]
     end
     subgraph PR["Protocol layer"]
         direction LR
-        C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
+        C2["C2 Request intake<br/>node/service.rs handle_request<br/>built"]
         C4["C4 Assignment<br/>leader dispatch: built<br/>bidding, node/bids.rs: built, the default (D114)"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
@@ -233,38 +285,39 @@ flowchart TB
 
 | #   | Component                 | Module(s)                                   | Owner | Status   | Responsibility |
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
-| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | Length-delimited frames, one multiplexed connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` (D20). |
-| C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. Checks `serving` again just before any reply leaves (D136). |
+| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One multiplexed TCP connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` on TCP (D20). `ClientPort`: UDP and TCP on one number (D168). |
+| —   | Datagram adapter          | `node/datagram.rs`                          | C     | built    | tarpc over UDP: one message is one datagram of at most 1,400 bytes, no error reaches tarpc, one channel per client program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
+| C2  | Request intake            | `node/service.rs::handle_request`           | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. Checks `serving` again just before any reply leaves (D136). |
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (bidding, the default, D114; leader dispatch, the baseline, set by config, D3, D34) | Chooses the executor: the lowest bidder (D2) or the leader (D3). |
-| C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. |
+| C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. The elected node orders the log and decides nothing else (D163). |
 | —   | Proposal queue            | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, everything waiting goes in one log entry, a proposal leaves at 3 s (D133). |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, severe incidents fall back to any capability, CPU knob (D49, D93, D94, D96, D101); seeded campus (D97, D98). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`, `raft/wal.rs`    | A     | built    | On disk in `node-<id>.wal` when `storage.dir` is set, which every lab run does; in memory for tests. Never purged, no snapshots (D118, which supersedes D24). |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). Logs its digest at every log index that is a multiple of 100 (`state_checkpoint`, D138). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target learned after the silence (D46, D75, D5). A wait that runs out after 1 s asks the leader again and keeps the lowest answer (D135). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); elected faults: all three nodes draw a number and the highest silences itself, and a node missing a number does nothing (D158, D159); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); elected faults: all three nodes draw a number and the highest silences itself, and a node missing a number does nothing (D158, D159); all of it switchable off with `faults.enabled` / `--faults off` (D77). On the client port the gate sits in the UDP reader, in front of tarpc (D174). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
 | —   | Cloud group               | `node/group.rs`                             | C     | built    | The nodes as one named group: the membership. Keeps this node's view of who is in it, `send` goes to the view and `probe` to everyone. A peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard (D152–D154, D210). |
 | —   | Takeover                  | `node/takeover.rs`                          | C     | built    | A node that lost a round plans the request if the winner is suspected, or nothing commits within max(200 ms, 3 × the winner's bid) (D42, D110). |
-| K1  | Client middleware         | `client.rs::MeshClient`                     | F     | built    | The group send: send to all nodes, retry with the same ID, first reply wins (D53, D112, D210). |
+| K1  | Client middleware         | `client.rs::MeshClient`                     | F     | built    | The group send: one tarpc call per node on one UDP stub each, retry with the same ID, first reply wins, a cancel for the rest (D53, D126, D167, D169, D210). |
 | K2  | Simulated user            | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built | A tokio task in a program. Uniform random incidents, seeded or from OS randomness (D99, D102). Waits as the pattern says: steady, random or all-at-once (D182). |
 | K3  | Workload controller       | `bin/loadgen.rs` arguments                  | F     | built    | Users, duration, think time, pattern, seed, open-loop rate, warm-up (D54, D182). TERM prints the summary and flushes the log (D183). |
-| K4  | Client metrics            | `metrics.rs` client events                  | F     | built    | `client_sent`, `client_done`, `client_gave_up`, `client_link_up`, `client_link_down`, and `machine_usage` from one program per machine (D185). |
+| K4  | Client metrics            | `metrics.rs` client events                  | F     | built    | `client_started`, `client_sent`, `client_done`, `client_gave_up`, `udp_socket`, `udp_counters`, and `machine_usage` from one program per machine (D172, D185, D191). |
 | K5  | User starter              | `scripts/start-users.sh`                    | F     | built    | One way to start and stop a client machine's users: 10 real programs by default, IDs, shares, start spread, PID file, totals (D181, D183, D184). |
 | K6  | Web page                  | `bin/frontend.rs`, `bin/frontend.html`      | F     | built    | Report form and answer card, load box, node table. No zone panel, because publish-subscribe is Phase 2. Hand-written HTTP, no new crate (D197–D203, D209). |
-| —   | Operator tool             | `bin/ctl.rs`, `client::control`             | C     | built    | Status, incidents, silence, skew (D62, D145, D155). |
+| —   | Operator tool             | `bin/ctl.rs`, `client::control`, `client::udp_answers` | C | built | Status, incidents, silence, skew, over tarpc on TCP (D62, D145, D155, D168). `ctl status` also checks each node's UDP port. |
 | —   | Degraded mode             | `node/degraded.rs`                          | C     | built    | The last node left answers provisionally and replays on return (D120–D124). |
-| —   | Experiment runner         | `scripts/run-experiments.sh`, `scripts/lab-common.sh`, `experiments/` | all  | built    | Bash over SSH from a hosts file (D62, D130, D139, D186). Untested over SSH. |
+| —   | Experiment runner         | `scripts/run-experiments.sh`, `scripts/lab-common.sh`, `experiments/` | all  | built    | Bash over SSH from a hosts file (D62, D130, D139, D186). Tested through a stand-in `ssh` with six separate directories (D188, D222). Not yet on the lab machines. |
 | —   | Analysis                  | `analysis/analyze.py`                       | all   | built    | Python: every metric the spec lists, with 95% intervals (D64). |
 
 ### 4.1 Module dependencies
 
 An arrow from X to Y means "X uses Y". The deterministic core (`state`, `bidding`, `planner`) uses
 only `proto`, which is what keeps it free of network, clock and randomness (D30). Only `node/` and
-`raft/network.rs` open sockets, with two named exceptions: `client.rs` (D112), and `bin/frontend.rs`,
-which only listens for the browser on its own PC (D200).
+`raft/network.rs` open sockets, with one named exception: `bin/frontend.rs`, which only listens for the browser on its own
+PC (D200). `client.rs` opens none itself: `transport::connect_client` and `transport::datagram_client` do it (D175).
 
 ```mermaid
 flowchart TD
@@ -295,6 +348,8 @@ flowchart TD
     NETWORK --> TRANSPORT
     STORE --> STATE["state.rs"]
     CLIENT --> TRANSPORT
+    TRANSPORT --> DATAGRAM["node/datagram.rs"]
+    DATAGRAM --> PROTO
     TRANSPORT --> PROTO["proto.rs (wire contract)"]
     STATE --> PROTO
     PLANNER --> PROTO
@@ -321,7 +376,7 @@ flowchart LR
         B1["bidding.rs"] --- B2["node/bids.rs"] --- B3["node/cpu.rs"]
     end
     subgraph C["Part C: Faults and failover"]
-        C1["node/faults.rs"] --- C2["node/heartbeat.rs"] --- C3["node/transport.rs"] --- C4["bin/ctl.rs"] --- C5["node/group.rs"]
+        C1["node/faults.rs"] --- C2["node/heartbeat.rs"] --- C3["node/transport.rs"] --- C4["bin/ctl.rs"] --- C5["node/group.rs"] --- C6["node/datagram.rs"]
     end
     subgraph D["Part D: Rejoin and recovery"]
         D1["node/rejoin.rs"]
@@ -363,7 +418,7 @@ flowchart TB
     subgraph NODE["Cloud side: each of the 3 nodes"]
         direction TB
         subgraph NAPP["Application: the incident service"]
-            SVC["handle_request, execute, plan_on_workers, send_done<br/>node/mod.rs today, node/service.rs under D156"]
+            SVC["handle_request, execute, plan_on_workers, send_done<br/>node/service.rs"]
             RULES["planner.rs, campus.rs, the rules in state.rs"]
         end
         subgraph NMW["Cloud middleware"]
@@ -390,10 +445,9 @@ flowchart TB
 | **Client side** | The web page and the simulated users. They hold reports and read answers | `MeshClient` | How many nodes there are, that its message was copied, that it was retried, and that a node failed |
 | **Cloud side** | The incident service: plan a report, record it, answer it | `CloudGroup`, bidding, the detector, takeover, rejoin, degraded mode, tarpc, openraft | Who else is alive, how a winner was chosen, and how a result reached the other replicas |
 
-**Status.** The client side is in the code today: `submit` is the application's one call. On the cloud side the middleware
-files are in the code today, but the incident service still sits beside the wiring in `node/mod.rs` and calls
-`consensus.propose` directly. D156 moves it to `node/service.rs`, adds `send_ordered` and `src/middleware.rs`, and
-`tests/layers.rs` keeps the split. It is required (D211) and **not built yet**.
+**Status.** Built on both sides. `submit` is the application's one call on the client side. On the cloud side the incident service is
+`node/service.rs`, and a result leaves it by one call, `ctx.group.send_ordered`. `src/middleware.rs` is the one interface the application layer
+may use, and `tests/layers.rs` fails if application code reaches past it (D156, D211).
 
 ---
 
@@ -403,19 +457,23 @@ files are in the code today, but the incident service still sits beside the wiri
 
 | Channel                   | Transport                                   | Pattern                                           | Status | Decisions |
 |---------------------------|---------------------------------------------|---------------------------------------------------|--------|-----------|
-| Client → every node       | TCP to `client_addr`                        | `ClientFrame::Request`, the same frame to all three | built | D6, D17, D112 |
-| Node → client             | same connection                             | `ServerFrame::Reply`, matched by request ID       | built  | D8, D37 |
-| `ctl` → one node          | TCP to `client_addr`                        | `ClientFrame::Control` / `ServerFrame::Control`, bypasses the fault gate | built | D18, D23 |
+| Client → every node       | UDP to `client_addr`, one socket per node   | tarpc call `ClientRpc::submit`, one per node, one datagram per message | built | D6, D167, D170 |
+| Node → client             | same socket pair, one datagram              | tarpc's `Response`, matched by tarpc's call ID; a node that cannot answer sends nothing | built  | D8, D36, D37, D169 |
+| Client → nodes that did not answer | same                               | tarpc's `Cancel`, one per call still open when `submit` returns: 2 on a first-attempt answer | built | D169, D172 |
+| `ctl` and the page's status polls → one node | TCP to `client_addr`     | tarpc calls `status`, `silence`, `skew_load`, `incidents`, which pass the fault gate | built | D18, D23, D168, D175 |
+| `ctl status` → one node   | UDP to `client_addr`                        | tarpc call `status`, up to 3 tries in 2 s, to check the port | built | D168 |
 | Node ↔ node               | one TCP connection per peer pair direction, multiplexed | tarpc calls to `proto::PeerRpc` | built | D7, D119 |
 
-Every frame: a 4-byte big-endian length, then a bincode body (varint integers, at most 16 MiB,
-no trailing bytes). A malformed frame closes the connection (D16).
+A TCP frame: a 4-byte big-endian length, then a tarpc message in tarpc's bincode format, at most 16 MiB. A malformed frame
+closes the connection (D16). A UDP datagram: one tarpc message, encoded by `proto::encode` (bincode with varint integers, no
+trailing bytes), at most 1,400 bytes. A bad one is counted and dropped (D170).
 
 ### 5.1a Group communication (built, D152–D155, D210)
 
 Group communication is one source to many: the sender sends once to a group, and the middleware makes the copies
 (Lecture 8 section 9, Lecture 9 section 2.2). **Our group send is the client middleware's send to all of the cloud
-nodes.** The application makes one `submit` call and does not know this happens. The members come from the cloud's
+nodes.** The application makes one `submit` call and does not know this happens. In the code it is `MeshClient::group_send`: one
+tarpc call per node, each in its own datagram (D167). The members come from the cloud's
 who's-alive list: each node keeps its own list of who is in the group, its view, and it changes as nodes fail and return,
 because we simulate failures. A `CloudGroup` send goes to the list; a ping goes to everyone, so a node off the list can
 come back.
@@ -446,7 +504,7 @@ flowchart LR
 
 | Call | Goes to | Guarantee | What covers a lost copy |
 |------|---------|-----------|-------------------------|
-| `MeshClient::submit`, the group send | all three nodes | best effort, unordered | the client's retry with the same ID (D52) |
+| `MeshClient::group_send`, from `submit`: the group send | all three nodes | best effort, unordered | the client's retry with the same ID (D52) |
 | `CloudGroup::send`: bids | the peers in this node's view | best effort, unordered, no retry; reports who acknowledged in time | a split decision, settled by first commit (D27) |
 | `CloudGroup::probe`: pings | every configured peer | best effort, unordered, no retry; reports who acknowledged in time | the next ping; a real loss becomes a suspicion (D79) |
 | `CloudGroup::send`: fault bids | every node that may bid | best effort, unordered, **not agreed** | nothing: the round dies at its deadline, and the next timer tries again (D159) |
@@ -466,12 +524,14 @@ Phase 2: providers publish, a directory lets others find them, and they are noti
 
 | Message                         | From → to              | Purpose                                              | Status   | Phase 1 name |
 |---------------------------------|------------------------|------------------------------------------------------|----------|--------------|
-| `ClientFrame::Request(ClientRequest { id, attempt, age_ms, incident })` | client → all nodes | ask for a plan; `age_ms` is how old the report is at this send (D143) | built | `IncidentRequest` |
-| `ServerFrame::Reply(ClientReply { id, from, body: Done(result) })` | node → client | the committed result | built | `ResponsePlan` |
-| `ServerFrame::Reply(ClientReply { id, from, body: Expired(result) })` | node → client | a report too old to plan: committed with nobody sent. It ends the client's wait (D143) | built | — (new) |
+| `ClientRpc::submit(ClientRequest { id, attempt, age_ms, incident })` | client → all nodes, UDP | ask for a plan; `age_ms` is how old the report is at this send (D143) | built | `IncidentRequest` |
+| `ClientReply { id, from, body: Done(result) }`, as `submit`'s return | node → client, UDP | the committed result | built | `ResponsePlan` |
+| `ClientReply { id, from, body: Expired(result) }`, as `submit`'s return | node → client, UDP | a report too old to plan: committed with nobody sent. It ends the client's wait (D143) | built | — (new) |
+| `ClientReply { id, from, body: Provisional(plan) }`, as `submit`'s return | node → client, UDP | a lone node's labelled answer, not committed (D120, D123) | built | — (new) |
 | `ReplyBody::Rejected(reason)`   | node → client          | defined, never sent (D36)                            | unused   | — |
-| `ClientFrame::Control(Status / Silence / SkewLoad / Incidents(query))` | ctl → node | inspect, read records and inject faults | built (`Silence` rejects overlaps and durations outside 1 ms to 20 s, D74; `Incidents` reads, D145) | experiment runner port |
-| `ServerFrame::Control(Incidents { node, rows })` | node → ctl or a page | up to 20 records, with this node's `NodeStatus`, so a reader can tell it is silenced or behind (D145) | built | — (new) |
+| tarpc's `Cancel`                | client → node, UDP     | ends a call the client no longer wants, on a node that stayed quiet; its work goes on (D169) | built | — (new) |
+| `ClientRpc::status`, `silence(ms)`, `skew_load(extra_work)`, `incidents(query)` | ctl → node, TCP; `status` also over UDP | inspect, read records and inject faults; pass the gate | built (`silence` rejects overlaps and durations outside 1 ms to 20 s, D74; `incidents` reads, D145) | experiment runner port |
+| `ControlReply::Incidents { node, rows }` | node → ctl or a page | up to 20 records, with this node's `NodeStatus`, so a reader can tell it is silenced or behind (D145) | built | — (new) |
 | `PeerBody::Raft(AppendEntries)` | leader → follower      | replicate; empty = Raft heartbeat                    | built    | `AppendEntries` |
 | `PeerBody::Raft(Vote)`          | candidate → peers      | election                                             | built    | `RequestVote` |
 | `PeerBody::Raft(InstallSnapshot)` | leader → lagging node | never used: snapshots are off (D24)                 | built, unused | `InstallSnapshot` |
@@ -555,6 +615,43 @@ stateDiagram-v2
     Retry --> Connected: "connect succeeds, log peer_reconnected with down_ms"
 ```
 
+### 5.6 A report over UDP (built, D167–D174)
+
+Application code makes one call. The client middleware makes one tarpc call per node. tarpc does the call IDs, deadlines and
+matching. The adapter in `node/datagram.rs` only puts one message in one packet. Nothing on this path holds a connection, so there
+are no pings and no reconnects, and a node that comes back just answers.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User task
+    participant M as MeshClient
+    participant A as Node 1 (wins the bid)
+    participant B as Node 2
+    participant C as Node 3
+    U->>M: submit(incident)
+    M->>M: new request ID, one deadline for this submit (36 s), log client_sent
+    par the group send: one datagram each
+        M->>A: tarpc submit(request, attempt 0)
+    and
+        M->>B: tarpc submit(request, attempt 0)
+    and
+        M-xC: tarpc submit(request, attempt 0): lost on the way
+    end
+    Note over A,B: each reader checks the fault gate, then hands the call to tarpc
+    A->>B: Bid (peer port, TCP)
+    B->>A: Bid (peer port, TCP)
+    Note over A,B: the round closes without node 3: it never heard of this report
+    A->>A: plan on the worker pool, propose, commit through Raft
+    Note over B: lost the bid: stands by, says nothing (D36)
+    A-->>M: one datagram: reply Done(result)
+    M->>U: Submitted, log client_done
+    M-xB: one datagram: tarpc cancel
+    M-xC: one datagram: tarpc cancel, harmless, as node 3 has no such call
+    Note over B: its call ends, its own work ends when it sees the commit (D169)
+    Note over M: 3 requests, 1 reply, 2 cancels. All lost, or the one reply lost: the retry after about 2 s, same ID, attempt 1
+```
+
 ---
 
 ## 6. Key flows
@@ -565,7 +662,8 @@ Every flow below names its status. Node IDs are examples; the leader moves after
 
 On its first start every node initializes Raft with the full membership (D25); a node that is already
 initialized skips it (D137). The peer port is serving before Raft
-starts (D61); the first leader registers the campus responders through the log (D38).
+starts (D61); any serving node that is not degraded registers the campus responders through the log, until its state holds them (D38, D164). No node is picked for this: the command is idempotent, so the few
+extra entries change nothing, and the log decides the list, not one node's file.
 
 ```mermaid
 sequenceDiagram
@@ -588,18 +686,25 @@ sequenceDiagram
     N2->>N1: AppendEntries (blank entry of the new term)
     N2->>N3: AppendEntries (blank entry of the new term)
     Note over N1,N3: raft_state events logged on every node
-    loop every 200 ms until responders exist
-        N2->>N2: leader and no responders? propose RegisterResponders(campus)
+    loop every 200 ms on each node, until its state holds responders
+        N1->>N1: serving, not degraded, no responders? propose RegisterResponders(campus)
+        N2->>N2: the same
+        N3->>N3: the same
     end
-    N2->>N1: AppendEntries [RegisterResponders]
-    N2->>N3: AppendEntries [RegisterResponders]
-    Note over N1,N3: Committed and applied: every node holds the same responders and digest
+    N1->>N2: Propose(RegisterResponders), forwarded, N2 leads
+    N3->>N2: Propose(RegisterResponders), forwarded
+    N2->>N1: AppendEntries [RegisterResponders, a few entries]
+    N2->>N3: AppendEntries [RegisterResponders, a few entries]
+    Note over N1,N3: The first entry adds the list and the others change nothing: same responders and digest everywhere
 ```
+
+A node back from its log file starts not serving, so it never proposes while its state still reads empty, and a lone node waits for a peer, since it could not commit (D164).
 
 ### 6.2 Normal request under leader dispatch (built)
 
 The baseline, with `policy.assignment = "leader-dispatch"` (D3, D34, D114). The leader is the only executor;
-followers stay quiet (D33).
+followers stay quiet (D33). Each `Request` here is a tarpc call to `submit` in one datagram, and each `Reply` is its return.
+Section 5.6 shows the cancels that follow.
 
 ```mermaid
 sequenceDiagram
@@ -671,13 +776,13 @@ sequenceDiagram
     N1->>K: Reply Done(result)
     N2->>K: Reply Done(result)
     N3->>K: Reply Done(result)
-    Note over K: keeps the first, ignores the rest (identical results)
+    Note over K: the first ends the submit, and the client cancels the other two calls (D169)
 ```
 
 ### 6.5 Stale plan and re-plan (built)
 
 Two executors picked the same free responder from their local copies. The log decides (D28); the
-loser plans again, at most three times (D35).
+loser plans again, at most three times (D35), then commits that nobody could be sent (D220).
 
 ```mermaid
 sequenceDiagram
@@ -695,7 +800,7 @@ sequenceDiagram
     X2->>X2: re-plan from fresh state (attempt 2 of 3)
     X2->>L: CommitResult(k2-7, responder 9)
     L-->>X2: Committed
-    Note over X2: after 3 stale attempts it stops without replying, the client retries
+    Note over X2: after 3 stale attempts it commits a plan with nobody on it and replies (D220)
 ```
 
 ### 6.6 Normal request under bidding (built, the default, D2, D43–D45, D103, D114)
@@ -867,18 +972,18 @@ sequenceDiagram
     participant OP as ctl
     participant N as Node 2
     participant P as Peers and clients
-    OP->>N: Control(Silence, ms 10000) on the client port
-    Note over N: control frames bypass the gate (D23)
+    OP->>N: tarpc silence(10000) over TCP on the client port
+    Note over N: control methods skip the gate (D23, D174)
     alt faults disabled, ms is 0 or above 20000, or the node is already silenced
-        N-->>OP: Control(Error) and the gate stays as it is
+        N-->>OP: ControlReply Error, and the gate stays as it is
     else
         N->>N: faults::silence_for: gate.try_silence(), log silenced
-        N-->>OP: Control(Done)
+        N-->>OP: ControlReply Done
     end
-    P-xN: peer and client frames: read and discarded
+    P-xN: peer calls never answered, report datagrams dropped in the reader, counted as rx_gate_dropped
     N-xP: outgoing calls fail at once (Silenced)
-    OP->>N: Control(Status)
-    N-->>OP: Status(silenced = true, serving = ...)
+    OP->>N: tarpc status() over TCP
+    N-->>OP: ControlReply Status(silenced = true, serving = ...)
     Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
 ```
 
@@ -886,7 +991,8 @@ sequenceDiagram
 
 Every 30 to 60 s the three nodes pick the machine that fails, by a random number draw. No leader is involved, and nothing goes
 through the Raft log. The first node whose timer runs out calls the round; the others draw at once when they hear of it, so
-calling a round gives no power. Every message is a `FaultBid` through the group (5.1a).
+calling a round gives no power. Every message is a `FaultBid` through the group (5.1a). 30 to 60 s is the code's default: `config/lab.example.toml` ships both interval keys
+set so that no timer fires, for the demo, and its comments say how to turn the draw on (D165).
 
 A normal round:
 
@@ -958,8 +1064,8 @@ the logs hold every ticket.
 
 ```mermaid
 flowchart TD
-    REQ["ClientFrame::Request arrives"] --> GATE{"Gate closed?"}
-    GATE -->|"yes"| DROP["Discard"]
+    REQ["ClientRpc::submit arrives in a datagram"] --> GATE{"Gate closed? (checked in the reader, D174)"}
+    GATE -->|"yes"| DROP["Discard, count rx_gate_dropped"]
     GATE -->|"no"| LOG["Log request_received, spawn a task"]
     LOG --> SERV{"serving?"}
     SERV -->|"no"| QUIET1["No reply (catching up)"]
@@ -996,8 +1102,12 @@ flowchart TD
     WINNER -->|"no"| REPLY2["Reply Done(winner)"]
     WINNER -->|"yes"| REPLY4["Reply Expired(winner)"]
     PROP -->|"Stale, attempts left"| PLAN
-    PROP -->|"Stale 3 times, or propose error"| QUIET4["No reply, client retries (D36)"]
+    PROP -->|"Stale 3 times"| NOBODY["Commit a plan with nobody on it (D220)"]
+    NOBODY --> STILL
+    PROP -->|"propose error"| QUIET4["No reply, client retries (D36)"]
 ```
+
+Every `No reply` box means the same thing: the call stays open with nothing sent, until the client's cancel or its deadline (D36, D169).
 
 ---
 
@@ -1094,7 +1204,7 @@ sequenceDiagram
     B-->>P: card, with an amber PROVISIONAL or red EXPIRED banner if so
     loop every 500 ms after the last answer
         B->>F: GET /api/status
-        F->>N: Control(Status) to all at once, 800 ms cap
+        F->>N: tarpc status over TCP, to all at once, 800 ms cap
         N-->>F: NodeStatus, or nothing
         F-->>B: rows, and reachable false only says unreachable after 3 s
     end
@@ -1152,7 +1262,8 @@ sequenceDiagram
 
 One-PC rehearsal, never six-PC results, measured with a prototype of this design, reports answered per second per load generator: at 100
 users, 0 with no queue (225 new terms), 4.6 with the queue alone (0 new terms), and 95.2 and 96.4 with grouped saves (0 new terms). The whole
-table is in D133. The final code has passed its tests but has not been measured at load, and nothing has run on the six PCs.
+table is in D133. The real code then ran 17 sweep cells on one PC, up to 3000 reports a second: 5 new terms in all, every one under all-at-once, and 4 of them from one
+2.8 s disk stall while other work ran. That too is a one-PC rehearsal (D219). Nothing has run on the six PCs.
 
 ---
 
@@ -1451,20 +1562,20 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Sent: assign RequestId, attempt 0, work out age_ms, send to all 3 nodes, log client_sent
-    Sent --> Done: first Reply Done(result) with this ID
-    Sent --> Expired: first Reply Expired(result) with this ID (D143)
-    Sent --> Provisional: first Reply Provisional(plan) from a lone node, no Done yet (D123)
+    [*] --> Sent: assign RequestId, take one deadline for all attempts, attempt 0, work out age_ms, one call per node, log client_sent
+    Sent --> Done: first reply Done(result) with this ID, from this attempt or an earlier one (D169)
+    Sent --> Expired: first reply Expired(result) with this ID (D143)
+    Sent --> Provisional: first reply Provisional(plan) from a lone node, no Done yet (D123)
     Provisional --> [*]: log client_done with provisional true, status provisional
-    Sent --> Retrying: no reply within the wait (2, 4, 6, 6, 6, 6 s with jitter)
-    Retrying --> Sent: resend, same ID, attempt + 1, a larger age_ms
+    Sent --> Retrying: no reply within the wait (2, 4, 6, 6, 6, 6 s with jitter), earlier calls stay open
+    Retrying --> Sent: send again, same ID, attempt + 1, a larger age_ms
     Retrying --> GaveUp: attempts exhausted (client_max_retries)
-    Done --> [*]: log client_done (latency on the client clock), status assigned or unassigned
-    Expired --> [*]: log client_done, status expired, nobody sent
-    GaveUp --> [*]: log client_gave_up, submit returns an error
+    Done --> [*]: log client_done (latency on the client clock), dropping the calls sends one cancel per call still open
+    Expired --> [*]: log client_done, status expired, nobody sent, the same cancels
+    GaveUp --> [*]: log client_gave_up, submit returns an error, up to 18 cancels go out
 ```
 
-`client::hand_over` names every reply body with no wildcard, so a new one cannot start out ignored. Ignoring `Expired`
+`client::answer_to` names every reply body with no wildcard, so a new one cannot start out ignored. Ignoring `Expired`
 would make the client wait out its retries and give up on a report the cloud had answered (D143).
 
 ---
@@ -1473,7 +1584,7 @@ would make the client wait out its retries and give up on a report the cloud had
 
 ### 9.1 Fault model
 
-- **Injected omission.** The fault gate drops every peer and client frame in and out (D13, D22). The
+- **Injected omission.** The fault gate drops every peer call and every report in and out (D13, D22). The
   process keeps running and keeps its state, which goes stale. Duration 1–20 s.
 - **Two faulty nodes at once.** No majority, so nothing commits. The last node answers provisionally
   and replays when a peer returns (6.13, D120).
@@ -1492,9 +1603,11 @@ would make the client wait out its retries and give up on a report the cloud had
 | Both peers           | The last node   | The peer detector above, without a break for `degraded_after_ms`; logs `degraded_entered` (D121) | about 2.15 s | built |
 | Any peer, for the group | Every other node | The peer detector above, without a break for `degraded_after_ms`; logs `group_view` (D153). A fault under about 2.2 s never shows here | about 2.15–2.2 s | built |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, `degraded`, `members`, role, term, digest per node | on demand        | built |
+| A node's UDP port closed (firewall) | The operator | `ctl status`: `node N: udp no answer` | on demand | built (D168) |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
-extra election, never two committed results or two leaders in one term.
+extra election, never two committed results or two leaders in one term. A client detects nothing: UDP has no connection, it
+keeps sending to all three, and a node that returns just answers (D167).
 
 A machine that lost power can fill a socket and stop answering with no close. Every peer call ends by its own
 deadline even if tarpc could not write it, so the detector keeps running (D150).
@@ -1508,6 +1621,7 @@ deadline even if tarpc could not write it, so the detector keeps running (D150).
 | An idle follower                | Nothing visible to clients                           | The other two are a majority    | built |
 | Executor under leader dispatch = leader | as "the leader"                              | The client's retry reaches the new leader | built |
 | Both peers, with the request in flight | Its proposal cannot commit                    | The client's retry gets a `Provisional` once the node is degraded (6.13); the old proposal may still commit later, and first commit wins | built |
+| A datagram: a request copy, a reply or a cancel | One copy lost costs nothing if another node answers. All three, or the one reply, cost one wait of about 2 s. A lost cancel parks a call for up to 36 s | The retry with the same ID (D52) | built, D173 |
 
 ### 9.4 Recovery: what is copied, replayed and rebuilt
 
@@ -1537,8 +1651,8 @@ sequenceDiagram
 ```
 
 In the one-PC rehearsal the restarted node first came up with role leader, from its stored vote, for about 5 ms, and stepped down when it saw the
-higher term. It logged no bid, plan or reply before `rejoined`. Requests the clients had queued for it during the outage reach it after it is back, and
-a client that already has its answer ignores the replies (D112). The rehearsal did **not** test losing unsynced disk writes: `Committed` records are
+higher term. It logged no bid, plan or reply before `rejoined`. A report sent to it during the outage is lost on the way, and the other two nodes answer it: a
+client holds nothing back for a node (D167). The rehearsal did **not** test losing unsynced disk writes: `Committed` records are
 not synced, and the one kernel keeps its page cache across the cut. A real power cut is demo scene 5.
 
 ---
@@ -1550,8 +1664,9 @@ flowchart TB
     subgraph RT["tokio runtime (async tasks)"]
         PS["serve_peers: accept loop"] --> PCX["one task per peer connection"]
         PCX --> PRQ["one task per peer request"]
-        CSV["serve_clients: accept loop"] --> CCX["one task per client connection"]
-        CCX --> CRQ["one task per client request (handle_request)"]
+        CSV["serve_clients: TCP accept loop and UDP reader"] --> CCX["one task per ctl connection and per client program (run_calls, owned)"]
+        CCX --> CTC["one task per tarpc call (owned)"]
+        CTC --> CRQ["one task per report (handle_request), which a cancel cannot stop"]
         ORC["openraft core task: owns Raft state"]
         RW["raft watcher: raft_state events"]
         HBS["heartbeat summary: 1 s"]
@@ -1583,8 +1698,9 @@ flowchart TB
 
 Rules that keep this safe (AGENTS.md, D47, D48, D71): no blocking calls on the runtime, no lock guard
 across `.await` (clippy denies it), `StateReader::with` closures stay short because applying
-committed entries waits for them, and every spawned task is owned by `NodeHandle` or ends when its
-connection closes.
+committed entries waits for them, and every spawned task is owned by `NodeHandle`, by its channel's `JoinSet` or by
+`MeshClient`, or ends when its connection closes. `handle_request` keeps a task of its own on purpose, so a client's cancel cannot
+cut off a bid or a commit, and every wait in it is capped (D169, D170).
 
 openraft saves each write inside its core task, so writes piled up in it would hold back the heartbeats. The proposal queue
 (D133) keeps the pile where the core cannot see it: one write in flight per node, and everything waiting goes in one save. See 6.18.
@@ -1646,6 +1762,11 @@ sequenceDiagram
     S->>S: remove the PID file, exit 0, 1 or 2
 ```
 
+A script killed with KILL cannot stop its programs. They run to the end of their time, and the script's list of their PIDs,
+`users-M-B.programs`, stays behind. `--stop` ends them, flushed as usual, and a new start with the same machine and batch refuses, because
+it would run two programs under one client ID (D190). Programs ignore HUP, so a closing terminal cannot end them before the script's TERM
+arrives.
+
 ---
 
 ## 11. Measurement
@@ -1655,32 +1776,38 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>silenced, restored, fault_election, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
+        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>udp_socket, udp_counters,<br/>silenced, restored, fault_election, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
     end
     subgraph CLIENT["Each client machine"]
-        CE["Events: client_sent, client_done (with status and priority), client_gave_up,<br/>client_link_up, client_link_down, machine_usage from one program"]
+        CE["Events: client_started, client_sent, client_done (with status and priority), client_gave_up,<br/>udp_socket, udp_counters, machine_usage from one program"]
     end
     NE --> NF["node-N.jsonl on that machine"]
     CE --> CF["client-ID.jsonl per program, on that machine"]
     NF --> COL["Collected after the run into<br/>runs/experiment/cell/run/ (not in git)"]
     CF --> COL
+    CE --> CO["users-M-B.out on that machine: plan, failures, totals"]
+    CO --> COL
     CFG["run config + git commit"] --> COL
     COL --> AN["analysis/ (Python, D64):<br/>percentiles, CIs, plots in analysis/out/"]
     AN --> REP["Report figures and tables"]
 ```
 
+`resource_usage` also carries `udp_drops`. `client_link_up` and `client_link_down` are no longer logged, and the names stay for old runs (D172).
+
 ### 11.2 Experiments and tests
 
 | ID   | Varies                  | Measures                                            | Owner | Phase 1 tests covered |
 |------|-------------------------|-----------------------------------------------------|-------|-----------------------|
-| E1   | users × policy          | latency p50/p95/p99, throughput, fairness (Jain)    | B, F  | LB-1, LB-3, P-1 |
+| E1   | users × policy          | latency p50/p95/p99, throughput, fairness (Jain), the leader's share of plans (`leader_plan_share`, one-leader runs only, D166) | B, F  | LB-1, LB-3, P-1 |
 | E2   | CPU burn on one node    | share of work per node, refused jobs (`plans_refused`) | E     | LB-2 |
-| E3   | victim × load           | client-visible gap (`client_gap_mean_ms`, `client_gap_max_ms`), election time, in-flight outcomes, duplicate executions | C | FT-1, FT-2, FT-3, FT-8 |
+| E3   | victim × load           | client-visible gap (`client_gap_mean_ms`, `client_gap_max_ms`), election time, in-flight outcomes, duplicate executions. A client that never hears again counts its whole silence, so read it with `gave_up` (D224) | C | FT-1, FT-2, FT-3, FT-8 |
 | E4   | silence length × load   | time to pass the rejoin check, entries replayed, digests compared at the same index (`digest_mismatches`, `rejoins_digest_confirmed`) | D     | FT-4, FT-5, FT-6 |
-| E5   | faults on or off        | elections, messages by type, commit latency (local vs forwarded) | A | — |
+| E5   | faults on or off        | elections, messages by type (print `udp_datagrams_per_req` beside `msgs_all_per_req`, D172), commit latency, by path (`commit_local_*`, `commit_forwarded_*`, D26, D166) | A | — |
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
 | Burst | `just_won` on or off, requests in bursts (`--pattern all-at-once`, D182; no cell yet) | longest winning streak, largest queue difference, p99 | B | — |
 | E7   | one program against 10 per machine, at 300 users | latency, client machine CPU, arrivals | F | — |
+
+`e1-1000-*` and `e1-3000-*` use 3000 responders, the other E1 cells 300 (D219).
 
 Part B runs its tests in a fixed order, each with its rule written first (D83): P-2, E6, burst, E1,
 then LB-2.
@@ -1699,7 +1826,7 @@ sweep, as D83 defines it.
 | FT-6 | Returning node with a stale term              | 0 elections caused by the return                | `elections_after_rejoin` in the analysis (D127); needs lab runs |
 | FT-7 | Client retry after commit                     | cached reply, 1 execution                       | tested in `tests/cluster.rs` |
 | FT-8 | Elected faults over a long run                | 0 lost, 0 duplicate commits, `fault_split_decisions` 0 | built (D158, D162); tried on one machine only; needs lab runs |
-| FT-9 | A machine loses power and restarts, under load | 0 lost; the node comes back from its file and the leader, digest equal at the same index, no `ERROR` line (D137) | tested in `tests/durable.rs` and `tests/restart_log.rs`. One-PC rehearsal with a hard cut of about 25 s, 4 of 4 runs: 0 lost and equal digests. **Not tested: losing unsynced disk writes, because the one kernel keeps its page cache. A real power cut on the six PCs is still to do** (demo scene 5) |
+| FT-9 | A machine loses power and restarts, under load | 0 lost; the node comes back from its file and the leader, digest equal at the same index, no `Can not initialize` line (D137, D222) | tested in `tests/durable.rs` and `tests/restart_log.rs`. One-PC rehearsal with a hard cut of about 25 s, 4 of 4 runs: 0 lost and equal digests. **Not tested: losing unsynced disk writes, because the one kernel keeps its page cache. A real power cut on the six PCs is still to do** (demo scene 5) |
 
 Method (D56, D63): latency on the client clock, durations with a monotonic clock on one machine,
 30 s warm-up dropped, repetitions per cell as decided in D63, raw logs kept per run.
@@ -1712,24 +1839,27 @@ Method (D56, D63): latency on the client clock, durations with a monotonic clock
 flowchart LR
     CELL["experiments/experiment-cell.toml<br/>run line + config sections"] --> RUN["scripts/run-experiments.sh<br/>bash over SSH, from a hosts file"]
     HOSTS["experiments/hosts"] --> RUN
-    GUARD["refuse_leftovers: nothing of ours running on any machine"] --> RUN
+    GUARD["refuse_leftovers: nothing of ours running on any machine, it stops nothing itself"] --> RUN
     RUN -->|"an old run folder"| OLD["runs/old/"]
     RUN -->|"a run that never got its fault"| DROPPED["runs/dropped/, not read by the analysis"]
     RUN -->|"one config to all six,<br/>wipe storage and metrics"| N["3 node machines"]
     RUN -->|"start-users.sh, 10 programs each,<br/>users shared exactly"| C["3 client machines"]
     RUN -->|"ctl silence / ctl skew"| N
-    N -->|"rsync"| LOGS["runs/experiment/cell/run-n/<br/>logs, config, commit, final status"]
+    RUN -->|"stop_all, then wait until nothing runs"| N
+    N -->|"rsync, once its node has stopped,<br/>a lost machine costs only its own logs"| LOGS["runs/experiment/cell/run-n/<br/>logs, config, commit, final status"]
     C -->|"rsync"| LOGS
     LOGS --> AN["analysis/analyze.py<br/>Python, venv"]
     AN --> OUT["analysis/out/<br/>summary.csv, plots"]
 ```
 
 Nodes also log `resource_usage` once a second (memory, CPU, network, queues, D128). Client machines log `machine_usage` once a
-second, from one program each (D185). The analysis names and leaves out a run with missing programs, or with a victim and no
-silence (D186). The runner refuses to start a run while a frontend, zonefeed, loadgen or node is left over on any machine,
+second, from one program each (D185). The analysis names and leaves out a run with missing or failed programs, users that do not add up, a program
+stopped early, a node log not copied, a damaged log, or a victim and no silence (D186, D191). Before the load starts the runner checks each node's UDP port, and stops on
+`udp no answer` (D168). A run's `run.json` appears only when its logs are in, so a batch stopped at any point leaves nothing for the analysis to count (D223). The runner refuses to start a run while a frontend, zonefeed, loadgen or node is left over on any machine,
 matched by path; it stops the batch if a load program ran beside its own or there is no leader at the start, and it sets a run
 aside in `runs/dropped/` if the fault could not be injected (D139). The settings the experiments run under are in D129. It has been
-tried on one machine only; **SSH and the lab are untested.**
+tried on one machine, and through a stand-in `ssh` that gives each of six machines its own directory, starts each remote shell in that machine's home directory with a
+bare environment, and waits as a real session does (D188, D222). **A real `sshd` and the lab are still untested.**
 
 ---
 
@@ -1741,14 +1871,14 @@ The report should say what changed between the submitted design and the built sy
 |--------------------------------------------------------|---------------------------------------------------------------|----------|
 | We implement Raft ourselves (D4)                       | openraft 0.9.25 behind `Consensus`                            | D14 (supersedes D4) |
 | PreVote stops returning nodes from forcing elections (D5) | Not available in openraft 0.9.25; the rejoin gate does it, measured by FT-6 | D5, D75, D127 |
-| Clients use UDP (D6)                                   | Clients use TCP today; still send to all three nodes. Noor has decided to go back to UDP, not on a branch yet | D17, D216 |
-| Three ports: UDP 7000, TCP 7100, TCP 7200              | Two TCP ports: 7001 peers, 8001 clients and `ctl`             | D18 |
+| Clients use UDP (D6)                                   | Clients use UDP, through tarpc on a small datagram adapter; still send to all three nodes. They spent 2026-10-20 to 2026-11-03 on TCP | D17, D167 |
+| Three ports: UDP 7000, TCP 7100, TCP 7200              | Two port numbers: 7001 TCP for peers, 8001 for clients on UDP and `ctl` on TCP | D18, D168 |
 | Durable log on disk (C7), snapshots every 1,000 entries | Log and vote on disk, as first designed; still no snapshots  | D118 (supersedes D24) |
 | Crash-restart test FT-9                                | Back in scope, for the physical power-off Dr Amr asks for     | D118 |
 | Single-owner tasks with channels (D11)                 | Shared `NodeContext` with closure-scoped locks and atomics    | D47 |
 | Per-resource versions checked at commit (D10)          | Responder hold check: `Stale` if held or unknown              | D28 |
 | Request table trimmed by TTL (D9)                      | Never trimmed during a run. The TTL a report carries now (D143) is another thing: it decides whether the report is planned, and no record is ever deleted | D9, D143, D149 |
-| Recompute once, then tell the client "retry"           | Re-plan up to 3 times, then stay quiet                        | D35, D36 |
+| Recompute once, then tell the client "retry"           | Re-plan up to 3 times, then commit that nobody could be sent and reply | D35, D36, D220 |
 | No separate failure detector                           | Peer heartbeats so followers see each other                   | D41 |
 | Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms), backstop max(200 ms, 3 × bid) | D42, D110 |
 | Bid window from the first bid seen                     | From request arrival; P-2 confirms or overturns it            | D43 |
@@ -1774,7 +1904,10 @@ The report should say what changed between the submitted design and the built sy
 | Reply only after commit (D8)                           | Still the rule, except a last node left alone answers provisionally | D120 |
 | No fault with two nodes down                           | Handled: degraded mode, and a returning node may stand after 3 s with no leader | D120, D125 |
 | Bidding off by default                                 | Bidding is the default; leader dispatch stays as E1's baseline | D114 |
-| Our own request/reply transport on the peer port       | tarpc, with typed methods; the client port keeps its own framing | D119 |
+| Our own request/reply transport on the peer port       | tarpc, with typed methods, on the peer port and the client port | D119, D167, D175 |
+| "The cloud coordinator" as the leader's role           | One elected node orders the log, and no node decides for another | D1, D163 |
+| The first leader seeds the responders                  | Any serving node, through the log; the extra entries change nothing | D38, D164 |
+| The demo on the default planner load                   | The demo on E1's `plan_work` and responders, at a load chosen by rule on the PCs | D129, D165, D205 |
 | A hand-chosen election timeout range per cluster       | A different range per node, to stop split votes               | D115 |
 
 ---
@@ -1784,8 +1917,8 @@ The report should say what changed between the submitted design and the built sy
 - **Discovery service** as a second state machine on the same Raft log: registrations and lease
   renewals become `Command` variants, so the directory is consistent on all three nodes with no new
   replication protocol (D69).
-- **Leases with fencing tokens** for executor claims: the leader issues an increasing token, so a
-  stale holder's late write is rejected.
+- **Leases with fencing tokens** for executor claims: the token is the commit's log position, so a stale holder's late write is rejected. The leader issues nothing new, because a new
+  leader duty would go against the table in section 2 (D69, D163).
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
 - **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
   duplicate suppression and bounded forwarding (D131). Lecture 9 places it in Phase 2, because it needs a publish step
@@ -1818,10 +1951,9 @@ limit the spec describes for Phase 2 dissemination, and `option.hard_ttl()`, a d
 No design decision in Phase 1's code is `Open`, and nothing waits on anyone's answer: the spec, the class notes and the
 recordings decide (Noor's rule, D213). What remains is for people to confirm or finish:
 
-- **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214 and D215, were decided by the agent on Noor's instruction to
+- **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219 and D220, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Decided and not merged yet** (D216, D156). Any-node
-  seeding, the client path over UDP, and the cloud side's file split. Each is labelled `planned` above. Whatever misses the time box
-  is listed in the PR and in the report.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). A leader that steps aside when overloaded is not on this branch: D217 stands, and D218 is kept free in case the
+  team later says Dr Amr asked for it.
 - **Lab results.** Nothing has run on the six machines; see [runbook.md](runbook.md). Every number in these docs is from tests or from
   one PC, and says so.

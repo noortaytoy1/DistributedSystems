@@ -1,6 +1,6 @@
 //! Connections and the fault gate.
 //!
-//! Every connection carries length-delimited frames (4-byte big-endian length, then a body).
+//! Every TCP connection carries length-delimited frames (4-byte big-endian length, then a body).
 //!
 //! - Peer port: remote invocation of [`PeerRpc`] through tarpc (D119), which matches replies to
 //!   requests, so many calls can be in flight at once. [`PeerClient`] keeps one connection per
@@ -8,38 +8,45 @@
 //!   reconnecting on every call (D89–D92). A connection whose calls have gone unanswered for
 //!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close. Every
 //!   call ends by its own deadline, even one tarpc has not managed to write yet (D150).
-//! - Client port: one-way frames in both directions, encoded with `proto::encode`; replies are
-//!   matched by request ID.
+//! - Client port: remote invocation of [`ClientRpc`], also through tarpc (D167), on one port number
+//!   twice over: UDP for clients, one datagram per message ([`super::datagram`]), and TCP for `ctl`,
+//!   so a lost silence order cannot vanish (D168). A node that cannot answer a `submit` stays quiet
+//!   and the client's cancel ends the call (D36, D169).
 //!
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
-//! frames, so an operator can still query a silenced node (D23, D160).
+//! calls, so an operator can still query a silenced node (D23, D160).
 //!
 //! Owner: C (faults and failover). The plumbing here was written with Part A because Raft cannot
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
 //! open sockets.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
 use futures::future::BoxFuture;
-use futures::{SinkExt, StreamExt};
-use tarpc::client::RpcError;
+use futures::{FutureExt, Stream, StreamExt};
+use tarpc::client::{NewClient, RpcError};
 use tarpc::server::{BaseChannel, Channel};
 use tarpc::tokio_serde::formats::Bincode;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tarpc::{ClientMessage, Request};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+use super::datagram::{self, ClientEnd, ServerEnd};
 use crate::config::ClusterConfig;
-use crate::metrics::{Event, EventLog, MessageCounters, MsgKind};
+use crate::metrics::{Event, EventLog, MessageCounters, MsgKind, UdpCounters};
 use crate::proto::{
-    self, Bid, ClientFrame, Command, FaultBid, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc,
-    PeerRpcClient, RaftRpc, ServerFrame, Term,
+    self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
+    ClientRpcResponse, Command, ControlReply, ControlRequest, FaultBid, IncidentQuery, NodeId,
+    PeerBody, PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient, RaftRpc, Term,
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
@@ -134,9 +141,17 @@ pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
 /// it: its listener stays up, so the connect succeeds (D119).
 const STALE_CONNECTION: Duration = Duration::from_secs(1);
 
-/// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users.
+/// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users, and
+/// for a client program whose users all wait on one node at once (D173).
 const MAX_IN_FLIGHT_CALLS: usize = 20_000;
 const CALL_BUFFER: usize = 2_000;
+
+fn stub_settings() -> tarpc::client::Config {
+    let mut config = tarpc::client::Config::default();
+    config.max_in_flight_requests = MAX_IN_FLIGHT_CALLS;
+    config.pending_request_buffer = CALL_BUFFER;
+    config
+}
 
 struct Conn {
     client: PeerRpcClient,
@@ -330,11 +345,8 @@ impl PeerClient {
 
 fn open_conn(stream: TcpStream) -> Conn {
     let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
-    let mut config = tarpc::client::Config::default();
-    config.max_in_flight_requests = MAX_IN_FLIGHT_CALLS;
-    config.pending_request_buffer = CALL_BUFFER;
     Conn {
-        client: PeerRpcClient::new(config, transport).spawn(),
+        client: PeerRpcClient::new(stub_settings(), transport).spawn(),
         closed: AtomicBool::new(false),
     }
 }
@@ -596,62 +608,177 @@ impl PeerRpc for PeerServer {
     }
 }
 
-/// Sends frames back to one connected client. Cheap to clone.
-#[derive(Clone)]
+// ---------------------------------------------------------------------------------------------
+// Client port
+// ---------------------------------------------------------------------------------------------
+
+/// Hands one answer back to the call waiting for it.
 pub struct ReplyTx {
-    tx: mpsc::UnboundedSender<Bytes>,
+    slot: Mutex<Option<oneshot::Sender<ClientReply>>>,
     gate: FaultGate,
     msgs: Arc<MessageCounters>,
 }
 
 impl ReplyTx {
-    /// Queue a frame for the client. Request replies are dropped while silenced; control
-    /// replies always go out. Returns false if the frame was dropped.
-    pub fn send(&self, frame: &ServerFrame) -> bool {
-        let is_reply = matches!(frame, ServerFrame::Reply(_));
-        if is_reply && self.gate.is_silenced() {
+    fn new(gate: FaultGate, msgs: Arc<MessageCounters>) -> (Self, oneshot::Receiver<ClientReply>) {
+        let (tx, answer) = oneshot::channel();
+        let reply = Self {
+            slot: Mutex::new(Some(tx)),
+            gate,
+            msgs,
+        };
+        (reply, answer)
+    }
+
+    /// Answer the call. False if the reply will not leave: the node is silenced, or the call has
+    /// ended, because the client cancelled it or its deadline passed. A caller logs `replied` only
+    /// on true, so the log never claims an answer that went nowhere.
+    pub fn send(&self, reply: ClientReply) -> bool {
+        if self.gate.is_silenced() {
             return false;
         }
-        let Ok(bytes) = proto::encode(frame) else {
+        let Some(tx) = lock(&self.slot).take() else {
             return false;
         };
-        let sent = self.tx.send(Bytes::from(bytes)).is_ok();
-        if sent && is_reply {
+        let sent = tx.send(reply).is_ok();
+        if sent {
             self.msgs.sent(MsgKind::ClientReply);
         }
         sent
     }
 
-    /// A sender with no connection behind it, and what would have gone down that connection.
+    /// A sender with no call behind it, and what would have gone back to that call.
     #[cfg(test)]
-    pub(crate) fn for_tests(gate: FaultGate) -> (Self, mpsc::UnboundedReceiver<Bytes>) {
-        let (tx, frames) = mpsc::unbounded_channel();
-        let msgs = Arc::default();
-        (Self { tx, gate, msgs }, frames)
+    pub(crate) fn for_tests(gate: FaultGate) -> (Self, oneshot::Receiver<ClientReply>) {
+        Self::new(gate, Arc::default())
     }
 }
 
-/// Handles one client frame. Must not block: spawn any real work.
-pub type ClientHandler = Arc<dyn Fn(ClientFrame, ReplyTx) + Send + Sync>;
+/// Starts work on one report. Must not block and must not wait for the work: a cancel ends the call
+/// that made the request, and that must not cut off a bid or a commit, so the work needs a task of
+/// its own (D169).
+pub type RequestHandler = Arc<dyn Fn(ClientRequest, ReplyTx) + Send + Sync>;
+/// Answers one control command. Must not block.
+pub type ControlHandler = Arc<dyn Fn(ControlRequest) -> ControlReply + Send + Sync>;
 
-/// Accept client connections forever.
-pub async fn serve_clients(
-    listener: TcpListener,
+/// The server side of [`ClientRpc`].
+#[derive(Clone)]
+pub struct ClientServer {
     gate: FaultGate,
     msgs: Arc<MessageCounters>,
-    handler: ClientHandler,
-) {
+    on_request: RequestHandler,
+    on_control: ControlHandler,
+}
+
+impl ClientServer {
+    pub fn new(
+        gate: FaultGate,
+        msgs: Arc<MessageCounters>,
+        on_request: RequestHandler,
+        on_control: ControlHandler,
+    ) -> Self {
+        Self {
+            gate,
+            msgs,
+            on_request,
+            on_control,
+        }
+    }
+}
+
+impl ClientRpc for ClientServer {
+    async fn submit(self, _: tarpc::context::Context, request: ClientRequest) -> ClientReply {
+        // Over UDP the reader has already dropped this; a call over TCP arrives here first.
+        if self.gate.is_silenced() {
+            return std::future::pending().await;
+        }
+        self.msgs.received(MsgKind::ClientRequest);
+        let (reply, answer) = ReplyTx::new(self.gate.clone(), self.msgs.clone());
+        (self.on_request)(request, reply);
+        match answer.await {
+            // The gate can have closed since the reply was handed over.
+            Ok(reply) if !self.gate.is_silenced() => reply,
+            // The work ended with nothing to say: this node is not serving, lost the bid, is full
+            // or could not commit. It stays quiet (D36), so this call lasts until the client cancels
+            // it or its deadline passes.
+            _ => std::future::pending().await,
+        }
+    }
+
+    async fn status(self, _: tarpc::context::Context) -> ControlReply {
+        (self.on_control)(ControlRequest::Status)
+    }
+
+    async fn silence(self, _: tarpc::context::Context, ms: u64) -> ControlReply {
+        (self.on_control)(ControlRequest::Silence { ms })
+    }
+
+    async fn skew_load(self, _: tarpc::context::Context, extra_work: u32) -> ControlReply {
+        (self.on_control)(ControlRequest::SkewLoad { extra_work })
+    }
+
+    async fn incidents(self, _: tarpc::context::Context, query: IncidentQuery) -> ControlReply {
+        (self.on_control)(ControlRequest::Incidents(query))
+    }
+}
+
+/// A node's client port: one port number, TCP and UDP (D168).
+pub struct ClientPort {
+    control: TcpListener,
+    datagrams: UdpSocket,
+}
+
+impl ClientPort {
+    /// Bind both. With port 0 (tests), TCP picks the number and UDP must get the same one, so a
+    /// number already taken on UDP means trying another.
+    pub async fn bind(addr: &str) -> std::io::Result<Self> {
+        let mut tries = 20;
+        loop {
+            let control = TcpListener::bind(addr).await?;
+            let local = control.local_addr()?;
+            match datagram::open_socket(local) {
+                Ok(datagrams) => return Ok(Self { control, datagrams }),
+                Err(e) if tries > 0 && e.kind() == std::io::ErrorKind::AddrInUse => {
+                    let wanted_any_port = addr.parse::<SocketAddr>().is_ok_and(|a| a.port() == 0);
+                    if !wanted_any_port {
+                        return Err(e);
+                    }
+                    tries -= 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.control.local_addr()
+    }
+
+    /// Log what the kernel gave the UDP socket.
+    pub fn report_buffer(&self, log: &EventLog) {
+        datagram::report_buffer(&self.datagrams, log);
+    }
+}
+
+/// Serve the client port until aborted, which also ends every channel and call on it.
+pub async fn serve_clients(port: ClientPort, server: ClientServer, counters: Arc<UdpCounters>) {
+    let ClientPort { control, datagrams } = port;
+    tokio::join!(
+        serve_control(control, server.clone()),
+        serve_datagrams(datagrams, server, counters),
+    );
+}
+
+/// The TCP side: `ctl`.
+async fn serve_control(listener: TcpListener, server: ClientServer) {
     let mut connections = JoinSet::new();
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 while connections.try_join_next().is_some() {}
-                connections.spawn(client_connection(
-                    stream,
-                    gate.clone(),
-                    msgs.clone(),
-                    handler.clone(),
-                ));
+                let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+                let calls = BaseChannel::with_defaults(transport).execute(server.clone().serve());
+                connections.spawn(run_calls(calls));
             }
             Err(e) => {
                 tracing::warn!("client accept failed: {e}");
@@ -661,43 +788,94 @@ pub async fn serve_clients(
     }
 }
 
-async fn client_connection(
-    stream: TcpStream,
-    gate: FaultGate,
-    msgs: Arc<MessageCounters>,
-    handler: ClientHandler,
-) {
-    let (mut sink, mut frames) = framed(stream).split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-    tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            if sink.send(bytes).await.is_err() {
-                break;
-            }
-        }
-    });
-    let reply_tx = ReplyTx {
-        tx,
-        gate: gate.clone(),
-        msgs: msgs.clone(),
+/// The UDP side: clients. The fault gate is checked here, before tarpc tracks the call: a silenced
+/// node never answers one, and would hold it until its deadline. Everything else passes. Control must
+/// (D23), so that `ctl status` can check this port on a silenced node. A cancel changes nothing that
+/// can be seen from outside, and dropping it would only park a call that is already open.
+async fn serve_datagrams(socket: UdpSocket, server: ClientServer, counters: Arc<UdpCounters>) {
+    let gate = server.gate.clone();
+    let keep = move |message: &ClientMessage<ClientRpcRequest>| {
+        !matches!(
+            message,
+            ClientMessage::Request(Request {
+                message: ClientRpcRequest::Submit { .. },
+                ..
+            })
+        ) || !gate.is_silenced()
     };
+    let open = move |end: ServerEnd<ClientRpcRequest, ClientRpcResponse>| {
+        run_calls(BaseChannel::with_defaults(end).execute(server.clone().serve()))
+    };
+    datagram::serve(
+        Arc::new(socket),
+        counters,
+        datagram::CHANNEL_IDLE,
+        keep,
+        open,
+    )
+    .await;
+}
 
-    while let Some(Ok(frame)) = frames.next().await {
-        let frame: ClientFrame = match proto::decode(&frame) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!("bad client frame: {e}");
-                return;
-            }
-        };
-        if let ClientFrame::Request(_) = frame {
-            if gate.is_silenced() {
-                continue;
-            }
-            msgs.received(MsgKind::ClientRequest);
+/// Run one channel: its stream must be polled for replies to go out, and each call gets a task that
+/// this function owns, so ending it ends them. tarpc ends the stream once the transport has closed
+/// and no call is left.
+pub async fn run_calls<Calls, Call>(calls: Calls)
+where
+    Calls: Stream<Item = Call>,
+    Call: Future<Output = ()> + Send + 'static,
+{
+    let mut calls = pin!(calls);
+    let mut running = JoinSet::new();
+    loop {
+        tokio::select! {
+            call = calls.next() => match call {
+                Some(call) => {
+                    running.spawn(call);
+                }
+                None => return,
+            },
+            Some(_) = running.join_next(), if !running.is_empty() => {}
         }
-        handler(frame, reply_tx.clone());
     }
+}
+
+/// A stub for one node over TCP, for `ctl`. The caller runs `dispatch`, which drives every call.
+pub async fn connect_client(
+    addr: &str,
+) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
+    let stream = TcpStream::connect(addr).await?;
+    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), transport);
+    Ok(NewClient {
+        client,
+        dispatch: dispatch.map(|_| ()),
+    })
+}
+
+/// A stub for one node over UDP, for clients. Never touches the network here, so it works while the
+/// node is away. The caller runs `dispatch`, which drives every call. An address that names a host
+/// waits on a lookup, so this belongs at program start; the lab config uses plain IP addresses.
+/// `report_to` gets the size of the socket's receive buffer.
+pub fn datagram_client(
+    addr: &str,
+    counters: Arc<UdpCounters>,
+    report_to: Option<&EventLog>,
+) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
+    let node = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))?;
+    let socket = datagram::client_socket(node)?;
+    if let Some(log) = report_to {
+        datagram::report_buffer(&socket, log);
+    }
+    let end: ClientEnd<ClientRpcRequest, ClientRpcResponse> =
+        ClientEnd::new(socket, node, counters);
+    let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), end);
+    Ok(NewClient {
+        client,
+        dispatch: dispatch.map(|_| ()),
+    })
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -710,7 +888,7 @@ mod tests {
 
     use super::*;
     use crate::config::NodeAddr;
-    use crate::proto::{Capability, PeerBody, Point, Responder};
+    use crate::proto::{Capability, PeerBody, Plan, Point, ReplyBody, RequestId, Responder};
 
     /// About 2 MiB per call on the wire, at about 9 bytes per responder.
     const FLOOD_RESPONDERS: u32 = 250_000;
@@ -761,6 +939,44 @@ mod tests {
             Event::Messages { sent, .. } => sent["propose"],
             _ => 0,
         }
+    }
+
+    fn reply() -> ClientReply {
+        ClientReply {
+            id: RequestId { client: 1, seq: 2 },
+            from: 3,
+            body: ReplyBody::Provisional(Plan {
+                responder: None,
+                cost: 0,
+                priority: 0,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reply_goes_back_once() {
+        let (tx, answer) = ReplyTx::for_tests(FaultGate::default());
+        assert!(tx.send(reply()));
+        assert!(!tx.send(reply()), "a call takes one answer");
+        assert_eq!(answer.await.unwrap(), reply());
+    }
+
+    #[tokio::test]
+    async fn a_silenced_node_sends_no_reply() {
+        let gate = FaultGate::default();
+        let (tx, answer) = ReplyTx::for_tests(gate.clone());
+        gate.silence();
+        assert!(!tx.send(reply()));
+        drop(tx);
+        assert!(answer.await.is_err());
+    }
+
+    /// False means `replied` is not logged for an answer that went nowhere.
+    #[test]
+    fn a_reply_to_a_call_that_ended_says_so() {
+        let (tx, answer) = ReplyTx::for_tests(FaultGate::default());
+        drop(answer);
+        assert!(!tx.send(reply()));
     }
 
     fn serve_echo(listener: TcpListener, gate: FaultGate) {

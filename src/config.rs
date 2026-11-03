@@ -47,7 +47,7 @@ pub struct NodeAddr {
     pub id: NodeId,
     /// Address for Raft, bids and heartbeats, e.g. "10.0.0.11:7001".
     pub peer_addr: String,
-    /// Address clients and `ctl` connect to, e.g. "10.0.0.11:8001".
+    /// Address for clients, over UDP, and for `ctl`, over TCP, e.g. "10.0.0.11:8001" (D168).
     pub client_addr: String,
 }
 

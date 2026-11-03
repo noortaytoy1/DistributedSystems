@@ -55,6 +55,15 @@ def election(at_s, round_number, victim, ms, called, election_us):
     }
 
 
+def udp_counters(ts_us, udp_drops=None, **counts):
+    fields = {"rx_datagrams": 0, "rx_bytes": 0, "rx_max_bytes": 900, "rx_bad": 0, "rx_foreign": 0,
+              "rx_requests": 0, "rx_cancels": 0, "rx_gate_dropped": 0, "rx_queue_full": 0,
+              "channels_opened": 0, "tx_datagrams": 0, "tx_bytes": 0, "tx_max_bytes": 900,
+              "tx_requests": 0, "tx_cancels": 0, "tx_replies": 0, "tx_would_block": 0,
+              "tx_encode_errors": 0, "tx_errors": 0}
+    return {"ts_us": ts_us, "ev": "udp_counters", "udp_drops": udp_drops, **fields, **counts}
+
+
 def synthetic_run():
     client = [{"ts_us": T0, "ev": "client_sent", "request": request(0), "attempt": 0}]
     client.append(done(1, 999, 1))  # inside the 2 s warm-up: dropped
@@ -116,6 +125,22 @@ def synthetic_run():
         election(3, 1, 2, 5000, False, 700),
         election(5, 3, None, None, False, None),  # missed a bid, so it never knew it had won
     ]
+    client += [
+        udp_counters(T0 + 2 * S, tx_requests=30, tx_cancels=20, tx_datagrams=50, udp_drops=7),
+        udp_counters(T0 + 8 * S, tx_requests=63, tx_cancels=42, tx_datagrams=105, tx_would_block=1,
+                     udp_drops=9),
+        # The last line, as a client stops, has no drop count: it must not end up as a zero.
+        udp_counters(T0 + 9 * S, tx_requests=63, tx_cancels=42, tx_datagrams=105, tx_would_block=1),
+        {"ts_us": T0, "ev": "udp_socket", "local_addr": "0.0.0.0:1", "rcvbuf_asked_bytes": 8388608,
+         "rcvbuf_got_bytes": 16777216},
+    ]
+    node1 += [
+        udp_counters(T0 + 2 * S, rx_requests=10, rx_cancels=8, tx_datagrams=5, udp_drops=100),
+        udp_counters(T0 + 8 * S, rx_requests=40, rx_cancels=28, tx_datagrams=16, rx_gate_dropped=3,
+                     rx_queue_full=2, rx_bad=1, udp_drops=105),
+        {"ts_us": T0, "ev": "udp_socket", "local_addr": "10.0.0.11:8001", "rcvbuf_asked_bytes": 8388608,
+         "rcvbuf_got_bytes": 425984},
+    ]
     return {"client-1": client, "node-1": node1, "node-2": node2, "node-3": node3}
 
 
@@ -150,6 +175,72 @@ class Arithmetic(unittest.TestCase):
         mean, half, n = analyze.confidence_interval([5.0, float("nan")])
         self.assertEqual((mean, n), (5.0, 1))
         self.assertTrue(math.isnan(half))
+
+
+def raft_state(at_s, leader):
+    return {"ts_us": T0 + at_s * S, "ev": "raft_state", "term": 2, "leader": leader, "role": "follower",
+            "last_applied": 1}
+
+
+def commit(at_s, latency_us, forwarded, kind="commit_result"):
+    return {"ts_us": T0 + at_s * S, "ev": "commit", "kind": kind, "outcome": "committed",
+            "latency_us": latency_us, "forwarded": forwarded, "log_index": 1, "request": request(1)}
+
+
+class TheLeadersRole(unittest.TestCase):
+    """Measuring starts at T0 + 10 s in these cases."""
+
+    def share(self, node1, node2):
+        events = {"node-1": node1, "node-2": node2, "client-1": []}
+        return analyze.leader_plan_share(events, T0 + 10 * S, {"share_node_1": 0.2, "share_node_2": 0.5})
+
+    def test_it_is_the_share_of_the_node_that_led_throughout(self):
+        self.assertEqual(self.share([raft_state(1, 2)], [raft_state(1, 2)]), 0.5)
+
+    def test_a_change_before_measuring_starts_does_not_count(self):
+        self.assertEqual(self.share([raft_state(1, 1), raft_state(2, 2)], [raft_state(3, 2)]), 0.5)
+
+    def test_a_change_inside_the_measured_time_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([raft_state(1, 1), raft_state(11, 2)], [raft_state(1, 1)])))
+
+    def test_a_moment_with_no_leader_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([raft_state(1, 2), raft_state(11, None)], [raft_state(1, 2)])))
+        # Even if the same node leads again afterwards: it did not lead throughout.
+        node = [raft_state(1, 2), raft_state(11, None), raft_state(12, 2)]
+        self.assertTrue(math.isnan(self.share(node, [raft_state(1, 2)])))
+
+    def test_two_nodes_naming_different_leaders_gives_nan(self):
+        # A silenced leader keeps reading itself while the others move on.
+        self.assertTrue(math.isnan(self.share([raft_state(1, 1)], [raft_state(1, 2)])))
+
+    def test_no_raft_state_at_all_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([], [])))
+
+    def test_commit_latency_splits_on_whether_the_proposal_was_forwarded(self):
+        events = {
+            "node-1": [commit(11, 1000, False), commit(11, 3000, False), commit(1, 9000, False)],
+            "node-2": [commit(12, 8000, True), commit(12, 5000, True, kind="release_responder")],
+        }
+        m = analyze.commit_metrics(events, T0 + 10 * S)
+        self.assertEqual(m["commit_count"], 3)
+        self.assertEqual(m["commit_local_count"], 2)
+        self.assertAlmostEqual(m["commit_local_mean_ms"], 2.0)
+        self.assertEqual(m["commit_forwarded_count"], 1)
+        self.assertAlmostEqual(m["commit_forwarded_mean_ms"], 8.0)
+
+    def test_a_run_with_one_path_has_nothing_on_the_other(self):
+        m = analyze.commit_metrics({"node-1": [commit(11, 1000, False)]}, T0 + 10 * S)
+        self.assertEqual(m["commit_forwarded_count"], 0)
+        self.assertTrue(math.isnan(m["commit_forwarded_mean_ms"]))
+
+    def test_a_whole_run_reports_both(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_run(run_dir, synthetic_run(), 1)
+            _, m = analyze.analyse_run(run_dir)
+        # The leader changes in this run.
+        self.assertTrue(math.isnan(m["leader_plan_share"]))
+        self.assertEqual(m["commit_local_count"], 0)
 
 
 class OneRun(unittest.TestCase):
@@ -267,6 +358,31 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(metrics["client_gap_max_ms"], 3500.0)
         self.assertAlmostEqual(metrics["client_gap_mean_ms"], 3250.0)
 
+    def test_a_client_that_never_hears_again_counts_its_whole_silence(self):
+        def event(name, at_s):
+            return {"ts_us": T0 + int(at_s * S), "ev": name}
+
+        # Fault from 5 s to 7 s. The last answer is at 4 s, and the client tries until 30 s.
+        events = {"client-1": [event("client_done", 3), event("client_done", 4), event("client_sent", 6),
+                               event("client_gave_up", 30)]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 26000.0)
+
+    def test_a_client_that_never_heard_at_all_counts_the_whole_run(self):
+        events = {"client-1": [{"ts_us": T0 + 1 * S, "ev": "client_sent"}, {"ts_us": T0 + 9 * S, "ev": "client_gave_up"}]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 8000.0)
+
+    def test_the_ends_of_a_normal_run_add_no_gap(self):
+        def answer(at_s):
+            return {"ts_us": T0 + int(at_s * S), "ev": "client_done"}
+
+        # The waits before the first answer and after the last do not overlap this fault.
+        events = {"client-1": [{"ts_us": T0, "ev": "client_sent"}, answer(4), answer(5.5), answer(7.5),
+                               {"ts_us": T0 + 20 * S, "ev": "client_sent"}]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 2000.0)
+
     def test_a_run_with_a_fault_reports_the_client_gap(self):
         self.assertGreater(self.m["client_gap_max_ms"], 0)
 
@@ -341,6 +457,41 @@ class OneRun(unittest.TestCase):
         write_run(self.root / "dropped" / "e9-synthetic-run-2", synthetic_run(), 2)
         self.assertEqual(analyze.summarise(self.root)[("e9", "synthetic")]["mean_ms"][2], 1)
 
+    def test_udp_traffic_per_answered_request_includes_the_cancels(self):
+        # 11 answered. Differences: 33 calls and 22 cancels sent, 55 + 11 datagrams both ways.
+        self.assertAlmostEqual(self.m["udp_requests_per_req"], 3.0)
+        self.assertAlmostEqual(self.m["udp_cancels_per_req"], 2.0)
+        self.assertAlmostEqual(self.m["udp_datagrams_per_req"], 6.0)
+
+    def test_udp_losses_and_drops(self):
+        self.assertAlmostEqual(self.m["udp_request_loss_share"], 1 - 30 / 33)
+        self.assertAlmostEqual(self.m["udp_cancel_loss_share"], 1 - 20 / 22)
+        self.assertEqual(self.m["udp_gate_dropped"], 3)
+        self.assertEqual(self.m["udp_queue_full"], 2)
+        self.assertEqual(self.m["udp_bad"], 1)
+        self.assertEqual(self.m["udp_send_lost"], 1)
+        self.assertEqual(self.m["udp_drops_nodes"], 5)
+        self.assertEqual(self.m["udp_drops_client_pc_max"], 2)
+        self.assertEqual(self.m["udp_rcvbuf_got_min_bytes"], 425984)
+
+    def test_a_cell_short_of_udp_buffer_gets_a_warning(self):
+        warnings = analyze.udp_warnings({("e1", "c"): {
+            "udp_rcvbuf_got_min_bytes": (425984, float("nan"), 1),
+            "udp_drops_nodes": (5.0, float("nan"), 1),
+            "udp_drops_client_pc_max": (0.0, float("nan"), 1),
+        }})
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("rmem_max", warnings[0])
+        self.assertIn("udp_drops_nodes", warnings[1])
+        clean = {"udp_rcvbuf_got_min_bytes": (16777216, float("nan"), 1),
+                 "udp_drops_nodes": (0.0, float("nan"), 1)}
+        self.assertEqual(analyze.udp_warnings({("e1", "c"): clean}), [])
+        # An older log has none of these.
+        self.assertEqual(analyze.udp_warnings({("e1", "old"): {}}), [])
+
+    def test_a_log_from_before_the_udp_path_still_reads(self):
+        self.assertEqual(analyze.udp_metrics({"client-1": [], "node-1": []}, 0, 5), {})
+
     def test_a_whole_tree_gives_a_csv_and_an_interval_across_runs(self):
         slower = synthetic_run()
         for e in slower["client-1"]:
@@ -387,6 +538,33 @@ class ClientPrograms(unittest.TestCase):
         m = self.analyse("three", events, users=30)
         self.assertEqual(m["client_programs"], 3)
         self.assertAlmostEqual(m["users_per_program"], 10.0)
+
+    def test_warm_up_counts_from_the_programs_start_and_not_its_first_send(self):
+        # A random pattern's only user waited 1.5 s before its first send. Warm-up is 2 s, on the program's
+        # clock, so a request sent 2.5 s in is measured. Counting from the first send would drop it.
+        started = {"ts_us": T0, "ev": "client_started", "users": 1}
+        client = [started, sent(int(1.5 * S)), done(1.5, 10, 1), sent(int(2.5 * S)), done(2.5, 10, 1)]
+        self.assertEqual(self.analyse("late", {"client-10000": client})["count"], 1)
+        # Without the event, the first send is all there is.
+        self.assertEqual(self.analyse("old", {"client-10000": client[1:]})["count"], 0)
+
+    def test_a_request_started_in_the_warm_up_does_not_count_when_it_gives_up_later(self):
+        def sent_as(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_sent", "request": request(seq), "attempt": 0}
+
+        def gave_up(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_gave_up", "request": request(seq), "attempts": 6}
+
+        # Warm-up is 2 s. Request 1 starts in it, and request 2 after it. Both give up after it.
+        client = [sent_as(1, 0), sent_as(2, 3), gave_up(1, 30), gave_up(2, 33)]
+        self.assertEqual(self.analyse("gave-up", {"client-10000": client})["gave_up"], 1)
+
+    def test_users_that_do_not_add_up_to_the_cell_are_left_out(self):
+        program = {"ts_us": T0, "ev": "client_started", "users": 33}
+        m = self.analyse("users", {"client-10000": [program, sent(0)], "client-20000": [program, sent(0)]})
+        self.assertEqual(m["client_users"], 66)
+        self.assertIn("66 users ran", analyze.run_problem({"users": 100}, m))
+        self.assertIsNone(analyze.run_problem({"users": 66}, m))
 
     def test_a_run_missing_programs_is_left_out_of_the_summary(self):
         events = synthetic_run()
@@ -452,6 +630,73 @@ class ClientPrograms(unittest.TestCase):
         self.assertAlmostEqual(m["client_pc_mem_available_min_mb"], 4.0)
         # A run with no samples has no such metric: nothing pretends the PC was idle.
         self.assertNotIn("client_pc_cpu_busy_p95", self.analyse("none", {"client-1": [sent(0)]}))
+
+    def whole_run(self, name, run, script_output=None, **extra):
+        """A good run, with what one machine's start-users.sh printed, if anything."""
+        directory = self.root / "e9" / name / f"run-{run}"
+        write_run(directory, synthetic_run(), run, **extra)
+        if script_output is not None:
+            (directory / "users-1-0.out").write_text(script_output)
+        return directory
+
+    def test_a_program_that_died_half_way_is_left_out(self):
+        # It sent requests, so it counts among the programs that took part. Only the script knows.
+        self.whole_run("whole", 1, "machine 1 batch 0: started 1, failed 0\n", client_programs_expected=1)
+        died = self.whole_run("whole", 2, "machine 1 batch 0: client 10000 exited with status 137\n"
+                              "machine 1 batch 0: started 1, failed 1\n", client_programs_expected=1)
+        summary = analyze.summarise(self.root)
+        self.assertEqual(summary[("e9", "synthetic")]["mean_ms"][2], 1)
+        meta, m = analyze.analyse_run(died)
+        self.assertIn("1 client programs failed", analyze.run_problem(meta, m))
+
+    def test_programs_a_signal_stopped_early_are_left_out(self):
+        cut = self.whole_run("cut", 1, "stopped by a signal: requests still in flight are not counted\n"
+                             "machine 1 batch 0: stopped early\nmachine 1 batch 0: started 1, failed 0\n")
+        meta, m = analyze.analyse_run(cut)
+        self.assertIn("stopped 1 client programs early", analyze.run_problem(meta, m))
+
+    def test_a_node_log_that_was_not_copied_is_left_out(self):
+        # A machine lost at the end of a run: without its log, fairness would read as two nodes' share.
+        whole = self.whole_run("nodes", 1, nodes=3)
+        meta, m = analyze.analyse_run(whole)
+        self.assertIsNone(analyze.run_problem(meta, m))
+        (whole / "node-2.jsonl").unlink()
+        meta, m = analyze.analyse_run(whole)
+        self.assertIn("2 of 3 node logs", analyze.run_problem(meta, m))
+
+    def test_a_script_that_never_printed_totals_is_left_out(self):
+        killed = self.whole_run("killed", 1, "plan machine=1 batch=0 users=1 programs=1\n")
+        meta, m = analyze.analyse_run(killed)
+        self.assertIn("never printed their totals", analyze.run_problem(meta, m))
+
+    def test_half_a_last_line_is_dropped_and_the_run_still_reads(self):
+        directory = self.whole_run("torn", 1)
+        whole, _ = analyze.analyse_run(directory)
+        log = directory / "client-1.jsonl"
+        log.write_text(log.read_text() + '{"ts_us":17000,"src":"client-1","ev":"client_do')
+        again, m = analyze.analyse_run(directory)
+        self.assertEqual(whole, again)
+        self.assertIsNone(analyze.run_problem(again, m))
+
+    def test_a_damaged_log_leaves_only_its_own_run_out(self):
+        self.whole_run("whole", 1)
+        damaged = self.whole_run("whole", 2)
+        log = damaged / "client-1.jsonl"
+        lines = log.read_text().split("\n")
+        lines[0] = lines[0][:20]
+        log.write_text("\n".join(lines))
+        summary = analyze.summarise(self.root)
+        self.assertEqual(summary[("e9", "synthetic")]["mean_ms"][2], 1)
+
+    def test_a_link_drop_reason_counts_as_zero_in_a_run_that_did_not_have_it(self):
+        down = {"ts_us": T0, "ev": "client_link_down", "node": 1, "reason": "send failed"}
+        quiet = synthetic_run()
+        loud = synthetic_run()
+        loud["client-1"] = loud["client-1"] + [down, down]
+        write_run(self.root / "e9" / "s" / "run-1", quiet, 1)
+        write_run(self.root / "e9" / "s" / "run-2", loud, 2)
+        mean, _, runs = analyze.summarise(self.root)[("e9", "synthetic")]["client_link_down_send_failed"]
+        self.assertEqual((mean, runs), (1.0, 2))
 
 
 if __name__ == "__main__":

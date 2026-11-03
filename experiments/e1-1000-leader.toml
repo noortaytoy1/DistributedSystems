@@ -11,7 +11,8 @@ cpu_weight = 1
 plan_work = 1000
 
 [campus]
-responders = 300
+# 300 would cap assignments near 500 a second, and the top of E1 would measure the pool (D219).
+responders = 3000
 
 [faults]
 # Faults only as the run line orders them: the schedule never fires within a run.

@@ -2,6 +2,9 @@
 //! one shared client. For real load use `scripts/start-users.sh`, which shares the users out over
 //! several of these programs (D181).
 //!
+//! This is the application layer on the client side (D211). A user calls `MeshClient::submit`, which
+//! comes from `rescuemesh::middleware`, and never names a node or sees the copies behind that call.
+//!
 //! ```text
 //! cargo run --release --bin loadgen -- --client-id 1 --users 20 --duration-s 30
 //! cargo run --release --bin loadgen -- --client-id 1 --users 20 --think-ms 1000 --pattern random
@@ -19,6 +22,7 @@
 //!
 //! Owner: F (client and scale).
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,9 +32,9 @@ use clap::{Parser, ValueEnum};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
-use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{self, EventLog, now_ms};
+use rescuemesh::metrics::{self, Event, EventLog, now_ms};
+use rescuemesh::middleware::{ClientError, MeshClient, Submitted};
 use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -350,6 +354,9 @@ async fn main() -> anyhow::Result<()> {
         .then(|| tokio::spawn(sample_machine(log.clone())));
 
     let start = Instant::now();
+    log.log(Event::ClientStarted {
+        users: args.rate.map_or(args.users, |_| 0),
+    });
     let measure_from = start + Duration::from_secs(args.warmup_s);
     let stop_at = start + Duration::from_secs(args.duration_s);
     let shared = stats.clone();
@@ -390,15 +397,14 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Duration::from_secs(args.duration_s - args.warmup_s)
     };
-    print!(
-        "{}",
-        summary(args.client_id, &mut lock(&stats), measured, stopped_early)
-    );
+    let text = summary(args.client_id, &mut lock(&stats), measured, stopped_early);
     drop(client);
-    tokio::task::spawn_blocking(move || log.close())
-        .await
-        .context("closing the event log")?;
-    Ok(())
+    let closed = tokio::task::spawn_blocking(move || log.close()).await;
+    // After the log, and no panic if it fails: `print!` panics when the reader has gone or the disk is
+    // full, which must not cost the log or count as a failed run. The script says who reported.
+    let mut out = std::io::stdout();
+    let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+    closed.context("closing the event log")
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

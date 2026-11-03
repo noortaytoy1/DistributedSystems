@@ -158,9 +158,13 @@ async fn reach_target(
     let mut target = learn_target(ctx, commits).await?;
     let mut last_warning = Instant::now();
     loop {
+        let waiting_since = Instant::now();
         if ctx.consensus.wait_applied(target, ASK_AGAIN_AFTER).await {
             return Some(target);
         }
+        // A Raft that has stopped says no at once, and each question to it prints an ERROR. Without
+        // this pause that is a tight loop writing to a disk that may be why Raft stopped.
+        tokio::time::sleep_until(waiting_since + ASK_AGAIN_AFTER).await;
         if last_warning.elapsed() >= WAIT_WARNING {
             last_warning = Instant::now();
             tracing::warn!(
@@ -337,6 +341,21 @@ mod tests {
         running.await.unwrap();
 
         assert!(ctx.serving.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_stopped_raft_is_asked_once_per_wait_and_not_in_a_tight_loop() {
+        let fake = ScriptedConsensus::new(1);
+        fake.set_leader(Some(1));
+        fake.script_answers([Ok(Some(10)), Err(ProposeError::Fatal("stopped".into()))]);
+        fake.stop();
+        let (_, running) = catching_up(&fake, EventLog::disabled("node-1"));
+        let started = Instant::now();
+
+        until("the second question", || fake.questions() >= 2).await;
+
+        assert!(started.elapsed() >= ASK_AGAIN_AFTER / 2, "no pause at all");
+        running.abort();
     }
 
     #[tokio::test]

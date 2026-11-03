@@ -6,6 +6,9 @@
 //! Timers are local, but the release goes through the log, so state stays deterministic. Two
 //! nodes releasing the same hold is harmless: the command is idempotent.
 //!
+//! This is a rule about responders, so it is application code like `service.rs` (D156). It reaches
+//! the layer below through `src/middleware.rs` alone, and `tests/layers.rs` holds it to that.
+//!
 //! Owner: E (planner and concurrency).
 
 use std::collections::BTreeMap;
@@ -16,8 +19,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::NodeContext;
 use crate::metrics::Event;
+use crate::middleware::NodeContext;
 use crate::proto::{Command, CommittedResult, NodeId, RequestId, ResponderId};
 
 /// How often a node looks at the holds. Small against the shortest service time (200 ms).
@@ -104,7 +107,7 @@ async fn propose(ctx: &NodeContext, due: Due) {
         responder: due.responder,
         request: due.request,
     };
-    if let Err(e) = ctx.consensus.propose(cmd).await {
+    if let Err(e) = ctx.group.send_ordered(cmd).await {
         tracing::debug!(request = %due.request, "release not proposed: {e}");
     }
 }

@@ -8,6 +8,9 @@
 
 REMOTE_DIR="${REMOTE_DIR:-DistributedSystems}"
 BIN="${BIN:-target/release}"
+# Never ask for a password, and notice a machine that has gone: without the keepalives, a client PC that
+# loses power leaves the runner waiting on its ssh with no end and no message.
+SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 NODE_IDS=() NODE_ADDRS=() NODE_SSH=() NODE_PEER_PORTS=() NODE_CLIENT_PORTS=()
 CLIENT_IDS=() CLIENT_SSH=()
@@ -38,6 +41,18 @@ read_hosts() {
     echo "$1 needs at least one node and one client" >&2
     return 1
   fi
+  # Two machines with one number would run programs with one client ID, and the second's log copy would
+  # overwrite the first's. Say so now, not after a series of runs that all get left out (D184).
+  if [[ -n "$(printf '%s\n' "${CLIENT_IDS[@]}" | sort | uniq -d)" ]]; then
+    echo "$1: two client machines have the same number" >&2
+    return 1
+  fi
+  for id in "${CLIENT_IDS[@]}"; do
+    if ! [[ "$id" =~ ^[1-9]$ ]]; then
+      echo "$1: a client machine's number must be 1 to 9, not $id" >&2
+      return 1
+    fi
+  done
 }
 
 # Client machine i's share of a cell's users. 100 over 3 machines is 34, 33 and 33: dividing and rounding
@@ -57,14 +72,18 @@ nodes_toml() {
   done
 }
 
-# Run a command in the repo directory on a machine.
+# Run a command in the repo directory on a machine. `cd` is a command of its own, never `cd X && $*`: in
+# a line with `&`, as the one that starts a node, the shell would send `cd X && first` to the background.
+# The rest of the line would then run in the home folder, and that background shell would hold the ssh
+# session open for as long as the node lives. 125 says the folder is missing: pgrep never exits with it,
+# so a machine without the repo cannot pass for one with no leftovers, which pgrep's exit 1 means (D139).
 on_host() {
   local host=$1
   shift
   if [[ "$host" == local ]]; then
     bash -c "$*"
   else
-    ssh -o BatchMode=yes "$host" "cd $REMOTE_DIR && $*"
+    ssh "${SSH_OPTIONS[@]}" "$host" "cd $REMOTE_DIR || exit 125; $*"
   fi
 }
 
@@ -73,7 +92,7 @@ copy_to() {
   if [[ "$host" == local ]]; then
     cp "$from" "$to"
   else
-    scp -q -o BatchMode=yes "$from" "$host:$REMOTE_DIR/$to"
+    scp -q "${SSH_OPTIONS[@]}" "$from" "$host:$REMOTE_DIR/$to"
   fi
 }
 
@@ -83,7 +102,7 @@ fetch_from() {
   if [[ "$host" == local ]]; then
     cp -r "$from"/. "$to"/
   else
-    rsync -a -e "ssh -o BatchMode=yes" "$host:$REMOTE_DIR/$from/" "$to/"
+    rsync -a -e "ssh ${SSH_OPTIONS[*]}" "$host:$REMOTE_DIR/$from/" "$to/"
   fi
 }
 
@@ -105,26 +124,28 @@ ALL_PROGRAMS="$LOAD_PROGRAMS|node"
 refuse_leftovers() {
   local programs=$1 grace_s=${2:-0}
   local pattern="[${BIN:0:1}]${BIN:1}/($programs)( |\$)"
-  local deadline=$((SECONDS + grace_s)) host found status
-  for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    while :; do
+  local deadline=$((SECONDS + grace_s)) host found status leftovers
+  while :; do
+    leftovers=""
+    for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
       found=$(on_host "$host" "pgrep -af '$pattern'") && status=0 || status=$?
       case "$status" in
-        1) break ;;
-        0)
-          if ((SECONDS >= deadline)); then
-            echo "left over on $host, stop it by hand and start again:" >&2
-            echo "$found" >&2
-            return 1
-          fi
-          sleep 1
-          ;;
+        0) leftovers+="$host: $found"$'\n' ;;
+        1) ;;
         *)
           echo "cannot check $host for leftover programs (exit $status)" >&2
           return 1
           ;;
       esac
     done
+    [[ -n "$leftovers" ]] || return 0
+    if ((SECONDS >= deadline)); then
+      echo "programs from an earlier run are still running; stop them first:" >&2
+      printf '%s' "$leftovers" >&2
+      echo "On each of those machines: kill those PIDs, or for a client machine's users, bash scripts/start-users.sh --stop --machine M" >&2
+      return 1
+    fi
+    sleep 1
   done
 }
 

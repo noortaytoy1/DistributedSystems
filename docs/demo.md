@@ -6,9 +6,11 @@ team should rehearse it on the lab machines: **none of this has been run there y
 
 ## Before you start
 
-Set up the machines with [runbook.md](runbook.md), with the fault election's timers set never to fire (runbook section 3), so that only you
-cause faults. Before every scene that uses `ctl silence`, check `serving = true` on all three. The demo uses E1's settings, already in `config/lab.example.toml`: `plan_work = 1000` and `responders = 300` (D205). Delete old
-logs (`rm -rf data/raft runs/lab` on all six), then start the three nodes, then a frontend on each client machine:
+Set up the machines with [runbook.md](runbook.md). `config/lab.example.toml` ships the fault election's timers set never to fire, so only you cause faults, and E1's settings: `plan_work = 1000` and `responders = 300` (D165, D205). To turn
+the draw on, see the last scene or runbook section 3. Before every scene that uses `ctl silence`, check `serving = true` on all three. Check `grep assignment config/lab.toml` says `bidding`. Delete old
+logs (`rm -rf data/raft runs/lab` on all six), then start node 3, about a second later nodes 2 and 1, and check `ctl status` shows one leader, equal digests and `node N: udp ok` for all three, before any load. Those three
+lines come over UDP and the table over TCP, so it shows the two transports side by side. Node 3 tends to lead, and ties still go to node 1, which keeps the two apart on
+screen. If you are asked why node 3: because we listed and started it first. Then a frontend on each client machine:
 `target/release/frontend --config config/lab.toml --client-id 11 --listen 127.0.0.1:9001` (12 and 13 on the others),
 and open `http://127.0.0.1:9001` there.
 
@@ -45,13 +47,14 @@ bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 20 --du
 *Different peers are elected as load conditions change.*
 
 1. Terminal 1 shows one Raft leader and equal digests. Under load the digest column can differ between refreshes; to show equal
-   state, compare `state_checkpoint` lines on two nodes at the same `log_index` (D138). Point out that the leader orders the log and
-   does not choose who plans (D114), and that the nodes are peers: client and server are the roles of one call (D212).
+   state, compare `state_checkpoint` lines on two nodes at the same `log_index` (D138). Point out that node 3 leads and that wins show on all three: the leader orders the log and
+   has no say in who plans (D163), and that the nodes are peers: client and server are the roles of one call (D212). The wins are the evidence that the election follows load. The leader does not
+   change with load, and a steady term is the healthy result (D217).
 2. Run the win count on each node machine twice, a few seconds apart.
 3. Raise the load: press Start again on one client machine with more users, or a second batch by hand,
    `bash scripts/start-users.sh --config config/lab.toml --machine 1 --batch 1 --users <N> --duration-s 300`, with N inside the highest
    load found on these PCs. `pgrep` then prints 20. Count again. Kill one program, `kill <pid>`: it prints its summary and leaves, and the
-   rest keep going.
+   rest keep going. If a demo goes wrong, `bash scripts/start-users.sh --stop --machine M [--batch B]` stops that machine's users, even if the script itself was killed.
 
 **Expect** the wins to shift between nodes as queues build. At very low load the fastest node can win most
 rounds, because the score is expected wait (D45), so show the higher load before drawing conclusions.
@@ -74,33 +77,36 @@ later the same command shows `resolved`, once the responder's release commits. A
 *Raise the load on one server and show the election respond.*
 
 ```bash
-target/release/ctl --config config/lab.toml skew --node 1 --work 5000
+target/release/ctl --config config/lab.toml skew --node <follower> --work 5000
 ```
 
-**Expect** node 1's win count to grow more slowly than the others', because its plans take longer and its bids
-rise. Then put it back with `skew --node 1 --work 1000`, because skew replaces `plan_work`. On the page, the next cards should
-move off node 1 (read from the code, not run).
+`<follower>` is any row in terminal 1 that is not the leader.
+
+**Expect** that node's win count to grow more slowly than the others', because its plans take longer and its bids
+rise. Then put it back with `skew --node <follower> --work 1000`. Do not use `--work 0`: skew replaces `plan_work`, so 0 makes that node the fastest (D165). On the page, the next cards should
+move off that node (read from the code, not run).
 
 ## 3. Server failure
 
 *The elected server goes nonresponsive under load, and service continues.*
 
-1. Cut the node the last card names as "Planned by". Or find one from the counts above. For the strongest version pick the one that
-   is also the leader.
+1. Find the leader in terminal 1, and call it `<leader>`. Its role is what this scene is about.
 2. Silence it for the longest fault allowed:
 
    ```bash
-   target/release/ctl --config config/lab.toml silence --node 1 --ms 20000
+   target/release/ctl --config config/lab.toml silence --node <leader> --ms 20000
    ```
 
-**Expect** terminal 1 to show `silenced = true`, and a new leader within about a second if it led (D214). The load generators keep
+**Expect** terminal 1 to show `silenced = true`, and another row reading `leader` in a newer term within about a second (D214). **Say this out loud:** the silenced node's own row may still read
+`leader` in the old term. That row is stale. The load generators keep
 going. On the others, `peer_suspected` and `takeover_started` appear in the logs. About 2 s after the fault starts, `members` on the
 survivors drops the silenced node, and bids stop going to it. Its own row shows `-`. A fault under about 2.2 s never shows in this
-column, only in `peer_suspected`. Send another report: the card names another node, perhaps after a second if the old one led. At the end
+column, only in `peer_suspected`. Send another report: the card names another node, after a stall of about a second. At the end
 `gave up` should be 0: let the run reach its duration so the rows show their summaries, or read each machine's last line, `reported k of P
 programs: done, gave up, retried, no responder, provisional`, or count with `grep -c client_gave_up runs/lab/client-*.jsonl`. A client never
 names a node and the page survives the cut, because it lives on the client PC: that is location, failure and access transparency, in the
-slides' words and the Sept 6 note's.
+slides' words and the Sept 6 note's. What we promise: no client names a node, no request is lost, and answers stall for about a
+second. We do not say clients do not notice: p99 shows it, and E3 has the measured figure (D165).
 
 ## 4. Server recovery
 
@@ -110,10 +116,10 @@ Wait for the 20 s to end, with terminal 1 on screen.
 
 **Expect** `silenced` to go false while `serving` stays false for a moment, then `serving` true with the same
 digest as the others, once the node has applied the leader's commit index. `members` on the others lists the node again as soon as it is
-heard, before `serving` goes true. Say this out loud: members means reachable, not able to serve. Show how long it took:
+heard, before `serving` goes true. Say this out loud: members means reachable, not able to serve. Its role is `follower` now, and its win count rises again. It got no role back and lost no say, because the role never carried a say in who plans (D163). Show how long it took:
 
 ```bash
-grep '"ev":"rejoined"' runs/lab/node-1.jsonl | tail -1
+grep '"ev":"rejoined"' runs/lab/node-<leader>.jsonl | tail -1
 ```
 
 Say what happened: the log entries it missed were copied, then replayed through the state machine; its load
@@ -146,18 +152,18 @@ retries end first, and the report shows `reports_expired = 0`.
 
 ## 5. Dr Amr's case: a machine physically off
 
-1. Under load, **turn off the power of one node machine**. Not a shutdown, and not `ctl`.
-2. **Expect** the same as scenario 3, and `members` on the others drops it about 2 s after that. The clients drop the dead connection
-   after about 3 s (D112), and the other nodes replace theirs after about 1 s (D119). The check that matters here: `peer_suspected` on
+1. Under load, **turn off the power of the node machine that leads now**. Not a shutdown, and not `ctl`.
+2. **Expect** the same as scenario 3, and `members` on the others drops it about 2 s after that. Clients have nothing to drop: they have no
+   connection to it, and its copies vanish while the other two answer (D167). The other nodes replace their connection to it after about 1 s (D119). The check that matters here: `peer_suspected` on
    both survivors within a second, because a stall here is what D150 fixes.
 3. Turn it back on and start it again, with the same ID and without wiping anything:
 
    ```bash
-   target/release/node --config config/lab.toml --id 1
-   grep -E '"ev":"(restarted|rejoined)"' runs/lab/node-1.jsonl | tail -2
+   target/release/node --config config/lab.toml --id <id>
+   grep -E '"ev":"(restarted|rejoined)"' runs/lab/node-<id>.jsonl | tail -2
    ```
 
-**Expect** `restarted`, then `rejoined`, then equal digests. No `ERROR` line appears (D137). Its vote and log came back from disk, and the
+**Expect** `restarted`, then `rejoined`, then equal digests. The restarted node prints no `Can not initialize` (D137). Its peers print `RPCError err=Unreachable` at `ERROR` while it is down, which is openraft's own line and is expected (D222). Its vote and log came back from disk, and the
 rest came from the leader (D118). `ctl status` can show it as leader for a few ms, from its stored vote, before it steps down. A real power cut is the one thing the rehearsal on one PC could not test: there, the one kernel kept its
 page cache, so losing unsynced writes was never tried. This scene is that test.
 
@@ -189,7 +195,7 @@ reconciliation status is Phase 2 (D149).
 
 ## 7. Scale and stress
 
-The last row of the table is not a live event, because it takes an hour. Show the results. Stop every frontend first: the runner refuses to
+The last row of the table is not a live event, because it takes an hour. Show the results. Stop every frontend and all demo users first: the runner refuses to
 start while one runs.
 
 ```bash
@@ -199,7 +205,7 @@ ls analysis/out
 ```
 
 Walk through `e1_latency_throughput.png`, `fairness.png` and `fault_phases.png`, which leaves out the `ft8` and `e5` cells, and `summary.csv` for
-recovery and election overhead: `fault_elections`, `fault_election_mean_ms`, `fault_bids_per_round` and `fault_split_decisions`. State the profile, the runs per cell and the limits (D63). If there is time, run one cell
+recovery and election overhead: `fault_elections`, `fault_election_mean_ms`, `fault_bids_per_round` and `fault_split_decisions`. Show `leader_plan_share` beside `elections`, from the runs where one node led throughout, and the baseline's 1 beside it (D166). Do not call it a third unless the data says so. State the profile, the runs per cell and the limits (D63). If there is time, run one cell
 live:
 
 ```bash
@@ -210,7 +216,7 @@ scripts/run-experiments.sh experiments/hosts quick e1-300-bidding
 
 *The servers periodically elect one machine to ignore communication.* This one happens by itself. About 3 minutes, nobody typing.
 
-Stop the nodes. In `config/lab.toml`, under `[faults]`, set the following, and copy the file to all six machines:
+The draw ships off, so this scene turns it on. Stop the nodes. In `config/lab.toml`, under `[faults]`, use the four values in the comment for this scene, and copy the file to all six machines:
 
 ```toml
 interval_min_ms = 20000
@@ -234,21 +240,26 @@ If one node's line has `victim: null`, explain it as the rule at work: that node
 
 Every answer here comes from the spec, the class notes or the recordings, and nothing is left open (D213).
 
-- **"Is the leader a coordinator?"** No job but ordering is left with it. The three nodes elect the failed machine among themselves (D158), bidding picks who plans (D114),
-  and any node can propose (D26). The leader only sequences the log. Loading the responder list on any node is the last part; say whether it is in this build (D216).
+- **"Is the leader a coordinator?"** No node decides for another. One elected, replaceable node orders the log: it numbers entries, sends the copies and answers one read. `docs/architecture.md` section 2 has a table, row by row, of who decides what.
+  Bidding picks who plans (D114), all three draw who fails (D158), any serving node loads the responders (D164), and you saw the leader go silent and come back as an ordinary node. What remains, and we say it: every commit passes through one elected node, and arrival
+  order at it settles a race. Only replacing Raft would remove that, and we rejected that as a rewrite a day before the deadline (D163). `leader_plan_share` is the number beside the baseline (D166). The reading is ours, and the report states it as a reading.
+- **"Does the leader change when it is busy?"** No, and that is Noor's decision (D217). There are two elections. The bid picks who plans each report, by load, so a busy node loses bids and work moves away from it. The Raft vote picks who orders the log, and it runs only when the
+  others stop hearing from the leader. Each change of leader costs about 0.8 s with no answers (one-PC rehearsal, not a six-PC result).
 - **"Is this client-server?"** No. The cloud nodes are peers that update each other's state, detect failures, share out work and tell each
   other their load. Client and server are the roles of one call, not of a node (D212, `docs/architecture.md` section 3.1).
 - **"Where is the middleware, and where is the application?"** On both sides, drawn in `docs/architecture.md` section 4.3. Client side: the page and
   the simulated users are the application, and `MeshClient` is the middleware. Cloud side: the incident service, the planner and the state
-  rules are the application, and the group, the election, the detector, tarpc and openraft are the middleware (D211). Say whether D156's file
-  split is in this build.
+  rules are the application, and the group, the election, the detector, tarpc and openraft are the middleware (D211). `src/middleware.rs` is the line in the code, and
+  `tests/layers.rs` fails if application code reaches past it (D156).
 - **"What is your group communication?"** The client middleware's send to all of the cloud nodes is the group send, and the application does not
   know it happens. The cloud's who's-alive list, `CloudGroup`'s view, is the membership, and it changes as nodes fail and return. Between the nodes,
   bids follow the list, pings go to everyone, and Raft orders results. Each list is one node's opinion, and we say so (D152–D155, D157, D210).
 - **"Where is publish-subscribe?"** Phase 2, as Lecture 9 says: it needs a publish step and a discovery service. It is in the design, in
   `docs/architecture.md` section 13. We first chose to build a small one, then the lecture settled it (D209). So the page has no zone panel.
   Reporting does not need it; it exists to tell others in a zone.
-- **"Why tarpc?"** A ready-made RPC, as the Oct 4 note asks (D119), with typed methods between the nodes. See the report's chapter 2 comparison.
+- **"Why tarpc?"** See D176 for the comparison with Java RMI, CORBA and Sun RPC/XDR, and D177 for the semantics.
+- **"Why UDP, when the notes say don't go this low?"** See D178. Noor's decision was UDP from clients to machines. Call IDs, matching and deadlines stay tarpc's, retries stay in the middleware, and the adapter holds no RPC logic.
+- **"What ends the call on a node that lost the bid?"** See D169. The node stays quiet, and the client's cancel ends it. A client that never cancels was the worst variant in the rows.
 - **"What did you build, and what is a library?"** See D68 and D215: openraft does Raft, tarpc does remote calls, and the
   bidding, group communication, recovery, degraded mode, planner and clients are ours.
 - **"What does the TTL do?"** D143: a report too old on arrival is not planned, the node answers expired and sends nobody, and
@@ -259,6 +270,7 @@ Every answer here comes from the spec, the class notes or the recordings, and no
 - **"What keeps the leader up under load?"** D133. Saving to disk and saying "I am alive" are the node's necessities, and processing requests must not
   override them. So our own queue sits in front of Raft: one write in flight per node, and everything waiting goes in one save. A report that waits
   over 3 s leaves the queue, and the client resends.
+- **"What happens past what it can answer?"** A plan that loses the race for a responder three times commits that nobody could be sent, and the report hears at once (D220). So overload shows as `no_responder_share` rising at low latency. The trade: an answer now, for a chance of a responder later.
 
 **Do not narrate `members` as health.** Lists differ between nodes, and a silenced node's list is frozen. Point at leader, serving and
 degraded as well.

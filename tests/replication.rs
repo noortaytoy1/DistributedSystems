@@ -147,7 +147,9 @@ async fn proposals_from_every_node_replicate_to_identical_state() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_commit_wins_when_several_nodes_execute_one_request() {
-    let cluster = TestCluster::start(3).await;
+    // No campus: every node proposes it at start (D164), so it could land after the list below, and
+    // the count of free responders at the end must only see this test's three.
+    let cluster = TestCluster::start_with(3, |c| c.campus.responders = 0).await;
     agreed_leader(&cluster, &[1, 2, 3]).await;
     consensus(&cluster, 1)
         .propose(register([1, 2, 3]))

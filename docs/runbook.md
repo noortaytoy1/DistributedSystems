@@ -1,8 +1,9 @@
 # Six-machine runbook
 
 How to run RescueMesh on the lab machines: three cloud nodes and three client machines on one network.
-Nothing here has been run on those machines yet, so expect to adjust it, and fix this page when you do. The
-demo itself is in [demo.md](demo.md).
+Nothing here has been run on those machines yet, so expect to adjust it, and fix this page when you do. The runner has run over a
+stand-in for ssh in `cargo test` (`tests/runner_script.rs`, `tests/runner_over_ssh.rs`), which shows how a far shell reads each line, and not
+firewalls, keys or sshd limits. The demo itself is in [demo.md](demo.md).
 
 ## 1. Prepare every machine (once)
 
@@ -29,16 +30,21 @@ from the terminals.
   `storage.dir`, so a slow or shared disk shows up as commit latency. `raft_io` gives the real disk: `sync_us / syncs` and
   `saved_commands / saves` (D133). Never use a shared filesystem: each machine keeps its own logs.
 
+On all six machines, make room for UDP bursts. Without this the kernel quietly caps the receive buffer, and a burst loses reports
+(D171):
+
+```bash
+sudo sysctl -w net.core.rmem_max=8388608
+echo 'net.core.rmem_max=8388608' | sudo tee /etc/sysctl.d/90-rescuemesh.conf     # keeps it after a reboot
+```
+
 On the three node machines, open the ports:
 
 ```bash
 sudo ufw allow 7001/tcp      # peers: reachable from the other two nodes
-sudo ufw allow 8001/tcp      # clients and ctl: reachable from the client machines
-sudo ufw allow 8001/udp      # ONLY with the UDP client path (D216), which has not merged yet. Reports then use UDP, and ctl stays on TCP
+sudo ufw allow 8001/udp      # reports from clients: reachable from the client machines
+sudo ufw allow 8001/tcp      # ctl: reachable from wherever you run it
 ```
-
-The UDP line depends on that work: skip it until the build you are running has it. Then `ctl status` says `udp no answer` if the rule is
-missing.
 
 The frontend needs no open port when the browser is on the same machine. Only if neither that nor `ssh -L` works, use
 `--listen 0.0.0.0:9001` and `sudo ufw allow 9001/tcp` on that client machine. There is no password (D199).
@@ -49,6 +55,10 @@ From the machine that runs the experiments, every machine needs an SSH key with 
 ssh-copy-id ubuntu@10.0.0.11     # and the other five
 ssh -o BatchMode=yes ubuntu@10.0.0.11 true
 ```
+
+The runner's `ssh` gives up on a machine after 10 s when connecting, and after about a minute of silence during a run, so a machine that loses power
+stops the series with a message. The runner expects the repo at `~/DistributedSystems` on every machine, or at `~/$REMOTE_DIR` if you set that. It sends
+each line as `cd DistributedSystems || exit 125; <line>`, so a machine without the folder stops the batch at once.
 
 ## 2. One config, one commit
 
@@ -64,26 +74,44 @@ for h in ubuntu@10.0.0.{11,12,13,21,22,23}; do scp config/lab.toml "$h:Distribut
 
 Both of those files are ignored by git, because they hold real addresses.
 
-**After this upgrade, wipe the Raft logs once on all three nodes** (`rm -rf data/raft`). The log's format changed. An old log
-still has good checksums but does not decode, so a node would cut it with only a warning. Every machine must run the same
-commit: a mixed build looks like a dead link.
+The example file is set up for the demo: it lists the nodes 3, 2, 1, runs E1's `plan_work` and responders, and has the fault election's timers off (D165). Keep `experiments/hosts` in order
+1, 2, 3: the runner builds each run's config from it and the cell, and never reads `lab.toml`, so none of this reaches the data.
+
+**Rebuild after every `git pull`, on all six machines.** `scripts/lab-build.sh experiments/hosts` does it and checks the commit. By hand, on each
+machine: `cargo build --release --bins`. Every machine must run the same commit, because an old client and a new node fail quietly: a mixed build looks like a
+dead node (D175).
+
+**Wipe the Raft logs on all three nodes whenever the version changes** (`rm -rf data/raft`, with the nodes stopped). A new field in a log entry changes the
+file's format. An old log still has good checksums but does not decode, so a node would cut it with only a warning. Never wipe it during a recovery test (section 5).
 
 ## 3. Start by hand
 
 ```bash
-# on node machine 1, 2 and 3, each with its own ID
-target/release/node --config config/lab.toml --id 1
+# on node machine 3 first, then about a second later on 2 and 1, each with its own ID
+target/release/node --config config/lab.toml --id 3
 
-# from any machine: all three should show one leader and equal digests
+# from any machine, before any load: all three should show one leader and equal digests
 target/release/ctl --config config/lab.toml status
+grep assignment config/lab.toml      # must say bidding
 
 # on client machine 1, 2 and 3, each with its own machine number
-bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 50 --duration-s 60
+bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 20 --duration-s 60
 
 # on client machine 1, 2 and 3: the web page, with IDs 11, 12 and 13. --config has no default on purpose.
 target/release/frontend --config config/lab.toml --client-id 11 --listen 127.0.0.1:9001
 # then open http://127.0.0.1:9001 in that machine's browser
 ```
+
+**First check, every time.** From a client machine, run `ctl status`. Under the table there is one line per node. `node 1: udp ok` is what you want.
+`node 3: udp no answer` means reports to that node vanish, even though its row above looks healthy, because the table comes over TCP: open `8001/udp` on it.
+A silenced node still says `udp ok`. Then look in a node's stderr for `UDP receive buffer capped by the kernel`, which means the sysctl above was missed. The
+runner stops a batch by itself on `udp no answer`, but not on a capped buffer: `analyze.py` warns about that afterwards.
+
+Node 3 tends to lead with that order, because the first node listed has the shortest election timeout (D115) and the first node started is already asking for votes. That only tends to happen: read
+`ctl status`. A node started well before its peers is degraded until one comes up, and that is normal. It loads the responders once a peer is there (D164).
+
+**The load is a rule, not a number (D165).** Start at 20 users per client PC. Use the highest that holds one term for 60 s from load start, on these PCs, with `ctl status`'s `term` column as the check. A
+load above that shows up as a term that keeps rising, and every figure from it is about elections.
 
 The `ctl status` table is 109 characters wide. `watch` cuts at the terminal width, so widen the terminal or `members`
 disappears.
@@ -96,23 +124,38 @@ this script. A second group of users on one machine needs its own `--batch`.
 Node output: `RUST_LOG=info,tarpc=info` brings tarpc's per-call lines back for debugging. Never run an experiment that way: they
 slow a node enough to cost it its leader (D134).
 
-`faults.enabled = true` in the lab config means the three nodes also elect one of them to go silent, about every 30 to 60 s. For anything
-you want to control yourself, such as the demo, set this in `config/lab.toml` first:
+To see what a machine is doing in plain words, with no rebuild: `python3 scripts/watch_events.py runs/lab`, and add `--reports` for every step of every report (D221). It only reads that machine's logs, so use one terminal per machine.
+
+**The fault draw ships off.** `config/lab.example.toml` has `faults.enabled = true` and both interval keys at `100000000`: `ctl silence` works, and no fault election ever runs, so only you cause faults, and forgetting an
+edit cannot silence a node in the middle of a scene (D165). To turn the draw on, so that the three nodes elect one of them to go silent about every 30 to 60 s, replace the two interval lines as the comments in the file show,
+copy the file to all six machines, and restart the nodes:
 
 ```toml
 [faults]
-enabled = true                # keeps ctl silence working
-interval_min_ms = 100000000   # no node's timer ever fires, so no fault election
-interval_max_ms = 100000000
+enabled = true
+interval_min_ms = 30000
+interval_max_ms = 60000
 ```
 
 ## 4. Check the settings before measuring
 
+First check the disk on each node machine, because every figure depends on a stable leader (D133, D163):
+
+```bash
+mkdir -p data/raft && dd if=/dev/zero of=data/raft/.t bs=512 count=1000 oflag=dsync && rm data/raft/.t
+```
+
+`dd` prints how long 1000 synced writes took. Note the number for each node machine in the report. Then the same machines' `raft_io` lines give the real figure under load (D133).
+
 ```bash
 scripts/run-experiments.sh experiments/hosts quick e1-300-bidding
 python analysis/analyze.py runs
-grep -E 'service_mean_us|no_responder_share|reports_expired|msgs_all_per_req' analysis/out/summary.csv
+grep -E 'service_mean_us|no_responder_share|reports_expired|msgs_all_per_req|udp_rcvbuf_got_min_bytes|udp_drops_nodes|udp_cancels_per_req' analysis/out/summary.csv
 ```
+
+`udp_rcvbuf_got_min_bytes` should read 16777216: the kernel doubles what it gives. **This is the one number on this page nobody has seen on a machine with the sysctl raised, so check it first.** If `udp_drops_nodes` is above 0, raise the number and say so in the report.
+
+In a cell past the knee, `no_responder_share` above 0 at low latency is a report that lost the race three times, not a pool that was empty. Both count there (D220).
 
 `reports_expired` must be 0, and `analyze.py` warns otherwise. With the 60 s default the refusal cannot fire in a run, so a
 nonzero count most likely means an age stamped wrongly, which looks like a very fast run where nobody gets sent (D147).
@@ -125,6 +168,8 @@ defaults (D40) that have only ever run on one machine.
 
 **Is the leader stable?** One `e1-300-bidding` must show no new terms: look at `elections` in that first cell. The proposal queue
 (D133) is what keeps it so, and it has passed its tests but has not been measured on these machines.
+
+One leader-dispatch run at the demo's load gives the number beside `leader_plan_share`. The baseline's share is 1 by construction, so it is the latency that matters there (D166).
 
 ## 5. Run the experiments
 
@@ -156,12 +201,17 @@ while all three are up mean bids are not getting through in time, or the term is
 (`target/release`) is running on any machine, and prints which, because a leftover gives wrong figures with no sign of it. Stop it by
 hand and start again. It does not stop them itself, and a program started from anywhere else is not noticed. A run where a load
 program ran beside its own, or with no leader at the start, is deleted and the batch stops: `analysis/analyze.py` reads every
-`run.json` it finds, so a bad run must not stay. A run whose fault could not be injected after 3 tries goes to
+`run.json` it finds, so a bad run must not stay. A run's `run.json` is written last, under the name `run.json.partial` until the logs are in. A folder with only `run.json.partial`
+is a run that did not finish, and the analysis does not read it (D223). A run whose fault could not be injected after 3 tries goes to
 `runs/dropped/<cell>-run-<n>/`, with the reason in `dropped.txt`. The batch goes on, and at the end it lists those runs and exits
 non-zero. Run those cells again, by name (D139). If a cell keeps landing there, it is above what the machines can hold.
 
 `PROGRAMS_PER_PC` changes the 10 programs per client machine, with no rebuild. Use one value for all final data; `run.json` records
 it (D181). A rerun moves the old run folder to `runs/old/` (D186).
+
+**If the machine running the runner dies**, its nodes keep running and the next run refuses, because it will not stop what it did not
+start (D189). Clear them on each machine it names: `kill` the PIDs it lists. For a client machine's users, use
+`bash scripts/start-users.sh --stop --machine M`.
 
 Between runs the runner wipes `storage.dir` and `metrics.dir` on every machine, so no state carries over.
 If you run by hand instead, wipe them yourself:
@@ -172,6 +222,16 @@ rm -rf data/raft runs/lab
 
 **Never wipe `storage.dir` during a recovery test:** that is the state a powered-off node comes back from
 (D118).
+
+**First run on the lab.** The runner has only run through a stand-in `ssh`. On the first run, check by hand, with one short cell
+(`WARMUP=5 MEASURED=20 REPS=1 scripts/run-experiments.sh experiments/hosts quick e1-30-bidding`):
+
+1. `ssh` returns as soon as each node has started. The runner reaches `wait_for_leader` within a few seconds.
+2. `pgrep -c -x loadgen` on a client machine prints 10 during the run.
+3. Nothing is left afterwards: `pgrep -a -x loadgen` and `pgrep -a -x node` print nothing, and `runs-config/` holds only `run.toml`.
+4. Every node's log in the run folder has a `stopped` event, and the folder has 30 `client-*.jsonl` files.
+5. Kill a client machine's `start-users.sh` with `kill -9` during a second short run. The runner should say it stopped the series, and
+   its next start should refuse while the programs still run.
 
 ## 6. Collect and analyse
 
@@ -185,13 +245,17 @@ python analysis/analyze.py runs      # analysis/out/summary.csv and plots
 ```
 
 `digest_mismatches` must be 0: any other value is a real bug, so keep the logs. `plans_refused` above 0 means a worker pool shed
-work in that cell, and `elections` well above 0 means the cell is above what the machines can hold.
+work in that cell, and `elections` well above 0 means the cell is above what the machines can hold. A large `client_gap_max_ms` with `gave_up` above 0 means clients stopped waiting,
+so it is a lower limit on the outage and not a time to recover (D224).
 
 ## 7. If something goes wrong
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `ctl status` says unreachable | the node is down, or port 8001 is closed |
+| `ctl status` says unreachable | the node is down, or `8001/tcp` is closed |
+| `ctl status` says `udp no answer` with a healthy row above it | `8001/udp` is closed on that node. Reports to it vanish, and the run still looks fine with two nodes answering |
+| A node's stderr says `UDP receive buffer capped by the kernel`, or `analyze.py` warns about a capped UDP buffer | `net.core.rmem_max` was not raised on that machine: `sudo sysctl -w net.core.rmem_max=8388608` |
+| Requests retry after about 2 s in bursts, and `udp_drops_nodes` is above 0 | copies lost to a full buffer: raise `net.core.rmem_max` and `RECEIVE_BUFFER_BYTES`, or spread the users' start |
 | No leader, and nodes log connect failures | port 7001 is closed between the nodes, or an address is wrong |
 | A node logs `Address already in use` | its old process is still running |
 | A node refuses to start: unknown key | the config is from another commit; rebuild and copy it again |
@@ -199,15 +263,21 @@ work in that cell, and `elections` well above 0 means the cell is above what the
 | `fault_election` lines with `victim` null, over and over | a round could not finish: one node is off, silenced, catching up or degraded, or has `--faults off`. That is the rule working (D158, D159) |
 | `degraded` is true with both peers running | the peers miss heartbeats for 2 s: an overloaded machine or a bad network (D121) |
 | A returning node stays `serving = false` | it hears no leader; after 3 s it may stand itself (D125), but it needs one peer for a majority. It asks the leader again every second (D135), so it is not waiting on a lost index. Look for `rejoin: still applying` in its log |
-| The runner says `left over on <host>` | a program from an earlier run or a person's terminal. Stop it by hand and run again (D139) |
-| The runner says `cannot check <host>` | ssh to that machine failed |
+| The runner says `programs from an earlier run are still running` | a `loadgen`, `node`, `frontend` or `zonefeed` from this build is still up on that machine. It stops nothing itself: `kill` the PIDs it lists, or `bash scripts/start-users.sh --stop --machine M`; for a web page's batch, stop the page (D139, D189) |
+| The runner says `cannot check <host> for leftover programs` | exit 255 means ssh to that machine failed; exit 125 means the repo folder is not there (D222) |
+| The runner seems to hang on starting a node | it should not now (D222), so look at what else holds the ssh session's output open on that machine |
+| `warning: still running, so its log copy may be cut short` | a node took over 10 s to stop. `STOP_WAIT_S` allows longer. If the next run refuses, stop it by hand |
+| `warning: cannot copy the logs from <machine>` | that machine cannot be reached. The other logs are copied, and its own stay on it until the next run wipes them |
+| `experiments/hosts: two client machines have the same number`, or `a client machine's number must be 1 to 9` | each client machine needs its own number from 1 to 9 in the hosts file |
+| `start-users: a killed start left programs running` | the script was killed and its programs ran on. `--stop --machine M --batch B` ends them, and they still flush (D190) |
 | The runner says `run dropped and batch stopped` | read the reason on that line. Earlier runs are kept. Re-run the cells that are missing |
 | The runner ends with `these never got their fault` | the node missed `ctl` for 6 s or more, usually overload. Logs are under `runs/dropped/`. Run those cells again by name |
 | `start-users: machine M batch B is already running` | it is, or another start got there first: `--stop`, or another `--batch` |
 | The runner stops the series with a status of 2 or more | a client machine refused to start, lost over a tenth of its programs, or cannot be reached (255): read `users-*.out` in the run folder |
-| `analyze.py` prints `left out ...` | a run had missing programs, or its fault never fired: rerun it |
+| `analyze.py` prints `left out ...` | the line says why: programs missing, failed or stopped early, users that do not add up, a node log not copied, a damaged log, or a fault that never fired. Rerun that run |
+| `analyze.py` prints `dropped a half-written last line` | a program or node was killed in mid-write. Harmless by itself; the run is left out only if another check catches it |
 | Elections keep happening with no fault | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
-| `ctl` errors, and client links churn with `bad frame` | a stale binary on one machine: `NodeStatus` grew (D155). Rebuild all six from one commit |
+| `ctl` errors, or reports vanish while every row looks healthy | a stale binary on one machine: an old client and a new node fail quietly (D155, D175). Rebuild all six from one commit |
 | `members` shows `-` | that node is silenced; its list is frozen and not worth reading |
 | `members` differs between nodes | normal for a moment: each list is one node's opinion. Lasting differences with everyone serving point at a network problem between two nodes |
 | Latency is very low, `no responder` is near 100% and `expired` is high | an age stamped wrongly, or `--ttl-ms` passed by mistake: check the loadgen command and the commit (D143) |

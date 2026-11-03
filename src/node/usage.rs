@@ -1,5 +1,6 @@
 //! Reads this process's memory and CPU and the machine's network counters from `/proc`, for the
 //! once-a-second `resource_usage` event (D128). The spec asks for CPU, memory, network and queues.
+//! UDP datagrams the kernel threw away come from here too (D171).
 //!
 //! Blocking file reads, so the caller runs [`read`] off the async runtime. A file that cannot be
 //! read leaves its fields out; the parsers are pure, so they are easy to test.
@@ -16,6 +17,9 @@ pub struct Usage {
     /// All interfaces but loopback. Includes other traffic on the machine, so keep it quiet.
     pub net_rx_bytes: Option<u64>,
     pub net_tx_bytes: Option<u64>,
+    /// The machine's `UdpRcvbufErrors`: datagrams dropped because a socket's receive buffer was
+    /// full. All of this machine's sockets, so on one machine it counts all three nodes.
+    pub udp_drops: Option<u64>,
 }
 
 pub fn read() -> Usage {
@@ -26,7 +30,14 @@ pub fn read() -> Usage {
         cpu_ticks: file("/proc/self/stat").as_deref().and_then(parse_cpu_ticks),
         net_rx_bytes,
         net_tx_bytes,
+        udp_drops: read_udp_drops(),
     }
+}
+
+/// Only the drop count, for client programs, which log nothing else from here.
+pub fn read_udp_drops() -> Option<u64> {
+    let snmp = std::fs::read_to_string("/proc/net/snmp").ok()?;
+    parse_udp_drops(&snmp)
 }
 
 fn parse_rss_kb(status: &str) -> Option<u64> {
@@ -62,9 +73,33 @@ fn parse_net(dev: &str) -> Option<(u64, u64)> {
     totals
 }
 
+/// `/proc/net/snmp` gives each protocol a line of names, then a line of numbers. Found by name,
+/// because kernels add columns, and "Udp:" with its colon, because "UdpLite:" follows it.
+fn parse_udp_drops(snmp: &str) -> Option<u64> {
+    let mut lines = snmp.lines().filter(|l| l.starts_with("Udp:"));
+    let names = lines.next()?;
+    let values = lines.next()?;
+    let column = names
+        .split_whitespace()
+        .position(|name| name == "RcvbufErrors")?;
+    values.split_whitespace().nth(column)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn udp_drops_come_from_the_udp_lines_by_name() {
+        let snmp = "Tcp: RtoAlgorithm RcvbufErrors\nTcp: 1 7\n\
+            Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors\n\
+            Udp: 100 2 3 90 41 0\n\
+            UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors\n\
+            UdpLite: 0 0 0 0 5 0\n";
+        assert_eq!(parse_udp_drops(snmp), Some(41));
+        assert_eq!(parse_udp_drops("Tcp: A\nTcp: 1\n"), None);
+        assert_eq!(parse_udp_drops("Udp: InDatagrams\nUdp: 1\n"), None);
+    }
 
     #[test]
     fn memory_comes_from_vmrss() {

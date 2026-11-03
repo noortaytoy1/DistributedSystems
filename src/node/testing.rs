@@ -24,7 +24,9 @@ use super::workers::WorkerPool;
 use super::{NodeContext, lock};
 use crate::config::Config;
 use crate::metrics::EventLog;
-use crate::proto::{Command, CommittedResult, NodeId, Outcome, PeerReply, ProposeError, RaftRpc};
+use crate::proto::{
+    Command, CommittedResult, NodeId, Outcome, PeerReply, Plan, ProposeError, RaftRpc, StaleReason,
+};
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, ConsensusStatus, Role};
 
@@ -51,12 +53,18 @@ pub(crate) struct ScriptedConsensus {
     quiet: AtomicBool,
     answers: Mutex<VecDeque<Result<Option<u64>, ProposeError>>>,
     questions: AtomicUsize,
+    /// As a Raft that has stopped: every wait fails at once.
+    stopped: AtomicBool,
     applied: watch::Sender<Option<u64>>,
     heard: watch::Sender<Option<u64>>,
     /// One permit for each proposal that has arrived.
     proposed: Semaphore,
     /// One permit for each proposal the test lets commit.
     commits: Semaphore,
+    /// How many more results come back `Stale`.
+    stale_left: AtomicUsize,
+    /// The plan of every result proposed so far, oldest first.
+    plans: Mutex<Vec<Plan>>,
 }
 
 impl ScriptedConsensus {
@@ -68,10 +76,13 @@ impl ScriptedConsensus {
             quiet: AtomicBool::new(false),
             answers: Mutex::new(VecDeque::new()),
             questions: AtomicUsize::new(0),
+            stopped: AtomicBool::new(false),
             applied: watch::channel(None).0,
             heard: watch::channel(None).0,
             proposed: Semaphore::new(0),
             commits: Semaphore::new(0),
+            stale_left: AtomicUsize::new(0),
+            plans: Mutex::new(Vec::new()),
         })
     }
 
@@ -105,6 +116,11 @@ impl ScriptedConsensus {
         self.applied.send_replace(Some(index));
     }
 
+    /// From here on every `wait_applied` fails at once, as on a Raft that has stopped.
+    pub(crate) fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+
     /// As if an AppendEntries from a current leader was accepted.
     pub(crate) fn hear_from_leader(&self) {
         self.heard.send_replace(None);
@@ -123,6 +139,16 @@ impl ScriptedConsensus {
     pub(crate) fn commit_one(&self) {
         self.commits.add_permits(1);
     }
+
+    /// The next `count` results come back `Stale`, as if their responder had just been taken.
+    pub(crate) fn make_stale(&self, count: usize) {
+        self.stale_left.store(count, Ordering::SeqCst);
+    }
+
+    /// The plan of every result proposed so far, oldest first.
+    pub(crate) fn proposed_plans(&self) -> Vec<Plan> {
+        lock(&self.plans).clone()
+    }
 }
 
 impl Consensus for ScriptedConsensus {
@@ -132,16 +158,27 @@ impl Consensus for ScriptedConsensus {
             self.proposed.add_permits(1);
             self.commits.acquire().await.expect("never closed").forget();
             Ok(match cmd {
-                Command::CommitResult(p) => Outcome::Committed(CommittedResult {
-                    request: p.request,
-                    incident: p.incident,
-                    executor: p.executor,
-                    term: p.term,
-                    plan: p.plan,
-                    age_ms: p.age_ms,
-                    assigned_at_ms: p.assigned_at_ms,
-                    log_index: 1,
-                }),
+                Command::CommitResult(p) => {
+                    lock(&self.plans).push(p.plan.clone());
+                    if self.stale_left.load(Ordering::SeqCst) > 0 {
+                        self.stale_left.fetch_sub(1, Ordering::SeqCst);
+                        return Ok(Outcome::Stale {
+                            request: p.request,
+                            responder: p.plan.responder.expect("only a named responder is taken"),
+                            reason: StaleReason::UnknownResponder,
+                        });
+                    }
+                    Outcome::Committed(CommittedResult {
+                        request: p.request,
+                        incident: p.incident,
+                        executor: p.executor,
+                        term: p.term,
+                        plan: p.plan,
+                        age_ms: p.age_ms,
+                        assigned_at_ms: p.assigned_at_ms,
+                        log_index: 1,
+                    })
+                }
                 _ => Outcome::Applied,
             })
         })
@@ -197,6 +234,11 @@ impl Consensus for ScriptedConsensus {
 
     fn wait_applied(&self, index: u64, timeout: Duration) -> BoxFuture<'_, bool> {
         Box::pin(async move {
+            if self.stopped.load(Ordering::SeqCst) {
+                // Lets a test see a caller that loops on this, instead of being shut out by it.
+                tokio::task::yield_now().await;
+                return false;
+            }
             let mut applied = self.applied.subscribe();
             let reached = applied.wait_for(|a| a.is_some_and(|a| a >= index));
             matches!(tokio::time::timeout(timeout, reached).await, Ok(Ok(_)))

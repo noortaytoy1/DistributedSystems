@@ -29,7 +29,7 @@ peer nodes decides which responder goes where and makes sure every report gets o
 ```
  clients (simulated users)            cloud: three peer nodes
  ┌──────────────────────┐   request  ┌──────────────────────────────────────┐
- │ multicast to all     │ ─────────▶ │ node 1   node 2   node 3             │
+ │ group send to all    │ ─────────▶ │ node 1   node 2   node 3             │
  │ retry with same ID   │            │ transport + fault gate               │
  │ first reply wins     │ ◀───────── │ assignment (bidding / leader)        │
  └──────────────────────┘    reply   │ worker pool + planner                │
@@ -45,9 +45,9 @@ experiments have not been run there.
 - **Built:** Raft replication with the log on disk, load-based bidding (the default), takeover from a silent
   winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), the planner with incident priority,
   TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
-  group communication with a who's-alive list, the client middleware, the load generator with 10 real programs per client
-  machine, a web page for each client machine, the experiment runner and the analysis.
-- **Decided, not merged yet:** clients over UDP, and any node loading the responder list (D216). The cloud side's layer files (D156).
+  group communication with a who's-alive list, the client middleware, reports over UDP through tarpc with `ctl` on tarpc over TCP (D167, D168),
+  any serving node loading the responder list (D164), the load generator with 10 real programs per client
+  machine, a web page for each client machine, the middleware and application kept apart on both sides (D156), the experiment runner and the analysis.
 - **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe (D209).
 
 ## Requirements
@@ -94,7 +94,7 @@ Then inspect the cluster and generate load. `--client-id` is required: use 1 to 
 ```bash
 cargo run --release --bin ctl -- status
 cargo run --release --bin loadgen -- --client-id 1 --users 20 --duration-s 30      # closed loop
-cargo run --release --bin loadgen -- --client-id 2 --rate 500 --duration-s 30      # open loop
+cargo run --release --bin loadgen -- --client-id 2 --rate 500 --duration-s 30      # open loop; above what the cluster can answer, new calls wait once 20,000 are open on one stub (D173)
 cargo run --release --bin ctl -- incidents --client 1 --limit 5                    # a client's newest records
 cargo run --release --bin ctl -- incidents --id 1-1762180000000123                 # one record, on every node
 cargo run --release --bin loadgen -- --client-id 3 --users 1 --duration-s 1 --ttl-ms 0   # every report refused
@@ -103,13 +103,13 @@ bash scripts/start-users.sh --stop --machine 1
 ```
 
 `ctl status` shows each node's role, term, leader, log position, state digest, whether it is serving, silenced or degraded,
-and who it lists as group members. Nodes that have applied the same log show the same digest. `loadgen` prints throughput
+and who it lists as group members. Below its table, one line per node says whether that node's UDP port answers: `node 1: udp ok`. Nodes that have applied the same log show the same digest. `loadgen` prints throughput
 and latency percentiles, with counts of retries, requests given up on, plans with no responder, provisional answers and
 expired reports. `--pattern steady|random|all-at-once` sets how users wait (D182). `ctl incidents` shows each record's status,
 responder, priority, owner, category, times and log index, on every node.
 
-Requests are planned by a load-based bidding election among the nodes. The Raft leader orders the log and does
-not choose who plans (D114). `policy.assignment = "leader-dispatch"` is the baseline for comparison.
+Requests are planned by a load-based bidding election among the nodes. The Raft leader orders the log and decides nothing else (D114, D163), and it does not
+change with load, because the bid already moves work away from a busy node (D217). `policy.assignment = "leader-dispatch"` is the baseline for comparison.
 
 ## Inject faults
 
@@ -128,7 +128,7 @@ refused.
 With fault injection on, the three nodes also elect one of them to fail: about every 30 to 60 s each draws a random number and sends it to the
 others, and the highest goes silent for 1 to 20 s. A node missing any of the numbers does nothing, so a node that is out stops the next election, and
 no leader is involved (D158). The `[faults]` section sets the ranges and an optional `seed`, which repeats each node's numbers per round but not the
-timing.
+timing. `config/lab.example.toml` ships with both interval keys set so that no timer fires, for the demo, and its comments give the values to turn elections on (D165). The code's default stays 30 to 60 s.
 
 With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled,
 uncommitted `Provisional` answers, then commits them through Raft when a peer returns. First commit wins, so a
@@ -137,18 +137,19 @@ provisional answer can turn out to differ, and clients are not told (D120).
 ## Run on several machines
 
 Copy `config/lab.example.toml` to `config/lab.toml`, fill in each machine's address, and make sure
-the peer and client ports are open between machines. Use the same file everywhere:
+the ports are open between machines: peers on TCP, client ports on both UDP (reports) and TCP (`ctl`). A big UDP buffer needs
+`sudo sysctl -w net.core.rmem_max=8388608` on all six. Use the same file everywhere, and rebuild on every machine after a `git pull`:
 
 ```bash
-# on each server machine, with its own ID
-cargo run --release --bin node -- --config config/lab.toml --id 1
+# on server machine 3 first, then about a second later on 2 and 1, each with its own ID
+cargo run --release --bin node -- --config config/lab.toml --id 3
 # on each client machine, with its own machine number
-bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 50
+bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 20
 # the web page on each client machine, then open that address in its browser
 cargo run --release --bin frontend -- --config config/lab.toml --client-id 11 --listen 127.0.0.1:9001
 ```
 
-The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [docs/demo.md](docs/demo.md).
+The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [docs/demo.md](docs/demo.md). The example config is set up for the demo; the experiment runner never reads it.
 
 ## Run the experiments
 
@@ -191,6 +192,15 @@ ignores, one JSON object per line:
 Human-readable logs go to stderr. The default filter keeps our own `info` lines and everyone's warnings, and turns off tarpc's
 per-call lines, which are costly at load (D134). `RUST_LOG` overrides it, for example `RUST_LOG=debug,openraft=info`.
 
+To watch a machine live in plain words, with no rebuild:
+
+```bash
+python3 scripts/watch_events.py runs/lab            # leader changes, draws, silences, who's alive, a summary each second
+python3 scripts/watch_events.py runs/lab --reports  # also every step of every report
+```
+
+It only reads the logs (D221), and each machine has only its own, so run it where you want to look.
+
 ## Repository layout
 
 ```
@@ -199,7 +209,7 @@ src/
   config.rs       config file format and validation
   state.rs        replicated state machine
   raft/           openraft setup, storage, network adapter
-  node/           node wiring, transport and fault gate, heartbeats, group communication, workers, rejoin, faults, degraded mode
+  node/           node wiring, transport and fault gate, UDP adapter, heartbeats, group communication, workers, rejoin, faults, degraded mode
   bidding.rs      load score and bid selection
   planner.rs      incident planner
   campus.rs       synthetic campus
@@ -219,7 +229,7 @@ docs/             architecture (with diagrams), protocol, design log, runbook, d
 - [docs/architecture.md](docs/architecture.md): deployment, components, every flow as a sequence
   diagram, state and lifecycle diagrams, each marked built, template, planned or open.
 - [docs/design-log.md](docs/design-log.md): every design decision with its options, reasoning and
-  consequences. None is open; D216 lists what is decided and still being built.
+  consequences. None is open; D216 lists Noor's decisions and what is built.
 - [docs/protocol.md](docs/protocol.md): messages, encodings and timers as they are in the code.
 - [docs/runbook.md](docs/runbook.md): running on the six lab machines.
 - [docs/demo.md](docs/demo.md): the Phase 1 demo, scenario by scenario.
@@ -234,8 +244,8 @@ recommendation, and records the answers in the design log before it writes code.
 ## Libraries
 
 [openraft](https://github.com/databendlabs/openraft) 0.9.25 provides Raft leader election and log
-replication. [tarpc](https://github.com/google/tarpc) 0.37 provides remote calls on the peer port (D119).
-Everything else that does distributed work (state machine, storage, network adapter, bidding, group communication, recovery,
-degraded mode, planner, client middleware, fault injection) is our own code (D215). openraft is under MIT or Apache-2.0 and tarpc under MIT.
+replication. [tarpc](https://github.com/google/tarpc) 0.37 provides remote calls, between nodes over TCP and from clients over UDP through a small adapter of ours (D119, D167).
+Everything else that does distributed work (state machine, storage, network adapter, datagram adapter, bidding, group communication, recovery,
+degraded mode, planner, client middleware, fault injection) is our own code (D179, D215). openraft is under MIT or Apache-2.0 and tarpc under MIT.
 AI coding agents helped write the code and these docs. Each design decision says who decided it, in the design log. [AGENTS.md](AGENTS.md) records which
 file belongs to which part.

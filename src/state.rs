@@ -368,6 +368,20 @@ mod tests {
         ));
     }
 
+    /// What lets a node answer after three stale plans (D220): with every responder held, a plan that
+    /// names nobody still commits, and it holds nothing.
+    #[test]
+    fn plan_naming_nobody_commits_when_every_responder_is_held() {
+        let mut s = with_responders(&[1]);
+        s.apply(2, &proposal(10, 1, Some(1)));
+        let Outcome::Committed(done) = s.apply(3, &proposal(11, 2, None)) else {
+            panic!("a plan naming nobody must commit");
+        };
+        assert_eq!(done.plan.responder, None);
+        assert_eq!(s.responder(1).unwrap().held_by, Some(rid(10)));
+        assert_eq!(s.counters().stale, 0);
+    }
+
     #[test]
     fn plan_for_an_unknown_responder_is_stale() {
         let mut s = with_responders(&[1]);

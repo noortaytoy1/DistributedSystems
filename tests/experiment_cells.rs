@@ -62,6 +62,27 @@ fn a_busy_leader_stays_leader_in_every_cell_but_the_one_that_tests_it() {
     }
 }
 
+/// The sweep below this load keeps D129's pool, so a figure must say where the pool changes.
+#[test]
+fn the_top_e1_cells_have_responders_for_their_load() {
+    let responders = |cell: &str| {
+        Config::from_toml(&format!("{BASE}{}", cell_text(cell)))
+            .unwrap()
+            .campus
+            .responders
+    };
+    for users in [1000, 3000] {
+        for policy in ["bidding", "leader"] {
+            assert_eq!(responders(&format!("e1-{users}-{policy}")), 3000);
+        }
+    }
+    for users in [30, 100, 300] {
+        for policy in ["bidding", "leader"] {
+            assert_eq!(responders(&format!("e1-{users}-{policy}")), 300);
+        }
+    }
+}
+
 #[test]
 fn the_quick_profile_is_fifteen_cells_of_the_full_one() {
     let list = std::fs::read_to_string(
