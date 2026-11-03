@@ -7,12 +7,12 @@ mod common;
 use std::time::Duration;
 
 use common::{TestCluster, first_reply, wait_until};
-use rescuemesh::client::MeshClient;
+use rescuemesh::client::{MeshClient, control};
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::metrics::{EventLog, now_ms};
 use rescuemesh::proto::{
-    Capability, Category, ClientRequest, CommittedResult, Incident, IncidentStatus, Point,
-    ReplyBody, RequestId, UserId,
+    Capability, Category, ClientRequest, CommittedResult, ControlReply, ControlRequest, Incident,
+    IncidentQuery, IncidentStatus, IncidentView, NodeStatus, Point, ReplyBody, RequestId, UserId,
 };
 
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -282,5 +282,109 @@ async fn nobody_free_reads_unassigned_then_expired_with_no_log_entry() {
     .await;
     // Past the deadline by the clock alone: nothing went through the log.
     assert_eq!(positions(&cluster), before);
+    cluster.shutdown().await;
+}
+
+/// One node's answer to a read, through its control port like `ctl` and a page.
+async fn read(
+    cluster: &TestCluster,
+    node: u64,
+    query: IncidentQuery,
+) -> (NodeStatus, Vec<IncidentView>) {
+    let addr = &cluster.config.node(node).unwrap().client_addr;
+    let reply = control(
+        addr,
+        ControlRequest::Incidents(query),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    let ControlReply::Incidents { node, rows } = reply else {
+        panic!("unexpected reply {reply:?}");
+    };
+    (node, rows)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rows_for_one_id_match_on_all_three_nodes() {
+    let cluster = start(30, |_| {}).await;
+    let client = MeshClient::new(75, &cluster.config, EventLog::disabled("c"));
+    let done = client.submit(incident(4, 60_000)).await.unwrap();
+    wait_until(PATIENCE, "the record on all three nodes", || {
+        (1..=3).all(|n| status_on(&cluster, n, &done.id).is_some())
+    })
+    .await;
+
+    let mut rows = Vec::new();
+    for node in 1..=3 {
+        let (_, mut got) = read(&cluster, node, IncidentQuery::One(done.id)).await;
+        assert_eq!(got.len(), 1, "node {node}");
+        rows.push(got.remove(0));
+    }
+    let result = done.committed.unwrap();
+    for row in &rows {
+        assert_eq!(row.id, done.id);
+        assert_eq!(row.incident, result.incident);
+        assert_eq!(row.responder, result.plan.responder);
+        assert_eq!(row.executor, result.executor);
+        assert_eq!(row.age_ms, result.age_ms);
+        assert_eq!(row.assigned_at_ms, result.assigned_at_ms);
+        assert_eq!(row.log_index, result.log_index);
+        // Worked out once, by the planner on the executor, and carried in the log.
+        assert_eq!(row.priority, result.plan.priority);
+        assert!(row.priority >= 400, "severity 4 alone is 400 points");
+        // Severity 4 at the default 200 ms per point.
+        assert_eq!(row.expires_at_ms, Some(result.assigned_at_ms + 800));
+    }
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_query_reads_that_clients_newest_records() {
+    let cluster = start(30, |_| {}).await;
+    let (low, high) = (
+        MeshClient::new(76, &cluster.config, EventLog::disabled("c")),
+        MeshClient::new(77, &cluster.config, EventLog::disabled("c")),
+    );
+    let first = low.submit(incident(1, 60_000)).await.unwrap();
+    let second = low.submit(incident(1, 60_000)).await.unwrap();
+    let other = high.submit(incident(1, 60_000)).await.unwrap();
+    let node = cluster.node(1);
+    wait_until(PATIENCE, "all three records on node 1", || {
+        node.ctx.status().results == 3
+    })
+    .await;
+
+    let of = |client, limit| read(&cluster, 1, IncidentQuery::OfClient { client, limit });
+    let ids = |rows: Vec<IncidentView>| rows.iter().map(|r| r.id).collect::<Vec<_>>();
+    assert_eq!(ids(of(76, 10).await.1), vec![second.id, first.id]);
+    assert_eq!(ids(of(76, 1).await.1), vec![second.id]);
+    assert_eq!(ids(of(77, 10).await.1), vec![other.id]);
+    assert_eq!(ids(of(78, 10).await.1), vec![]);
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn control_rows_say_whether_the_node_is_silenced_or_serving() {
+    let cluster = start(30, |_| {}).await;
+    let any = IncidentQuery::OfClient {
+        client: 79,
+        limit: 1,
+    };
+    let (status, _) = read(&cluster, 2, any.clone()).await;
+    assert!(status.serving && !status.silenced);
+
+    // Control frames pass the gate, so it answers; the reply must give it away.
+    cluster.node(2).ctx.gate.silence();
+    let (status, _) = read(&cluster, 2, any.clone()).await;
+    assert!(status.silenced);
+    let node = cluster.node(2);
+    wait_until(PATIENCE, "the silenced node to stop serving", || {
+        !node.ctx.status().serving
+    })
+    .await;
+    let (status, _) = read(&cluster, 2, any).await;
+    assert!(!status.serving);
+    node.ctx.gate.restore();
     cluster.shutdown().await;
 }

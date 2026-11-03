@@ -504,6 +504,17 @@ fn on_control(ctx: &Arc<NodeContext>, cmd: ControlRequest) -> ControlReply {
             ctx.plan_work.store(extra_work, Ordering::SeqCst);
             ControlReply::Done
         }
+        ControlRequest::Incidents(query) => {
+            let ms_per_severity = ctx.config.campus.service_ms_per_severity;
+            let now = now_ms();
+            let rows = ctx
+                .state
+                .with(|s| s.incident_rows(&query, now, ms_per_severity));
+            ControlReply::Incidents {
+                node: ctx.status(),
+                rows,
+            }
+        }
     }
 }
 

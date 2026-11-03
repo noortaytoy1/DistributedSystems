@@ -459,6 +459,7 @@ async fn a_fresh_report_gets_a_responder_and_reads_assigned() {
     let done = client.submit(incident()).await.unwrap();
     assert!(done.plan.responder.is_some());
     assert_eq!(done.status, IncidentStatus::Assigned);
+    assert!(done.plan.priority >= 200, "severity 2 alone is 200 points");
     let result = done.committed.unwrap();
     assert!(!result.too_old_on_arrival());
     assert!(result.age_ms < 10_000, "age {} ms", result.age_ms);

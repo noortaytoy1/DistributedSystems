@@ -21,8 +21,8 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{
-    Command, CommittedResult, IncidentStatus, Outcome, RequestId, Responder, ResponderId,
-    ResultProposal, StaleReason,
+    Command, CommittedResult, IncidentQuery, IncidentStatus, IncidentView, MAX_INCIDENT_ROWS,
+    Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +143,44 @@ impl CloudState {
             .responder
             .and_then(|responder| self.responders.get(&responder))
             .is_some_and(|slot| slot.held_by == Some(result.request))
+    }
+
+    /// The records `query` asks for, read at `now_ms` (D145). One client's range costs only the rows
+    /// returned, and sequence numbers start at the current time (D113), so the highest is the newest.
+    pub fn incident_rows(
+        &self,
+        query: &IncidentQuery,
+        now_ms: u64,
+        ms_per_severity: u64,
+    ) -> Vec<IncidentView> {
+        let view = |result: &CommittedResult| IncidentView {
+            id: result.request,
+            incident: result.incident.clone(),
+            status: result.status(self.is_held(result), now_ms),
+            responder: result.plan.responder,
+            priority: result.plan.priority,
+            executor: result.executor,
+            age_ms: result.age_ms,
+            assigned_at_ms: result.assigned_at_ms,
+            expires_at_ms: result.planned_end_ms(ms_per_severity),
+            log_index: result.log_index,
+        };
+        match *query {
+            IncidentQuery::One(id) => self.results.get(&id).map(view).into_iter().collect(),
+            IncidentQuery::OfClient { client, limit } => {
+                let first = RequestId { client, seq: 0 };
+                let last = RequestId {
+                    client,
+                    seq: u64::MAX,
+                };
+                self.results
+                    .range(first..=last)
+                    .rev()
+                    .take(limit.min(MAX_INCIDENT_ROWS) as usize)
+                    .map(|(_, result)| view(result))
+                    .collect()
+            }
+        }
     }
 
     pub fn results(&self) -> impl Iterator<Item = &CommittedResult> {
@@ -455,6 +493,92 @@ mod tests {
         );
         assert_eq!(s, before);
         assert_eq!(s.digest(), before.digest());
+    }
+
+    /// Commits one nobody-sent report for each (client, seq), at indexes from 2.
+    fn with_results(ids: &[(u64, u64)]) -> CloudState {
+        let mut s = CloudState::new();
+        for (i, (client, seq)) in ids.iter().enumerate() {
+            let Command::CommitResult(mut p) = proposal(*seq, 1, None) else {
+                panic!("proposal() builds a CommitResult");
+            };
+            p.request = RequestId {
+                client: *client,
+                seq: *seq,
+            };
+            s.apply(i as u64 + 2, &Command::CommitResult(p));
+        }
+        s
+    }
+
+    fn row_ids(rows: &[IncidentView]) -> Vec<(u64, u64)> {
+        rows.iter().map(|r| (r.id.client, r.id.seq)).collect()
+    }
+
+    #[test]
+    fn rows_of_one_client_come_newest_first_up_to_the_limit() {
+        let s = with_results(&[(3, 1), (3, 2), (3, 3), (3, 4)]);
+        let rows = s.incident_rows(
+            &IncidentQuery::OfClient {
+                client: 3,
+                limit: 2,
+            },
+            1_000,
+            200,
+        );
+        assert_eq!(row_ids(&rows), vec![(3, 4), (3, 3)]);
+    }
+
+    #[test]
+    fn a_client_query_never_returns_more_than_the_cap() {
+        let ids: Vec<(u64, u64)> = (0..MAX_INCIDENT_ROWS as u64 + 5).map(|s| (3, s)).collect();
+        let s = with_results(&ids);
+        let rows = s.incident_rows(
+            &IncidentQuery::OfClient {
+                client: 3,
+                limit: u32::MAX,
+            },
+            1_000,
+            200,
+        );
+        assert_eq!(rows.len(), MAX_INCIDENT_ROWS as usize);
+    }
+
+    #[test]
+    fn a_higher_client_id_does_not_hide_a_lower_one() {
+        let s = with_results(&[(1, 5), (2, 6), (3, 7), (3, 8), (3, 9)]);
+        let of = |client| {
+            let query = IncidentQuery::OfClient { client, limit: 2 };
+            row_ids(&s.incident_rows(&query, 1_000, 200))
+        };
+        assert_eq!(of(1), vec![(1, 5)]);
+        assert_eq!(of(2), vec![(2, 6)]);
+        assert_eq!(of(3), vec![(3, 9), (3, 8)]);
+        assert_eq!(of(4), Vec::<(u64, u64)>::new());
+    }
+
+    #[test]
+    fn a_row_shows_the_record_and_its_status() {
+        let mut s = with_responders(&[1]);
+        s.apply(2, &proposal(10, 2, Some(1)));
+        let one = IncidentQuery::One(rid(10));
+        let rows = s.incident_rows(&one, 1_000, 200);
+        let [row] = rows.as_slice() else {
+            panic!("expected one row, got {rows:?}");
+        };
+        assert_eq!(row.id, rid(10));
+        assert_eq!(row.incident.severity, 3);
+        assert_eq!(row.status, IncidentStatus::Assigned);
+        assert_eq!(row.responder, Some(1));
+        assert_eq!(row.priority, 300);
+        assert_eq!(row.executor, 2);
+        assert_eq!((row.age_ms, row.assigned_at_ms), (4, 1_000));
+        assert_eq!(row.expires_at_ms, Some(1_600));
+        assert_eq!(row.log_index, 2);
+        assert!(
+            s.incident_rows(&IncidentQuery::One(rid(11)), 1_000, 200)
+                .is_empty()
+        );
     }
 
     #[test]

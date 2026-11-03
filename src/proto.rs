@@ -4,6 +4,7 @@
 //! review from every affected owner, and keep docs/protocol.md in sync.
 
 use std::fmt;
+use std::str::FromStr;
 
 use bincode::Options;
 use openraft::error::{InstallSnapshotError, RaftError};
@@ -37,6 +38,25 @@ pub struct RequestId {
 impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}-{}", self.client, self.seq)
+    }
+}
+
+impl FromStr for RequestId {
+    type Err = String;
+
+    /// Reads what `Display` writes, so `ctl` can take an ID copied from its own output.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let number = |part: &str| {
+            part.parse()
+                .map_err(|e| format!("bad request ID {text:?}: {e}"))
+        };
+        let (client, seq) = text
+            .split_once('-')
+            .ok_or_else(|| format!("bad request ID {text:?}: expected <client>-<seq>"))?;
+        Ok(RequestId {
+            client: number(client)?,
+            seq: number(seq)?,
+        })
     }
 }
 
@@ -288,6 +308,16 @@ impl CommittedResult {
             .saturating_add(self.incident.ttl_ms.saturating_sub(self.age_ms))
     }
 
+    /// When the responder is planned to be free again: the time on scene counted from the plan
+    /// (D111, D144). `None` if nobody was sent. A plan, not a promise: a backup releases at twice
+    /// the service time, a failed release restarts the wait, and a replayed plan's hold starts when
+    /// the replay commits. Only the release committing makes a record Resolved.
+    pub fn planned_end_ms(&self, ms_per_severity: u64) -> Option<u64> {
+        self.plan.responder?;
+        let service_ms = u64::from(self.incident.severity).saturating_mul(ms_per_severity);
+        Some(self.assigned_at_ms.saturating_add(service_ms))
+    }
+
     /// Where this record stands, given whether its responder is still held and the reader's clock
     /// (D142). A responder still held past the deadline really is still out there, so only a record
     /// that sent nobody can expire.
@@ -353,6 +383,43 @@ impl fmt::Display for IncidentStatus {
         f.write_str(self.as_str())
     }
 }
+
+/// One committed incident as an operator or a page reads it: every field the spec lists for an
+/// incident, with its status worked out at the moment of reading (D142, D145).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentView {
+    pub id: IncidentId,
+    pub incident: Incident,
+    pub status: IncidentStatus,
+    pub responder: Option<ResponderId>,
+    /// Priority points (D148).
+    pub priority: u32,
+    pub executor: NodeId,
+    /// The report's age when it was planned. Measured on the client's clock, unlike
+    /// `assigned_at_ms`: never subtract `reported_at_ms` from `assigned_at_ms` (D144).
+    pub age_ms: u64,
+    pub assigned_at_ms: u64,
+    /// See [`CommittedResult::planned_end_ms`].
+    pub expires_at_ms: Option<u64>,
+    pub log_index: u64,
+}
+
+/// Which incident records to read (D145).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IncidentQuery {
+    One(IncidentId),
+    /// This client's newest records first, at most `limit` of them and never more than
+    /// [`MAX_INCIDENT_ROWS`].
+    OfClient {
+        client: ClientId,
+        limit: u32,
+    },
+}
+
+/// Rows `ctl incidents --client` asks for unless told otherwise.
+pub const DEFAULT_INCIDENT_ROWS: u32 = 10;
+/// Most rows one reply carries: building them holds up applying the log (`StateReader::with`).
+pub const MAX_INCIDENT_ROWS: u32 = 20;
 
 /// What applying a [`Command`] produced. This is the Raft response type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -467,6 +534,8 @@ pub enum ControlRequest {
     SkewLoad {
         extra_work: u32,
     },
+    /// Read committed incident records from this node's copy of the state (D145).
+    Incidents(IncidentQuery),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,6 +543,12 @@ pub enum ControlReply {
     Status(NodeStatus),
     Done,
     Error(String),
+    /// Control frames pass the fault gate, so a silenced or returning node still answers. `node`
+    /// says so: a reader must not take such a node's rows as current.
+    Incidents {
+        node: NodeStatus,
+        rows: Vec<IncidentView>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -768,6 +843,17 @@ mod tests {
     }
 
     #[test]
+    fn the_planned_end_is_the_time_on_scene_after_the_plan() {
+        // Severity 4 at 200 ms per point.
+        assert_eq!(record(Some(9), 0, 1_000).planned_end_ms(200), Some(1_800));
+        assert_eq!(record(None, 0, 1_000).planned_end_ms(200), None);
+        assert_eq!(
+            record(Some(9), 0, u64::MAX).planned_end_ms(200),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
     fn expired_replies_round_trip() {
         let frame = ServerFrame::Reply(ClientReply {
             id: RequestId { client: 1, seq: 2 },
@@ -776,6 +862,59 @@ mod tests {
         });
         let back: ServerFrame = decode(&encode(&frame).unwrap()).unwrap();
         assert_eq!(back, frame);
+    }
+
+    #[test]
+    fn incident_queries_and_rows_round_trip() {
+        let request = ClientFrame::Control(ControlRequest::Incidents(IncidentQuery::OfClient {
+            client: 3,
+            limit: 10,
+        }));
+        let back: ClientFrame = decode(&encode(&request).unwrap()).unwrap();
+        assert_eq!(back, request);
+
+        let reply = ServerFrame::Control(ControlReply::Incidents {
+            node: NodeStatus {
+                id: 1,
+                term: 2,
+                leader: Some(1),
+                role: "leader".into(),
+                last_log_index: Some(9),
+                last_applied: Some(9),
+                digest: 7,
+                results: 1,
+                responders: 30,
+                silenced: false,
+                serving: true,
+                degraded: false,
+            },
+            rows: vec![IncidentView {
+                id: RequestId { client: 3, seq: 4 },
+                incident: incident(),
+                status: IncidentStatus::Assigned,
+                responder: Some(16),
+                priority: 460,
+                executor: 2,
+                age_ms: 0,
+                assigned_at_ms: 1_000,
+                expires_at_ms: Some(1_800),
+                log_index: 5,
+            }],
+        });
+        let back: ServerFrame = decode(&encode(&reply).unwrap()).unwrap();
+        assert_eq!(back, reply);
+    }
+
+    #[test]
+    fn request_ids_parse_back_from_their_display_form() {
+        let id = RequestId {
+            client: 3,
+            seq: 1_762_180_000_000_123,
+        };
+        assert_eq!(id.to_string().parse(), Ok(id));
+        for bad in ["", "3", "3-", "-4", "a-4", "3-b", "3-4-5"] {
+            assert!(bad.parse::<RequestId>().is_err(), "{bad:?}");
+        }
     }
 
     #[test]
