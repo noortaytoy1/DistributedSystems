@@ -345,6 +345,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   without a commit (D120).
 - **Provisional:** an answer given without a commit. It is replayed through Raft later, and first commit
   wins, so it can turn out to differ (D122).
+- **Fault election:** every 30 to 60 s the three nodes draw random numbers and send them to each other; the highest goes silent for 1 to 20 s. A node missing
+  any number does nothing, so a node that is out stops the next election. No leader, nothing in the log (D158).
 - **Group send:** the client middleware's send to all of the cloud nodes. The application makes one call and does not know it
   happens (D210).
 - **Group:** the cloud nodes as one named group (`node/group.rs`). `send` goes to the view and `probe` to every configured peer. Order

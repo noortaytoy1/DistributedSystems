@@ -125,10 +125,10 @@ Fault injection can be switched off for no-fault baseline runs: `enabled = false
 `[faults]` in the config, or `--faults off` when starting a node (D77). `ctl silence` is then
 refused.
 
-With fault injection on, the three nodes also elect one of themselves to fail: every 30 to 60 s each draws a random
-number and sends it to the other two, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does
-nothing, so two cannot go down at once this way, and no leader is involved (D158). The `[faults]` section sets the ranges and an
-optional `seed`.
+With fault injection on, the three nodes also elect one of them to fail: about every 30 to 60 s each draws a random number and sends it to the
+others, and the highest goes silent for 1 to 20 s. A node missing any of the numbers does nothing, so a node that is out stops the next election, and
+no leader is involved (D158). The `[faults]` section sets the ranges and an optional `seed`, which repeats each node's numbers per round but not the
+timing.
 
 With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled,
 uncommitted `Provisional` answers, then commits them through Raft when a peer returns. First commit wins, so a
@@ -174,7 +174,7 @@ Every process reads one TOML file. Unknown keys are rejected, so a typo fails at
 | `campus`   | Seed, zones and responders of the synthetic campus, time on scene, how long a report stays valid (`incident_ttl_ms`) |
 | `metrics`  | Directory for event logs; leave it out to disable                            |
 | `storage`  | Directory for each node's Raft log and vote. Leave it out to keep them in memory, which is for tests only: a node then cannot survive losing power (D118) |
-| `faults`   | Fault injection on or off, the schedule's ranges and seed                    |
+| `faults`   | Fault injection on or off, the fault election's ranges and seed              |
 
 Defaults and validation live in [src/config.rs](src/config.rs).
 

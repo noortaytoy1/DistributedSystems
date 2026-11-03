@@ -94,7 +94,7 @@ maps to one method.
 | `Raft(Vote)`                 | candidate                  | `Vote(Result<..>)`                 |
 | `Raft(InstallSnapshot)`      | leader                     | `InstallSnapshot(Result<..>)`      |
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)`. One command. The leader puts it in the same queue as its own proposals (D133) |
-| `FaultBid { round, ticket, ms }` | every node that may bid, to the peers in its view | `Ack`. No retry. A node acts only when it holds a bid from all 3 configured nodes: the highest ticket closes its own gate for its own `ms` (D158, D159). It replaces `FaultOrder` (D160) |
+| `FaultBid(FaultBid { round, ticket, ms })` | every node that may bid, to the group (D158) | `Ack`. Only `Ack` means the peer holds it. A bid from an older term gets `StaleTerm` and is dropped. No retry |
 | `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: the larger of the leader's commit index and its first entry of the term, confirmed by a majority, or `NotLeader { leader }` (D76). Everything committed before the question is at or below the answer, but the answer itself may not be committed yet, so a waiting node asks again after 1 s and keeps the lowest answer (D135) |
 | `Bid(Bid { request, attempt, score })` | every serving node, to the peers in its view, not waited for (D104, D154) | `Ack`. Each request and attempt has its own round (D84) |
 | `Heartbeat`                  | every node, to every configured peer, in its view or not (D154) | `Ack`                              |
@@ -102,6 +102,11 @@ maps to one method.
 **Term rule.** A receiver drops a non-Raft message whose `term` is lower than its own and
 answers `StaleTerm { current }`. Raft RPCs are always passed to openraft, which rejects stale
 leaders itself and must reply so they step down.
+
+**Fault election.** A round closes on a node only when it holds a bid from every node in `config.cluster.nodes`, whatever its member list says, and its own
+send has finished. The first bid per node stands. A round at or below the highest one this node has left, or below the one in progress, is late and changes
+nothing. A higher round replaces the one in progress. Highest ticket wins, ties to the lower node ID, and the winner uses the `ms` in its own bid. `ticket` is
+in `0..1_000_000`. `round` is a local counter, not saved. Nothing about a round is replicated.
 
 **Silence.** A silenced node's methods never return, and it fails every outgoing call at once.
 The caller sees its deadline pass.
@@ -247,11 +252,11 @@ Defaults from `config.rs`, tuned for a LAN:
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
 | `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `campus.incident_ttl_ms`      | 60000        | how long a client says its reports stay valid. A node refuses an older one. Above the client's retries: 30 s, at most 36 s with jitter (D143). `loadgen --ttl-ms` sets it for one run. 0 is refused in the config |
-| `faults.interval_min_ms`      | 30000        | each node waits at least this long, from the end of the last round and any silence it elected. The first to finish calls the next fault election, so the wait averages less than the middle of the range (D159) |
-| `faults.interval_max_ms`      | 60000        | ... and at most this long (random) |
+| `faults.interval_min_ms`      | 30000        | each node waits at least this long, from the end of the last round and any silence it elected; the first to finish calls the next round |
+| `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`, or rounds cannot finish) |
 | `faults.silence_min_ms`       | 1000         | shortest silence a node draws                              |
 | `faults.silence_max_ms`       | 20000        | longest silence a node draws (at most 20000)               |
-| (derived) fault round deadline | 2 × `peer_rpc_timeout_ms` | a node gives up on a round after this, and waits again (D159) |
+| (derived) fault round deadline | 2 × `peer_rpc_timeout_ms` | a node gives up on a round after this, logs a null victim and waits again (D159) |
 
 Do not confuse `incident_ttl_ms` with the `hard_ttl` openraft gives one RPC. The deadline on one record is
 `assigned_at_ms + ttl_ms - age_ms`, and no timer waits on it.

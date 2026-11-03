@@ -6,8 +6,8 @@ team should rehearse it on the lab machines: **none of this has been run there y
 
 ## Before you start
 
-Set up the machines with [runbook.md](runbook.md), with elected faults held off so that only you cause faults, until the
-scene that needs them. The demo uses E1's settings, already in `config/lab.example.toml`: `plan_work = 1000` and `responders = 300` (D205). Delete old
+Set up the machines with [runbook.md](runbook.md), with the fault election's timers set never to fire (runbook section 3), so that only you
+cause faults. Before every scene that uses `ctl silence`, check `serving = true` on all three. The demo uses E1's settings, already in `config/lab.example.toml`: `plan_work = 1000` and `responders = 300` (D205). Delete old
 logs (`rm -rf data/raft runs/lab` on all six), then start the three nodes, then a frontend on each client machine:
 `target/release/frontend --config config/lab.toml --client-id 11 --listen 127.0.0.1:9001` (12 and 13 on the others),
 and open `http://127.0.0.1:9001` there.
@@ -187,22 +187,6 @@ node 1 back as in scenario 5, and all three digests should match.
 its client was told a responder was sent. The client is not told (D122). The conflict count is the evidence, and a visible
 reconciliation status is Phase 2 (D149).
 
-## Elected faults: the nodes pick who fails (D158, D162)
-
-*The servers periodically elect one machine to ignore communication for a random time of up to 20 s.*
-
-Stop every load, set `interval_min_ms = 20000` and `interval_max_ms = 30000` under `[faults]` in `config/lab.toml` on all six, and restart the
-nodes, so a round comes within about 30 s. Start a small load, then watch:
-
-```bash
-grep '"ev":"fault_election"' runs/lab/node-*.jsonl | tail -3
-```
-
-**Expect** a `fault_election` line on all three nodes for the same round, with the same `victim`, its tickets and the silence, then `silenced` on that one
-node, which closed its own gate. No leader takes part, and nothing goes through the log. If one node is off, silenced, catching up or degraded, the line
-shows `victim` null: a node missing any of the 3 numbers does nothing, so two cannot go down at once this way. The forced-failure scene above uses
-`ctl silence` instead, because an election cannot promise a chosen moment.
-
 ## 7. Scale and stress
 
 The last row of the table is not a live event, because it takes an hour. Show the results. Stop every frontend first: the runner refuses to
@@ -214,20 +198,44 @@ python analysis/analyze.py runs
 ls analysis/out
 ```
 
-Walk through `e1_latency_throughput.png`, `fairness.png` and `fault_phases.png`, and `summary.csv` for election
-overhead and recovery. State the profile, the runs per cell and the limits (D63). If there is time, run one cell
+Walk through `e1_latency_throughput.png`, `fairness.png` and `fault_phases.png`, which leaves out the `ft8` and `e5` cells, and `summary.csv` for
+recovery and election overhead: `fault_elections`, `fault_election_mean_ms`, `fault_bids_per_round` and `fault_split_decisions`. State the profile, the runs per cell and the limits (D63). If there is time, run one cell
 live:
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick e1-300-bidding
 ```
 
+## The servers elect a machine to fail (D158, D162)
+
+*The servers periodically elect one machine to ignore communication.* This one happens by itself. About 3 minutes, nobody typing.
+
+Stop the nodes. In `config/lab.toml`, under `[faults]`, set the following, and copy the file to all six machines:
+
+```toml
+interval_min_ms = 20000
+interval_max_ms = 30000
+silence_min_ms = 20000
+silence_max_ms = 20000
+```
+
+Start the nodes, and start the load on all three client machines. A round comes within 30 s. Say nothing and type nothing: the `silenced` column turns true on one node in
+Terminal 1, the others keep serving, and it turns false again 20 s later. Then, on each node machine:
+
+```bash
+grep '"ev":"fault_election"' runs/lab/node-*.jsonl
+```
+
+The numbers are there: each node's line has the same three tickets and names the same victim, the highest. No leader appears anywhere on that path.
+
+If one node's line has `victim: null`, explain it as the rule at work: that node missed a number, so it did nothing, and the others went ahead.
+
 ## Questions to be ready for
 
 Every answer here comes from the spec, the class notes or the recordings, and nothing is left open (D213).
 
-- **"Is the leader a coordinator?"** No. The leader only orders results: it does not decide who plans (D114) and it does not pick who fails, because the
-  three nodes elect that themselves by a random draw (D158). Loading the responder list on any node is the last part; say whether it is in this build (D216).
+- **"Is the leader a coordinator?"** No job but ordering is left with it. The three nodes elect the failed machine among themselves (D158), bidding picks who plans (D114),
+  and any node can propose (D26). The leader only sequences the log. Loading the responder list on any node is the last part; say whether it is in this build (D216).
 - **"Is this client-server?"** No. The cloud nodes are peers that update each other's state, detect failures, share out work and tell each
   other their load. Client and server are the roles of one call, not of a node (D212, `docs/architecture.md` section 3.1).
 - **"Where is the middleware, and where is the application?"** On both sides, drawn in `docs/architecture.md` section 4.3. Client side: the page and

@@ -34,7 +34,7 @@ On the three node machines, open the ports:
 ```bash
 sudo ufw allow 7001/tcp      # peers: reachable from the other two nodes
 sudo ufw allow 8001/tcp      # clients and ctl: reachable from the client machines
-sudo ufw allow 8001/udp      # ONLY with the UDP client path (D216), which has not merged yet. Reports then use UDP and ctl stays on TCP
+sudo ufw allow 8001/udp      # ONLY with the UDP client path (D216), which has not merged yet. Reports then use UDP, and ctl stays on TCP
 ```
 
 The UDP line depends on that work: skip it until the build you are running has it. Then `ctl status` says `udp no answer` if the rule is
@@ -96,13 +96,13 @@ this script. A second group of users on one machine needs its own `--batch`.
 Node output: `RUST_LOG=info,tarpc=info` brings tarpc's per-call lines back for debugging. Never run an experiment that way: they
 slow a node enough to cost it its leader (D134).
 
-`faults.enabled = true` in the lab config means the three nodes also elect one of themselves to go silent every 30 to 60 s (D158). For
-anything you want to control yourself, set this in `config/lab.toml` first:
+`faults.enabled = true` in the lab config means the three nodes also elect one of them to go silent, about every 30 to 60 s. For anything
+you want to control yourself, such as the demo, set this in `config/lab.toml` first:
 
 ```toml
 [faults]
 enabled = true                # keeps ctl silence working
-interval_min_ms = 100000000   # no election ever fires
+interval_min_ms = 100000000   # no node's timer ever fires, so no fault election
 interval_max_ms = 100000000
 ```
 
@@ -132,6 +132,25 @@ defaults (D40) that have only ever run on one machine.
 scripts/run-experiments.sh experiments/hosts quick      # 15 cells, about 70 minutes
 scripts/run-experiments.sh experiments/hosts full       # 33 cells, about 8 hours
 ```
+
+`quick` runs `ft8-random-faults` and `ft8-election-rate` first, because they are the first real logs the fault-election analysis sees: a bug
+costs minutes, not the hour.
+
+If fault elections misbehave on the real network, keep the code and leave them out: pass an explicit cell list without the `ft8` cells. `lab.toml`
+does not reach the cells, because the runner builds each run's config from the cell file. Use `ctl silence` in the demo, and say in the report that
+this was an accepted risk.
+
+### Check the fault election on the real network
+
+```bash
+# Start everything with fast elections, in config/lab.toml on all six: interval 1000 to 1500 ms, silence 100 to 1000 ms.
+# Cut one node machine's power under load. On the other two node machines, for at least 10 s:
+grep '"ev":"fault_election"' runs/lab/node-*.jsonl | tail      # victim must be null on every new line
+grep -c '"ev":"silenced"' runs/lab/node-*.jsonl                # must not rise
+```
+
+Then power it back on, and check a later round closes on all three. Also check the 1 s round deadline on the real network: lines with a null victim
+while all three are up mean bids are not getting through in time, or the term is moving (a bid from an older term is dropped).
 
 **Stop every frontend first.** The runner refuses to start a run while a `frontend`, `zonefeed`, `loadgen` or `node` from `$BIN`
 (`target/release`) is running on any machine, and prints which, because a leftover gives wrong figures with no sign of it. Stop it by

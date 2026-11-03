@@ -14,7 +14,7 @@ a first line saying how to run it, then the config sections that differ. The run
 | `programs` | real `loadgen` programs per client machine; default 10, or `PROGRAMS_PER_PC` (D181) |
 | `pattern` | `steady` (default), `random` or `all-at-once` (D182); every cell here uses steady |
 | `think_ms` | pause between a reply and that user's next request |
-| `victim` | `leader`, `follower` or `others` (everyone but one follower, D120), through `ctl silence`; no key means no ordered fault. Only the `ft8` cells and `e5-faults-on` let elections fire (D162) |
+| `victim` | `leader`, `follower` or `others` (everyone but one follower, D120); no key means no ordered fault |
 | `silence_ms` | how long the victim is silent, starting a third of the way into the measured time |
 | `skew_work` | `ctl skew` on the first node: extra planner work per request |
 
@@ -26,7 +26,8 @@ a first line saying how to run it, then the config sections that differ. The run
 | E2, E6 | load-score variant, with one node skewed | share of work per node, latency and fairness under skew | E, B | `e2e6-skew-<score>` |
 | E3, E4, FT-6 | victim × load | client-side gap (`client_gap_*`), election time, in-flight outcomes, time to pass the rejoin check (`recovery_mean_ms`), equal state (`digest_mismatches`, `rejoins_digest_confirmed`), elections after a rejoin (`elections_after_rejoin`) | C, D | `e3e4-<users>-<victim>`, and `e4-<users>-silence-<n>s` for silence length |
 | E5 | faults on or off | elections, messages by type, commit latency | A | `e5-faults-off`, `e5-faults-on` |
-| FT-8 | elected faults throughout | lost requests, duplicate commits, election time, abandoned rounds (D161) | C | `ft8-random-faults`, and `ft8-election-rate` with short silences for tens of rounds (D162) |
+| FT-8 | elected faults throughout | lost requests, duplicate commits, split decisions (must be 0) | C | `ft8-random-faults` |
+| FT-8 | fast elected faults | election frequency, duration and message overhead, for the spec's three numbers; its silences are shorter than the spec's | C | `ft8-election-rate` |
 | P-2 | bid window | split decisions | B | `p2-window-<n>ms` |
 | D120 | load, with two nodes silent | provisional answers, conflicts, replay | C | `degraded-<users>` |
 | E7 | one program per machine against 10 | whether the number of programs changes latency, client machine CPU or arrivals; compare with `e1-300-bidding` | F | `e7-p1-300` |
@@ -35,8 +36,11 @@ a first line saying how to run it, then the config sections that differ. The run
 
 | Profile | Cells | Runs per cell | One run | Time in all |
 |---------|-------|---------------|---------|-------------|
-| `quick` | the 15 in `quick.list`, with `ft8-random-faults` and `ft8-election-rate` first (D162) | 3 | 15 s warm-up + 60 s measured + 15 s restart | about 70 minutes |
+| `quick` | the 15 in `quick.list` | 3 | 15 s warm-up + 60 s measured + 15 s restart | about 70 minutes |
 | `full` | all 33 | 5 | 30 s warm-up + 2 min measured + 15 s restart | about 8 hours |
+
+`quick` starts with the `ft8` cells, so a bug in the fault election costs one cell and not the hour. To leave them out, pass an explicit cell
+list; `lab.toml` does not reach the cells.
 
 **`quick` has limits, and the report must state them:** 3 runs give wide confidence intervals, and it is
 below the 5 runs and 30 s warm-up of the `full` profile. Say which profile each figure came from.
