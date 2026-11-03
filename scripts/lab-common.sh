@@ -124,27 +124,28 @@ ALL_PROGRAMS="$LOAD_PROGRAMS|node"
 refuse_leftovers() {
   local programs=$1 grace_s=${2:-0}
   local pattern="[${BIN:0:1}]${BIN:1}/($programs)( |\$)"
-  local deadline=$((SECONDS + grace_s)) host found status
-  for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    while :; do
+  local deadline=$((SECONDS + grace_s)) host found status leftovers
+  while :; do
+    leftovers=""
+    for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
       found=$(on_host "$host" "pgrep -af '$pattern'") && status=0 || status=$?
       case "$status" in
-        1) break ;;
-        0)
-          if ((SECONDS >= deadline)); then
-            echo "programs from an earlier run are still running; stop them first:" >&2
-            echo "$host: $found" >&2
-            echo "On that machine: kill those PIDs, or for a client machine's users, bash scripts/start-users.sh --stop --machine M" >&2
-            return 1
-          fi
-          sleep 1
-          ;;
+        0) leftovers+="$host: $found"$'\n' ;;
+        1) ;;
         *)
           echo "cannot check $host for leftover programs (exit $status)" >&2
           return 1
           ;;
       esac
     done
+    [[ -n "$leftovers" ]] || return 0
+    if ((SECONDS >= deadline)); then
+      echo "programs from an earlier run are still running; stop them first:" >&2
+      printf '%s' "$leftovers" >&2
+      echo "On each of those machines: kill those PIDs, or for a client machine's users, bash scripts/start-users.sh --stop --machine M" >&2
+      return 1
+    fi
+    sleep 1
   done
 }
 
