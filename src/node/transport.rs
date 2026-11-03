@@ -601,6 +601,14 @@ impl ReplyTx {
         }
         sent
     }
+
+    /// A sender with no connection behind it, and what would have gone down that connection.
+    #[cfg(test)]
+    pub(crate) fn for_tests(gate: FaultGate) -> (Self, mpsc::UnboundedReceiver<Bytes>) {
+        let (tx, frames) = mpsc::unbounded_channel();
+        let msgs = Arc::default();
+        (Self { tx, gate, msgs }, frames)
+    }
 }
 
 /// Handles one client frame. Must not block: spawn any real work.

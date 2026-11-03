@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio::time::Instant;
 
 use super::bids::BidState;
@@ -22,7 +22,7 @@ use super::workers::WorkerPool;
 use super::{NodeContext, lock};
 use crate::config::Config;
 use crate::metrics::EventLog;
-use crate::proto::{Command, NodeId, Outcome, PeerReply, ProposeError, RaftRpc};
+use crate::proto::{Command, CommittedResult, NodeId, Outcome, PeerReply, ProposeError, RaftRpc};
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, ConsensusStatus, Role};
 
@@ -49,6 +49,10 @@ pub(crate) struct ScriptedConsensus {
     questions: AtomicUsize,
     applied: watch::Sender<Option<u64>>,
     heard: watch::Sender<Option<u64>>,
+    /// One permit for each proposal that has arrived.
+    proposed: Semaphore,
+    /// One permit for each proposal the test lets commit.
+    commits: Semaphore,
 }
 
 impl ScriptedConsensus {
@@ -60,6 +64,8 @@ impl ScriptedConsensus {
             questions: AtomicUsize::new(0),
             applied: watch::channel(None).0,
             heard: watch::channel(None).0,
+            proposed: Semaphore::new(0),
+            commits: Semaphore::new(0),
         })
     }
 
@@ -88,11 +94,40 @@ impl ScriptedConsensus {
     pub(crate) fn hear_from_leader(&self) {
         self.heard.send_replace(None);
     }
+
+    /// Resolves when the next proposal has arrived.
+    pub(crate) async fn proposal_arrived(&self) {
+        self.proposed
+            .acquire()
+            .await
+            .expect("never closed")
+            .forget();
+    }
+
+    /// Lets one waiting proposal commit.
+    pub(crate) fn commit_one(&self) {
+        self.commits.add_permits(1);
+    }
 }
 
 impl Consensus for ScriptedConsensus {
-    fn propose(&self, _cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
-        Box::pin(async { Err(ProposeError::Timeout) })
+    /// Waits for [`Self::commit_one`], so a test decides what happens while a handler is waiting.
+    fn propose(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
+        Box::pin(async move {
+            self.proposed.add_permits(1);
+            self.commits.acquire().await.expect("never closed").forget();
+            Ok(match cmd {
+                Command::CommitResult(p) => Outcome::Committed(CommittedResult {
+                    request: p.request,
+                    incident: p.incident,
+                    executor: p.executor,
+                    term: p.term,
+                    plan: p.plan,
+                    log_index: 1,
+                }),
+                _ => Outcome::Applied,
+            })
+        })
     }
 
     fn propose_local(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
