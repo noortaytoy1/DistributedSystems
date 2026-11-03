@@ -49,14 +49,18 @@ nodes_toml() {
   done
 }
 
-# Run a command in the repo directory on a machine.
+# Run a command in the repo directory on a machine. `cd` is a command of its own, never `cd X && $*`: in
+# a line with `&`, as the one that starts a node, the shell would send `cd X && first` to the background.
+# The rest of the line would then run in the home folder, and that background shell would hold the ssh
+# session open for as long as the node lives. 125 says the folder is missing: pgrep never exits with it,
+# so a machine without the repo cannot pass for one with no leftovers, which pgrep's exit 1 means (D139).
 on_host() {
   local host=$1
   shift
   if [[ "$host" == local ]]; then
     bash -c "$*"
   else
-    ssh -o BatchMode=yes "$host" "cd $REMOTE_DIR && $*"
+    ssh -o BatchMode=yes "$host" "cd $REMOTE_DIR || exit 125; $*"
   fi
 }
 

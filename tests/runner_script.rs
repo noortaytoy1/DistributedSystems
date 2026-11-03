@@ -1,8 +1,13 @@
 //! The runner's guards, run for real with bash: the leftover check and the retried silence (D139).
+//! A pretend lab then runs the whole runner and the real programs over a stand-in for ssh, because
+//! `hosts.local` cannot show a line that only goes wrong on a far machine.
 //! Linux only, like the scripts themselves.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
+use std::fs;
+use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -153,6 +158,21 @@ refuse_leftovers "$ALL_PROGRAMS""#;
     assert!(stderr(&refused).contains("user@pretend"), "{refused:?}");
 }
 
+/// `cd` failing also exits 1 in `cd X && pgrep`, which would read as "nothing left over".
+#[test]
+fn a_machine_without_the_repo_folder_cannot_pass_for_a_clean_one() {
+    let refused = lab_bash(
+        &unique_bin_dir(),
+        r#"ssh() { bash -c "${@: -1}"; }
+REMOTE_DIR=no-such-folder
+NODE_SSH=(user@pretend)
+CLIENT_SSH=(user@pretend)
+refuse_leftovers "$ALL_PROGRAMS""#,
+    );
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("cannot check"), "{refused:?}");
+}
+
 #[test]
 fn a_machine_that_cannot_be_checked_stops_the_run() {
     // What ssh exits with when it cannot connect. Reading that as clean would run on a bad machine.
@@ -210,4 +230,229 @@ fn already_silenced_counts_as_done() {
     );
     assert!(done.status.success(), "{done:?}");
     assert_eq!(calls_made(&done), 2);
+}
+
+/// Stands in for ssh as a real session behaves: the far shell starts in the machine's home folder with
+/// a bare environment, not in the repo, and the call does not return until everything holding the
+/// session's output has closed it.
+const FAKE_SSH: &str = r#"#!/usr/bin/env bash
+while [[ "${1:-}" == -* ]]; do
+  if [[ "$1" == -o ]]; then shift; fi
+  shift
+done
+host=$1
+shift
+cd "$FAKE_LAB/$host" || exit 255
+env -i HOME="$FAKE_LAB/$host" PATH="$PATH" bash -c "$*" </dev/null 2>&1 | cat
+exit "${PIPESTATUS[0]}"
+"#;
+
+const FAKE_SCP: &str = r#"#!/usr/bin/env bash
+[[ -z "${FAKE_SCP_FAILS:-}" ]] || exit 1
+to=${*: -1}
+cp "${*: -2:1}" "$FAKE_LAB/${to%%:*}/${to#*:}"
+"#;
+
+const FAKE_RSYNC: &str = r#"#!/usr/bin/env bash
+from=${*: -2:1}
+cp -r "$FAKE_LAB/${from%%:*}/${from#*:}." "${*: -1}"
+"#;
+
+const RUN_FOLDER: &str = "control/runs/e9/try/run-1";
+
+/// Six machines as folders, nothing shared but loopback, each with the repo at ~/DistributedSystems.
+struct Lab {
+    root: PathBuf,
+    /// Where the programs live on each machine. Unique, so tests cannot see each other's programs.
+    bin: String,
+}
+
+impl Lab {
+    fn new() -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let (pid, n) = (std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst));
+        let root = std::env::temp_dir().join(format!("rescuemesh-lab-{pid}-{n}"));
+        let bin = format!("labbin{pid}x{n}");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        let control = root.join("control");
+        fs::create_dir_all(control.join("experiments")).unwrap();
+        copy_folder(&repo.join("scripts"), &control);
+        fs::copy(
+            repo.join("experiments/quick.list"),
+            control.join("experiments/quick.list"),
+        )
+        .unwrap();
+        let cell = fs::read_to_string(repo.join("experiments/e3e4-300-follower.toml")).unwrap();
+        let (_, settings) = cell.split_once('\n').unwrap();
+        fs::write(
+            control.join("experiments/e9-try.toml"),
+            format!("# run: users=3 think_ms=200 victim=follower silence_ms=1000\n{settings}"),
+        )
+        .unwrap();
+        git(&control, &["init", "-q"]);
+        git(
+            &control,
+            &[
+                "-c",
+                "user.email=lab@example.invalid",
+                "-c",
+                "user.name=lab",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "lab",
+            ],
+        );
+
+        let stubs = root.join("stubs");
+        fs::create_dir_all(&stubs).unwrap();
+        for (name, body) in [("ssh", FAKE_SSH), ("scp", FAKE_SCP), ("rsync", FAKE_RSYNC)] {
+            fs::write(stubs.join(name), body).unwrap();
+            fs::set_permissions(stubs.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let programs = [
+            ("node", env!("CARGO_BIN_EXE_node")),
+            ("ctl", env!("CARGO_BIN_EXE_ctl")),
+            ("loadgen", env!("CARGO_BIN_EXE_loadgen")),
+        ];
+        for pc in ["pc1", "pc2", "pc3", "pc4", "pc5", "pc6"] {
+            let repo_there = root.join(pc).join("DistributedSystems");
+            fs::create_dir_all(repo_there.join(&bin)).unwrap();
+            copy_folder(&repo.join("scripts"), &repo_there);
+            for (name, path) in programs {
+                std::os::unix::fs::symlink(path, repo_there.join(&bin).join(name)).unwrap();
+            }
+        }
+
+        // Held until all are read, so no two ports come out the same.
+        let held: Vec<_> = (0..6)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let port = |i: usize| held[i].local_addr().unwrap().port();
+        let hosts = format!(
+            "node 1 127.0.0.1 pc1 {} {}\nnode 2 127.0.0.1 pc2 {} {}\nnode 3 127.0.0.1 pc3 {} {}\n\
+             client 1 127.0.0.1 pc4\nclient 2 127.0.0.1 pc5\nclient 3 127.0.0.1 pc6\n",
+            port(0),
+            port(1),
+            port(2),
+            port(3),
+            port(4),
+            port(5),
+        );
+        fs::write(control.join("experiments/hosts"), hosts).unwrap();
+        Self { root, bin }
+    }
+
+    /// The real runner, on the one cell this lab has, with a short profile.
+    fn run_the_cell(&self, more_env: &[(&str, &str)]) -> Output {
+        let path = format!(
+            "{}:{}",
+            self.root.join("stubs").display(),
+            std::env::var("PATH").unwrap()
+        );
+        Command::new("timeout")
+            .args(["120", "bash", "scripts/run-experiments.sh"])
+            .args(["experiments/hosts", "quick", "e9-try"])
+            .current_dir(self.root.join("control"))
+            .env("PATH", path)
+            .env("FAKE_LAB", &self.root)
+            .env("BIN", &self.bin)
+            .envs([
+                ("WARMUP", "1"),
+                ("MEASURED", "3"),
+                ("GAP", "0"),
+                ("REPS", "1"),
+            ])
+            .envs(more_env.iter().copied())
+            .output()
+            .unwrap()
+    }
+
+    fn in_run_folder(&self, file: &str) -> PathBuf {
+        self.root.join(RUN_FOLDER).join(file)
+    }
+}
+
+impl Drop for Lab {
+    fn drop(&mut self) {
+        // A failed test may leave programs behind that still write here.
+        let _ = lab_bash(
+            Path::new(&self.bin),
+            r#"pkill -f "[${BIN:0:1}]${BIN:1}/" || true"#,
+        );
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn copy_folder(from: &Path, into: &Path) {
+    let copied = Command::new("cp").arg("-r").arg(from).arg(into).status();
+    assert!(copied.unwrap().success());
+}
+
+fn git(folder: &Path, args: &[&str]) {
+    let done = Command::new("git")
+        .args(args)
+        .current_dir(folder)
+        .status()
+        .unwrap();
+    assert!(done.success(), "git {args:?}");
+}
+
+/// The line that starts a node ends in `&`, and that hides from any test on this machine what it does
+/// on a far one: with `cd X && ...` the pid file went to the home folder and the session never ended,
+/// so the batch hung on its first node.
+#[test]
+fn a_whole_cell_runs_over_ssh_and_stops_everything_it_started() {
+    let lab = Lab::new();
+
+    let run = lab.run_the_cell(&[]);
+
+    assert!(run.status.success(), "{run:?}");
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("silenced node"),
+        "{run:?}"
+    );
+    for file in [
+        "run.json",
+        "status-after.txt",
+        "node-1.jsonl",
+        "node-2.jsonl",
+        "node-3.jsonl",
+    ] {
+        assert!(lab.in_run_folder(file).exists(), "no {file}: {run:?}");
+    }
+    let silenced = (1..=3)
+        .filter(|n| {
+            fs::read_to_string(lab.in_run_folder(&format!("node-{n}.jsonl")))
+                .unwrap()
+                .contains(r#""ev":"silenced""#)
+        })
+        .count();
+    assert_eq!(silenced, 1, "one node gets the fault: {run:?}");
+    let clients = fs::read_dir(lab.root.join(RUN_FOLDER))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("client-") && name.ends_with(".jsonl")
+        })
+        .count();
+    assert!(clients >= 3, "logs of {clients} load programs: {run:?}");
+
+    // Nothing went to the home folder, and every program it started has stopped.
+    let home: Vec<_> = fs::read_dir(lab.root.join("pc1"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(home, ["DistributedSystems"]);
+    let stopped = lab_bash(
+        Path::new(&lab.bin),
+        r#"refuse_leftovers "$ALL_PROGRAMS" 10"#,
+    );
+    assert!(stopped.status.success(), "{stopped:?}");
 }
