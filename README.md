@@ -236,5 +236,6 @@ recommendation, and records the answers in the design log before it writes code.
 [openraft](https://github.com/databendlabs/openraft) 0.9.25 provides Raft leader election and log
 replication. [tarpc](https://github.com/google/tarpc) 0.37 provides remote calls on the peer port (D119).
 Everything else that does distributed work (state machine, storage, network adapter, bidding, group communication, recovery,
-degraded mode, planner, client middleware, fault injection) is our own code (D215). [AGENTS.md](AGENTS.md) records which
+degraded mode, planner, client middleware, fault injection) is our own code (D215). openraft is under MIT or Apache-2.0 and tarpc under MIT.
+AI coding agents helped write the code and these docs. Each design decision says who decided it, in the design log. [AGENTS.md](AGENTS.md) records which
 file belongs to which part.

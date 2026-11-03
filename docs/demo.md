@@ -158,7 +158,7 @@ retries end first, and the report shows `reports_expired = 0`.
    ```
 
 **Expect** `restarted`, then `rejoined`, then equal digests. No `ERROR` line appears (D137). Its vote and log came back from disk, and the
-rest came from the leader (D118). A real power cut is the one thing the rehearsal on one PC could not test: there, the one kernel kept its
+rest came from the leader (D118). `ctl status` can show it as leader for a few ms, from its stored vote, before it steps down. A real power cut is the one thing the rehearsal on one PC could not test: there, the one kernel kept its
 page cache, so losing unsynced writes was never tried. This scene is that test.
 
 ## 6. Dr Amr's case: one off and one failed, one server for 3 clients

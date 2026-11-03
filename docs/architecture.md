@@ -1536,6 +1536,11 @@ sequenceDiagram
     Note over N: no leader after 3 s means the whole cluster may have restarted, so elections go on
 ```
 
+In the one-PC rehearsal the restarted node first came up with role leader, from its stored vote, for about 5 ms, and stepped down when it saw the
+higher term. It logged no bid, plan or reply before `rejoined`. Requests the clients had queued for it during the outage reach it after it is back, and
+a client that already has its answer ignores the replies (D112). The rehearsal did **not** test losing unsynced disk writes: `Committed` records are
+not synced, and the one kernel keeps its page cache across the cut. A real power cut is demo scene 5.
+
 ---
 
 ## 10. Concurrency inside a node

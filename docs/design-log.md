@@ -5775,7 +5775,7 @@ line changes.
 - **Context.** `docs/architecture.md` section 11.2 had three kinds of error.
   1. *FT-2 said "failover within 600 ms".* That cannot pass. openraft waits `election_timeout + leader_lease` once a vote is committed (`core/raft_core.rs:1475-1476`), and `leader_lease` is
      `election_timeout_max`, 300 ms (`engine/engine_config.rs:56`). D115 gives nodes 1, 2 and 3 the ranges 150–225, 300–375 and 450–525 ms, on a 75 ms tick. So with node 1 gone, node 2 stands at about 600 to 750 ms
-     before any vote. In the one-PC power-cut rehearsal (three 90 s runs and one 300 s run, 90 reports a second, node 1 leading and cut), the first candidate came at +0.77 to +0.81 s, the new leader at +0.82 to +0.94 s, the first
+     before any vote. In the one-PC power-cut rehearsal, on the build from before tonight's changes (commit a98a1c3; three 90 s runs and one 300 s run, about 90 reports a second, node 1 leading and cut), the first candidate came at +0.77 to +0.81 s, the new leader at +0.82 to +0.94 s, the first
      answer to a new request at +0.84 to +0.94 s, and the longest time with no answer to anyone was 0.84 to 0.98 s. 150–300 ms also appeared in sections 6.1, 6.8, 8.2 and 9.2.
   2. *FT-9 said "dropped for Phase 1 (D24)",* while section 12 said it is back in scope, D118 superseded D24, and `tests/durable.rs` covers it. Lines for FT-3, FT-4, FT-5 and FT-8 still said they needed parts that are now built.
   3. *LB-1, LB-3 and P-1 were cited but defined nowhere in the repo.*
