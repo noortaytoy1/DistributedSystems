@@ -6,12 +6,10 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::sync::mpsc;
 use std::time::Duration;
 
-use common::{TestCluster, first_reply, wait_until};
+use common::{TestCluster, first_reply, hold_jobs, wait_until};
 use rescuemesh::config::{AssignmentPolicy, Config};
-use rescuemesh::node::NodeHandle;
 use rescuemesh::proto::{
     Capability, ClientRequest, CommittedResult, Incident, NodeId, Point, ReplyBody, RequestId,
 };
@@ -66,34 +64,6 @@ async fn done(cluster: &TestCluster, req: ClientRequest) -> CommittedResult {
         ReplyBody::Done(result) => result,
         other => panic!("request {seq} got {other:?}"),
     }
-}
-
-/// Runs `jobs` jobs on the node's worker pool that last until the returned senders are dropped.
-async fn hold_jobs(node: &NodeHandle, jobs: usize) -> Vec<mpsc::Sender<()>> {
-    let before = node.ctx.workers.load();
-    let mut senders = Vec::new();
-    for _ in 0..jobs {
-        let (tx, rx) = mpsc::channel::<()>();
-        let pool = node.ctx.workers.clone();
-        tokio::spawn(async move {
-            let _ = pool
-                .run(move || {
-                    let _ = rx.recv();
-                })
-                .await;
-        });
-        senders.push(tx);
-    }
-    wait_until(
-        Duration::from_secs(5),
-        "the held jobs to reach the pool",
-        || {
-            let load = node.ctx.workers.load();
-            load.queued + load.running == before.queued + before.running + jobs
-        },
-    )
-    .await;
-    senders
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

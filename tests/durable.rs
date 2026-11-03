@@ -134,6 +134,63 @@ async fn a_restarted_follower_keeps_its_log_and_catches_up_before_serving() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A node back from disk reads an empty state until it catches up. It must not take that for an
+/// empty campus and propose the list again (D164).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_node_does_not_load_the_campus_again() {
+    let dir = storage_dir("campus");
+    let (storage, metrics) = (dir.join("raft"), dir.join("runs"));
+    let events = metrics.clone();
+    let mut cluster = TestCluster::start_with(3, move |c| {
+        c.storage.dir = Some(storage);
+        c.metrics.dir = Some(metrics);
+    })
+    .await;
+    leader_everywhere(&cluster.nodes).await;
+    let config = cluster.config.clone();
+    // The commit also means the campus is in the log ahead of it, or the plan would name nobody.
+    wait_until(Duration::from_secs(5), "the campus on every node", || {
+        cluster.nodes.iter().all(|n| n.ctx.status().responders > 0)
+    })
+    .await;
+    commit(&config, 1).await;
+
+    let leader = cluster.nodes[0].ctx.consensus.status().leader.unwrap();
+    let victim = (1..=3).find(|id| *id != leader).unwrap();
+    let at = cluster
+        .nodes
+        .iter()
+        .position(|n| n.ctx.id == victim)
+        .unwrap();
+    cluster.nodes.remove(at).shutdown().await;
+    let proposals = || {
+        std::fs::read_to_string(events.join(format!("node-{victim}.jsonl")))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("register_responders"))
+            .count()
+    };
+    let before = proposals();
+
+    let back = restart(&config, victim).await;
+    wait_until(Duration::from_secs(10), "serving again", || {
+        back.ctx.serving.load(Ordering::SeqCst)
+    })
+    .await;
+    // A later commit reaching this node gives a proposal made at start the time to come back.
+    let later = commit(&config, 2).await;
+    wait_until(Duration::from_secs(5), "the later commit here", || {
+        back.ctx.state.with(|s| s.last_index()) >= later
+    })
+    .await;
+    back.ctx.log.flush();
+    assert_eq!(proposals(), before);
+
+    back.shutdown().await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_whole_cluster_restarts_from_disk_with_every_committed_result() {
     let dir = storage_dir("all");
