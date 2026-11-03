@@ -86,6 +86,10 @@ pub enum Event {
         /// a second is the change in `answered_us` over the change in `answered` (D218).
         answered: u64,
         answered_us: u64,
+        /// Writes finished, and the time they took with no queueing in it: mean write time over a
+        /// second is the change in `write_us` over the change in `writes_done` (D228).
+        writes_done: u64,
+        write_us: u64,
         /// Writes to the log file that waited for the disk, and the time they took.
         syncs: u64,
         sync_us: u64,
@@ -99,13 +103,15 @@ pub enum Event {
         max_leader_gap_us: u64,
     },
     /// This Raft leader found itself overloaded and went quiet, so that a normal vote picks a new
-    /// leader (D218). All from the last second: `score` is its own mean bid, `log_wait_us` the mean
-    /// time its log took per proposal, `save_us` its mean disk save, `load` what the rule compared
-    /// (the score, or the log wait if that is over its bar and higher), and `peer_scores` the peers'
-    /// mean bids.
+    /// leader (D218, D228). All from the last second: `score` is its own mean bid, `write_us` the
+    /// mean time one log write took, `log_wait_us` the mean time per proposal with the queue in it,
+    /// which the rule does not read, `save_us` its mean disk save, `load` what the rule compared
+    /// (the score, or the write time if that is over its bar and higher), and `peer_scores` the
+    /// peers' mean bids.
     LeaderSteppedAside {
         term: u64,
         score: u64,
+        write_us: u64,
         log_wait_us: u64,
         save_us: u64,
         load: u64,
@@ -846,6 +852,7 @@ mod tests {
         let aside = Event::LeaderSteppedAside {
             term: 4,
             score: 9_000,
+            write_us: 8_000,
             log_wait_us: 12_000,
             save_us: 3_000,
             load: 9_000,
@@ -855,6 +862,7 @@ mod tests {
         assert!(text.contains(r#""ev":"leader_stepped_aside""#), "{text}");
         assert!(text.contains(r#""term":4"#), "{text}");
         assert!(text.contains(r#""score":9000"#), "{text}");
+        assert!(text.contains(r#""write_us":8000"#), "{text}");
         assert!(text.contains(r#""log_wait_us":12000"#), "{text}");
         assert!(text.contains(r#""save_us":3000"#), "{text}");
         assert!(text.contains(r#""load":9000"#), "{text}");

@@ -96,12 +96,19 @@ impl ScriptedConsensus {
         self.term.store(term, Ordering::SeqCst);
     }
 
-    /// Adds answered proposals, as if a write had finished, and says how many wait now.
-    pub(crate) fn add_log_work(&self, answered: u64, each_us: u64, waiting: usize) {
+    /// Adds finished writes, as if the log had carried them.
+    pub(crate) fn add_writes(&self, writes: u64, each_us: u64) {
+        let mut work = lock(&self.log_work);
+        work.writes += writes;
+        work.writes_done += writes;
+        work.write_us += writes * each_us;
+    }
+
+    /// Adds answered proposals, with the time they spent in the queue in `each_us`.
+    pub(crate) fn add_answers(&self, answered: u64, each_us: u64) {
         let mut work = lock(&self.log_work);
         work.answered += answered;
         work.answered_us += answered * each_us;
-        work.waiting = waiting;
     }
 
     /// Adds disk saves, as if the log file had been written.

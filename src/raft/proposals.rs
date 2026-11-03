@@ -36,9 +36,11 @@ use crate::proto::{Command, CommandGroup, Outcome, ProposeError};
 
 /// Most commands in one log entry.
 ///
-/// High enough never to limit a run: at one save per round of about 7 ms it allows over 28,000
-/// commands per second, and a slow lab disk at 25 ms per round still allows 8000, against about
-/// 3500 from 3000 users (one request each, plus the releases of 300 responders). Low enough for the
+/// High enough not to limit a run on a healthy disk: a round is two saves and some work, about 14 ms
+/// at 3000 users on one PC, which allows about 14,000 commands per second against about 6000 from
+/// 3000 users (one request each and a release for each, with 3000 responders). On a slow disk it is
+/// the limit: with 25 ms added to each save a round took 62 ms, which allows 3200, so proposals wait
+/// out their deadline there, and about 15 ms a save is where that starts (D228). Low enough for the
 /// wire: even `max_payload_entries` (300) full groups in one AppendEntries would be at most 7.4 MB
 /// (123 bytes per command at the longest), well under `MAX_FRAME_BYTES` (16 MiB). The test
 /// `a_full_catch_up_message_fits_in_a_frame` holds this to the real encoding, and in practice one
@@ -65,10 +67,15 @@ pub struct QueueStats {
     pub expired: AtomicU64,
     /// Writes that outlasted the write cap and stopped being waited for.
     pub write_timeouts: AtomicU64,
-    /// Proposals answered, and the time they took from entering the queue to being answered: how
-    /// long this node's log is taking, in the same unit as the bids (D218).
+    /// Proposals answered, and the time they took from entering the queue to being answered. This
+    /// grows with the queue, so it says how much is arriving as well as how fast the log is.
     pub answered: AtomicU64,
     pub answered_us: AtomicU64,
+    /// Writes finished, and the time they took from `client_write` to its answer, queueing not
+    /// included: one save here, one on a follower and the work around them. Grouping keeps this flat
+    /// under load and it does not grow with the queue, so it is what the busy-leader check reads (D228).
+    pub writes_done: AtomicU64,
+    pub write_us: AtomicU64,
 }
 
 /// See the module docs. Dropping it stops the queue's task.
@@ -212,7 +219,12 @@ async fn run<W, F>(
         stats
             .commands
             .fetch_add(commands.len() as u64, Ordering::Relaxed);
+        let started = Instant::now();
         let written = tokio::time::timeout(write_cap, write(CommandGroup(commands))).await;
+        stats
+            .write_us
+            .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        stats.writes_done.fetch_add(1, Ordering::Relaxed);
         let result = written.unwrap_or_else(|_| {
             stats.write_timeouts.fetch_add(1, Ordering::Relaxed);
             Err(ProposeError::Timeout)
@@ -568,6 +580,46 @@ mod tests {
         assert_eq!(late.await.unwrap(), Err(ProposeError::Timeout));
         assert_eq!(q.stats().answered.load(Ordering::SeqCst), 2);
         assert!(q.stats().answered_us.load(Ordering::SeqCst) >= took + 20_000);
+    }
+
+    /// A saturated log has a long queue and writes of the usual length, on whichever node leads, so
+    /// the busy-leader check must be able to read the two apart (D228).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_counts_its_own_time_and_not_the_time_its_proposals_queued() {
+        let raft = Arc::new(FakeRaft::default());
+        let q = queue(100, &raft);
+        q.hold(true);
+        let first = submit(&q, 0, LONG);
+        wait_until("it to wait", || {
+            q.stats().waiting.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        let queued_for = Instant::now();
+        wait_until("some time in the queue", || {
+            queued_for.elapsed() >= Duration::from_millis(60)
+        })
+        .await;
+        assert_eq!(q.stats().writes_done.load(Ordering::SeqCst), 0);
+
+        q.hold(false);
+        wait_until("the write", || raft.in_flight() == 1).await;
+        let written_for = Instant::now();
+        wait_until("some time in the write", || {
+            written_for.elapsed() >= Duration::from_millis(20)
+        })
+        .await;
+        assert_eq!(q.stats().writes_done.load(Ordering::SeqCst), 0, "not yet");
+        raft.permits.add_permits(1);
+        first.await.unwrap().unwrap();
+
+        assert_eq!(q.stats().writes_done.load(Ordering::SeqCst), 1);
+        let write_us = q.stats().write_us.load(Ordering::SeqCst);
+        let answered_us = q.stats().answered_us.load(Ordering::SeqCst);
+        assert!(write_us >= 20_000, "{write_us} us");
+        assert!(
+            answered_us >= write_us + 60_000,
+            "{write_us} us of {answered_us} us"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

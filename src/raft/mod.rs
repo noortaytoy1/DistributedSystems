@@ -120,8 +120,11 @@ pub struct LogWork {
     /// Proposals answered, and the time they took from entering the queue. Both cumulative.
     pub answered: u64,
     pub answered_us: u64,
-    /// Proposals in the queue now.
-    pub waiting: usize,
+    /// `client_write` calls started and finished, and the time the finished ones took, queueing
+    /// not included. All cumulative. Started and finished differ while one is in flight.
+    pub writes: u64,
+    pub writes_done: u64,
+    pub write_us: u64,
     /// Writes to the log file that waited for the disk, and the time they took. Both cumulative.
     pub saves: u64,
     pub save_us: u64,
@@ -302,6 +305,8 @@ impl RaftNode {
             write_timeouts: queue.write_timeouts.load(Ordering::Relaxed),
             answered: queue.answered.load(Ordering::Relaxed),
             answered_us: queue.answered_us.load(Ordering::Relaxed),
+            writes_done: queue.writes_done.load(Ordering::Relaxed),
+            write_us: queue.write_us.load(Ordering::Relaxed),
             syncs: saved.syncs.load(Ordering::Relaxed),
             sync_us: saved.sync_us.load(Ordering::Relaxed),
             max_sync_us: saved.max_sync_us.swap(0, Ordering::Relaxed),
@@ -563,7 +568,11 @@ impl Consensus for RaftNode {
         LogWork {
             answered: stats.answered.load(Ordering::Relaxed),
             answered_us: stats.answered_us.load(Ordering::Relaxed),
-            waiting: stats.waiting.load(Ordering::Relaxed),
+            // Read finished before started, so a write that ends between the two reads as in flight
+            // for one reading at most, and never the other way round.
+            writes_done: stats.writes_done.load(Ordering::Relaxed),
+            writes: stats.writes.load(Ordering::Relaxed),
+            write_us: stats.write_us.load(Ordering::Relaxed),
             saves: self.log_stats.syncs.load(Ordering::Relaxed),
             save_us: self.log_stats.sync_us.load(Ordering::Relaxed),
         }
