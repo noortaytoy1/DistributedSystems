@@ -259,7 +259,11 @@ fn help_works_from_any_folder() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(stdout(&output).contains("--machine M"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("--machine M"),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]

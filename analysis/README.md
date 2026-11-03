@@ -50,6 +50,7 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
   means less load than the cell says;
 - a machine's `users-*.out` says a program failed or a signal stopped programs early, or has no totals at all. A
   program that dies half way has still sent something, so only those lines show it;
+- a node's log did not get copied, which would make fairness read as the other nodes' share;
 - the cell has a victim and no node logged `silenced`, which means the fault never fired;
 - a log has a line that cannot be read, other than half a line at its very end. A killed program leaves that half
   line, so it is dropped and named, and the run still counts unless one of the rules above catches it.

@@ -339,6 +339,15 @@ class ClientPrograms(unittest.TestCase):
         meta, m = analyze.analyse_run(cut)
         self.assertIn("stopped 1 client programs early", analyze.run_problem(meta, m))
 
+    def test_a_node_log_that_was_not_copied_is_left_out(self):
+        # A machine lost at the end of a run: without its log, fairness would read as two nodes' share.
+        whole = self.whole_run("nodes", 1, nodes=3)
+        meta, m = analyze.analyse_run(whole)
+        self.assertIsNone(analyze.run_problem(meta, m))
+        (whole / "node-2.jsonl").unlink()
+        meta, m = analyze.analyse_run(whole)
+        self.assertIn("2 of 3 node logs", analyze.run_problem(meta, m))
+
     def test_a_script_that_never_printed_totals_is_left_out(self):
         killed = self.whole_run("killed", 1, "plan machine=1 batch=0 users=1 programs=1\n")
         meta, m = analyze.analyse_run(killed)

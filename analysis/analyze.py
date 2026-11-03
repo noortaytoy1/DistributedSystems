@@ -463,6 +463,7 @@ def analyse_run(run_dir):
     metrics.update(client_script_metrics(run_dir))
     metrics.update(arrival_metrics(events, start))
     metrics.update(client_pc_metrics(events, start))
+    metrics["node_logs"] = len(node_events(events))
     metrics["silenced_events"] = sum(
         1 for es in node_events(events).values() for e in es if e["ev"] == "silenced"
     )
@@ -484,6 +485,8 @@ def run_problem(meta, metrics):
         return f"a signal stopped {metrics['client_programs_stopped_early']} client programs early"
     if metrics["client_scripts_with_no_totals"]:
         return f"{metrics['client_scripts_with_no_totals']} start-users.sh runs never printed their totals"
+    if meta.get("nodes") and metrics["node_logs"] != meta["nodes"]:
+        return f"{metrics['node_logs']} of {meta['nodes']} node logs were copied"
     victim = meta.get("victim", "none")
     if victim != "none" and metrics["silenced_events"] == 0:
         return f"the cell silences its {victim}, and no node logged a silence"

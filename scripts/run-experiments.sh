@@ -159,9 +159,9 @@ run_once() {
   local config="$out/config.toml"
   write_config "$file" "$config"
   echo "$COMMIT" >"$out/commit.txt"
-  printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s","users":%d,"programs_per_pc":%d,"client_programs_expected":%d,"pattern":"%s","think_ms":%d,"victim":"%s"}\n' \
+  printf '{"experiment":"%s","cell":"%s","run":%d,"profile":"%s","warmup_s":%d,"measured_s":%d,"commit":"%s","users":%d,"programs_per_pc":%d,"client_programs_expected":%d,"pattern":"%s","think_ms":%d,"victim":"%s","nodes":%d}\n' \
     "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" \
-    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" >"$out/run.json"
+    "$users" "$programs" "$expected" "$pattern" "$think" "$victim" "${#NODE_IDS[@]}" >"$out/run.json"
 
   # Nothing of ours runs now, so any PID file left is stale, and stop_all must not kill what that number
   # has become since.

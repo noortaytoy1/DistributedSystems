@@ -239,11 +239,25 @@ fn names(dir: &Path) -> Vec<String> {
 #[test]
 fn a_whole_run_works_on_six_machines_with_nothing_shared() {
     let lab = Lab::new("whole");
+    // A PID file left by a crash, whose number now belongs to something else on that machine.
+    let mut unrelated = Command::new("sleep").arg("120").spawn().unwrap();
+    let config_dir = lab.machine("pc4").join("runs-config");
+    fs::create_dir_all(&config_dir).unwrap();
+    let stale = format!("{}\n", unrelated.id());
+    fs::write(config_dir.join("users-4-4.pid"), stale).unwrap();
+
     let runner = lab.runner(&["e1-30-bidding"], 2, 10);
     let code = lab.finish(runner);
     let output = lab.runner_output();
     assert_eq!(code, Some(0), "{output}");
     assert!(!output.contains("warning"), "{output}");
+    let survived = unrelated.try_wait().unwrap().is_none();
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
+    assert!(
+        survived,
+        "stop_all killed a process through a stale PID file"
+    );
 
     let out = lab.control().join("runs/e1/30-bidding/run-1");
     let collected = names(&out);
