@@ -1,4 +1,5 @@
 # run: users=300 think_ms=1000 programs=1
+# The control for the number of programs: one per client machine, against e1-300-bidding's 10 (D187).
 
 [policy]
 assignment = "bidding"

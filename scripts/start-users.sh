@@ -166,24 +166,32 @@ fi
 [[ -r "$config" ]] || refuse "cannot read config $config"
 [[ -x "$BIN/loadgen" ]] || refuse "no loadgen at $BIN: build first (cargo build --release --bins), or set BIN"
 
-mkdir -p "$PID_DIR" "$out_dir"
+mkdir -p "$PID_DIR" "$out_dir" || refuse "cannot create $PID_DIR or $out_dir"
 if holder=$(running_pid); then
   refuse "machine $machine batch $batch is already running as pid $holder: use --stop, or another --batch"
 fi
 rm -f "$pid_file"
-(set -o noclobber; echo "$$" >"$pid_file") 2>/dev/null || refuse "another start just took machine $machine batch $batch"
-
-out_file="$out_dir/users-$machine-$batch.out"
-: >"$out_file"
-
-# A lost SSH connection must not stop the totals reaching the file.
-trap '' PIPE
-say() {
-  echo "$*" >>"$out_file"
-  echo "$*" || true
-}
+(set -o noclobber; echo "$$" >"$pid_file") 2>/dev/null ||
+  refuse "cannot take $pid_file: another start just did, or the folder is not writable"
 
 pids=() client_ids=() stopping=0 got_signal=0 killer=""
+
+# Also runs when set -e aborts the script: no program may outlive it.
+cleanup() {
+  ((${#pids[@]} == 0)) || kill -TERM "${pids[@]}" 2>/dev/null || true
+  rm -f "$pid_file"
+}
+trap cleanup EXIT
+
+out_file="$out_dir/users-$machine-$batch.out"
+: >"$out_file" || refuse "cannot write $out_file"
+
+# Neither a lost SSH connection nor a full disk may stop the totals reaching whichever of the two still works.
+trap '' PIPE
+say() {
+  echo "$*" >>"$out_file" || true
+  echo "$*" || true
+}
 
 stop_programs() {
   got_signal=1
@@ -193,14 +201,6 @@ stop_programs() {
   (sleep "$STOP_GRACE_S"; kill -KILL "${pids[@]}" 2>/dev/null) </dev/null >/dev/null 2>&1 &
   killer=$!
 }
-
-# Also runs when set -e aborts the script: no program may outlive it.
-cleanup() {
-  ((${#pids[@]} == 0)) || kill -TERM "${pids[@]}" 2>/dev/null || true
-  rm -f "$pid_file"
-}
-
-trap cleanup EXIT
 trap stop_programs TERM INT HUP
 
 say "$plan"

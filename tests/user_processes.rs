@@ -398,6 +398,31 @@ fn dry_run_refuses_what_would_collide_or_mean_nothing() {
 }
 
 #[test]
+fn the_runner_shares_a_cells_users_exactly() {
+    let shares = |users: u64| -> Vec<u64> {
+        let script = format!(
+            "source scripts/lab-common.sh; read_hosts experiments/hosts.example; \
+             for i in 0 1 2; do users_on_machine $i {users}; done"
+        );
+        let output = Command::new("bash")
+            .args(["-c", &script])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        stdout(&output)
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect()
+    };
+    assert_eq!(shares(100), [34, 33, 33]);
+    assert_eq!(shares(2), [1, 1, 0]);
+    for users in [1, 30, 300, 1000, 1500, 3000] {
+        assert_eq!(shares(users).iter().sum::<u64>(), users);
+    }
+}
+
+#[test]
 fn a_real_start_gives_one_log_per_program() {
     let scratch = Scratch::new("users-real");
     scratch.write_closed_config();

@@ -122,13 +122,6 @@ refuse_leftovers() {
   done
 }
 
-# Client machine i's share of the cell's users. 100 over 3 machines is 34, 33 and 33: dividing and rounding
-# down would quietly run a smaller cell than its name says.
-users_on_machine() {
-  local i=$1 users=$2 machines=${#CLIENT_IDS[@]}
-  echo $((users / machines + (i < users % machines ? 1 : 0)))
-}
-
 run_once() {
   local cell=$1 rep=$2
   local file="experiments/$cell.toml"
@@ -209,7 +202,7 @@ run_once() {
     fetch_from "$host" runs/current "$out"
   done
   if ((worst >= 2)); then
-    echo "stopping the series: a client machine ended with status $worst; see $out/users-*.out" >&2
+    echo "stopping the series: a client machine ended with status $worst; see above and $out/users-*.out" >&2
     exit 1
   elif ((worst == 1)); then
     echo "  warning: some programs failed in this run; see $out/users-*.out"

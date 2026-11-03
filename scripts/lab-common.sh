@@ -40,6 +40,13 @@ read_hosts() {
   fi
 }
 
+# Client machine i's share of a cell's users. 100 over 3 machines is 34, 33 and 33: dividing and rounding
+# down would quietly run a smaller cell than its name says (D186).
+users_on_machine() {
+  local i=$1 users=$2 machines=${#CLIENT_IDS[@]}
+  echo $((users / machines + (i < users % machines ? 1 : 0)))
+}
+
 # The [[cluster.nodes]] tables, so all six machines read the same node list.
 nodes_toml() {
   local i
