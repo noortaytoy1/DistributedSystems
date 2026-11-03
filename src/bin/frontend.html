@@ -341,8 +341,9 @@ async function sendReport(event) {
 
 const nodeMemory = new Map();
 
-function yesNo(value, goodWhenTrue) {
-  return el("td", value === goodWhenTrue ? "yes" : (value ? "warn" : ""), value ? "yes" : "no");
+// Green when all is well, whichever word that is: serving yes, silenced no.
+function yesNo(value, good) {
+  return el("td", value === good ? "yes" : "warn", value ? "yes" : "no");
 }
 
 function shown(value) {
