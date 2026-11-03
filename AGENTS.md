@@ -102,8 +102,8 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 
 Review pairs: A↔D, B↔E, C↔F.
 
-`raft/` includes `raft/proposals.rs`, the proposal queue (D133). Row A also holds `node/service.rs`, and `src/middleware.rs` is
-shared (D156).
+`raft/` includes `raft/proposals.rs`, the proposal queue (D133). Row A also holds `node/service.rs` and `node/step_aside.rs`, and
+`src/middleware.rs` is shared (D156, D218).
 
 Files outside a finished part are templates: signatures, doc comments and placeholder bodies that
 compile and never panic. One exception: `node/transport.rs` holds minimal working plumbing
@@ -339,7 +339,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 ## Glossary
 
 - **Term:** Raft's logical epoch. At most one leader per term (`single-term-leader`).
-- **Leader:** the node a majority elected to order the log. It numbers entries, sends the copies and answers one read, and it decides nothing else (D163). It does not change with load: the bid does that for the work (D217).
+- **Leader:** the node a majority elected to order the log. It numbers entries, sends the copies and answers one read, and it decides nothing else (D163). The bid moves work by load (D217). A leader that stays overloaded steps aside, and a normal vote picks another (D218).
+- **Going quiet:** a leader stopping its heartbeats and holding its writes, so that followers' timers run out and an ordinary vote moves the leadership (D218). No timer or vote rule changes.
 - **Executor:** the node that plans a request: the bidding winner, or the leader in baseline
   mode.
 - **First commit wins:** the state machine keeps the first committed result per request ID.

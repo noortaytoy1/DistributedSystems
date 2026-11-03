@@ -44,7 +44,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Requirement (project description)                         | Mechanism                                                               | Status   | Decisions |
 |-----------------------------------------------------------|-------------------------------------------------------------------------|----------|-----------|
 | Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built | D6, D53, D167 |
-| An election picks the node that orders the log             | Raft leader election (openraft). That node numbers entries, sends the copies and answers one read, and decides nothing. The table below says who decides what. The role moves when its holder stops being heard, not with load: the bid follows load (D217) | built | D1, D14, D114, D158, D163, D164, D217 |
+| An election picks the node that orders the log             | Raft leader election (openraft). That node numbers entries, sends the copies and answers one read, and decides nothing. The table below says who decides what. The role moves when its holder stops being heard, or when it stays overloaded and steps aside so a normal vote picks another (D218). Work still follows load through the bid, every report | built | D1, D14, D114, D158, D163, D164, D217, D218 |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | built | D2, D3, D45, D114 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built    | D13, D41, D42, D110, D158 |
 | The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
@@ -53,7 +53,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | A report past its TTL is not planned; the node answers expired and sends nobody | The client states the age; the winner commits nobody; `ReplyBody::Expired` | built; **fires only with `--ttl-ms`, never in a measured run** | D143 |
 | An assignment says when it was created and when it expires | `assigned_at_ms` in the log; `expires_at_ms` is the planned end | built; the end is not enforced | D144 |
 | The selected peer computes an incident priority and a plan | `Plan.priority`, in points, from severity, age, distance, availability and capability | built; **nothing is ordered by it yet** | D148 |
-| Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E7, with a runner and analysis | built; **the lab runs are still to do** | D55, D56, D63, D130, D138, D187 |
+| Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E8, with a runner and analysis | built; **the lab runs are still to do** | D55, D56, D63, D130, D138, D187 |
 | The leader stays up under load, and saves are never skipped | Our own queue in front of Raft, one write in flight, grouped saves | built; measured as a prototype on one PC only | D133 |
 | One server left still handles the clients                  | Degraded mode: labelled provisional answers, replayed through Raft on return | built | D120–D125 |
 | A machine physically off comes back                        | Raft log and vote on disk, then the same catch-up as a silence           | built; rehearsed on one PC with a killed process behind a dropped link; **a real power cut is still to do** | D118, D137, D214 |
@@ -83,12 +83,14 @@ log. The test is whether one node decides for another, not whether any node is e
 | Answering alone | The lone node | Nothing | Ours | D120, D121 | `node/degraded.rs` |
 | A retry of a decided request | Any node, from its own copy | Nothing | Ours | D27 | `node/service.rs::handle_request` |
 | Is a returning node current | The node's own gate | Answers one read | openraft and ours | D75, D76, D135 | `node/rejoin.rs` |
+| Whether a busy leader moves | The leader itself, on its own numbers and its peers' bids. Then an ordinary vote picks who follows it | It stops its heartbeats. Nothing more | Ours for the check, openraft for the vote | D218 | `node/step_aside.rs` |
 | Who orders the log and sends the copies | Whichever node a majority elected. Every node stores, and 2 of 3 commit | These are its duties | openraft | D1, D14, D115 | `raft/` |
 
 **What the leader cannot do:** pick a planner; change a plan (`write_local` hands the command to `client_write` unread); commit without 2 of 3; silence anyone.
 
-**The leader does not change with load (Noor's decision, D217).** The bid already elects the worker by load for every report, and a busy node loses bids. So the evidence that the
-election reacts to load is wins per node, not Raft terms, and a steady term under load is the healthy result. D218 is kept free in case the team later says Dr Amr asked for the leader itself to change.
+**A busy leader steps aside (Noor's decision, D218, amending D217).** The bid already elects the worker by load for every report, and a busy node loses bids. So the evidence that the
+election reacts to load is still wins per node, and a steady term under even load is the healthy result. But every result passes through the leader, so an overloaded leader machine slows
+every commit. So a leader that stays overloaded goes quiet, and a normal vote picks another: section 6.19. This rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it.
 
 **Limits, said openly.** Every commit still passes through one elected node, so a strict reader can still call it a coordinator; only replacing Raft removes that, and that was
 rejected as a rewrite a day before the deadline (D163). Which of two racing plans reaches the leader first commits first. A cut-off leader can still read `leader` in an old term
@@ -291,7 +293,8 @@ flowchart TB
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (bidding, the default, D114; leader dispatch, the baseline, set by config, D3, D34) | Chooses the executor: the lowest bidder (D2) or the leader (D3). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. The elected node orders the log and decides nothing else (D163). |
-| —   | Proposal queue            | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, everything waiting goes in one log entry, a proposal leaves at 3 s (D133). |
+| —   | Proposal queue            | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, everything waiting goes in one log entry, a proposal leaves at 3 s (D133). A leader stepping aside can hold it, and it counts how long its answers take (D218). |
+| —   | Busy-leader check         | `node/step_aside.rs`                        | A     | built    | Once a second, the leader compares its load with its peers' bids. Overloaded for 5 s and safe to: it goes quiet, so that followers' timers run out and a normal vote picks a new leader (D218). |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, severe incidents fall back to any capability, CPU knob (D49, D93, D94, D96, D101); seeded campus (D97, D98). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`, `raft/wal.rs`    | A     | built    | On disk in `node-<id>.wal` when `storage.dir` is set, which every lab run does; in memory for tests. Never purged, no snapshots (D118, which supersedes D24). |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). Logs its digest at every log index that is a multiple of 100 (`state_checkpoint`, D138). |
@@ -335,6 +338,9 @@ flowchart TD
     NODE --> FAULTS["node/faults.rs"]
     NODE --> REJOIN["node/rejoin.rs"]
     NODE --> GROUP["node/group.rs"]
+    NODE --> STEPASIDE["node/step_aside.rs"]
+    STEPASIDE --> BIDS
+    STEPASIDE --> RAFT
     HEART --> GROUP
     GROUP --> TRANSPORT
     GROUP --> RAFT
@@ -370,7 +376,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph A["Part A: Raft and replication"]
-        A1["raft/"] --- A2["state.rs"] --- A3["node/mod.rs"] --- A4["config.rs"]
+        A1["raft/"] --- A2["state.rs"] --- A3["node/mod.rs"] --- A4["config.rs"] --- A5["node/step_aside.rs"]
     end
     subgraph B["Part B: Bidding election"]
         B1["bidding.rs"] --- B2["node/bids.rs"] --- B3["node/cpu.rs"]
@@ -425,6 +431,7 @@ flowchart TB
             ELECT["Bidding election: bidding.rs, node/bids.rs"]
             GROUPM["Membership and sends: node/group.rs"]
             FAIL["Detector, takeover, rejoin, degraded mode:<br/>heartbeat.rs, takeover.rs, rejoin.rs, degraded.rs"]
+            STEP["A busy leader stepping aside: step_aside.rs"]
             RPC["Remote calls: transport.rs on tarpc (library)"]
             ORDER["Ordering: raft/ on openraft (library),<br/>through the proposal queue, raft/proposals.rs"]
         end
@@ -432,6 +439,8 @@ flowchart TB
         SVC -->|"commit this result"| ORDER
         ELECT --> GROUPM
         FAIL --> GROUPM
+        STEP --> ELECT
+        STEP --> ORDER
         GROUPM --> RPC
         ORDER --> RPC
         SVC --- RULES
@@ -443,7 +452,7 @@ flowchart TB
 | | Application | Middleware | The application does not know |
 |-------|-------------|------------|-------------------------------|
 | **Client side** | The web page and the simulated users. They hold reports and read answers | `MeshClient` | How many nodes there are, that its message was copied, that it was retried, and that a node failed |
-| **Cloud side** | The incident service: plan a report, record it, answer it | `CloudGroup`, bidding, the detector, takeover, rejoin, degraded mode, tarpc, openraft | Who else is alive, how a winner was chosen, and how a result reached the other replicas |
+| **Cloud side** | The incident service: plan a report, record it, answer it | `CloudGroup`, bidding, the detector, takeover, rejoin, degraded mode, a busy leader stepping aside, tarpc, openraft | Who else is alive, how a winner was chosen, and how a result reached the other replicas |
 
 **Status.** Built on both sides. `submit` is the application's one call on the client side. On the cloud side the incident service is
 `node/service.rs`, and a result leaves it by one call, `ctx.group.send_ordered`. `src/middleware.rs` is the one interface the application layer
@@ -1265,6 +1274,67 @@ users, 0 with no queue (225 new terms), 4.6 with the queue alone (0 new terms), 
 table is in D133. The real code then ran 17 sweep cells on one PC, up to 3000 reports a second: 5 new terms in all, every one under all-at-once, and 4 of them from one
 2.8 s disk stall while other work ran. That too is a one-PC rehearsal (D219). Nothing has run on the six PCs.
 
+### 6.19 A busy leader steps aside (built, D218, amends D217)
+
+Every result passes through the leader, so an overloaded leader machine slows every commit, and the bid can move planning away from it but
+not the ordering. So once a second the leader looks at the last second. It is overloaded when its load is at least `leader_overload_ratio` times
+the lowest peer's mean bid, and over a small floor. Its load is its own mean bid, or the mean time its log took per proposal if that is higher and
+slow: over 40 ms, and over 5 of its own disk saves. The log wait is there because bids even out, so the bid alone can miss a leader that is too busy to keep the log (D218).
+A peer with no bid in that second makes the second not count, so an old number cannot decide it, and a peer that is not serving does not bid.
+
+openraft 0.9.25 has no hand-over command, and followers refuse votes while they have heard from their leader within the lease. So the leader
+goes quiet and an ordinary vote does the rest. No election timer and no vote rule changes, so Raft's safety does not either: all this can cause is an election, and one can happen at any time.
+
+Safe to go quiet means: this node is serving, not degraded and not silenced, all members are in its group view, it suspects no peer, no silence the failure draw named is going on, every peer bid in that
+second, and `leader_overload_cooldown_ms` have passed since the last term change. All of that, and the overload itself, must hold without a break for `leader_overload_for_ms`. A break starts the count over.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Q as Proposal queue on L
+    participant L as L, the busy leader
+    participant F1 as F1, the follower with the shorter timer
+    participant F2 as F2, the other follower
+    Note over L: Once a second, L compares its load with the lowest peer's bid
+    Note over L: At least 3 times, over the floor, for 5 s without a break, and it is safe
+    L->>L: log leader_stepped_aside
+    L->>Q: hold, so new writes wait here, each with its own deadline
+    L-xF1: no heartbeats, no writes
+    L-xF2: no heartbeats, no writes
+    Note over L,F2: Peer pings and bids go on, so nobody is suspected, and every node keeps planning. Commits wait
+    Note over F1,F2: Each follower's own wait runs out, its range plus the lease (D115)
+    F1->>L: Vote for term + 1
+    F1->>F2: Vote for term + 1
+    L-->>F1: granted. L has seen a higher term, so it steps down
+    L->>Q: release, and heartbeats back on
+    F2-->>F1: granted, or refused if its own lease still holds. One grant is enough
+    Note over F1: leader of term + 1, logged by raft_state
+    F1->>L: AppendEntries, the blank entry of the term
+    F1->>F2: AppendEntries, the blank entry of the term
+    L->>L: log leader_step_aside_ended, outcome changed
+    Q->>L: held writes, and openraft answers ForwardToLeader
+    L->>F1: Propose, as for any follower (D26)
+    Note over L,F2: Every node starts its cooldown again on the new term
+    opt nobody takes over within 3 s
+        L->>Q: release, and heartbeats back on
+        L->>L: log leader_step_aside_ended, outcome timed_out, and warn why
+        Note over L: L still leads if no vote happened. Its next try is a full cooldown away
+    end
+```
+
+The vote knows nothing of load: the follower whose timer ends first wins, so node 2 takes over from node 1, and node 1 from anyone else (D115). If a busy node does not lead, nothing happens, because
+the rule only looks at the leader. If two nodes are busy, the leadership can move between them, once per cooldown at most. A leader silenced while quiet ends its try at once, and going quiet lives only in the process, so a leader killed while quiet restarts with heartbeats on.
+
+**One-PC rehearsal, never six-PC results, one run each (the whole table is in D218).** Three nodes with disk saves on, three load generators, think 1000 ms, reports over UDP, with other work on the PC.
+
+| Case | What happened | Commit p50 / p99, ms |
+|------|---------------|----------------------|
+| Even, 300 users, 60 s | no step-aside, the term stays. The leader's bid was at most 1.10 times its lowest peer's | 7.5 / 12.4 |
+| Even, 3000 users, 60 s | no step-aside, the term stays. At most 1.20 times, and its log wait was about 20 ms against peer bids near 50 ms | 19.7 / 39.1 |
+| `ctl skew` 20000 on the leader | quiet about 8.5 s later, a new leader 759 ms after that, nobody gave up, digests equal, no second change in the 60 s left, and node 1's wins fell from 6771 to 16 | 16.6 / 23.7 before the move, 12.4 / 28.6 after |
+| 32 busy loops on the leader's 4 cores | its bid reached at most 2.51 times, so the bid alone would never fire. Its log wait was 94 ms against 8 ms. Quiet about 6 s later, a new leader 876 ms after that, nobody gave up, digests equal | 8.3 / 18.6 before, 86.3 / 357.9 starved, 12.0 / 61.3 after the move. Never moved: 73.3 / 300.5 |
+
+
 ---
 
 ## 7. Replicated state
@@ -1551,9 +1621,9 @@ stateDiagram-v2
     Candidate --> Leader: votes from a majority (2 of 3)
     Candidate --> Follower: sees a leader or a higher term
     Candidate --> Candidate: split vote, new timeout, term + 1
-    Leader --> Follower: sees a higher term (for example after returning from silence)
+    Leader --> Follower: sees a higher term (for example after returning from silence, or after going quiet to step aside, D218)
     note right of Leader
-        Sends AppendEntries every 50 ms.
+        Sends AppendEntries every 50 ms, unless it has gone quiet to step aside (at most 3 s, D218).
         Every change logs a raft_state event.
     end note
 ```
@@ -1604,6 +1674,7 @@ would make the client wait out its retries and give up on a report the cloud had
 | Any peer, for the group | Every other node | The peer detector above, without a break for `degraded_after_ms`; logs `group_view` (D153). A fault under about 2.2 s never shows here | about 2.15–2.2 s | built |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, `degraded`, `members`, role, term, digest per node | on demand        | built |
 | A node's UDP port closed (firewall) | The operator | `ctl status`: `node N: udp no answer` | on demand | built (D168) |
+| An overloaded leader | The leader itself | Once a second, its load against its peers' bids, for `leader_overload_for_ms` without a break (D218). The load is its bid, or its log wait if that is slow | 6 to 9 s, once the cooldown is over | built |
 
 All detectors are timeouts and can be wrong about a slow node. That costs only duplicate work or an
 extra election, never two committed results or two leaders in one term. A client detects nothing: UDP has no connection, it
@@ -1776,7 +1847,7 @@ arrives.
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>udp_socket, udp_counters,<br/>silenced, restored, fault_election, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
+        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io, leader_stepped_aside, leader_step_aside_ended,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>udp_socket, udp_counters,<br/>silenced, restored, fault_election, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_started, client_sent, client_done (with status and priority), client_gave_up,<br/>udp_socket, udp_counters, machine_usage from one program"]
@@ -1806,6 +1877,7 @@ flowchart LR
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
 | Burst | `just_won` on or off, requests in bursts (`--pattern all-at-once`, D182; no cell yet) | longest winning streak, largest queue difference, p99 | B | — |
 | E7   | one program against 10 per machine, at 300 users | latency, client machine CPU, arrivals | F | — |
+| E8   | a busy first node with the step-aside on | whether and when the leader moves, and commit latency either side; compare with `e2e6-skew-expected-wait` | A | — |
 
 `e1-1000-*` and `e1-3000-*` use 3000 responders, the other E1 cells 300 (D219).
 
@@ -1909,6 +1981,7 @@ The report should say what changed between the submitted design and the built sy
 | The first leader seeds the responders                  | Any serving node, through the log; the extra entries change nothing | D38, D164 |
 | The demo on the default planner load                   | The demo on E1's `plan_work` and responders, at a load chosen by rule on the PCs | D129, D165, D205 |
 | A hand-chosen election timeout range per cluster       | A different range per node, to stop split votes               | D115 |
+| The leader changes only when it fails                  | It also steps aside when it stays overloaded, and a normal vote picks another | D218 |
 
 ---
 
@@ -1953,7 +2026,8 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219 and D220, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). A leader that steps aside when overloaded is not on this branch: D217 stands, and D218 is kept free in case the
-  team later says Dr Amr asked for it.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209).
+- **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
+  report must state that.
 - **Lab results.** Nothing has run on the six machines; see [runbook.md](runbook.md). Every number in these docs is from tests or from
   one PC, and says so.

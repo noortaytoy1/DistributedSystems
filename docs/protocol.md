@@ -97,7 +97,7 @@ on both transports (D23, D174). `ctl` builds a `ControlRequest`, and `client::co
 Nodes call each other through the tarpc service `proto::PeerRpc` (D119). A connection carries many
 calls at once, and replies may come back in any order. Each method takes `from` and `term`, the
 sender's current Raft term, and has a deadline, which holds even for a call tarpc could not write because the socket is full
-(D150). A connection whose calls have gone unanswered for
+(D150). A leader stepping aside sends nothing new: it reads the bids it already receives, and only stops sending (D218). A connection whose calls have gone unanswered for
 1 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
 maps to one method.
 
@@ -233,7 +233,7 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 
 | Error | Raised by | What the caller does |
 |-------|-----------|----------------------|
-| `ProposeError::NotLeader { leader }` | a node that does not lead, answering `Propose` or `ReadIndex` | retries at the hinted leader until its deadline (D26) |
+| `ProposeError::NotLeader { leader }` | a node that does not lead, answering `Propose` or `ReadIndex`. Writes held by a leader stepping aside get this when the hold ends, if the leader has changed (D218) | retries at the hinted leader until its deadline (D26) |
 | `ProposeError::Timeout` | no leader committed the proposal before the deadline | the node stays quiet and the client's retry takes over (D36) |
 | `ProposeError::Fatal(reason)` | consensus stopped | the node stays quiet and logs it |
 | `TransportError::Silenced` | an outgoing call on a silenced node | never sent. The caller treats it as a failed call |
@@ -247,6 +247,15 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 | A malformed TCP frame | the receiver | the connection closes (D16) |
 | A bad datagram, an ICMP error or a failed send | the datagram adapter | counted and dropped; no error reaches tarpc, and the client's retry covers it (D170) |
 | `ReplyBody::Rejected(reason)` | defined, never sent (D36) | none |
+
+## Leader changes
+
+A leader that stays overloaded goes quiet, and a normal vote picks another (D218). No message and no field on the wire changes. Two events say what happened, on that leader's own log:
+
+- `leader_stepped_aside { term, score, log_wait_us, save_us, load, peer_scores }`: this leader went quiet. `score` is its mean bid in the last second, `log_wait_us` the mean time its log took per proposal, `save_us` its mean disk save, `load` what the rule compared, and `peer_scores` the peers' mean bids.
+- `leader_step_aside_ended { term, outcome, new_term, new_leader, waited_ms }`: `outcome` is `changed`, `re_elected`, `timed_out` or `stopped`, and `term` is the term it went quiet in.
+
+`raft_io` gains `answered` and `answered_us`, both cumulative: the proposals this node's queue answered, and the time they took from entering it.
 
 ## Timers
 
@@ -275,6 +284,8 @@ Defaults from `config.rs`, tuned for a LAN:
 | `faults.silence_min_ms`       | 1000         | shortest silence a node draws                              |
 | `faults.silence_max_ms`       | 20000        | longest silence a node draws (at most 20000)               |
 | (derived) fault round deadline | 2 × `peer_rpc_timeout_ms` | a node gives up on a round after this, logs a null victim and waits again (D159) |
+| `policy.leader_overload_for_ms` | 5000 | how long a leader must stay overloaded, without a break, before it steps aside (D218) |
+| `policy.leader_overload_cooldown_ms` | 60000 | no step-aside until this long after the last term change or the last try; at least 3000. This is what stops a storm of elections (D218) |
 
 Do not confuse `incident_ttl_ms` with the `hard_ttl` openraft gives one RPC. The deadline on one record is
 `assigned_at_ms + ttl_ms - age_ms`, and no timer waits on it.
@@ -287,6 +298,10 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `rejoin.rs::NO_LEADER_ELECT_AFTER` | 3 s | a returning node that hears no leader this long may stand itself (D125) |
 | `rejoin.rs::ASK_AGAIN_AFTER` | 1 s | how long a returning node waits on one target before it asks the leader again (D135) |
 | `rejoin.rs::WAIT_WARNING` | 5 s | how often a node still catching up warns |
+| `step_aside.rs::CHECK_INTERVAL` | 1 s | how often a node reads the bids of the last second (D218) |
+| `step_aside.rs::QUIET_LIMIT` | 3 s | how long a leader stays quiet waiting for a new leader; the same as `propose_timeout_ms` by default (D218) |
+| `step_aside.rs::floor` | 1000 µs, 8 jobs or 500 permille, by score kind | a leader at or below this is never overloaded, so tiny numbers on an idle cluster cannot make a large ratio (D218) |
+| `step_aside.rs::LOG_WAIT_FLOOR`, `LOG_WAIT_SAVES` | 40 ms, 5 saves | a leader's mean log wait counts only above both, so a slow disk cannot pass for a busy leader (D218) |
 | `node/mod.rs::MAX_PLAN_ATTEMPTS` | 3 | plans of one request before the executor commits that nobody could be sent (D35, D220) |
 | `node/mod.rs::CAMPUS_CHECK_INTERVAL` | 200 ms | how often a node checks that the campus is registered, and proposes it if it may (D164) |
 | `degraded.rs::REPLAY_INTERVAL`, `REPLAY_BATCH` | 100 ms, 64 | how fast provisional answers are replayed (D122) |

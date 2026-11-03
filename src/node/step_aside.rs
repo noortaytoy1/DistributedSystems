@@ -55,14 +55,14 @@ pub const QUIET_LIMIT: Duration = Duration::from_secs(3);
 /// How often a quiet leader looks for a higher term.
 const WATCH_INTERVAL: Duration = Duration::from_millis(20);
 
-/// A mean log wait at or below this never counts. A healthy log takes about 9 ms at 300 users and
-/// 24 ms at 3000 on one PC, because grouping keeps it nearly flat under load (D133, D218).
+/// A mean log wait at or below this never counts. A healthy log takes about 8 ms at 300 users and
+/// 20 ms at 3000 on one PC, because grouping keeps it nearly flat under load (D133, D218).
 const LOG_WAIT_FLOOR: Duration = Duration::from_millis(40);
 
 /// Nor does one at or below this many of this node's own disk saves. A write is a save here and a
 /// save on a follower, and a proposal waits for about one and a half writes, so a healthy wait is 3
 /// to 4.3 saves on any disk (3.1 and 4.3 measured, D218). On a slow disk of 25 ms the bar is 125 ms,
-/// so a slow disk cannot pass for a busy leader, and moving the leader would not cure it anyway.
+/// so a slow disk alone does not pass for a busy leader.
 const LOG_WAIT_SAVES: u64 = 5;
 
 /// A node at or below this score is never overloaded, so that tiny numbers on an idle cluster cannot

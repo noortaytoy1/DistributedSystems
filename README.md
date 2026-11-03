@@ -43,7 +43,7 @@ Phase 1 is built and passes its tests on one machine. **It has not yet run on th
 experiments have not been run there.
 
 - **Built:** Raft replication with the log on disk, load-based bidding (the default), takeover from a silent
-  winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), the planner with incident priority,
+  winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), a busy leader that steps aside so a normal vote can move the leadership (D218), the planner with incident priority,
   TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
   group communication with a who's-alive list, the client middleware, reports over UDP through tarpc with `ctl` on tarpc over TCP (D167, D168),
   any serving node loading the responder list (D164), the load generator with 10 real programs per client
@@ -108,8 +108,8 @@ and latency percentiles, with counts of retries, requests given up on, plans wit
 expired reports. `--pattern steady|random|all-at-once` sets how users wait (D182). `ctl incidents` shows each record's status,
 responder, priority, owner, category, times and log index, on every node.
 
-Requests are planned by a load-based bidding election among the nodes. The Raft leader orders the log and decides nothing else (D114, D163), and it does not
-change with load, because the bid already moves work away from a busy node (D217). `policy.assignment = "leader-dispatch"` is the baseline for comparison.
+Requests are planned by a load-based bidding election among the nodes. The Raft leader orders the log and decides nothing else (D114, D163). The bid moves work away from a busy node, and a leader that
+stays overloaded also steps aside, so that a normal vote picks another (D218). `policy.assignment = "leader-dispatch"` is the baseline for comparison.
 
 ## Inject faults
 
@@ -156,7 +156,7 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 ```bash
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
-scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 33, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 34, about 8 hours
 python analysis/analyze.py runs                    # analysis/out/: summary.csv and plots
 ```
 
@@ -170,7 +170,7 @@ Every process reads one TOML file. Unknown keys are rejected, so a typo fails at
 |------------|-----------------------------------------------------------------------------|
 | `cluster`  | Node IDs, peer addresses (Raft, bids, heartbeats), client addresses          |
 | `timers`   | Raft heartbeat and election timeouts, bid window, client retry, timeouts     |
-| `policy`   | `assignment` (`"bidding"` or `"leader-dispatch"`), `score`, `cpu_weight`, `just_won`, `initial_service_us` |
+| `policy`   | `assignment` (`"bidding"` or `"leader-dispatch"`), `score`, `cpu_weight`, `just_won`, `initial_service_us`, and when a busy leader steps aside: `leader_overload_ratio` (0 turns it off), `leader_overload_for_ms`, `leader_overload_cooldown_ms` (D218) |
 | `workers`  | Planner threads, queue capacity, planner cost knob                           |
 | `campus`   | Seed, zones and responders of the synthetic campus, time on scene, how long a report stays valid (`incident_ttl_ms`) |
 | `metrics`  | Directory for event logs; leave it out to disable                            |
