@@ -328,8 +328,8 @@ def convergence_metrics(events):
     }
 
 
-def message_metrics(events, start_us, completed):
-    """Messages sent in the measured time, per answered request. Counters are cumulative."""
+def sent_in_window(events, start_us):
+    """Messages sent in the measured time, by kind. Counters are cumulative."""
     per_kind = defaultdict(int)
     for es in node_events(events).values():
         snapshots = [e for e in es if e["ev"] == "messages" and e["ts_us"] >= start_us]
@@ -338,6 +338,66 @@ def message_metrics(events, start_us, completed):
         first, last = snapshots[0]["sent"], snapshots[-1]["sent"]
         for kind, count in last.items():
             per_kind[kind] += count - first.get(kind, 0)
+    return per_kind
+
+
+def fault_election_metrics(events, start_us):
+    """The fault election (D158, D161), grouped by round from each node's `fault_election` lines.
+
+    A node that never held every number logs a null victim. Null lines are skipped in the mean, and a
+    round where no line names a victim counts as abandoned. A lagging node can reuse the number of a
+    round the others gave up on, which only merges two abandoned rounds.
+    """
+    rounds = defaultdict(list)
+    durations_us = []
+    for source, es in node_events(events).items():
+        node = int(source.split("-")[1])
+        for e in es:
+            if e["ev"] != "fault_election" or e["ts_us"] < start_us:
+                continue
+            rounds[e["round"]].append((node, e["victim"]))
+            # A joiner's figure is shorter by construction, so only the caller's says how long the
+            # election took (D161).
+            if e["called"] and e["election_us"] is not None:
+                durations_us.append(e["election_us"])
+
+    elections = abandoned = splits = not_silenced = 0
+    for lines in rounds.values():
+        named = {victim for _, victim in lines if victim is not None}
+        if not named:
+            abandoned += 1
+            continue
+        elections += 1
+        if len(named) > 1:
+            splits += 1
+        if any(node in named and victim is None for node, victim in lines):
+            not_silenced += 1
+
+    bids = sent_in_window(events, start_us).get("fault_bid", 0)
+    refused = sum(
+        1
+        for es in node_events(events).values()
+        for e in es
+        if e["ev"] == "fault_refused" and e["ts_us"] >= start_us
+    )
+    return {
+        "fault_elections": elections,
+        "fault_rounds_abandoned": abandoned,
+        "fault_election_mean_ms": float(np.mean(durations_us)) / 1000 if durations_us else float("nan"),
+        # Must be 0. Same numbers, same winner, so a split means the rule broke (bid_split_decisions
+        # is the same check for the load election, where a split is allowed and the commit settles it).
+        "fault_split_decisions": splits,
+        # The named node's own line is null: it missed a bid, so it never knew it had won.
+        "fault_elected_not_silenced": not_silenced,
+        "fault_refused": refused,
+        # Per round, because per request it would be a tiny number that says nothing.
+        "fault_bids_per_round": bids / len(rounds) if rounds else float("nan"),
+    }
+
+
+def message_metrics(events, start_us, completed):
+    """Messages sent in the measured time, per answered request."""
+    per_kind = sent_in_window(events, start_us)
     if not completed:
         return {}
     metrics = {f"msgs_{kind}_per_req": n / completed for kind, n in per_kind.items()}
@@ -494,6 +554,7 @@ def analyse_run(run_dir):
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
     metrics.update(convergence_metrics(events))
+    metrics.update(fault_election_metrics(events, start))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))
@@ -650,11 +711,16 @@ def plot_fairness(plt, summary, out):
     plt.close(fig)
 
 
+# Faults on a timer, one after another. Their "during" runs from the first silence to the last restore,
+# which is most of the run, so a before-and-after picture says nothing about any one fault.
+FAULTS_ON_A_TIMER = {"ft8", "e5"}
+
+
 def plot_phases(plt, summary, out):
     cells = [
         (f"{experiment}-{cell}", metrics)
         for (experiment, cell), metrics in sorted(summary.items())
-        if "during_p99_ms" in metrics
+        if "during_p99_ms" in metrics and experiment not in FAULTS_ON_A_TIMER
     ]
     if not cells:
         return

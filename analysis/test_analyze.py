@@ -42,6 +42,19 @@ def done(start_s, latency_ms, executor, provisional=False, no_responder=False, a
     }
 
 
+def election(at_s, round_number, victim, ms, called, election_us):
+    return {
+        "ts_us": T0 + at_s * S,
+        "ev": "fault_election",
+        "round": round_number,
+        "tickets": {"1": 10, "2": 20},
+        "victim": victim,
+        "ms": ms,
+        "called": called,
+        "election_us": election_us,
+    }
+
+
 def synthetic_run():
     client = [{"ts_us": T0, "ev": "client_sent", "request": request(0), "attempt": 0}]
     client.append(done(1, 999, 1))  # inside the 2 s warm-up: dropped
@@ -65,8 +78,14 @@ def synthetic_run():
          "net_rx_bytes": 0, "net_tx_bytes": 0, "queued": 2, "running": 1},
         {"ts_us": T0 + 4 * S, "ev": "resource_usage", "rss_kb": 4096, "cpu_ticks": 150,
          "net_rx_bytes": 500, "net_tx_bytes": 500, "queued": 4, "running": 1},
-        {"ts_us": T0 + 3 * S, "ev": "messages", "sent": {"bid": 10}, "received": {}},
-        {"ts_us": T0 + 8 * S, "ev": "messages", "sent": {"bid": 32}, "received": {}},
+        {"ts_us": T0 + 3 * S, "ev": "messages", "sent": {"bid": 10, "fault_bid": 0}, "received": {}},
+        {"ts_us": T0 + 8 * S, "ev": "messages", "sent": {"bid": 32, "fault_bid": 24}, "received": {}},
+        election(1, 0, 3, 5000, True, 99_000),  # inside the 2 s warm-up: dropped
+        election(3, 1, 2, 5000, True, 3000),
+        election(4, 2, None, None, True, None),
+        election(5, 3, 3, 4000, True, 5000),
+        election(6, 4, 1, 6000, False, 100),
+        {"ts_us": T0 + 6 * S, "ev": "fault_refused", "victim": 1, "reason": "recovering: not serving yet"},
     ]
     node2 = [
         {"ts_us": T0 + 3 * S, "ev": "raft_state", "term": 2, "leader": 1, "role": "follower", "last_applied": 1},
@@ -79,6 +98,10 @@ def synthetic_run():
         {"ts_us": T0 + 4 * S, "ev": "state_checkpoint", "log_index": 100, "digest": 1111},
         {"ts_us": T0 + 6 * S, "ev": "state_checkpoint", "log_index": 200, "digest": 2222},
         {"ts_us": T0 + 9 * S, "ev": "state_checkpoint", "log_index": 300, "digest": 3333},
+        election(3, 1, 2, 5000, False, 500),
+        election(4, 2, None, None, False, None),
+        election(5, 3, 3, 4000, False, 200),
+        election(6, 4, 2, 7000, True, 7000),  # names another node than node 1 does: a split
     ]
     node3 = [
         {"ts_us": T0 + 1 * S, "ev": "overloaded", "request": request(0), "attempt": 0, "queued": 64, "running": 4},
@@ -90,6 +113,8 @@ def synthetic_run():
          "i_won": False, "bids_seen": 3, "my_score": 9, "window_us": 30_000},
         {"ts_us": T0 + 8 * S, "ev": "provisional_conflict", "request": request(7), "reason": "responder_taken",
          "responder": 1, "winner_responder": None, "winner_executor": None},
+        election(3, 1, 2, 5000, False, 700),
+        election(5, 3, None, None, False, None),  # missed a bid, so it never knew it had won
     ]
     return {"client-1": client, "node-1": node1, "node-2": node2, "node-3": node3}
 
@@ -284,6 +309,24 @@ class OneRun(unittest.TestCase):
         self.assertEqual(self.m["before_count"], 4)
         self.assertEqual(self.m["during_count"], 4)
         self.assertAlmostEqual(self.m["during_mean_ms"], 65.0)
+
+    def test_fault_elections(self):
+        self.assertEqual(self.m["fault_elections"], 3)  # rounds 1, 3 and 4; round 0 is warm-up
+        self.assertEqual(self.m["fault_rounds_abandoned"], 1)  # round 2
+        # Called lines only, nulls skipped: 3000, 5000 and 7000 us.
+        self.assertAlmostEqual(self.m["fault_election_mean_ms"], 5.0)
+        self.assertEqual(self.m["fault_split_decisions"], 1)  # round 4
+        self.assertEqual(self.m["fault_elected_not_silenced"], 1)  # round 3
+        self.assertEqual(self.m["fault_refused"], 1)
+        self.assertAlmostEqual(self.m["fault_bids_per_round"], 24 / 4)
+        self.assertAlmostEqual(self.m["msgs_fault_bid_per_req"], 24 / 11)
+
+    def test_a_run_with_no_fault_election_has_counts_of_zero_and_no_mean(self):
+        m = analyze.fault_election_metrics({"node-1": [], "client-1": []}, 0)
+        self.assertEqual(m["fault_elections"], 0)
+        self.assertEqual(m["fault_split_decisions"], 0)
+        self.assertTrue(math.isnan(m["fault_election_mean_ms"]))
+        self.assertTrue(math.isnan(m["fault_bids_per_round"]))
 
     def test_messages_per_request_use_the_difference_in_counters(self):
         self.assertAlmostEqual(self.m["msgs_bid_per_req"], 22 / 11)

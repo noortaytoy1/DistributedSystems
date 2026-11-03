@@ -170,13 +170,19 @@ pub enum Event {
         ms: u64,
     },
     Restored,
-    /// The leader's schedule ordered `victim` silent for `ms` (E3, FT-8).
-    FaultOrdered {
-        victim: NodeId,
-        ms: u64,
-        term: u64,
+    /// One round of the fault election as this node saw it, once per round (D158, D161). `tickets`
+    /// are the numbers it held. `victim` and `ms` are null if it never held all of them, and then it
+    /// did nothing. `called` is true if this node's timer started the round. `election_us` runs from
+    /// this node's own bid to the last bid it needed, on this node's clock, and is null with `victim`.
+    FaultElection {
+        round: u64,
+        tickets: BTreeMap<NodeId, u64>,
+        victim: Option<NodeId>,
+        ms: Option<u64>,
+        called: bool,
+        election_us: Option<u64>,
     },
-    /// The order was not carried out: the victim refused it, had a newer term, or was unreachable.
+    /// This node was elected and stayed up: it was catching up, or already silenced.
     FaultRefused {
         victim: NodeId,
         reason: String,
@@ -535,8 +541,8 @@ pub enum MsgKind {
     Propose,
     /// A returning node asks the leader for its commit index (D76).
     ReadIndex,
-    /// The leader's scheduled fault order (D78).
-    FaultOrder,
+    /// One node's numbers in a fault election (D158).
+    FaultBid,
     Bid,
     PeerHeartbeat,
     ClientRequest,
@@ -551,7 +557,7 @@ impl MsgKind {
         MsgKind::RaftSnapshot,
         MsgKind::Propose,
         MsgKind::ReadIndex,
-        MsgKind::FaultOrder,
+        MsgKind::FaultBid,
         MsgKind::Bid,
         MsgKind::PeerHeartbeat,
         MsgKind::ClientRequest,
@@ -566,7 +572,7 @@ impl MsgKind {
             MsgKind::RaftSnapshot => "raft_snapshot",
             MsgKind::Propose => "propose",
             MsgKind::ReadIndex => "read_index",
-            MsgKind::FaultOrder => "fault_order",
+            MsgKind::FaultBid => "fault_bid",
             MsgKind::Bid => "bid",
             MsgKind::PeerHeartbeat => "peer_heartbeat",
             MsgKind::ClientRequest => "client_request",
@@ -584,7 +590,7 @@ impl MsgKind {
             PeerBody::Raft(RaftRpc::InstallSnapshot(_)) => MsgKind::RaftSnapshot,
             PeerBody::Propose(_) => MsgKind::Propose,
             PeerBody::ReadIndex => MsgKind::ReadIndex,
-            PeerBody::FaultOrder { .. } => MsgKind::FaultOrder,
+            PeerBody::FaultBid(_) => MsgKind::FaultBid,
             PeerBody::Bid(_) => MsgKind::Bid,
             PeerBody::Heartbeat => MsgKind::PeerHeartbeat,
         }

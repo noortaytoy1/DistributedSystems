@@ -246,17 +246,19 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FaultConfig {
-    /// False turns off every injected fault: the schedule never starts and `ctl silence` is
-    /// refused (D77).
+    /// False turns off every injected fault: this node never bids in a fault election, so no
+    /// election finishes anywhere, and `ctl silence` is refused (D77, D158).
     pub enabled: bool,
-    /// The leader waits a random time in this range after a silence ends (or after it becomes
-    /// leader) before it orders the next fault (D12, D78).
+    /// Each node waits a random time in this range, from the end of the last round and any silence
+    /// it elected. The first to finish calls the next fault election, so the wait between rounds
+    /// averages less than the middle of the range (D159).
     pub interval_min_ms: u64,
     pub interval_max_ms: u64,
-    /// Each scheduled silence lasts a random time in this range, at most 20 s.
+    /// Each node draws its silence from this range, at most 20 s. The elected node uses its own.
     pub silence_min_ms: u64,
     pub silence_max_ms: u64,
-    /// Seed for the schedule; mixed with the leader's term. Unset: a random seed, logged at start.
+    /// Seed for this node's numbers; mixed with the round and the node, so one seed repeats the
+    /// numbers per round but not the timing. Unset: a random seed per process, logged at start.
     pub seed: Option<u64>,
 }
 
@@ -392,8 +394,9 @@ impl Config {
                 "faults: need 0 < silence_min_ms <= silence_max_ms <= {max_fault}"
             ));
         }
-        // A leader that silences itself cannot tell its successor; the successor's first wait
-        // must outlast any silence already running, or two faults overlap (D78).
+        // Not for safety: the all-numbers rule keeps faults apart with no timer in the argument
+        // (D158). A node that missed the winner's bid waits only this interval, so a shorter one
+        // calls rounds that cannot finish while the winner is out.
         if f.interval_min_ms < f.silence_max_ms {
             return invalid("faults: need interval_min_ms >= silence_max_ms".into());
         }

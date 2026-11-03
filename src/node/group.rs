@@ -4,8 +4,8 @@
 //! the group, its [`View`]. A caller sends once; the group makes the copies and reports who got
 //! them (D152).
 //!
-//! - [`CloudGroup::send`] addresses the peers in the view. Bids use it, and so does anything else
-//!   that only needs the peers this node believes are alive.
+//! - [`CloudGroup::send`] addresses the peers in the view. Bids and the fault election use it, and
+//!   so does anything else that only needs the peers this node believes are alive.
 //! - [`CloudGroup::probe`] addresses every configured peer, in the view or not. Heartbeats use it:
 //!   if they followed the list, two nodes that removed each other would never hear each other
 //!   again, and a 20 s fault would last for ever (D154).

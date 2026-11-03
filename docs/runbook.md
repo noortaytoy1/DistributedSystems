@@ -92,8 +92,8 @@ defaults (D40) that have only ever run on loopback.
 ## 5. Run the experiments
 
 ```bash
-scripts/run-experiments.sh experiments/hosts quick      # 13 cells, about 1 hour
-scripts/run-experiments.sh experiments/hosts full       # 31 cells, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick      # 15 cells, about 70 minutes
+scripts/run-experiments.sh experiments/hosts full       # 33 cells, about 8 hours
 ```
 
 Between runs the runner wipes `storage.dir` and `metrics.dir` on every machine, so no state carries over.

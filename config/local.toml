@@ -63,13 +63,15 @@ incident_ttl_ms = 60000
 dir = "runs/local"
 
 [faults]
-# false: no injected faults at all (no schedule, ctl silence refused). Baseline runs.
-# Override for one node with: node --faults on|off
+# false: no injected faults at all (no fault election, ctl silence refused). Baseline runs.
+# Override for one node with: node --faults on|off. One node with it off stops every election.
 enabled = true
-# The leader waits interval_min..max ms after a silence, then silences a random node for
-# silence_min..max ms. interval_min_ms must be >= silence_max_ms so faults never overlap.
+# Each node waits interval_min..max ms; the first to finish calls a fault election. All three draw
+# a random number, and the highest goes silent for its own silence_min..max ms. A node missing any
+# number does nothing. interval_min_ms must be >= silence_max_ms, or rounds cannot finish.
+# To stop elections without turning ctl silence off, set both interval keys to 100000000.
 interval_min_ms = 30000
 interval_max_ms = 60000
 silence_min_ms = 1000
 silence_max_ms = 20000
-# seed = 1   # fix the schedule; unset picks a random seed and logs it
+# seed = 1   # repeats each node's numbers per round; unset picks a random seed and logs it

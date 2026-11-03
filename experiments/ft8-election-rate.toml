@@ -1,0 +1,21 @@
+# run: users=300 think_ms=1000
+
+[policy]
+assignment = "bidding"
+score = "expected-wait"
+cpu_weight = 1
+
+[workers]
+plan_work = 1000
+
+[campus]
+responders = 300
+
+[faults]
+# Many short fault elections, for their frequency, duration and message cost (D162). These timings
+# are for measuring the election; the faults themselves are far shorter than the spec's 1 to 20 s.
+enabled = true
+interval_min_ms = 1000
+interval_max_ms = 1500
+silence_min_ms = 100
+silence_max_ms = 1000

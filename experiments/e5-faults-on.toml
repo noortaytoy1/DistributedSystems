@@ -12,7 +12,8 @@ plan_work = 1000
 responders = 300
 
 [faults]
-# The schedule as configured for the lab; a fixed seed repeats it.
+# The fault election as configured for the lab. The fixed seed repeats each node's numbers per
+# round, not the timing, so runs of this cell are alike but not the same.
 enabled = true
 interval_min_ms = 30000
 interval_max_ms = 60000

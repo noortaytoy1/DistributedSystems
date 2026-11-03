@@ -51,6 +51,7 @@ use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
 use degraded::DegradedState;
+use faults::FaultElection;
 use group::CloudGroup;
 use heartbeat::Suspicion;
 use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
@@ -82,6 +83,8 @@ pub struct NodeContext {
     pub serving: AtomicBool,
     /// Bid rounds and the load figures bids are made from (bids.rs).
     pub bids: BidState,
+    /// This node's rounds of the fault election (faults.rs).
+    pub fault_election: FaultElection,
     /// Extra planner work per request, set by `ctl skew`.
     pub plan_work: AtomicU32,
     /// Whether this node is the last one left, and what it answered meanwhile (degraded.rs).
@@ -230,6 +233,7 @@ pub async fn start_with(
         // A node with a Raft log from an earlier run may be behind (D118).
         serving: AtomicBool::new(!restarted),
         bids: BidState::new(id, &config),
+        fault_election: FaultElection::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
         degraded: DegradedState::default(),
         config: Arc::new(config),
@@ -284,8 +288,9 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     match body {
         PeerBody::Propose(cmd) => PeerReply::Proposed(ctx.consensus.propose_local(cmd).await),
         PeerBody::ReadIndex => PeerReply::ReadIndex(ctx.consensus.read_index_local().await),
-        PeerBody::FaultOrder { ms } => {
-            PeerReply::FaultOrder(faults::on_order(&ctx, Duration::from_millis(ms)))
+        PeerBody::FaultBid(bid) => {
+            faults::on_bid(&ctx, from, bid);
+            PeerReply::Ack
         }
         PeerBody::Heartbeat => {
             lock(&ctx.suspicion).heard_from(from, Instant::now());

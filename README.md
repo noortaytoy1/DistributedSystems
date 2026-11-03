@@ -138,7 +138,7 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 ```bash
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
-scripts/run-experiments.sh experiments/hosts quick # 13 cells, about 1 hour; `full` is 31, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 33, about 8 hours
 python analysis/analyze.py runs                    # analysis/out/: summary.csv and plots
 ```
 

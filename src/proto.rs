@@ -601,7 +601,7 @@ pub trait PeerRpc {
     ) -> PeerReply;
     async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
     async fn read_index(from: NodeId, term: Term) -> PeerReply;
-    async fn fault_order(from: NodeId, term: Term, ms: u64) -> PeerReply;
+    async fn fault_bid(from: NodeId, term: Term, bid: FaultBid) -> PeerReply;
     async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
     async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
@@ -626,12 +626,9 @@ pub enum PeerBody {
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
     /// ReadIndex, D76). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
-    /// The leader orders the receiver silent for `ms` (scheduled fault injection, D12, D78). The
-    /// envelope's term makes a stale leader's order fail the term rule. Answered with
-    /// [`PeerReply::FaultOrder`].
-    FaultOrder {
-        ms: u64,
-    },
+    /// This node's numbers for a fault election, sent to the group (D158). Answered with `Ack`.
+    /// The envelope's term applies the term rule: a dropped bid only stops the round finishing.
+    FaultBid(FaultBid),
     Bid(Bid),
     Heartbeat,
 }
@@ -658,8 +655,6 @@ pub enum PeerReply {
     Proposed(Result<Outcome, ProposeError>),
     /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
     ReadIndex(Result<Option<u64>, ProposeError>),
-    /// The victim obeyed, or why it refused (disabled, already silenced, recovering).
-    FaultOrder(Result<(), String>),
 }
 
 /// One node's bid to execute a request. Lowest score wins; ties go to the lower node ID.
@@ -670,6 +665,20 @@ pub struct Bid {
     pub attempt: u32,
     /// Load score in bidding.rs units (lower is less loaded).
     pub score: u64,
+}
+
+/// One node's numbers in one round of the fault election (D158). The highest `ticket` goes silent,
+/// for the `ms` in its own bid; ties go to the lower node ID. A separate election from [`Bid`]: it
+/// picks a machine to fail, and it needs a bid from every node before anyone acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaultBid {
+    /// Counts rounds on this node and is lifted by any higher round it hears of. Not saved, and
+    /// nothing outside the fault election reads it (D159).
+    pub round: u64,
+    /// A random number, in `0..1_000_000`.
+    pub ticket: u64,
+    /// How long this node goes silent if it is elected.
+    pub ms: u64,
 }
 
 // ---------------------------------------------------------------------------------------------

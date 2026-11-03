@@ -16,6 +16,7 @@ use tokio::time::Instant;
 
 use super::bids::BidState;
 use super::degraded::DegradedState;
+use super::faults::FaultElection;
 use super::group::CloudGroup;
 use super::heartbeat::Suspicion;
 use super::transport::{FaultGate, PeerSet};
@@ -236,6 +237,7 @@ pub(crate) fn context(
         )),
         serving: AtomicBool::new(true),
         bids: BidState::new(id, &config),
+        fault_election: FaultElection::new(id, &config),
         plan_work: AtomicU32::new(config.workers.plan_work),
         degraded: DegradedState::default(),
         config: Arc::new(config),
