@@ -63,7 +63,8 @@ use tokio::time::timeout;
 /// SWITCH-ON 1 (lane-wire, gap-15). `Incident` gains `owner`, `category` and `ttl_ms`.
 ///
 /// Returns what the cloud could not carry, for the card to say so. Called after `needs` is set,
-/// because the category must be one of that capability (`Category::needs`).
+/// because the category must be one of that capability: the form asks for the help needed, and
+/// `Capability::categories` lists what fits it.
 fn fill_report_fields(
     incident: &mut Incident,
     form: &ReportForm,
@@ -71,11 +72,8 @@ fn fill_report_fields(
 ) -> Vec<&'static str> {
     // REAL:
     // incident.owner = rescuemesh::proto::UserId { client, user: form.who };
-    // if let Some(category) = rescuemesh::proto::Category::ALL
-    //     .into_iter()
-    //     .find(|c| c.needs() == form.needs)
-    // {
-    //     incident.category = category;
+    // if let Some(category) = form.needs.categories().first() {
+    //     incident.category = *category;
     // }
     // incident.ttl_ms = form.valid_for_s.saturating_mul(1000);
     // Vec::new()
@@ -93,40 +91,38 @@ fn draw_incident(cfg: &CampusConfig, client: ClientId, who: u32, now_ms: u64) ->
 
 /// SWITCH-ON 3 (lane-wire, gap-15). `Submitted` gains `status: IncidentStatus`, which is the only
 /// source of `Expired`. Until then the status follows from what the answer holds.
-fn reply_status(done: &Submitted) -> String {
+fn reply_status(done: &Submitted) -> &'static str {
     // REAL:
-    // format!("{:?}", done.status)
-    let name = if done.provisional {
-        "Provisional"
+    // done.status.as_str()
+    if done.provisional {
+        "provisional"
     } else if done.plan.responder.is_some() {
-        "Assigned"
+        "assigned"
     } else {
-        "Unassigned"
-    };
-    name.to_string()
+        "unassigned"
+    }
 }
 
 /// SWITCH-ON 4 (lane-wire, gap-15 with priority). The plan gains the incident's priority. `None`
 /// makes the card say "not available yet".
-fn plan_priority(plan: &Plan) -> Option<u64> {
+fn plan_priority(plan: &Plan) -> Option<u32> {
     // REAL:
-    // Some(u64::from(plan.priority))
+    // Some(plan.priority)
     let _ = plan;
     None
 }
 
-/// SWITCH-ON 5 (lane-load, gap-16). `loadgen --pattern steady|random|spike`. On this branch an
+/// SWITCH-ON 5 (lane-load, gap-16). `loadgen --pattern steady|random|all-at-once`. On this branch an
 /// unknown flag would make loadgen exit at once, so only steady runs, which needs no flag: it is
 /// what loadgen does today.
 fn loadgen_pattern_args(pattern: Pattern) -> Result<Vec<String>, String> {
     // REAL:
-    // Ok(vec!["--pattern".to_string(), pattern.loadgen_name().to_string()])
+    // Ok(vec!["--pattern".to_string(), pattern.name().to_string()])
     match pattern {
         Pattern::Steady => Ok(Vec::new()),
         Pattern::Random | Pattern::AllAtOnce => Err(format!(
-            "the {} pattern is not available yet: this build's loadgen has no --pattern flag ({})",
-            pattern.label(),
-            pattern.loadgen_name()
+            "the {} pattern is not available yet: this build's loadgen has no --pattern flag",
+            pattern.label()
         )),
     }
 }
@@ -215,8 +211,12 @@ const MAX_RUNNING_PROGRAMS: usize = 20;
 const MAX_OFFERED_REPORTS_PER_S: u64 = 1500;
 const MIN_THINK_MS: u64 = 200;
 const MAX_DURATION_S: u64 = 900;
-/// `client_id * 1000 + n` keeps every program's ID unique across PCs. `n = 0` is the zone panel.
-const MAX_PROGRAM_NUMBER: u64 = 999;
+/// A program's ID is `client_id * this + n`, unique across PCs. Six digits for the IDs 11, 12 and 13
+/// the docs use, because five-digit IDs belong to `scripts/start-users.sh`: at 1000, 11001 would be
+/// its machine 1, batch 1, program 1, and two programs would share one ID and one log.
+const PROGRAM_ID_BASE: u64 = 10_000;
+const MAX_PROGRAM_NUMBER: u64 = PROGRAM_ID_BASE - 1;
+/// `n = 0`: the zone panel's own client. Programs start at 1.
 const ZONE_PANEL_NUMBER: u64 = 0;
 /// Rows kept for the page; the oldest ended ones go first.
 const MAX_PROGRAM_ROWS: usize = 60;
@@ -259,7 +259,7 @@ struct Args {
     /// unreachable nodes.
     #[arg(long)]
     config: PathBuf,
-    /// Unique across machines (D113). Programs started here use this times 1000, plus a number.
+    /// Unique across machines (D113). Programs started here use this times 10000, plus a number.
     #[arg(long)]
     client_id: ClientId,
 }
@@ -272,10 +272,10 @@ async fn main() -> anyhow::Result<()> {
         Config::load(&args.config).with_context(|| format!("loading {}", args.config.display()))?;
     anyhow::ensure!(
         args.client_id
-            .checked_mul(1000)
+            .checked_mul(PROGRAM_ID_BASE)
             .and_then(|id| id.checked_add(MAX_PROGRAM_NUMBER))
             .is_some(),
-        "--client-id is too large: programs use it times 1000"
+        "--client-id is too large: programs use it times 10000"
     );
     let log = EventLog::open(
         config.metrics.dir.as_deref(),
@@ -802,7 +802,7 @@ async fn report(app: &App, query: &Query<'_>) -> Result<Response, Response> {
             let status = reply_status(&done);
             Ok(Response::json(
                 200,
-                &report_json(&done, &form, &app.responders, &status, &not_carried),
+                &report_json(&done, &form, &app.responders, status, &not_carried),
             ))
         }
         Err(ClientError::GaveUp { attempts }) => Ok(Response::json(
@@ -851,7 +851,7 @@ fn report_json(
         "status": status,
         "priority": plan_priority(&done.plan),
         "provisional": done.provisional,
-        "expired": status == "Expired",
+        "expired": status == "expired",
         "log_index": committed.map(|c| c.log_index),
         "term": committed.map(|c| c.term),
         "latency_us": u64::try_from(done.latency.as_micros()).unwrap_or(u64::MAX),
@@ -935,6 +935,7 @@ enum Pattern {
 impl Pattern {
     const ALL: [Pattern; 3] = [Pattern::Steady, Pattern::Random, Pattern::AllAtOnce];
 
+    /// The name on this page's API and on `loadgen --pattern`.
     fn name(self) -> &'static str {
         match self {
             Pattern::Steady => "steady",
@@ -948,15 +949,6 @@ impl Pattern {
             Pattern::Steady => "Steady",
             Pattern::Random => "Random",
             Pattern::AllAtOnce => "All at once",
-        }
-    }
-
-    /// The name on `loadgen --pattern` (gap-16).
-    fn loadgen_name(self) -> &'static str {
-        match self {
-            Pattern::Steady => "steady",
-            Pattern::Random => "random",
-            Pattern::AllAtOnce => "spike",
         }
     }
 
@@ -1150,7 +1142,7 @@ fn load_start(app: &App, query: &Query<'_>) -> Result<Response, Response> {
     let (mut started, mut failed) = (0u32, 0u32);
     for users in split_users(request.users) {
         load.last_number += 1;
-        let client_id = app.client_id * 1000 + load.last_number;
+        let client_id = app.client_id * PROGRAM_ID_BASE + load.last_number;
         if start_program(app, &mut load, client_id, users, &request, &pattern_args) {
             started += 1;
         } else {
@@ -1242,6 +1234,8 @@ fn program_command(
         .arg("--seed")
         .arg(client_id.to_string())
         .args(pattern_args)
+        // Otherwise each of up to ten programs starts one runtime thread per core (gap-16).
+        .env("TOKIO_WORKER_THREADS", worker_threads(request.users))
         .stdin(Stdio::null())
         // Read to the end by wait_with_output, so a program can never block on a full pipe.
         .stdout(Stdio::piped())
@@ -1249,6 +1243,11 @@ fn program_command(
         // A program must not outlive the page that shows it.
         .kill_on_drop(true);
     command
+}
+
+fn worker_threads(users: u32) -> String {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    (cores / split_users(users).len().max(1)).max(1).to_string()
 }
 
 /// Owns one program until it ends, and writes down how it ended.
@@ -1474,7 +1473,7 @@ async fn zones_register(app: &App, query: &Query<'_>) -> Result<Response, Respon
     let mut slot = app.zone_client.lock().await;
     let client = slot
         .get_or_insert_with(|| {
-            let id = app.client_id * 1000 + ZONE_PANEL_NUMBER;
+            let id = app.client_id * PROGRAM_ID_BASE + ZONE_PANEL_NUMBER;
             Arc::new(MeshClient::new(id, &app.config, app.log.clone()))
         })
         .clone();
@@ -1787,15 +1786,9 @@ mod tests {
     #[test]
     fn provisional_json_has_no_index_or_request() {
         let done = submitted(None, plan());
-        let json = report_json(
-            &done,
-            &form(),
-            &some_responders(),
-            &reply_status(&done),
-            &[],
-        );
+        let json = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
         assert_eq!(json["provisional"], true);
-        assert_eq!(json["status"], "Provisional");
+        assert_eq!(json["status"], "provisional");
         assert_eq!(json["expired"], false);
         for absent in ["request", "log_index", "term"] {
             assert!(json[absent].is_null(), "{absent}");
@@ -1808,15 +1801,9 @@ mod tests {
     #[test]
     fn committed_json_names_everything_and_the_id_is_text() {
         let done = submitted(Some(committed(plan())), plan());
-        let json = report_json(
-            &done,
-            &form(),
-            &some_responders(),
-            &reply_status(&done),
-            &[],
-        );
+        let json = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
         assert_eq!(json["provisional"], false);
-        assert_eq!(json["status"], "Assigned");
+        assert_eq!(json["status"], "assigned");
         assert_eq!(json["request"], format!("11-{}", u64::MAX - 1));
         assert_eq!(json["log_index"], 41);
         assert_eq!(json["term"], 8);
@@ -1837,18 +1824,12 @@ mod tests {
             cost: 0,
         };
         let done = submitted(Some(committed(nobody.clone())), nobody);
-        let free = report_json(
-            &done,
-            &form(),
-            &some_responders(),
-            &reply_status(&done),
-            &[],
-        );
-        assert_eq!(free["status"], "Unassigned");
+        let free = report_json(&done, &form(), &some_responders(), reply_status(&done), &[]);
+        assert_eq!(free["status"], "unassigned");
         assert_eq!(free["expired"], false);
         assert!(free["responder"].is_null());
         // After gap-15 this status comes from `Submitted::status`.
-        let late = report_json(&done, &form(), &some_responders(), "Expired", &[]);
+        let late = report_json(&done, &form(), &some_responders(), "expired", &[]);
         assert_eq!(late["expired"], true);
     }
 
@@ -1884,7 +1865,7 @@ mod tests {
 
     fn running_row(users: u32, think_ms: u64) -> ProgramRow {
         ProgramRow {
-            client_id: 11001,
+            client_id: 110_001,
             pid: Some(1),
             users,
             think_ms,
@@ -2259,7 +2240,7 @@ mod tests {
         assert_eq!(status, 200, "{card}");
         assert_eq!(card["ok"], true);
         assert_eq!(card["provisional"], false);
-        assert_eq!(card["status"], "Assigned");
+        assert_eq!(card["status"], "assigned");
         assert_eq!(card["expired"], false);
         assert_eq!(card["attempts"], 1);
         assert_eq!(card["who"], 7);
@@ -2342,7 +2323,7 @@ mod tests {
         assert_eq!(status, 200, "{card}");
         assert_eq!(card["ok"], true);
         assert_eq!(card["provisional"], true);
-        assert_eq!(card["status"], "Provisional");
+        assert_eq!(card["status"], "provisional");
         assert_eq!(card["answered_by"].as_u64(), Some(lone));
         assert_eq!(card["planned_by"].as_u64(), Some(lone));
         for absent in ["request", "log_index", "term"] {
@@ -2423,7 +2404,7 @@ mod tests {
         })
         .await;
         for (row, n) in rows.iter().zip(1u64..) {
-            let id = 11_000 + n;
+            let id = 110_000 + n;
             assert_eq!(row["client_id"], id);
             assert_eq!(row["users"], 100);
             assert_eq!(row["pattern"], "steady");
@@ -2444,7 +2425,7 @@ mod tests {
             rows.len() == 17 && rows[10..].iter().all(|r| r["state"] == "failed")
         })
         .await;
-        assert_eq!(rows[16]["client_id"], 11_017);
+        assert_eq!(rows[16]["client_id"], 110_017);
         assert_eq!(rows[16]["users"], 1);
         assert_eq!(rows[16]["exit_code"], 3);
         page.end().await;

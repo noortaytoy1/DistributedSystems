@@ -185,7 +185,7 @@ async fn a_loadgen_that_reaches_its_duration_shows_its_summary() {
     let users: Vec<u64> = rows.iter().map(|r| r["users"].as_u64().unwrap()).collect();
     assert_eq!(users, [2, 2, 1, 1, 1, 1, 1, 1, 1, 1]);
     for (row, n) in rows.iter().zip(1u64..) {
-        let id = 11_000 + n;
+        let id = 110_000 + n;
         assert_eq!(row["client_id"], id);
         assert_eq!(row["exit_code"], 0);
         let summary = row["summary"].as_str().unwrap();
