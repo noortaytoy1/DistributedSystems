@@ -191,6 +191,15 @@ ignores, one JSON object per line:
 Human-readable logs go to stderr. The default filter keeps our own `info` lines and everyone's warnings, and turns off tarpc's
 per-call lines, which are costly at load (D134). `RUST_LOG` overrides it, for example `RUST_LOG=debug,openraft=info`.
 
+To watch a machine live in plain words, with no rebuild:
+
+```bash
+python3 scripts/watch_events.py runs/lab            # leader changes, draws, silences, who's alive, a summary each second
+python3 scripts/watch_events.py runs/lab --reports  # also every step of every report
+```
+
+It only reads the logs (D221), and each machine has only its own, so run it where you want to look.
+
 ## Repository layout
 
 ```

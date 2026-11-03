@@ -96,6 +96,8 @@ this script. A second group of users on one machine needs its own `--batch`.
 Node output: `RUST_LOG=info,tarpc=info` brings tarpc's per-call lines back for debugging. Never run an experiment that way: they
 slow a node enough to cost it its leader (D134).
 
+To see what a machine is doing in plain words, with no rebuild: `python3 scripts/watch_events.py runs/lab`, and add `--reports` for every step of every report (D221). It only reads that machine's logs, so use one terminal per machine.
+
 `faults.enabled = true` in the lab config means the three nodes also elect one of them to go silent, about every 30 to 60 s. For anything
 you want to control yourself, such as the demo, set this in `config/lab.toml` first:
 

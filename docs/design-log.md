@@ -299,6 +299,7 @@ table below in sync.
 | D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs |
 | D215 | The library boundary names tarpc | all | Implemented in the docs |
 | D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, items 1, 7 and 9 not on a branch yet |
+| D221 | A live log viewer that only reads the event logs | all | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -5837,6 +5838,21 @@ line changes.
 - **Where.** `docs/architecture.md` sections 2, 6.11 and 14.
 - **How we check it.** `git grep UdpSocket` and the status of each builder's branch.
 - **Report notes.** The report's changed-decisions list starts from this table.
+
+### D221 · A live log viewer that only reads the event logs
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented · **Decided by:** Noor Hany Emam asked for it ("we don't have visibility into what's happening"); the form is the agent's recommendation
+- **Context.** While the system ran on the six machines the team could not see what it was doing. Node output shows leader changes, silences and who is alive, but not what happens to a report. The event logs hold all of it, one JSON object per line, which is hard to read live.
+- **Options considered.**
+  1. *A small script that reads the event logs and prints plain words.* No rebuild, and it cannot slow a node, because the node does not know it exists.
+  2. *More log lines inside the nodes.* Rejected. A rebuild on six machines, and D134 measured what chatty output costs: 32 reports a second against 100 in the same one-PC test, with the node output on a slow disk.
+  3. *A panel on the web page.* Rejected for now. More code in a program that must not touch measured paths, and the page only sees its own client PC.
+- **Decision.** Option 1: `scripts/watch_events.py`, Python standard library only. By default it prints rare events as they happen (leader changes, the failure draw, silences, suspicions, who's alive, takeovers, catching up) and one summary line per program per second. `--reports` adds a line for every step of every report.
+- **Why.** It gives the team and the demo a live view at no cost to what is measured.
+- **Consequences.** It reads event names and field names from `src/metrics.rs`, so a renamed event needs a change here too. Each machine has only its own logs, so it shows one machine's view, and a full picture means one terminal per machine. Node logs are flushed in batches, so lines can lag a little. It adds nothing to analysis: measurements still come from `analysis/analyze.py`.
+- **Where.** `scripts/watch_events.py`, `README.md`, `docs/runbook.md`.
+- **How we check it.** Run on a real three-node cluster on one PC with a silenced leader, in `--once` mode: silence, suspicion, new leader, who's alive and catching up all printed correctly. Live mode was tried on a small hand-made log: old lines are skipped, new lines and new files appear. Not yet run on the six machines. No automated test.
+- **Report notes.** Useful in the demo for showing what the system is doing, next to `ctl status`.
 
 ### Notes on older entries
 
