@@ -1,4 +1,5 @@
-//! Raft through openraft 0.9.25: elects the cloud coordinator and orders every command.
+//! Raft through openraft 0.9.25: elects the node that orders the log, and replicates every command.
+//! The leader numbers entries, sends the copies and answers one read; it decides nothing (D163).
 //!
 //! Node code talks to Raft only through the [`Consensus`] trait, so the library can be swapped
 //! for our own Raft without touching `node/`.
