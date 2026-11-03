@@ -262,7 +262,11 @@ mod tests {
             },
             executor,
             term: 1,
-            plan: Plan { responder, cost: 7 },
+            plan: Plan {
+                responder,
+                cost: 7,
+                priority: 300,
+            },
             age_ms: 4,
             assigned_at_ms: 1_000,
         })

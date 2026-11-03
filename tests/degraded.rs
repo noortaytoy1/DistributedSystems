@@ -249,6 +249,7 @@ async fn losing_the_first_commit_logs_a_conflict_and_keeps_the_winner() {
     let winner = Plan {
         responder: None,
         cost: provisional.cost + 1,
+        priority: provisional.priority,
     };
     let other = cluster.node(1);
     wait_until(PATIENCE, "a leader on the other side", || {
@@ -288,6 +289,74 @@ async fn losing_the_first_commit_logs_a_conflict_and_keeps_the_winner() {
             .is_ok_and(|text| text.contains(r#""reason":"lost_first_commit""#))
     })
     .await;
+    digests_match(&cluster).await;
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_responder_with_another_priority_is_no_conflict() {
+    let dir = std::env::temp_dir().join(format!("rescuemesh-degraded-p-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let metrics = dir.clone();
+    let cluster = start(|c| c.metrics.dir = Some(metrics)).await;
+    let lone = 3;
+    leave_alone(&cluster, lone).await;
+    let reply = first_reply(&cluster.config, request(1), Duration::from_secs(5))
+        .await
+        .unwrap();
+    let ReplyBody::Provisional(provisional) = reply.body else {
+        panic!("expected a provisional answer, got {:?}", reply.body);
+    };
+
+    // The other side committed the same responder for this request, a moment later or earlier.
+    cluster.node(lone).ctx.gate.silence();
+    restore_others(&cluster, lone);
+    let other = cluster.node(1);
+    wait_until(PATIENCE, "a leader on the other side", || {
+        let status = other.ctx.consensus.status();
+        status.leader.is_some_and(|l| l != lone) && other.ctx.status().serving
+    })
+    .await;
+    let req = request(1);
+    let winner = Plan {
+        priority: provisional.priority + 7,
+        ..provisional.clone()
+    };
+    let proposal = ResultProposal {
+        request: req.id,
+        incident: req.incident,
+        executor: 1,
+        term: other.ctx.consensus.status().term,
+        plan: winner.clone(),
+        age_ms: req.age_ms,
+        assigned_at_ms: now_ms(),
+    };
+    other
+        .ctx
+        .consensus
+        .propose(Command::CommitResult(proposal))
+        .await
+        .unwrap();
+
+    cluster.node(lone).ctx.gate.restore();
+    let node = cluster.node(lone);
+    wait_until(PATIENCE, "the replay to settle", || {
+        node.ctx.status().serving && node.ctx.degraded.pending() == 0
+    })
+    .await;
+    assert_eq!(
+        node.ctx
+            .state
+            .with(|s| s.result(&request(1).id).cloned())
+            .unwrap()
+            .plan,
+        winner
+    );
+    // A conflict is logged before the entry leaves the table, so this cannot be too early.
+    node.ctx.log.flush();
+    let text = std::fs::read_to_string(dir.join(format!("node-{lone}.jsonl"))).unwrap();
+    assert!(!text.contains("provisional_conflict"), "{text}");
     digests_match(&cluster).await;
     cluster.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);

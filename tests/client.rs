@@ -201,6 +201,7 @@ async fn serve_stub(
                                 plan: Plan {
                                     responder: None,
                                     cost: 0,
+                                    priority: 200,
                                 },
                                 age_ms: req.age_ms,
                                 assigned_at_ms: 0,
@@ -323,6 +324,7 @@ async fn a_retry_keeps_the_request_id_and_increments_the_attempt() {
                     plan: Plan {
                         responder: None,
                         cost: 0,
+                        priority: 200,
                     },
                     age_ms: req.age_ms,
                     assigned_at_ms: 0,
@@ -407,6 +409,7 @@ async fn an_expired_reply_ends_the_wait_at_once() {
                     plan: Plan {
                         responder: None,
                         cost: 0,
+                        priority: 0,
                     },
                     age_ms: req.age_ms,
                     assigned_at_ms: 0,

@@ -30,7 +30,11 @@ fn proposal(client: u64, seq: u64, executor: NodeId, responder: Option<Responder
         },
         executor,
         term: 0,
-        plan: Plan { responder, cost: 1 },
+        plan: Plan {
+            responder,
+            cost: 1,
+            priority: 200,
+        },
         age_ms: 0,
         assigned_at_ms: 0,
     })

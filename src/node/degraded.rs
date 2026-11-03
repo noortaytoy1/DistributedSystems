@@ -305,7 +305,8 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
         match outcome {
             Outcome::Committed(_) => break,
             Outcome::Duplicate(winner) => {
-                if winner.plan != plan {
+                // The client was told who goes. A priority worked out a moment apart is no conflict.
+                if !winner.plan.same_assignment(&plan) {
                     ctx.log.log(Event::ProvisionalConflict {
                         request,
                         reason: "lost_first_commit".to_string(),
@@ -366,7 +367,11 @@ mod tests {
     }
 
     fn plan_with(responder: Option<ResponderId>) -> Plan {
-        Plan { responder, cost: 5 }
+        Plan {
+            responder,
+            cost: 5,
+            priority: 100,
+        }
     }
 
     fn responder(id: ResponderId) -> Responder {

@@ -241,6 +241,7 @@ impl MeshClient {
             provisional,
             no_responder: plan.responder.is_none(),
             status: status.as_str(),
+            priority: plan.priority,
         });
         Submitted {
             id: reply.id,

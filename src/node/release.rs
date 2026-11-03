@@ -132,6 +132,7 @@ mod tests {
             plan: Plan {
                 responder: Some(1),
                 cost: 0,
+                priority: 200,
             },
             age_ms: 0,
             assigned_at_ms: 0,

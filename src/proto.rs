@@ -187,6 +187,17 @@ pub struct Plan {
     pub responder: Option<ResponderId>,
     /// Planner cost of this plan, lower is better. The unit is defined in planner.rs.
     pub cost: u64,
+    /// How urgent the incident is, in priority points, higher is more urgent (D148). The sum is
+    /// defined in planner.rs. 0 means nobody looked: the report was too old to plan.
+    pub priority: u32,
+}
+
+impl Plan {
+    /// Whether two plans for one incident send the same responder. Priority is left out because it
+    /// depends on the moment of planning: two plans can agree on who goes and differ in it.
+    pub fn same_assignment(&self, other: &Plan) -> bool {
+        self.responder == other.responder && self.cost == other.cost
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -678,6 +689,7 @@ mod tests {
             plan: Plan {
                 responder: Some(9),
                 cost: 120,
+                priority: 460,
             },
             age_ms: 2_000,
             assigned_at_ms: 1_700_000_002_000,
@@ -693,11 +705,29 @@ mod tests {
             incident: incident(),
             executor: 3,
             term: 4,
-            plan: Plan { responder, cost: 0 },
+            plan: Plan {
+                responder,
+                cost: 0,
+                priority: 0,
+            },
             age_ms,
             assigned_at_ms,
             log_index: 5,
         }
+    }
+
+    #[test]
+    fn plans_that_differ_only_in_priority_send_the_same_responder() {
+        let plan = |responder, cost, priority| Plan {
+            responder,
+            cost,
+            priority,
+        };
+        let first = plan(Some(9), 120, 300);
+        assert!(first.same_assignment(&plan(Some(9), 120, 460)));
+        assert!(!first.same_assignment(&plan(Some(8), 120, 300)));
+        assert!(!first.same_assignment(&plan(None, 120, 300)));
+        assert!(!first.same_assignment(&plan(Some(9), 121, 300)));
     }
 
     #[test]

@@ -418,10 +418,7 @@ async fn plan_on_workers(
             age_ms: req.age_ms,
             ttl_ms: req.incident.ttl_ms,
         });
-        return Ok(Plan {
-            responder: None,
-            cost: 0,
-        });
+        return Ok(planner::not_planned());
     }
     let incident = req.incident.clone();
     // Two machines' clocks: NTP error is negligible against the planner's threshold (D95). The

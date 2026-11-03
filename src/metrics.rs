@@ -257,6 +257,8 @@ pub enum Event {
         /// Where the incident stood when this answer was given (D142): `provisional`, `unassigned`,
         /// `assigned` or `expired`.
         status: &'static str,
+        /// The plan's priority points (D148).
+        priority: u32,
     },
     ClientGaveUp {
         request: RequestId,
