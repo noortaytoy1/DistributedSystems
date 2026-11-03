@@ -251,6 +251,18 @@ fn plan(scratch: &Scratch, flags: &str) -> Vec<Planned> {
 }
 
 #[test]
+fn help_works_from_any_folder() {
+    let scripts = Path::new(SCRIPT).parent().unwrap();
+    let output = Command::new("bash")
+        .args(["start-users.sh", "--help"])
+        .current_dir(scripts)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("--machine M"), "{}", stdout(&output));
+}
+
+#[test]
 fn the_default_is_ten_programs_sharing_the_users() {
     let scratch = Scratch::new("users-default");
     let programs = plan(&scratch, "--machine 1 --users 1000");

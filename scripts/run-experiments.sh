@@ -125,6 +125,7 @@ refuse_leftovers() {
   wait_until_stopped && return 0
   echo "programs from an earlier run are still running; stop them first:" >&2
   echo "$leftovers" >&2
+  echo "On each of those machines: kill those PIDs, or for a client machine's users, bash scripts/start-users.sh --stop --machine M" >&2
   exit 1
 }
 

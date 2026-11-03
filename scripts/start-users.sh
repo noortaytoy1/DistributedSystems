@@ -30,7 +30,8 @@
 # Standard output starts with a `plan` line and ends with `started` and `reported` lines. Exit status:
 # 0 all fine, 1 some program failed, 2 more than 10 percent failed or it refused to start.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+self=$(readlink -f "$0")
+cd "$(dirname "$self")/.."
 
 BIN="${BIN:-${CARGO_TARGET_DIR:-target}/release}"
 PID_DIR="${PID_DIR:-runs-config}"
@@ -50,7 +51,7 @@ while (($# > 0)); do
   case "$flag" in
     --dry-run) dry_run=1; shift; continue ;;
     --stop) stop=1; shift; continue ;;
-    -h | --help) sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$self"; exit 0 ;;
   esac
   (($# >= 2)) || refuse "$flag needs a value"
   case "$flag" in
