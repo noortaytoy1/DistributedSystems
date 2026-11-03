@@ -239,6 +239,11 @@ pub struct ResultProposal {
     /// Raft term the executor saw when it proposed.
     pub term: Term,
     pub plan: Plan,
+    /// The report's age as the client stated it in the send this plan answers (D143).
+    pub age_ms: u64,
+    /// When the executor made the plan: unix milliseconds on its clock (D144). In the proposal
+    /// because the state machine has no clock; every node keeps this same value.
+    pub assigned_at_ms: u64,
 }
 
 /// A result that is part of the replicated state.
@@ -249,8 +254,93 @@ pub struct CommittedResult {
     pub executor: NodeId,
     pub term: Term,
     pub plan: Plan,
+    /// The report's age as the client stated it in the send this plan answers (D143).
+    pub age_ms: u64,
+    /// When the executor made the plan: unix milliseconds on its clock (D144).
+    pub assigned_at_ms: u64,
     /// Raft log index the result was committed at.
     pub log_index: u64,
+}
+
+impl CommittedResult {
+    /// The report was already too old when a node took it, so nobody was planned (D143). A fact in
+    /// the log, the same on every node whatever its clock says.
+    pub fn too_old_on_arrival(&self) -> bool {
+        self.incident.is_too_old(self.age_ms)
+    }
+
+    /// When a record that sent nobody reads Expired: its TTL, counted from when it was reported on
+    /// the executor's clock. Never `reported_at_ms + ttl_ms`, which would let one client PC with a
+    /// wrong clock change the labels on every node.
+    pub fn deadline_ms(&self) -> u64 {
+        self.assigned_at_ms
+            .saturating_add(self.incident.ttl_ms.saturating_sub(self.age_ms))
+    }
+
+    /// Where this record stands, given whether its responder is still held and the reader's clock
+    /// (D142). A responder still held past the deadline really is still out there, so only a record
+    /// that sent nobody can expire.
+    ///
+    /// The step to Expired past the deadline is a rule about reading, not a change in the log: no
+    /// entry marks it, and a clock stepped back turns the label back. It cannot change a plan, a
+    /// hold or the digest.
+    pub fn status(&self, held: bool, now_ms: u64) -> IncidentStatus {
+        match self.plan.responder {
+            Some(_) if held => IncidentStatus::Assigned,
+            Some(_) => IncidentStatus::Resolved,
+            None if self.too_old_on_arrival() || now_ms >= self.deadline_ms() => {
+                IncidentStatus::Expired
+            }
+            None => IncidentStatus::Unassigned,
+        }
+    }
+
+    /// Where this record stood when it committed. A client works this out from the reply alone: no
+    /// clock and no state, so a retry that arrives after the release still reads Assigned, and
+    /// reading the latest status is a separate question (D142).
+    pub fn status_at_commit(&self) -> IncidentStatus {
+        match self.plan.responder {
+            Some(_) => IncidentStatus::Assigned,
+            None if self.too_old_on_arrival() => IncidentStatus::Expired,
+            None => IncidentStatus::Unassigned,
+        }
+    }
+}
+
+/// Where an incident stands. Never stored, and in no [`Command`] or [`Outcome`]: every value comes
+/// from facts the log already holds, so `apply` does not change and reading a status cannot move the
+/// digest (D142).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IncidentStatus {
+    /// A lone node's answer, not committed yet (D120). Only the client that got it sees this.
+    Provisional,
+    /// Committed with nobody sent: no suitable responder was free.
+    Unassigned,
+    /// A responder was sent and is still held.
+    Assigned,
+    /// The responder's release committed: its time on scene is over (D111).
+    Resolved,
+    /// Nobody was sent, and the report was too old on arrival or its deadline has passed.
+    Expired,
+}
+
+impl IncidentStatus {
+    /// Short name for logs and `ctl`. Field values in the event log, so keep them stable.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IncidentStatus::Provisional => "provisional",
+            IncidentStatus::Unassigned => "unassigned",
+            IncidentStatus::Assigned => "assigned",
+            IncidentStatus::Resolved => "resolved",
+            IncidentStatus::Expired => "expired",
+        }
+    }
+}
+
+impl fmt::Display for IncidentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// What applying a [`Command`] produced. This is the Raft response type.
@@ -312,6 +402,9 @@ pub struct ClientRequest {
     pub id: RequestId,
     /// 0 for the first send, then 1, 2, ... for retries with the same ID.
     pub attempt: u32,
+    /// How old the report is at this send, on the client's own clock. A node judges "too old" from
+    /// this, so that decision never compares two machines' clocks (D143).
+    pub age_ms: u64,
     pub incident: Incident,
 }
 
@@ -327,6 +420,9 @@ pub struct ClientReply {
 pub enum ReplyBody {
     /// The committed result for the request. Every reply for one request carries the same result.
     Done(CommittedResult),
+    /// The report was too old to plan, so nobody was sent (D143). Committed like any result, so a
+    /// retry gets this same record. This is an answer: a client must stop waiting when it gets one.
+    Expired(CommittedResult),
     /// A lone node's plan, not committed: no quorum exists to commit it (D120, D123). The node
     /// commits it once a peer returns, and the first commit wins, so it may turn out to differ.
     Provisional(Plan),
@@ -565,6 +661,7 @@ mod tests {
         let frame = ClientFrame::Request(ClientRequest {
             id: RequestId { client: 7, seq: 42 },
             attempt: 1,
+            age_ms: 2_000,
             incident: incident(),
         });
         let back: ClientFrame = decode(&encode(&frame).unwrap()).unwrap();
@@ -582,9 +679,73 @@ mod tests {
                 responder: Some(9),
                 cost: 120,
             },
+            age_ms: 2_000,
+            assigned_at_ms: 1_700_000_002_000,
         });
         let back: Command = decode(&encode(&cmd).unwrap()).unwrap();
         assert_eq!(back, cmd);
+    }
+
+    /// A record with a 60 s TTL.
+    fn record(responder: Option<ResponderId>, age_ms: u64, assigned_at_ms: u64) -> CommittedResult {
+        CommittedResult {
+            request: RequestId { client: 1, seq: 2 },
+            incident: incident(),
+            executor: 3,
+            term: 4,
+            plan: Plan { responder, cost: 0 },
+            age_ms,
+            assigned_at_ms,
+            log_index: 5,
+        }
+    }
+
+    #[test]
+    fn status_is_assigned_while_held_and_resolved_after() {
+        let r = record(Some(9), 0, 1_000);
+        assert_eq!(r.status(true, 1_000), IncidentStatus::Assigned);
+        // Held past the report's deadline: the responder really is still out there.
+        assert_eq!(r.status(true, 1_000_000), IncidentStatus::Assigned);
+        assert_eq!(r.status(false, 1_000), IncidentStatus::Resolved);
+        assert_eq!(r.status_at_commit(), IncidentStatus::Assigned);
+    }
+
+    #[test]
+    fn nobody_sent_reads_unassigned_then_expired_at_the_deadline() {
+        let r = record(None, 0, 1_000);
+        assert_eq!(r.status_at_commit(), IncidentStatus::Unassigned);
+        assert_eq!(r.status(false, 60_999), IncidentStatus::Unassigned);
+        assert_eq!(r.status(false, 61_000), IncidentStatus::Expired);
+        // A reader's clock stepped back turns the label back: a read rule, not a state change.
+        assert_eq!(r.status(false, 60_999), IncidentStatus::Unassigned);
+    }
+
+    #[test]
+    fn too_old_on_arrival_reads_expired_at_any_clock() {
+        let r = record(None, 60_000, 1_000);
+        assert!(r.too_old_on_arrival());
+        assert_eq!(r.status_at_commit(), IncidentStatus::Expired);
+        for now_ms in [0, 1_000, u64::MAX] {
+            assert_eq!(r.status(false, now_ms), IncidentStatus::Expired);
+        }
+    }
+
+    #[test]
+    fn the_deadline_counts_from_the_report_and_saturates() {
+        assert_eq!(record(None, 5_000, 1_000).deadline_ms(), 56_000);
+        assert_eq!(record(None, 90_000, 1_000).deadline_ms(), 1_000);
+        assert_eq!(record(None, 0, u64::MAX).deadline_ms(), u64::MAX);
+    }
+
+    #[test]
+    fn expired_replies_round_trip() {
+        let frame = ServerFrame::Reply(ClientReply {
+            id: RequestId { client: 1, seq: 2 },
+            from: 3,
+            body: ReplyBody::Expired(record(None, 60_000, 1_000)),
+        });
+        let back: ServerFrame = decode(&encode(&frame).unwrap()).unwrap();
+        assert_eq!(back, frame);
     }
 
     #[test]

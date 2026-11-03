@@ -133,6 +133,8 @@ mod tests {
                 responder: Some(1),
                 cost: 0,
             },
+            age_ms: 0,
+            assigned_at_ms: 0,
             log_index: 1,
         }
     }

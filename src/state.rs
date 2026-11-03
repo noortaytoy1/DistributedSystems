@@ -10,6 +10,8 @@
 //!   not recorded (`Outcome::Stale`); the executor plans again.
 //! - **Digest.** A hash chain over every applied command and its outcome. Two nodes with the
 //!   same digest at the same index applied the same log and hold the same state.
+//! - **Status.** An incident's status is worked out when someone reads it, from the result and the
+//!   hold (D142). The caller passes the time in; nothing here looks at a clock.
 //!
 //! Owner: A (Raft and replication).
 
@@ -19,8 +21,8 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{
-    Command, CommittedResult, Outcome, RequestId, Responder, ResponderId, ResultProposal,
-    StaleReason,
+    Command, CommittedResult, IncidentStatus, Outcome, RequestId, Responder, ResponderId,
+    ResultProposal, StaleReason,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +117,8 @@ impl CloudState {
             executor: p.executor,
             term: p.term,
             plan: p.plan.clone(),
+            age_ms: p.age_ms,
+            assigned_at_ms: p.assigned_at_ms,
             log_index: index,
         };
         self.results.insert(p.request, result.clone());
@@ -124,6 +128,21 @@ impl CloudState {
 
     pub fn result(&self, id: &RequestId) -> Option<&CommittedResult> {
         self.results.get(id)
+    }
+
+    /// Where an incident stands at `now_ms`, or `None` if nothing is committed for it.
+    pub fn status_at(&self, id: &RequestId, now_ms: u64) -> Option<IncidentStatus> {
+        let result = self.results.get(id)?;
+        Some(result.status(self.is_held(result), now_ms))
+    }
+
+    /// Whether the responder this result sent is still held for it.
+    fn is_held(&self, result: &CommittedResult) -> bool {
+        result
+            .plan
+            .responder
+            .and_then(|responder| self.responders.get(&responder))
+            .is_some_and(|slot| slot.held_by == Some(result.request))
     }
 
     pub fn results(&self) -> impl Iterator<Item = &CommittedResult> {
@@ -244,6 +263,8 @@ mod tests {
             executor,
             term: 1,
             plan: Plan { responder, cost: 7 },
+            age_ms: 4,
+            assigned_at_ms: 1_000,
         })
     }
 
@@ -373,6 +394,63 @@ mod tests {
         assert_eq!(a.digest(), b.digest());
         assert_ne!(a.digest(), c.digest());
         assert_eq!(a.last_index(), 4);
+    }
+
+    #[test]
+    fn a_commit_keeps_the_proposals_age_and_time() {
+        let mut s = with_responders(&[1]);
+        let Outcome::Committed(result) = s.apply(2, &proposal(10, 1, Some(1))) else {
+            panic!("the proposal must commit");
+        };
+        assert_eq!((result.age_ms, result.assigned_at_ms), (4, 1_000));
+        assert_eq!(s.result(&rid(10)), Some(&result));
+    }
+
+    #[test]
+    fn status_at_follows_the_hold_through_release() {
+        let mut s = with_responders(&[1]);
+        assert_eq!(s.status_at(&rid(10), 1_000), None);
+        s.apply(2, &proposal(10, 1, Some(1)));
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Assigned));
+        // A release for someone else changes nothing.
+        s.apply(
+            3,
+            &Command::ReleaseResponder {
+                responder: 1,
+                request: rid(99),
+            },
+        );
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Assigned));
+        s.apply(
+            4,
+            &Command::ReleaseResponder {
+                responder: 1,
+                request: rid(10),
+            },
+        );
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Resolved));
+        // The responder going out again for another request does not undo that.
+        s.apply(5, &proposal(11, 1, Some(1)));
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Resolved));
+        assert_eq!(s.status_at(&rid(11), 1_000), Some(IncidentStatus::Assigned));
+    }
+
+    #[test]
+    fn reading_status_changes_neither_state_nor_digest() {
+        let mut s = with_responders(&[1]);
+        s.apply(2, &proposal(10, 1, None));
+        let before = s.clone();
+        // Past the deadline, the same record reads differently and nothing has moved.
+        assert_eq!(
+            s.status_at(&rid(10), 1_000),
+            Some(IncidentStatus::Unassigned)
+        );
+        assert_eq!(
+            s.status_at(&rid(10), 1_000_000),
+            Some(IncidentStatus::Expired)
+        );
+        assert_eq!(s, before);
+        assert_eq!(s.digest(), before.digest());
     }
 
     #[test]

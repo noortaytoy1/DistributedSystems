@@ -31,7 +31,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use super::workers::Overloaded;
 use super::{MAX_PLAN_ATTEMPTS, NodeContext, lock, plan_on_workers};
-use crate::metrics::Event;
+use crate::metrics::{Event, now_ms};
 use crate::proto::{
     ClientRequest, Command, Incident, Outcome, Plan, RequestId, Responder, ResponderId,
     ResultProposal,
@@ -42,11 +42,14 @@ const REPLAY_INTERVAL: Duration = Duration::from_millis(100);
 /// Results proposed at once. Raft batches concurrent proposals, so a long outage replays quickly.
 const REPLAY_BATCH: usize = 64;
 
-/// One answer given without a commit.
+/// One answer given without a commit. It keeps its stamps, so the replay records when the client
+/// was told, not when a quorum came back (D144).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Provisional {
     incident: Incident,
     plan: Plan,
+    age_ms: u64,
+    assigned_at_ms: u64,
 }
 
 /// What a finished plan turned into.
@@ -70,27 +73,21 @@ impl Table {
     fn store(
         &mut self,
         request: RequestId,
-        incident: &Incident,
-        plan: Plan,
+        answer: Provisional,
         hold: Duration,
         now: Instant,
     ) -> Stored {
         if let Some(existing) = self.pending.get(&request) {
             return Stored::Answer(existing.plan.clone());
         }
-        if let Some(responder) = plan.responder {
+        if let Some(responder) = answer.plan.responder {
             if self.holds.get(&responder).is_some_and(|until| *until > now) {
                 return Stored::Taken;
             }
             self.holds.insert(responder, now + hold);
         }
-        self.pending.insert(
-            request,
-            Provisional {
-                incident: incident.clone(),
-                plan: plan.clone(),
-            },
-        );
+        let plan = answer.plan.clone();
+        self.pending.insert(request, answer);
         Stored::Answer(plan)
     }
 
@@ -165,8 +162,13 @@ pub async fn plan(ctx: &NodeContext, req: &ClientRequest) -> Result<Plan, PlanEr
         let free = lock(&ctx.degraded.table).free(all, Instant::now());
         let plan = plan_on_workers(ctx, req, free).await?;
         let hold = service_time(ctx, &req.incident);
-        let stored =
-            lock(&ctx.degraded.table).store(req.id, &req.incident, plan, hold, Instant::now());
+        let answer = Provisional {
+            incident: req.incident.clone(),
+            plan,
+            age_ms: req.age_ms,
+            assigned_at_ms: now_ms(),
+        };
+        let stored = lock(&ctx.degraded.table).store(req.id, answer, hold, Instant::now());
         if let Stored::Answer(plan) = stored {
             return Ok(plan);
         }
@@ -276,7 +278,12 @@ async fn replay(ctx: Arc<NodeContext>) {
 
 /// One try at getting a stored answer committed. It stays in the table if no quorum took it.
 async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional) {
-    let Provisional { incident, mut plan } = provisional;
+    let Provisional {
+        incident,
+        mut plan,
+        age_ms,
+        assigned_at_ms,
+    } = provisional;
     // At most two rounds: a plan with no responder cannot go stale.
     for _ in 0..2 {
         let proposal = ResultProposal {
@@ -285,6 +292,8 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
             executor: ctx.id,
             term: ctx.consensus.status().term,
             plan: plan.clone(),
+            age_ms,
+            assigned_at_ms,
         };
         let outcome = match ctx.consensus.propose(Command::CommitResult(proposal)).await {
             Ok(outcome) => outcome,
@@ -369,6 +378,27 @@ mod tests {
         }
     }
 
+    fn answer(plan: Plan) -> Provisional {
+        Provisional {
+            incident: incident(),
+            plan,
+            age_ms: 0,
+            assigned_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_stored_answer_keeps_its_age_and_time() {
+        let mut table = Table::default();
+        let stamped = Provisional {
+            age_ms: 2_500,
+            assigned_at_ms: 9_000,
+            ..answer(plan_with(Some(1)))
+        };
+        table.store(rid(1), stamped.clone(), ms(200), Instant::now());
+        assert_eq!(table.pending.get(&rid(1)), Some(&stamped));
+    }
+
     #[test]
     fn degraded_only_after_the_whole_wait_without_a_break() {
         let t0 = Instant::now();
@@ -396,11 +426,11 @@ mod tests {
         let mut table = Table::default();
         let first = plan_with(Some(1));
         assert_eq!(
-            table.store(rid(1), &incident(), first.clone(), ms(200), t0),
+            table.store(rid(1), answer(first.clone()), ms(200), t0),
             Stored::Answer(first.clone())
         );
         assert_eq!(
-            table.store(rid(1), &incident(), plan_with(Some(2)), ms(200), t0),
+            table.store(rid(1), answer(plan_with(Some(2))), ms(200), t0),
             Stored::Answer(first)
         );
         assert_eq!(table.pending.len(), 1);
@@ -411,15 +441,9 @@ mod tests {
     fn a_held_responder_is_not_given_twice_until_its_time_is_up() {
         let t0 = Instant::now();
         let mut table = Table::default();
-        table.store(rid(1), &incident(), plan_with(Some(1)), ms(200), t0);
+        table.store(rid(1), answer(plan_with(Some(1))), ms(200), t0);
         assert_eq!(
-            table.store(
-                rid(2),
-                &incident(),
-                plan_with(Some(1)),
-                ms(200),
-                t0 + ms(199)
-            ),
+            table.store(rid(2), answer(plan_with(Some(1))), ms(200), t0 + ms(199)),
             Stored::Taken
         );
         let ids = |free: Vec<Responder>| free.iter().map(|r| r.id).collect::<Vec<_>>();
@@ -427,13 +451,7 @@ mod tests {
         assert_eq!(ids(table.free(all.clone(), t0 + ms(199))), vec![2]);
         assert_eq!(ids(table.free(all, t0 + ms(200))), vec![1, 2]);
         assert_eq!(
-            table.store(
-                rid(2),
-                &incident(),
-                plan_with(Some(1)),
-                ms(200),
-                t0 + ms(200)
-            ),
+            table.store(rid(2), answer(plan_with(Some(1))), ms(200), t0 + ms(200)),
             Stored::Answer(plan_with(Some(1)))
         );
     }
@@ -441,8 +459,7 @@ mod tests {
     #[test]
     fn a_plan_with_no_responder_holds_nothing() {
         let mut table = Table::default();
-        let plan = plan_with(None);
-        table.store(rid(1), &incident(), plan, ms(200), Instant::now());
+        table.store(rid(1), answer(plan_with(None)), ms(200), Instant::now());
         assert!(table.holds.is_empty());
         assert_eq!(table.pending.len(), 1);
     }

@@ -27,7 +27,7 @@ use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{EventLog, now_us};
-use rescuemesh::proto::{ClientId, UserId};
+use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -75,6 +75,7 @@ struct Stats {
     no_responder: u64,
     retried: u64,
     provisional: u64,
+    expired: u64,
 }
 
 impl Stats {
@@ -85,6 +86,7 @@ impl Stats {
                 self.no_responder += u64::from(done.plan.responder.is_none());
                 self.provisional += u64::from(done.provisional);
                 self.retried += u64::from(done.attempts > 1);
+                self.expired += u64::from(done.status == IncidentStatus::Expired);
             }
             Err(ClientError::GaveUp { .. }) => self.gave_up += 1,
             Err(e) => tracing::warn!("request failed: {e}"),
@@ -201,8 +203,13 @@ fn print_summary(args: &Args, stats: &mut Stats, measured: Duration) {
     };
     let mean_ms = stats.latencies_us.iter().sum::<u64>() as f64 / done.max(1) as f64 / 1000.0;
     println!(
-        "client {}: done {done}, gave up {}, retried {}, no responder {}, provisional {}",
-        args.client_id, stats.gave_up, stats.retried, stats.no_responder, stats.provisional
+        "client {}: done {done}, gave up {}, retried {}, no responder {}, provisional {}, expired {}",
+        args.client_id,
+        stats.gave_up,
+        stats.retried,
+        stats.no_responder,
+        stats.provisional,
+        stats.expired
     );
     println!(
         "throughput {:.1} req/s over {:.1} s",

@@ -12,8 +12,13 @@
 //!   answering, and the connection is replaced.
 //! - **Provisional answers (D123).** A lone node's answer counts as a reply, because no commit can
 //!   come. `Submitted` keeps it apart from a committed result.
+//! - **The report's age (D143).** Each send states how old the report is, measured on this machine,
+//!   so a node can refuse one that is too old without comparing two machines' clocks. A refusal is
+//!   an answer: the wait ends there, and `Submitted::status` says `Expired`.
 //! - **Backpressure (D112).** Each node has a bounded send queue. A full queue drops the frame for
-//!   that node only, so a dead node never blocks a user.
+//!   that node only, so a dead node never blocks a user. A frame waiting here keeps the age it was
+//!   stamped with, so a machine off the network for longer than the TTL can still get its report
+//!   planned after it gave up (D143).
 //!
 //! Owner: F (client and scale).
 
@@ -31,11 +36,11 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::config::Config;
-use crate::metrics::{Event, EventLog, now_us};
+use crate::metrics::{Event, EventLog, now_ms, now_us};
 use crate::node::transport::framed;
 use crate::proto::{
     self, ClientFrame, ClientId, ClientReply, ClientRequest, CommittedResult, ControlReply,
-    ControlRequest, Incident, NodeId, Plan, ReplyBody, RequestId, ServerFrame,
+    ControlRequest, Incident, IncidentStatus, NodeId, Plan, ReplyBody, RequestId, ServerFrame,
 };
 
 /// Frames waiting for one node. Frames beyond this are dropped; the retry covers them.
@@ -70,6 +75,8 @@ pub enum ClientError {
 /// A request that got a reply.
 #[derive(Debug, Clone)]
 pub struct Submitted {
+    /// The request ID, which is also the incident's.
+    pub id: RequestId,
     /// The node that answered first.
     pub from: NodeId,
     /// The node that planned the request.
@@ -79,6 +86,9 @@ pub struct Submitted {
     pub committed: Option<CommittedResult>,
     /// True if a lone node answered without a commit (D123).
     pub provisional: bool,
+    /// Where the incident stood when this answer was given (D142). To see it change later, for
+    /// example to Resolved, read it with `ControlRequest::Incidents`.
+    pub status: IncidentStatus,
     /// From first send to first reply, on the client clock.
     pub latency: Duration,
     pub attempts: u32,
@@ -155,9 +165,14 @@ impl MeshClient {
             id,
         };
 
+        // One wall-clock difference now, then a monotonic clock, so a clock step during the retries
+        // cannot fake an age (D143). Against the clock that stamped the report, this starts near 0.
+        let age_at_submit_ms = now_ms().saturating_sub(incident.reported_at_ms);
+        let submitted = Instant::now();
         let attempts = self.max_retries + 1;
         for attempt in 0..attempts {
-            self.send_to_all(id, attempt, &incident)?;
+            let age_ms = age_at_submit_ms.saturating_add(submitted.elapsed().as_millis() as u64);
+            self.send_to_all(id, attempt, age_ms, &incident)?;
             let wait = jittered(self.wait_before_retry(attempt));
             if let Ok(reply) = tokio::time::timeout(wait, &mut reply_rx).await {
                 let reply = reply.map_err(|_| ClientError::Closed)?;
@@ -175,11 +190,13 @@ impl MeshClient {
         &self,
         id: RequestId,
         attempt: u32,
+        age_ms: u64,
         incident: &Incident,
     ) -> Result<(), ClientError> {
         let frame = ClientFrame::Request(ClientRequest {
             id,
             attempt,
+            age_ms,
             incident: incident.clone(),
         });
         let bytes = Bytes::from(proto::encode(&frame)?);
@@ -203,11 +220,15 @@ impl MeshClient {
     }
 
     fn finished(&self, reply: ClientReply, started: Instant, attempts: u32) -> Submitted {
-        let (executor, plan, committed) = match reply.body {
-            ReplyBody::Done(result) => (result.executor, result.plan.clone(), Some(result)),
+        let (executor, plan, status, committed) = match reply.body {
+            // The record says which of the two it is, so both end the same way.
+            ReplyBody::Done(result) | ReplyBody::Expired(result) => {
+                let status = result.status_at_commit();
+                (result.executor, result.plan.clone(), status, Some(result))
+            }
             // A lone node plans for itself.
-            ReplyBody::Provisional(plan) => (reply.from, plan, None),
-            ReplyBody::Rejected(_) => unreachable!("run_link does not hand over Rejected replies"),
+            ReplyBody::Provisional(plan) => (reply.from, plan, IncidentStatus::Provisional, None),
+            ReplyBody::Rejected(_) => unreachable!("hand_over does not hand over Rejected replies"),
         };
         let provisional = committed.is_none();
         let latency = started.elapsed();
@@ -219,13 +240,16 @@ impl MeshClient {
             attempts,
             provisional,
             no_responder: plan.responder.is_none(),
+            status: status.as_str(),
         });
         Submitted {
+            id: reply.id,
             from: reply.from,
             executor,
             plan,
             committed,
             provisional,
+            status,
             latency,
             attempts,
         }
@@ -334,12 +358,16 @@ async fn serve_link(
     }
 }
 
-/// The first `Done` or `Provisional` for an ID wins: it takes the waiter, so later ones find
-/// nothing. `Rejected` is not an answer (D36): the client keeps waiting for another node or its
-/// retry.
+/// The first `Done`, `Expired` or `Provisional` for an ID wins: it takes the waiter, so later ones
+/// find nothing. `Rejected` is not an answer (D36): the client keeps waiting for another node or
+/// its retry.
+///
+/// Names every body, with no wildcard: a new one must not start out ignored, or a user would wait
+/// for the whole retry budget and give up on a report the cloud had already answered (D143).
 fn hand_over(waiters: &Waiters, reply: ClientReply) {
-    if matches!(reply.body, ReplyBody::Rejected(_)) {
-        return;
+    match reply.body {
+        ReplyBody::Done(_) | ReplyBody::Expired(_) | ReplyBody::Provisional(_) => {}
+        ReplyBody::Rejected(_) => return,
     }
     if let Some(waiter) = lock(waiters).remove(&reply.id) {
         let _ = waiter.send(reply);

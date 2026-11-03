@@ -3,7 +3,8 @@
 //! A client request goes: received → already decided? reply from state → assignment picks the
 //! executor → executor plans on the worker pool → proposes `CommitResult` through Raft →
 //! replies with the committed (winning) result. A node never replies before the commit, with one
-//! exception: a node left alone answers provisionally (degraded.rs, D120).
+//! exception: a node left alone answers provisionally (degraded.rs, D120). A report too old to plan
+//! takes the same path with nobody on the plan, and its reply says `Expired` (D143).
 //!
 //! Each part's entry point (`heartbeat::spawn`, `faults::spawn_schedule`, `rejoin::spawn`, ...)
 //! is called from here, so owners fill in their own file without editing this one.
@@ -35,7 +36,7 @@ use tokio::time::Instant;
 
 use crate::campus;
 use crate::config::{AssignmentPolicy, Config};
-use crate::metrics::{Event, EventLog};
+use crate::metrics::{Event, EventLog, now_ms};
 use crate::planner::{self, CostKnob};
 use crate::proto::{
     ClientFrame, ClientReply, ClientRequest, Command, CommittedResult, ControlReply,
@@ -386,6 +387,8 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             executor: ctx.id,
             term: ctx.consensus.status().term,
             plan,
+            age_ms: req.age_ms,
+            assigned_at_ms: now_ms(),
         };
         match ctx
             .consensus
@@ -406,9 +409,25 @@ async fn plan_on_workers(
     req: &ClientRequest,
     free: Vec<Responder>,
 ) -> Result<Plan, Overloaded> {
+    // Too old means not planned (D143). Here, after the election, so one node commits it, and for
+    // `execute` and `degraded::plan` alike. No worker job and no `record_service`, so a refusal
+    // leaves the planning time this node bids with as it was.
+    if req.incident.is_too_old(req.age_ms) {
+        ctx.log.log(Event::ReportExpired {
+            request: req.id,
+            age_ms: req.age_ms,
+            ttl_ms: req.incident.ttl_ms,
+        });
+        return Ok(Plan {
+            responder: None,
+            cost: 0,
+        });
+    }
     let incident = req.incident.clone();
-    // Two machines' clocks: NTP error is negligible against the planner's threshold (D95).
-    let age_ms = (crate::metrics::now_us() / 1_000).saturating_sub(incident.reported_at_ms);
+    // Two machines' clocks: NTP error is negligible against the planner's threshold (D95). The
+    // too-old rule above reads the client's stated age instead, because a wrong clock there would
+    // turn a whole run into refusals with no error; here it can only change a fallback.
+    let age_ms = now_ms().saturating_sub(incident.reported_at_ms);
     let knob = CostKnob {
         extra_work: ctx.plan_work.load(Ordering::Relaxed),
     };
@@ -449,12 +468,19 @@ fn send_provisional(
     }
 }
 
+/// Reply with a committed result. Which body it gets comes from the record alone, with no state and
+/// no clock, so every reply for one ID is the same (D37).
 fn send_done(ctx: &NodeContext, reply: &ReplyTx, done: CommittedResult, started: Instant) {
     let (request, executor) = (done.request, done.executor);
+    let body = if done.too_old_on_arrival() {
+        ReplyBody::Expired(done)
+    } else {
+        ReplyBody::Done(done)
+    };
     let sent = reply.send(&ServerFrame::Reply(ClientReply {
         id: request,
         from: ctx.id,
-        body: ReplyBody::Done(done),
+        body,
     }));
     if sent {
         ctx.log.log(Event::Replied {

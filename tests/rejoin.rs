@@ -35,6 +35,8 @@ fn proposal(seq: u64, executor: NodeId) -> Command {
             responder: None,
             cost: 1,
         },
+        age_ms: 0,
+        assigned_at_ms: 0,
     })
 }
 

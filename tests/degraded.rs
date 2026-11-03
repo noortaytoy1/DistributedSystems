@@ -9,10 +9,10 @@ use std::time::Duration;
 use common::{TestCluster, first_reply, wait_until};
 use rescuemesh::client::MeshClient;
 use rescuemesh::config::{AssignmentPolicy, Config};
-use rescuemesh::metrics::EventLog;
+use rescuemesh::metrics::{EventLog, now_ms};
 use rescuemesh::proto::{
-    Capability, Category, ClientRequest, Command, Incident, Plan, Point, ReplyBody, RequestId,
-    ResultProposal, UserId,
+    Capability, Category, ClientRequest, Command, Incident, IncidentStatus, Plan, Point, ReplyBody,
+    RequestId, ResultProposal, UserId,
 };
 
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -28,7 +28,7 @@ fn incident() -> Incident {
         location: Point { x: 10, y: 20 },
         severity: 1,
         needs: Capability::Medical,
-        reported_at_ms: rescuemesh::metrics::now_us() / 1000,
+        reported_at_ms: now_ms(),
         ttl_ms: 60_000,
     }
 }
@@ -37,6 +37,7 @@ fn request(seq: u64) -> ClientRequest {
     ClientRequest {
         id: RequestId { client: 90, seq },
         attempt: 0,
+        age_ms: 0,
         incident: incident(),
     }
 }
@@ -262,6 +263,8 @@ async fn losing_the_first_commit_logs_a_conflict_and_keeps_the_winner() {
         executor: 1,
         term: other.ctx.consensus.status().term,
         plan: winner.clone(),
+        age_ms: req.age_ms,
+        assigned_at_ms: now_ms(),
     };
     other
         .ctx
@@ -343,6 +346,85 @@ async fn a_replayed_plan_whose_responder_is_taken_is_recorded_without_it() {
     digests_match(&cluster).await;
     cluster.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replay_keeps_the_original_stamps() {
+    let cluster = start(|_| {}).await;
+    let lone = 2;
+    leave_alone(&cluster, lone).await;
+    let before = now_ms();
+    let mut req = request(1);
+    req.age_ms = 1_234;
+    let reply = first_reply(&cluster.config, req.clone(), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(matches!(reply.body, ReplyBody::Provisional(_)));
+    let answered = now_ms();
+
+    // However long the return takes, the record says when the client was told.
+    let started = tokio::time::Instant::now();
+    wait_until(PATIENCE, "time to pass before the return", || {
+        started.elapsed() > Duration::from_millis(100)
+    })
+    .await;
+    restore_others(&cluster, lone);
+    let node = cluster.node(lone);
+    wait_until(PATIENCE, "the replayed result on this node", || {
+        node.ctx.state.with(|s| s.result(&req.id).is_some())
+    })
+    .await;
+    let result = node.ctx.state.with(|s| s.result(&req.id).cloned()).unwrap();
+    assert_eq!(result.age_ms, 1_234);
+    assert!(
+        (before..=answered).contains(&result.assigned_at_ms),
+        "{before} {} {answered}",
+        result.assigned_at_ms
+    );
+    digests_match(&cluster).await;
+    cluster.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lone_node_answers_a_too_old_report_provisionally_and_the_record_reads_expired() {
+    let cluster = start(|_| {}).await;
+    let lone = 3;
+    leave_alone(&cluster, lone).await;
+    let mut req = request(1);
+    req.age_ms = 1_000;
+    req.incident.ttl_ms = 1_000;
+    let reply = first_reply(&cluster.config, req.clone(), Duration::from_secs(5))
+        .await
+        .unwrap();
+    // Uncommitted, so it says Provisional; nobody is sent, and nothing is held locally either.
+    let ReplyBody::Provisional(plan) = reply.body else {
+        panic!("expected a provisional answer, got {:?}", reply.body);
+    };
+    assert_eq!(plan.responder, None);
+    assert_eq!(cluster.node(lone).ctx.degraded.pending(), 1);
+
+    restore_others(&cluster, lone);
+    let node = cluster.node(lone);
+    wait_until(PATIENCE, "the record to read Expired", || {
+        node.ctx.state.with(|s| s.status_at(&req.id, now_ms())) == Some(IncidentStatus::Expired)
+    })
+    .await;
+    digests_match(&cluster).await;
+
+    // The replay committed it, so a retry now gets the committed refusal.
+    let retry = {
+        let mut retry = req.clone();
+        retry.attempt = 1;
+        first_reply(&cluster.config, retry, Duration::from_secs(5))
+            .await
+            .unwrap()
+    };
+    assert!(
+        matches!(retry.body, ReplyBody::Expired(_)),
+        "{:?}",
+        retry.body
+    );
+    cluster.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -22,6 +22,7 @@ fn request(seq: u64) -> ClientRequest {
     ClientRequest {
         id: RequestId { client: 88, seq },
         attempt: 0,
+        age_ms: 0,
         incident: Incident {
             owner: UserId {
                 client: 88,
