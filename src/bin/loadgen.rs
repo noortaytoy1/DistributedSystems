@@ -11,7 +11,7 @@
 //! Closed loop (default): each user sends, waits for the reply or gives up, waits as `--pattern`
 //! says, repeats (D182). Open loop (`--rate`): requests go out at evenly spaced intended times
 //! whatever the replies do, and latency counts from the intended time, so overload cannot hide in
-//! the generator (D54).
+//! the generator (D54). Reports then take turns among `--users` owners (D146).
 //!
 //! Every address comes from `--config`, so the same command works on all three client machines.
 //! Prints throughput and percentiles; raw events go to `metrics.dir` from the config. TERM or
@@ -30,7 +30,8 @@ use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{self, EventLog, now_us};
+use rescuemesh::metrics::{self, EventLog, now_ms};
+use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -60,7 +61,8 @@ struct Args {
     /// to frontends, 21 to 23 to zone feeds, and five-digit IDs to scripts/start-users.sh (D184).
     #[arg(long)]
     client_id: u64,
-    /// Concurrent simulated users (closed loop). Ignored with `--rate`.
+    /// Concurrent simulated users (closed loop). With `--rate`, how many users the reports are
+    /// shared among; it does not change the rate.
     #[arg(long, default_value_t = 10)]
     users: u32,
     /// Sending time, including any warm-up.
@@ -86,6 +88,10 @@ struct Args {
     /// enough (D185).
     #[arg(long)]
     sample_machine: bool,
+    /// How long each report stays valid, instead of `campus.incident_ttl_ms`. For showing a refusal
+    /// (0 refuses every report at once); the experiment runner never passes it.
+    #[arg(long)]
+    ttl_ms: Option<u64>,
 }
 
 impl Args {
@@ -111,6 +117,7 @@ struct Stats {
     no_responder: u64,
     retried: u64,
     provisional: u64,
+    expired: u64,
 }
 
 impl Stats {
@@ -121,6 +128,7 @@ impl Stats {
                 self.no_responder += u64::from(done.plan.responder.is_none());
                 self.provisional += u64::from(done.provisional);
                 self.retried += u64::from(done.attempts > 1);
+                self.expired += u64::from(done.status == IncidentStatus::Expired);
             }
             Err(ClientError::GaveUp { .. }) => self.gave_up += 1,
             Err(e) => tracing::warn!("request failed: {e}"),
@@ -135,17 +143,13 @@ fn percentile(sorted: &[u64], percent: u64) -> Option<u64> {
 }
 
 /// One draw from this run's seeded generator, stamped with the current time.
-fn incident(rng: &mut StdRng, campus: &CampusConfig) -> rescuemesh::proto::Incident {
-    campus::random_incident(rng, campus, now_us() / 1000)
+fn incident(rng: &mut StdRng, campus: &CampusConfig, owner: UserId) -> rescuemesh::proto::Incident {
+    campus::random_incident(rng, campus, owner, now_ms())
 }
 
 /// Each user draws from its own generator, so a seed repeats the same incidents per user.
 fn user_rng(seed: u64, user: u64) -> StdRng {
     StdRng::seed_from_u64(seed.wrapping_mul(1_000_003).wrapping_add(user))
-}
-
-fn now_ms() -> u64 {
-    now_us() / 1000
 }
 
 /// One user's waits. It has its own generator, so `random` never disturbs the incident stream a
@@ -198,6 +202,15 @@ async fn pause(wait: Duration, stop_at: Instant) {
     }
 }
 
+/// Who reports the next open-loop request: the users take turns. `.max(1)` keeps `--users 0`, which
+/// open loop used to ignore, from dividing by zero.
+fn open_loop_owner(client: ClientId, sent: u32, users: u32) -> UserId {
+    UserId {
+        client,
+        user: sent % users.max(1),
+    }
+}
+
 async fn closed_loop(
     args: &Args,
     client: Arc<MeshClient>,
@@ -212,11 +225,15 @@ async fn closed_loop(
         let (client, stats) = (client.clone(), stats.clone());
         let mut rng = user_rng(args.seed, u64::from(user));
         let mut pacer = Pacer::new(args.pattern, args.think_ms, args.seed, u64::from(user));
+        let owner = UserId {
+            client: args.client_id,
+            user,
+        };
         users.spawn(async move {
             pause(pacer.first_wait(user, total, now_ms()), stop_at).await;
             while Instant::now() < stop_at {
                 let started = Instant::now();
-                let outcome = client.submit(incident(&mut rng, &campus)).await;
+                let outcome = client.submit(incident(&mut rng, &campus, owner)).await;
                 if started >= measure_from {
                     lock(&stats).record(outcome);
                 }
@@ -253,7 +270,8 @@ async fn open_loop(
             break;
         };
         let (client, stats) = (client.clone(), stats.clone());
-        let report = incident(&mut rng, &campus);
+        let owner = open_loop_owner(args.client_id, sent, args.users);
+        let report = incident(&mut rng, &campus, owner);
         requests.spawn(async move {
             let outcome = client.submit_from(report, intended).await;
             if intended >= measure_from {
@@ -296,13 +314,15 @@ fn summary(client_id: u64, stats: &mut Stats, measured: Duration, stopped_early:
         ""
     };
     format!(
-        "client {client_id}: done {done}, gave up {}, retried {}, no responder {}, provisional {}\n\
+        "client {client_id}: done {done}, gave up {}, retried {}, no responder {}, provisional {}, \
+         expired {}\n\
          {note}throughput {:.1} req/s over {:.1} s\n\
          latency ms: mean {mean_ms:.2}, p50 {}, p95 {}, p99 {}\n",
         stats.gave_up,
         stats.retried,
         stats.no_responder,
         stats.provisional,
+        stats.expired,
         done as f64 / measured.as_secs_f64().max(0.001),
         measured.as_secs_f64(),
         shown(50),
@@ -332,7 +352,11 @@ async fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     let measure_from = start + Duration::from_secs(args.warmup_s);
     let stop_at = start + Duration::from_secs(args.duration_s);
-    let (shared, campus) = (stats.clone(), config.campus);
+    let shared = stats.clone();
+    let mut campus = config.campus;
+    if let Some(ttl_ms) = args.ttl_ms {
+        campus.incident_ttl_ms = ttl_ms;
+    }
     let run = async {
         match args.rate {
             Some(rate) => {
@@ -396,9 +420,21 @@ mod tests {
     }
 
     #[test]
+    fn open_loop_owner_survives_zero_users() {
+        assert_eq!(open_loop_owner(4, 7, 0), UserId { client: 4, user: 0 });
+    }
+
+    #[test]
+    fn open_loop_reports_take_turns_among_the_users() {
+        let users: Vec<u32> = (0..5).map(|s| open_loop_owner(4, s, 3).user).collect();
+        assert_eq!(users, vec![0, 1, 2, 0, 1]);
+    }
+
+    #[test]
     fn a_seed_repeats_the_same_incidents_and_users_differ() {
         let campus = CampusConfig::default();
-        let draw = |user| campus::random_incident(&mut user_rng(5, user), &campus, 0);
+        let owner = UserId { client: 1, user: 0 };
+        let draw = |user| campus::random_incident(&mut user_rng(5, user), &campus, owner, 0);
         assert_eq!(draw(1), draw(1));
         assert_ne!(
             (1..20).map(draw).collect::<Vec<_>>(),
@@ -453,7 +489,8 @@ mod tests {
     #[test]
     fn random_waits_leave_the_incident_stream_unchanged() {
         let campus = CampusConfig::default();
-        let draw = |rng: &mut StdRng| campus::random_incident(rng, &campus, 0);
+        let owner = UserId { client: 1, user: 0 };
+        let draw = |rng: &mut StdRng| campus::random_incident(rng, &campus, owner, 0);
         let mut alone = user_rng(5, 1);
         let plain: Vec<_> = (0..20).map(|_| draw(&mut alone)).collect();
         let mut paced = user_rng(5, 1);
@@ -517,11 +554,15 @@ mod tests {
             retried: 4,
             no_responder: 5,
             provisional: 6,
+            expired: 7,
         };
         let text = summary(10_000, &mut stats, Duration::from_secs(2), false);
         assert_eq!(
             text.lines().next(),
-            Some("client 10000: done 2, gave up 3, retried 4, no responder 5, provisional 6")
+            Some(
+                "client 10000: done 2, gave up 3, retried 4, no responder 5, provisional 6, \
+                 expired 7"
+            )
         );
         assert!(text.contains("throughput 1.0 req/s over 2.0 s"), "{text}");
         assert!(!text.contains("stopped"), "{text}");

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use common::{TestCluster, wait_until};
 use rescuemesh::proto::{
-    Capability, Command, Incident, NodeId, Outcome, Plan, Point, RequestId, Responder, ResponderId,
-    ResultProposal, StaleReason,
+    Capability, Category, Command, Incident, NodeId, Outcome, Plan, Point, RequestId, Responder,
+    ResponderId, ResultProposal, StaleReason, UserId,
 };
 use rescuemesh::raft::{Consensus, Role};
 
@@ -19,15 +19,24 @@ fn proposal(client: u64, seq: u64, executor: NodeId, responder: Option<Responder
     Command::CommitResult(ResultProposal {
         request: RequestId { client, seq },
         incident: Incident {
+            owner: UserId { client, user: 0 },
+            category: Category::Flooding,
             zone: 0,
             location: Point { x: 5, y: 5 },
             severity: 2,
             needs: Capability::Rescue,
             reported_at_ms: 0,
+            ttl_ms: 60_000,
         },
         executor,
         term: 0,
-        plan: Plan { responder, cost: 1 },
+        plan: Plan {
+            responder,
+            cost: 1,
+            priority: 200,
+        },
+        age_ms: 0,
+        assigned_at_ms: 0,
     })
 }
 

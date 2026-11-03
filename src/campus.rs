@@ -10,15 +10,16 @@
 //! no library upgrade can change.
 //!
 //! Incidents (D99) are drawn uniformly: zone, position inside it, severity 1–5 and needed
-//! capability. [`random_incident`] draws from the caller's RNG, so a seeded run can be repeated.
-//! [`unseeded_incident`] draws from OS randomness, so every run differs (D102).
+//! capability, then a category that capability answers (D141). [`random_incident`] draws from the
+//! caller's RNG, so a seeded run can be repeated. [`unseeded_incident`] draws from OS randomness,
+//! so every run differs (D102).
 //!
 //! Owner: E (planner and concurrency).
 
 use rand::Rng;
 
 use crate::config::CampusConfig;
-use crate::proto::{Capability, Incident, Point, Responder, ZoneId};
+use crate::proto::{Capability, Incident, Point, Responder, UserId, ZoneId};
 
 /// Side of a square zone, in metres.
 pub const ZONE_SIZE_M: i32 = 500;
@@ -43,24 +44,37 @@ pub fn responders(cfg: &CampusConfig) -> Vec<Responder> {
         .collect()
 }
 
-/// A random incident, as a simulated user would report it.
-pub fn random_incident(rng: &mut impl Rng, cfg: &CampusConfig, now_ms: u64) -> Incident {
+/// A random incident, as the simulated user `owner` would report it.
+pub fn random_incident(
+    rng: &mut impl Rng,
+    cfg: &CampusConfig,
+    owner: UserId,
+    now_ms: u64,
+) -> Incident {
     let zone = rng.gen_range(0..cfg.zones.max(1));
     let dx = rng.gen_range(0..ZONE_SIZE_M);
     let dy = rng.gen_range(0..ZONE_SIZE_M);
+    let severity = rng.gen_range(1..=5);
+    // The capability comes first so each stays a quarter of the load (D99). Drawing the category
+    // first would make Technical 3/7 of it, because three categories need it.
+    let needs = Capability::ALL[rng.gen_range(0..Capability::ALL.len())];
+    let categories = needs.categories();
     Incident {
+        owner,
+        category: categories[rng.gen_range(0..categories.len())],
         zone,
         location: offset(zone_corner(cfg.zones, zone), dx, dy),
-        severity: rng.gen_range(1..=5),
-        needs: Capability::ALL[rng.gen_range(0..Capability::ALL.len())],
+        severity,
+        needs,
         reported_at_ms: now_ms,
+        ttl_ms: cfg.incident_ttl_ms,
     }
 }
 
 /// A random incident drawn from OS randomness: no seed, so no two runs see the same incidents
 /// (D102). Clients only; the deterministic core never calls this.
-pub fn unseeded_incident(cfg: &CampusConfig, now_ms: u64) -> Incident {
-    random_incident(&mut rand::thread_rng(), cfg, now_ms)
+pub fn unseeded_incident(cfg: &CampusConfig, owner: UserId, now_ms: u64) -> Incident {
+    random_incident(&mut rand::thread_rng(), cfg, owner, now_ms)
 }
 
 /// Columns of the zone grid: the smallest `c` with `c × c ≥ zones`.
@@ -115,6 +129,7 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::Category;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
     use std::collections::{BTreeMap, BTreeSet};
@@ -125,6 +140,14 @@ mod tests {
             zones,
             responders,
             service_ms_per_severity: 200,
+            incident_ttl_ms: 60_000,
+        }
+    }
+
+    fn owner() -> UserId {
+        UserId {
+            client: 3,
+            user: 17,
         }
     }
 
@@ -208,7 +231,7 @@ mod tests {
         assert_eq!(rs.len(), 8);
         assert!(rs.iter().all(|r| r.zone == 0));
         let mut rng = StdRng::seed_from_u64(3);
-        let inc = random_incident(&mut rng, &cfg(42, 1, 8), 5);
+        let inc = random_incident(&mut rng, &cfg(42, 1, 8), owner(), 5);
         assert_eq!(inc.zone, 0);
     }
 
@@ -219,7 +242,7 @@ mod tests {
         let (mut zones, mut severities, mut needs) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         for i in 0..2_000 {
-            let inc = random_incident(&mut rng, &c, i);
+            let inc = random_incident(&mut rng, &c, owner(), i);
             assert_eq!(inc.reported_at_ms, i);
             assert!(inc.zone < c.zones, "{inc:?}");
             assert!(inside_zone(c.zones, inc.zone, inc.location), "{inc:?}");
@@ -234,12 +257,53 @@ mod tests {
     }
 
     #[test]
+    fn every_category_occurs_and_agrees_with_needs() {
+        let c = CampusConfig::default();
+        let mut rng = StdRng::seed_from_u64(12);
+        let mut categories = BTreeSet::new();
+        for i in 0..2_000 {
+            let inc = random_incident(&mut rng, &c, owner(), i);
+            assert_eq!(inc.category.needs(), inc.needs, "{inc:?}");
+            categories.insert(inc.category);
+        }
+        assert_eq!(categories, Category::ALL.into_iter().collect());
+    }
+
+    #[test]
+    fn each_capability_stays_about_a_quarter_of_the_load() {
+        let c = CampusConfig::default();
+        let mut rng = StdRng::seed_from_u64(13);
+        let mut per_need = BTreeMap::new();
+        for i in 0..8_000 {
+            let inc = random_incident(&mut rng, &c, owner(), i);
+            *per_need.entry(inc.needs).or_insert(0) += 1;
+        }
+        // 2000 expected for each; three categories needing Technical must not raise its share.
+        for (need, count) in per_need {
+            assert!((1_800..=2_200).contains(&count), "{need:?}: {count}");
+        }
+    }
+
+    #[test]
+    fn a_report_carries_its_owner_and_the_configured_ttl() {
+        let c = CampusConfig {
+            incident_ttl_ms: 1_234,
+            ..CampusConfig::default()
+        };
+        let mut rng = StdRng::seed_from_u64(14);
+        let inc = random_incident(&mut rng, &c, owner(), 5);
+        assert_eq!(inc.owner, owner());
+        assert_eq!(inc.ttl_ms, 1_234);
+        assert_eq!(unseeded_incident(&c, owner(), 5).ttl_ms, 1_234);
+    }
+
+    #[test]
     fn the_same_rng_seed_gives_the_same_incidents() {
         let c = CampusConfig::default();
         let draw = |seed| {
             let mut rng = StdRng::seed_from_u64(seed);
             (0..50)
-                .map(|i| random_incident(&mut rng, &c, i))
+                .map(|i| random_incident(&mut rng, &c, owner(), i))
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));
@@ -250,7 +314,7 @@ mod tests {
     fn unseeded_incidents_stay_in_range() {
         let c = CampusConfig::default();
         for i in 0..500 {
-            let inc = unseeded_incident(&c, i);
+            let inc = unseeded_incident(&c, owner(), i);
             assert_eq!(inc.reported_at_ms, i);
             assert!(inc.zone < c.zones, "{inc:?}");
             assert!(inside_zone(c.zones, inc.zone, inc.location), "{inc:?}");
@@ -264,7 +328,7 @@ mod tests {
         let c = CampusConfig::default();
         let draw = || {
             (0..50)
-                .map(|i| unseeded_incident(&c, i))
+                .map(|i| unseeded_incident(&c, owner(), i))
                 .collect::<Vec<_>>()
         };
         assert_ne!(draw(), draw());

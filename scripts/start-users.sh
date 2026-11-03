@@ -257,11 +257,11 @@ say "machine $machine batch $batch: started $started, failed $failed"
 say "machine $machine batch $batch: $(awk -v started="$started" '
   /^client [0-9]+: done / {
     gsub(",", "")
-    reported++; done_n += $4; gave_up += $7; retried += $9; no_responder += $12; provisional += $14
+    reported++; done_n += $4; gave_up += $7; retried += $9; no_responder += $12; provisional += $14; expired += $16
   }
   END {
-    printf "reported %d of %d programs: done %d, gave up %d, retried %d, no responder %d, provisional %d",
-      reported, started, done_n, gave_up, retried, no_responder, provisional
+    printf "reported %d of %d programs: done %d, gave up %d, retried %d, no responder %d, provisional %d, expired %d",
+      reported, started, done_n, gave_up, retried, no_responder, provisional, expired
   }' "$out_file")"
 
 if ((failed * 10 > started)); then

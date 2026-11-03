@@ -30,6 +30,11 @@ pub fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wall-clock time in unix milliseconds, the unit of the timestamps inside incidents and results.
+pub fn now_ms() -> u64 {
+    now_us() / 1_000
+}
+
 /// Every event any process logs. Field names are the analysis contract.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "ev", rename_all = "snake_case")]
@@ -102,6 +107,13 @@ pub enum Event {
         request: RequestId,
         executor: NodeId,
         latency_us: u64,
+    },
+    /// A report reached the node that would plan it too old, so nobody is planned for it (D143).
+    /// Rare: the default TTL outlasts every retry, so a measured run should log none (D147).
+    ReportExpired {
+        request: RequestId,
+        age_ms: u64,
+        ttl_ms: u64,
     },
 
     // --- bidding (B)
@@ -269,8 +281,14 @@ pub enum Event {
         attempts: u32,
         /// True if the answer was a lone node's, not committed (D123).
         provisional: bool,
-        /// True if the plan sent nobody, because no suitable responder was free (D111).
+        /// True if the plan sent nobody, because no suitable responder was free (D111) or the
+        /// report was too old (D143).
         no_responder: bool,
+        /// Where the incident stood when this answer was given (D142): `provisional`, `unassigned`,
+        /// `assigned` or `expired`.
+        status: &'static str,
+        /// The plan's priority points (D148).
+        priority: u32,
     },
     ClientGaveUp {
         request: RequestId,

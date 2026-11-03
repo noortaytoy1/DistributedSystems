@@ -39,7 +39,9 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Convergence after a rejoin (D138) | `digest_checkpoints_compared`, `digest_mismatches` (must be 0), `rejoins_digest_confirmed` against `rejoins`, `rejoin_targets_lowered` (D135) |
 | CPU, memory, network, queues | `cpu_cores_mean`, `rss_mb_max`, `net_bytes_per_s_mean`, `queued_mean`, `queued_max`, `running_mean`; shed work as `plans_refused`, `plans_refused_node_<n>` (D138) |
 | Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers`, `takeovers_suspected`, `takeovers_backstop`, `takeover_wait_suspected_mean_ms`, `takeover_wait_backstop_mean_ms`. Not failover figures: a backstop takeover needs no fault, only a busy winner (D138) |
-| Plans with no responder (D111) | `no_responder_share` |
+| Plans with no responder (D111) | `no_responder_share`; an expired report counts here too |
+| Reports refused as too old (D147) | `reports_expired`. Should be 0 in every measured cell: `analyze.py` prints a warning otherwise, because the likeliest cause is a stamping bug |
+| Incident priority (D148) | `priority_mean`, in priority points. 0 only for a refused report |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
 | Client model, and whether the client PCs were the limit (D181, D185) | `client_programs`, `users_per_program`, `client_link_down`, `client_link_down_<reason>`, `client_pc_cpu_busy_p95` (share of the PC's CPU, 0 to 1), `client_pc_mem_available_min_mb` |

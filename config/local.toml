@@ -55,6 +55,9 @@ plan_work = 0
 seed = 42
 zones = 6
 responders = 30
+# How long a report stays valid; a node refuses an older one and sends nobody (D143). Keep it above
+# the client's retries, at most 36 s with these timers. Set it for one run with: loadgen --ttl-ms
+incident_ttl_ms = 60000
 
 [metrics]
 dir = "runs/local"

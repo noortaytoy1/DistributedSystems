@@ -10,6 +10,8 @@
 //!   not recorded (`Outcome::Stale`); the executor plans again.
 //! - **Digest.** A hash chain over every applied command and its outcome. Two nodes with the
 //!   same digest at the same index applied the same log and hold the same state.
+//! - **Status.** An incident's status is worked out when someone reads it, from the result and the
+//!   hold (D142). The caller passes the time in; nothing here looks at a clock.
 //!
 //! Owner: A (Raft and replication).
 
@@ -19,8 +21,8 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{
-    Command, CommittedResult, Outcome, RequestId, Responder, ResponderId, ResultProposal,
-    StaleReason,
+    Command, CommittedResult, IncidentQuery, IncidentStatus, IncidentView, MAX_INCIDENT_ROWS,
+    Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +117,8 @@ impl CloudState {
             executor: p.executor,
             term: p.term,
             plan: p.plan.clone(),
+            age_ms: p.age_ms,
+            assigned_at_ms: p.assigned_at_ms,
             log_index: index,
         };
         self.results.insert(p.request, result.clone());
@@ -124,6 +128,59 @@ impl CloudState {
 
     pub fn result(&self, id: &RequestId) -> Option<&CommittedResult> {
         self.results.get(id)
+    }
+
+    /// Where an incident stands at `now_ms`, or `None` if nothing is committed for it.
+    pub fn status_at(&self, id: &RequestId, now_ms: u64) -> Option<IncidentStatus> {
+        let result = self.results.get(id)?;
+        Some(result.status(self.is_held(result), now_ms))
+    }
+
+    /// Whether the responder this result sent is still held for it.
+    fn is_held(&self, result: &CommittedResult) -> bool {
+        result
+            .plan
+            .responder
+            .and_then(|responder| self.responders.get(&responder))
+            .is_some_and(|slot| slot.held_by == Some(result.request))
+    }
+
+    /// The records `query` asks for, read at `now_ms` (D145). One client's range costs only the rows
+    /// returned, and sequence numbers start at the current time (D113), so the highest is the newest.
+    pub fn incident_rows(
+        &self,
+        query: &IncidentQuery,
+        now_ms: u64,
+        ms_per_severity: u64,
+    ) -> Vec<IncidentView> {
+        let view = |result: &CommittedResult| IncidentView {
+            id: result.request,
+            incident: result.incident.clone(),
+            status: result.status(self.is_held(result), now_ms),
+            responder: result.plan.responder,
+            priority: result.plan.priority,
+            executor: result.executor,
+            age_ms: result.age_ms,
+            assigned_at_ms: result.assigned_at_ms,
+            expires_at_ms: result.planned_end_ms(ms_per_severity),
+            log_index: result.log_index,
+        };
+        match *query {
+            IncidentQuery::One(id) => self.results.get(&id).map(view).into_iter().collect(),
+            IncidentQuery::OfClient { client, limit } => {
+                let first = RequestId { client, seq: 0 };
+                let last = RequestId {
+                    client,
+                    seq: u64::MAX,
+                };
+                self.results
+                    .range(first..=last)
+                    .rev()
+                    .take(limit.min(MAX_INCIDENT_ROWS) as usize)
+                    .map(|(_, result)| view(result))
+                    .collect()
+            }
+        }
     }
 
     pub fn results(&self) -> impl Iterator<Item = &CommittedResult> {
@@ -213,7 +270,7 @@ fn chain(prev: u64, index: u64, cmd: &Command, outcome: &Outcome) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Incident, Plan, Point};
+    use crate::proto::{Capability, Category, Incident, Plan, Point, UserId};
 
     fn rid(seq: u64) -> RequestId {
         RequestId { client: 1, seq }
@@ -232,15 +289,24 @@ mod tests {
         Command::CommitResult(ResultProposal {
             request: rid(seq),
             incident: Incident {
+                owner: UserId { client: 1, user: 0 },
+                category: Category::MedicalAssistance,
                 zone: 0,
                 location: Point { x: 1, y: 1 },
                 severity: 3,
                 needs: Capability::Medical,
                 reported_at_ms: 0,
+                ttl_ms: 60_000,
             },
             executor,
             term: 1,
-            plan: Plan { responder, cost: 7 },
+            plan: Plan {
+                responder,
+                cost: 7,
+                priority: 300,
+            },
+            age_ms: 4,
+            assigned_at_ms: 1_000,
         })
     }
 
@@ -370,6 +436,149 @@ mod tests {
         assert_eq!(a.digest(), b.digest());
         assert_ne!(a.digest(), c.digest());
         assert_eq!(a.last_index(), 4);
+    }
+
+    #[test]
+    fn a_commit_keeps_the_proposals_age_and_time() {
+        let mut s = with_responders(&[1]);
+        let Outcome::Committed(result) = s.apply(2, &proposal(10, 1, Some(1))) else {
+            panic!("the proposal must commit");
+        };
+        assert_eq!((result.age_ms, result.assigned_at_ms), (4, 1_000));
+        assert_eq!(s.result(&rid(10)), Some(&result));
+    }
+
+    #[test]
+    fn status_at_follows_the_hold_through_release() {
+        let mut s = with_responders(&[1]);
+        assert_eq!(s.status_at(&rid(10), 1_000), None);
+        s.apply(2, &proposal(10, 1, Some(1)));
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Assigned));
+        // A release for someone else changes nothing.
+        s.apply(
+            3,
+            &Command::ReleaseResponder {
+                responder: 1,
+                request: rid(99),
+            },
+        );
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Assigned));
+        s.apply(
+            4,
+            &Command::ReleaseResponder {
+                responder: 1,
+                request: rid(10),
+            },
+        );
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Resolved));
+        // The responder going out again for another request does not undo that.
+        s.apply(5, &proposal(11, 1, Some(1)));
+        assert_eq!(s.status_at(&rid(10), 1_000), Some(IncidentStatus::Resolved));
+        assert_eq!(s.status_at(&rid(11), 1_000), Some(IncidentStatus::Assigned));
+    }
+
+    #[test]
+    fn reading_status_changes_neither_state_nor_digest() {
+        let mut s = with_responders(&[1]);
+        s.apply(2, &proposal(10, 1, None));
+        let before = s.clone();
+        // Past the deadline, the same record reads differently and nothing has moved.
+        assert_eq!(
+            s.status_at(&rid(10), 1_000),
+            Some(IncidentStatus::Unassigned)
+        );
+        assert_eq!(
+            s.status_at(&rid(10), 1_000_000),
+            Some(IncidentStatus::Expired)
+        );
+        assert_eq!(s, before);
+        assert_eq!(s.digest(), before.digest());
+    }
+
+    /// Commits one nobody-sent report for each (client, seq), at indexes from 2.
+    fn with_results(ids: &[(u64, u64)]) -> CloudState {
+        let mut s = CloudState::new();
+        for (i, (client, seq)) in ids.iter().enumerate() {
+            let Command::CommitResult(mut p) = proposal(*seq, 1, None) else {
+                panic!("proposal() builds a CommitResult");
+            };
+            p.request = RequestId {
+                client: *client,
+                seq: *seq,
+            };
+            s.apply(i as u64 + 2, &Command::CommitResult(p));
+        }
+        s
+    }
+
+    fn row_ids(rows: &[IncidentView]) -> Vec<(u64, u64)> {
+        rows.iter().map(|r| (r.id.client, r.id.seq)).collect()
+    }
+
+    #[test]
+    fn rows_of_one_client_come_newest_first_up_to_the_limit() {
+        let s = with_results(&[(3, 1), (3, 2), (3, 3), (3, 4)]);
+        let rows = s.incident_rows(
+            &IncidentQuery::OfClient {
+                client: 3,
+                limit: 2,
+            },
+            1_000,
+            200,
+        );
+        assert_eq!(row_ids(&rows), vec![(3, 4), (3, 3)]);
+    }
+
+    #[test]
+    fn a_client_query_never_returns_more_than_the_cap() {
+        let ids: Vec<(u64, u64)> = (0..MAX_INCIDENT_ROWS as u64 + 5).map(|s| (3, s)).collect();
+        let s = with_results(&ids);
+        let rows = s.incident_rows(
+            &IncidentQuery::OfClient {
+                client: 3,
+                limit: u32::MAX,
+            },
+            1_000,
+            200,
+        );
+        assert_eq!(rows.len(), MAX_INCIDENT_ROWS as usize);
+    }
+
+    #[test]
+    fn a_higher_client_id_does_not_hide_a_lower_one() {
+        let s = with_results(&[(1, 5), (2, 6), (3, 7), (3, 8), (3, 9)]);
+        let of = |client| {
+            let query = IncidentQuery::OfClient { client, limit: 2 };
+            row_ids(&s.incident_rows(&query, 1_000, 200))
+        };
+        assert_eq!(of(1), vec![(1, 5)]);
+        assert_eq!(of(2), vec![(2, 6)]);
+        assert_eq!(of(3), vec![(3, 9), (3, 8)]);
+        assert_eq!(of(4), Vec::<(u64, u64)>::new());
+    }
+
+    #[test]
+    fn a_row_shows_the_record_and_its_status() {
+        let mut s = with_responders(&[1]);
+        s.apply(2, &proposal(10, 2, Some(1)));
+        let one = IncidentQuery::One(rid(10));
+        let rows = s.incident_rows(&one, 1_000, 200);
+        let [row] = rows.as_slice() else {
+            panic!("expected one row, got {rows:?}");
+        };
+        assert_eq!(row.id, rid(10));
+        assert_eq!(row.incident.severity, 3);
+        assert_eq!(row.status, IncidentStatus::Assigned);
+        assert_eq!(row.responder, Some(1));
+        assert_eq!(row.priority, 300);
+        assert_eq!(row.executor, 2);
+        assert_eq!((row.age_ms, row.assigned_at_ms), (4, 1_000));
+        assert_eq!(row.expires_at_ms, Some(1_600));
+        assert_eq!(row.log_index, 2);
+        assert!(
+            s.incident_rows(&IncidentQuery::One(rid(11)), 1_000, 200)
+                .is_empty()
+        );
     }
 
     #[test]
