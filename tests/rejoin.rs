@@ -210,8 +210,11 @@ async fn a_returning_node_logs_the_same_digests_at_the_same_indexes() {
     let follower = (1..=3).find(|id| *id != leader).unwrap();
 
     let consensus = &cluster.node(leader).ctx.consensus;
-    let commits = |range: std::ops::Range<u64>| {
-        futures::future::join_all(range.map(|seq| consensus.propose(proposal(seq, leader))))
+    // One at a time, because this needs log entries: proposals that wait together share one (D133).
+    let commits = |range: std::ops::Range<u64>| async move {
+        for seq in range {
+            consensus.propose(proposal(seq, leader)).await.unwrap();
+        }
     };
     cluster.node(follower).ctx.gate.silence();
     wait_until(WAIT, "silenced follower stops serving", || {

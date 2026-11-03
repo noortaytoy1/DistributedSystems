@@ -69,6 +69,31 @@ pub enum Event {
         error: String,
         latency_us: u64,
     },
+    /// Once a second: the proposal queue and the Raft log file (D133). All cumulative, except
+    /// `waiting` (now) and the two largest-so-far figures (since the last event). Commands per
+    /// save is `saved_commands / saves`; disk syncs per second comes from `syncs`.
+    RaftIo {
+        /// Proposals in the queue now.
+        waiting: usize,
+        /// `client_write` calls the queue started, and the commands they carried.
+        writes: u64,
+        commands: u64,
+        /// Proposals that left the queue unwritten at their deadline.
+        expired: u64,
+        /// Writes that outlasted the write cap (`propose_timeout_ms`).
+        write_timeouts: u64,
+        /// Writes to the log file that waited for the disk, and the time they took.
+        syncs: u64,
+        sync_us: u64,
+        max_sync_us: u64,
+        /// Calls to save log entries, and the entries and commands they carried.
+        saves: u64,
+        saved_entries: u64,
+        saved_commands: u64,
+        /// Longest gap between two AppendEntries arriving while this node follows: how close to an
+        /// election it came.
+        max_leader_gap_us: u64,
+    },
     /// Periodic state fingerprint; equal digests at equal indexes mean identical state.
     StateDigest {
         last_applied: u64,

@@ -205,6 +205,7 @@ pub async fn start_with(
     };
     tasks.push(raft.spawn_watcher());
     tasks.push(raft.spawn_heartbeat_summary());
+    tasks.push(raft.spawn_io_report());
 
     let group = Arc::new(CloudGroup::new(
         id,

@@ -65,9 +65,11 @@ pub struct Timers {
     pub client_retry_ms: u64,
     pub client_retry_max_ms: u64,
     pub client_max_retries: u32,
-    /// How long a node keeps trying to commit one proposal (including leader changes).
+    /// How long a node keeps trying to commit one proposal (including leader changes and its wait
+    /// in the leader's proposal queue). A proposal never waits longer than this (D133).
     pub propose_timeout_ms: u64,
-    /// Timeout for one non-Raft peer RPC (bid, heartbeat, forwarded proposal attempt).
+    /// Timeout for one non-Raft peer RPC (bid, heartbeat, read index). A forwarded proposal instead
+    /// waits up to its `propose_timeout_ms`, because the leader's queue may hold it that long.
     pub peer_rpc_timeout_ms: u64,
     /// Every peer suspected for this long, and a serving node answers without a commit (D121).
     /// One peer suspected for this long leaves this node's group member list (D153).

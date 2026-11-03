@@ -21,8 +21,8 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{
-    Command, CommittedResult, IncidentQuery, IncidentStatus, IncidentView, MAX_INCIDENT_ROWS,
-    Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
+    Command, CommandGroup, CommittedResult, IncidentQuery, IncidentStatus, IncidentView,
+    MAX_INCIDENT_ROWS, Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,13 @@ pub struct CloudState {
 impl CloudState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Apply one committed log entry: its commands in order, each seeing what the one before it
+    /// did. Each goes through [`apply`](Self::apply), so a group changes the state and the digest
+    /// exactly as the same commands would one after another at this index (D133).
+    pub fn apply_group(&mut self, index: u64, group: &CommandGroup) -> Vec<Outcome> {
+        group.0.iter().map(|cmd| self.apply(index, cmd)).collect()
     }
 
     /// Apply one committed command found at Raft log index `index`.
@@ -579,6 +586,111 @@ mod tests {
             s.incident_rows(&IncidentQuery::One(rid(11)), 1_000, 200)
                 .is_empty()
         );
+    }
+
+    fn release(responder: ResponderId, seq: u64) -> Command {
+        Command::ReleaseResponder {
+            responder,
+            request: rid(seq),
+        }
+    }
+
+    #[test]
+    fn a_group_gives_the_same_state_and_digest_on_two_copies() {
+        let group = CommandGroup(vec![
+            proposal(1, 1, Some(1)),
+            proposal(2, 2, Some(1)),
+            release(1, 1),
+            proposal(3, 3, Some(1)),
+            proposal(4, 1, None),
+        ]);
+        let mut a = with_responders(&[1, 2]);
+        let mut b = with_responders(&[1, 2]);
+        let from_a = a.apply_group(2, &group);
+        let from_b = b.apply_group(2, &group);
+        assert_eq!(from_a, from_b);
+        assert_eq!(a, b);
+        assert_eq!(a.digest(), b.digest());
+        assert_eq!(a.last_index(), 2);
+        assert_eq!(from_a.len(), 5, "one outcome per command, in order");
+        assert!(matches!(from_a[0], Outcome::Committed(_)));
+        assert!(matches!(from_a[1], Outcome::Stale { .. }));
+        assert_eq!(from_a[2], Outcome::Applied);
+        assert!(matches!(from_a[3], Outcome::Committed(_)));
+    }
+
+    #[test]
+    fn a_group_is_the_same_as_its_commands_one_after_another_at_one_index() {
+        let commands = vec![
+            proposal(1, 1, Some(1)),
+            release(1, 1),
+            proposal(2, 2, Some(1)),
+        ];
+        let mut grouped = with_responders(&[1]);
+        let outcomes = grouped.apply_group(2, &CommandGroup(commands.clone()));
+        let mut single = with_responders(&[1]);
+        let one_by_one: Vec<_> = commands.iter().map(|c| single.apply(2, c)).collect();
+        assert_eq!(outcomes, one_by_one);
+        assert_eq!(grouped, single);
+    }
+
+    #[test]
+    fn the_order_inside_a_group_changes_the_digest() {
+        let first = proposal(1, 1, Some(1));
+        let second = proposal(2, 2, Some(1));
+        let mut a = with_responders(&[1]);
+        a.apply_group(2, &CommandGroup(vec![first.clone(), second.clone()]));
+        let mut b = with_responders(&[1]);
+        b.apply_group(2, &CommandGroup(vec![second, first]));
+        assert_ne!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn results_of_one_group_share_its_log_index() {
+        let mut s = with_responders(&[1, 2]);
+        let outcomes = s.apply_group(
+            7,
+            &CommandGroup(vec![proposal(1, 1, Some(1)), proposal(2, 1, Some(2))]),
+        );
+        for outcome in &outcomes {
+            let Outcome::Committed(result) = outcome else {
+                panic!("expected a commit, got {outcome:?}");
+            };
+            assert_eq!(result.log_index, 7);
+        }
+    }
+
+    #[test]
+    fn a_command_in_a_group_is_idempotent() {
+        // Inside one group: the retry of a result gets the winner, and a second release does nothing.
+        let mut s = with_responders(&[1, 2]);
+        let outcomes = s.apply_group(
+            2,
+            &CommandGroup(vec![
+                proposal(1, 1, Some(1)),
+                proposal(1, 2, Some(2)),
+                release(1, 1),
+                release(1, 1),
+            ]),
+        );
+        let Outcome::Committed(winner) = &outcomes[0] else {
+            panic!("the first proposal must commit");
+        };
+        assert_eq!(outcomes[1], Outcome::Duplicate(winner.clone()));
+        assert_eq!(s.counters().released, 1);
+        assert_eq!(s.free_responders().len(), 2);
+
+        // The whole group again, as after a leader change: nothing moves.
+        let (results, free) = (s.result_count(), s.free_responders());
+        let again = s.apply_group(
+            3,
+            &CommandGroup(vec![proposal(1, 1, Some(1)), release(1, 1)]),
+        );
+        assert_eq!(again[0], Outcome::Duplicate(winner.clone()));
+        assert_eq!(s.result_count(), results);
+        assert_eq!(s.free_responders(), free);
+        assert_eq!(s.counters().committed, 1);
+        assert_eq!(s.counters().released, 1);
     }
 
     #[test]

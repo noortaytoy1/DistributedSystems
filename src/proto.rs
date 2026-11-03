@@ -224,7 +224,13 @@ impl Plan {
 // Raft log
 // ---------------------------------------------------------------------------------------------
 
-/// Payload of a Raft log entry.
+/// Payload of a Raft log entry: the commands that waited together share one entry, so one disk
+/// save and one replication round cover all of them (D133). Applied in order at the entry's log
+/// index. A group holds [`Command`]s and is not one itself, so groups cannot nest.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CommandGroup(pub Vec<Command>);
+
+/// One thing the replicated state can be told to do.
 ///
 /// Every variant must be idempotent: applying the same command twice must leave the state as
 /// if it was applied once, because a proposal can be retried after a leader change.
@@ -289,7 +295,7 @@ pub struct CommittedResult {
     pub age_ms: u64,
     /// When the executor made the plan: unix milliseconds on its clock (D144).
     pub assigned_at_ms: u64,
-    /// Raft log index the result was committed at.
+    /// Raft log index the result was committed at. Results of one [`CommandGroup`] share it.
     pub log_index: u64,
 }
 
@@ -421,7 +427,8 @@ pub const DEFAULT_INCIDENT_ROWS: u32 = 10;
 /// Most rows one reply carries: building them holds up applying the log (`StateReader::with`).
 pub const MAX_INCIDENT_ROWS: u32 = 20;
 
-/// What applying a [`Command`] produced. This is the Raft response type.
+/// What applying a [`Command`] produced. Raft answers a group with one of these per command, in
+/// the group's order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Outcome {
     /// This proposal was the first for its request and is now the result.
