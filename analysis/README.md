@@ -49,6 +49,9 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
 | Client model, and whether the client PCs were the limit (D181, D185) | `client_programs`, `client_users` (users the programs say they ran), `users_per_program`, `client_programs_failed`, `client_programs_stopped_early`, `client_scripts_with_no_totals`, `client_link_down`, `client_link_down_<reason>`, `client_pc_cpu_busy_p95` (share of the PC's CPU, 0 to 1), `client_pc_mem_available_min_mb` |
 | Whether arrivals clump (D182) | `arrival_peak_100ms_share` over the measured time, `arrival_peak_100ms_share_first_s` for the first second of the run, `arrival_peak_100ms_share_after_fault`. Even arrivals read 0.1, and all together 1 |
+| The UDP client path (D172): what it carried | `udp_requests_per_req`, `udp_cancels_per_req`, `udp_datagrams_per_req`. Cancels are outside the `msgs_` figures, which count what nodes send |
+| The UDP client path: what it lost | `udp_request_loss_share`, `udp_cancel_loss_share`, `udp_send_lost`, `udp_queue_full`, `udp_bad`, and `udp_gate_dropped` for reports a silenced node dropped |
+| The UDP receive buffer (D171) | `udp_rcvbuf_got_min_bytes`, `udp_drops_nodes`, `udp_drops_client_pc_max`. `analyze.py` prints a warning for a capped buffer or any drops. Each lost copy can cost a client a 2 s retry |
 
 **Runs left out (D186).** `summarise` names a run on screen and does not average it in if:
 

@@ -62,13 +62,19 @@ fn run(command: &mut Command) {
     assert!(status.success(), "{command:?}: {status}");
 }
 
-/// Free ports on loopback, all different: each is held until all are chosen.
+/// Free ports on loopback, all different: each is held until all are chosen. A node's client port
+/// takes its number on TCP and UDP (D168), so a number must be free on both.
 fn free_ports(n: usize) -> Vec<u16> {
-    let held: Vec<_> = (0..n)
-        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
-        .collect();
+    let mut held = Vec::new();
+    while held.len() < n {
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        if let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) {
+            held.push((tcp, udp));
+        }
+    }
     held.iter()
-        .map(|l| l.local_addr().unwrap().port())
+        .map(|(tcp, _)| tcp.local_addr().unwrap().port())
         .collect()
 }
 

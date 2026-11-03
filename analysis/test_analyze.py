@@ -55,6 +55,15 @@ def election(at_s, round_number, victim, ms, called, election_us):
     }
 
 
+def udp_counters(ts_us, udp_drops=None, **counts):
+    fields = {"rx_datagrams": 0, "rx_bytes": 0, "rx_max_bytes": 900, "rx_bad": 0, "rx_foreign": 0,
+              "rx_requests": 0, "rx_cancels": 0, "rx_gate_dropped": 0, "rx_queue_full": 0,
+              "channels_opened": 0, "tx_datagrams": 0, "tx_bytes": 0, "tx_max_bytes": 900,
+              "tx_requests": 0, "tx_cancels": 0, "tx_replies": 0, "tx_would_block": 0,
+              "tx_encode_errors": 0, "tx_errors": 0}
+    return {"ts_us": ts_us, "ev": "udp_counters", "udp_drops": udp_drops, **fields, **counts}
+
+
 def synthetic_run():
     client = [{"ts_us": T0, "ev": "client_sent", "request": request(0), "attempt": 0}]
     client.append(done(1, 999, 1))  # inside the 2 s warm-up: dropped
@@ -115,6 +124,22 @@ def synthetic_run():
          "responder": 1, "winner_responder": None, "winner_executor": None},
         election(3, 1, 2, 5000, False, 700),
         election(5, 3, None, None, False, None),  # missed a bid, so it never knew it had won
+    ]
+    client += [
+        udp_counters(T0 + 2 * S, tx_requests=30, tx_cancels=20, tx_datagrams=50, udp_drops=7),
+        udp_counters(T0 + 8 * S, tx_requests=63, tx_cancels=42, tx_datagrams=105, tx_would_block=1,
+                     udp_drops=9),
+        # The last line, as a client stops, has no drop count: it must not end up as a zero.
+        udp_counters(T0 + 9 * S, tx_requests=63, tx_cancels=42, tx_datagrams=105, tx_would_block=1),
+        {"ts_us": T0, "ev": "udp_socket", "local_addr": "0.0.0.0:1", "rcvbuf_asked_bytes": 8388608,
+         "rcvbuf_got_bytes": 16777216},
+    ]
+    node1 += [
+        udp_counters(T0 + 2 * S, rx_requests=10, rx_cancels=8, tx_datagrams=5, udp_drops=100),
+        udp_counters(T0 + 8 * S, rx_requests=40, rx_cancels=28, tx_datagrams=16, rx_gate_dropped=3,
+                     rx_queue_full=2, rx_bad=1, udp_drops=105),
+        {"ts_us": T0, "ev": "udp_socket", "local_addr": "10.0.0.11:8001", "rcvbuf_asked_bytes": 8388608,
+         "rcvbuf_got_bytes": 425984},
     ]
     return {"client-1": client, "node-1": node1, "node-2": node2, "node-3": node3}
 
@@ -431,6 +456,41 @@ class OneRun(unittest.TestCase):
     def test_a_run_the_runner_set_aside_is_not_read(self):
         write_run(self.root / "dropped" / "e9-synthetic-run-2", synthetic_run(), 2)
         self.assertEqual(analyze.summarise(self.root)[("e9", "synthetic")]["mean_ms"][2], 1)
+
+    def test_udp_traffic_per_answered_request_includes_the_cancels(self):
+        # 11 answered. Differences: 33 calls and 22 cancels sent, 55 + 11 datagrams both ways.
+        self.assertAlmostEqual(self.m["udp_requests_per_req"], 3.0)
+        self.assertAlmostEqual(self.m["udp_cancels_per_req"], 2.0)
+        self.assertAlmostEqual(self.m["udp_datagrams_per_req"], 6.0)
+
+    def test_udp_losses_and_drops(self):
+        self.assertAlmostEqual(self.m["udp_request_loss_share"], 1 - 30 / 33)
+        self.assertAlmostEqual(self.m["udp_cancel_loss_share"], 1 - 20 / 22)
+        self.assertEqual(self.m["udp_gate_dropped"], 3)
+        self.assertEqual(self.m["udp_queue_full"], 2)
+        self.assertEqual(self.m["udp_bad"], 1)
+        self.assertEqual(self.m["udp_send_lost"], 1)
+        self.assertEqual(self.m["udp_drops_nodes"], 5)
+        self.assertEqual(self.m["udp_drops_client_pc_max"], 2)
+        self.assertEqual(self.m["udp_rcvbuf_got_min_bytes"], 425984)
+
+    def test_a_cell_short_of_udp_buffer_gets_a_warning(self):
+        warnings = analyze.udp_warnings({("e1", "c"): {
+            "udp_rcvbuf_got_min_bytes": (425984, float("nan"), 1),
+            "udp_drops_nodes": (5.0, float("nan"), 1),
+            "udp_drops_client_pc_max": (0.0, float("nan"), 1),
+        }})
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("rmem_max", warnings[0])
+        self.assertIn("udp_drops_nodes", warnings[1])
+        clean = {"udp_rcvbuf_got_min_bytes": (16777216, float("nan"), 1),
+                 "udp_drops_nodes": (0.0, float("nan"), 1)}
+        self.assertEqual(analyze.udp_warnings({("e1", "c"): clean}), [])
+        # An older log has none of these.
+        self.assertEqual(analyze.udp_warnings({("e1", "old"): {}}), [])
+
+    def test_a_log_from_before_the_udp_path_still_reads(self):
+        self.assertEqual(analyze.udp_metrics({"client-1": [], "node-1": []}, 0, 5), {})
 
     def test_a_whole_tree_gives_a_csv_and_an_interval_across_runs(self):
         slower = synthetic_run()

@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::fs;
-use std::net::TcpListener;
+use std::net::{TcpListener, UdpSocket};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
@@ -329,11 +329,17 @@ impl Lab {
             }
         }
 
-        // Held until all are read, so no two ports come out the same.
-        let held: Vec<_> = (0..6)
-            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
-            .collect();
-        let port = |i: usize| held[i].local_addr().unwrap().port();
+        // Held until all are read, so no two ports come out the same. A node's client port takes its
+        // number on TCP and UDP (D168), so a number must be free on both.
+        let mut held = Vec::new();
+        while held.len() < 6 {
+            let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+            let number = tcp.local_addr().unwrap().port();
+            if let Ok(udp) = UdpSocket::bind(("127.0.0.1", number)) {
+                held.push((tcp, udp));
+            }
+        }
+        let port = |i: usize| held[i].0.local_addr().unwrap().port();
         let hosts = format!(
             "node 1 127.0.0.1 pc1 {} {}\nnode 2 127.0.0.1 pc2 {} {}\nnode 3 127.0.0.1 pc3 {} {}\n\
              client 1 127.0.0.1 pc4\nclient 2 127.0.0.1 pc5\nclient 3 127.0.0.1 pc6\n",

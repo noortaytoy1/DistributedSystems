@@ -16,7 +16,7 @@ use rescuemesh::campus;
 use rescuemesh::client::{MeshClient, Submitted};
 use rescuemesh::config::{AssignmentPolicy, Config};
 use rescuemesh::metrics::{EventLog, now_us};
-use rescuemesh::proto::NodeId;
+use rescuemesh::proto::{NodeId, UserId};
 use rescuemesh::raft::Role;
 
 /// Only ever reached by a failing test.
@@ -82,7 +82,8 @@ async fn ready_cluster() -> (TestCluster, NodeId) {
 }
 
 async fn report(client: &MeshClient, cluster: &TestCluster) -> Submitted {
-    let incident = campus::unseeded_incident(&cluster.config.campus, now_us() / 1000);
+    let owner = UserId { client: 7, user: 0 };
+    let incident = campus::unseeded_incident(&cluster.config.campus, owner, now_us() / 1000);
     client.submit(incident).await.unwrap()
 }
 

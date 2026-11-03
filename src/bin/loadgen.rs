@@ -31,7 +31,7 @@ use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
 use rescuemesh::client::{ClientError, MeshClient, Submitted};
 use rescuemesh::config::{CampusConfig, Config};
-use rescuemesh::metrics::{self, Event, EventLog, now_ms, now_us};
+use rescuemesh::metrics::{self, Event, EventLog, now_ms};
 use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
