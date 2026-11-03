@@ -122,6 +122,9 @@ pub struct LogWork {
     pub answered_us: u64,
     /// Proposals in the queue now.
     pub waiting: usize,
+    /// Writes to the log file that waited for the disk, and the time they took. Both cumulative.
+    pub saves: u64,
+    pub save_us: u64,
 }
 
 /// What node code needs from consensus.
@@ -561,6 +564,8 @@ impl Consensus for RaftNode {
             answered: stats.answered.load(Ordering::Relaxed),
             answered_us: stats.answered_us.load(Ordering::Relaxed),
             waiting: stats.waiting.load(Ordering::Relaxed),
+            saves: self.log_stats.syncs.load(Ordering::Relaxed),
+            save_us: self.log_stats.sync_us.load(Ordering::Relaxed),
         }
     }
 

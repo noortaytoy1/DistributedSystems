@@ -100,12 +100,14 @@ pub enum Event {
     },
     /// This Raft leader found itself overloaded and went quiet, so that a normal vote picks a new
     /// leader (D218). All from the last second: `score` is its own mean bid, `log_wait_us` the mean
-    /// time its log took per proposal, `load` what the rule compared (the score, or the log wait if
-    /// that is over its floor and higher), and `peer_scores` the peers' mean bids.
+    /// time its log took per proposal, `save_us` its mean disk save, `load` what the rule compared
+    /// (the score, or the log wait if that is over its bar and higher), and `peer_scores` the peers'
+    /// mean bids.
     LeaderSteppedAside {
         term: u64,
         score: u64,
         log_wait_us: u64,
+        save_us: u64,
         load: u64,
         peer_scores: BTreeMap<NodeId, u64>,
     },
@@ -845,6 +847,7 @@ mod tests {
             term: 4,
             score: 9_000,
             log_wait_us: 12_000,
+            save_us: 3_000,
             load: 9_000,
             peer_scores: BTreeMap::from([(2, 1_500), (3, 2_000)]),
         };
@@ -853,6 +856,7 @@ mod tests {
         assert!(text.contains(r#""term":4"#), "{text}");
         assert!(text.contains(r#""score":9000"#), "{text}");
         assert!(text.contains(r#""log_wait_us":12000"#), "{text}");
+        assert!(text.contains(r#""save_us":3000"#), "{text}");
         assert!(text.contains(r#""load":9000"#), "{text}");
         assert!(
             text.contains(r#""peer_scores":{"2":1500,"3":2000}"#),

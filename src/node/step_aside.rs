@@ -3,8 +3,9 @@
 //! Every result passes through the Raft leader, so an overloaded leader machine slows every commit,
 //! and the bid can move planning away from it but not the ordering. Once a second the leader looks
 //! at the last second. Its load is its mean bid, or the mean time its log took per proposal if that
-//! is over [`LOG_WAIT_FLOOR`] and higher: the bid sees planning, and the log wait sees a machine too
-//! busy to keep the log, which the bid can miss. A leader whose load has stayed at least
+//! is higher and over the bar in [`LogReading::is_slow`]. The bid sees planning, and bids even out,
+//! because a loaded node loses rounds. The log wait sees a machine too busy to keep the log, which
+//! the bid can miss (the numbers are in D218). A leader whose load has stayed at least
 //! `policy.leader_overload_ratio` times its lowest peer's mean bid for
 //! `policy.leader_overload_for_ms`, and above a small floor, goes quiet if it is safe to. Safe means
 //! it is serving and not degraded and not silenced, it has all members in its group view and suspects
@@ -54,10 +55,15 @@ pub const QUIET_LIMIT: Duration = Duration::from_secs(3);
 /// How often a quiet leader looks for a higher term.
 const WATCH_INTERVAL: Duration = Duration::from_millis(20);
 
-/// A mean log wait at or below this says nothing about the leader. A healthy log takes tens of
-/// milliseconds, because it is one disk save and one round to a follower, and grouping keeps that
-/// nearly flat under load (D133). See D218 for the numbers this was chosen from.
-pub const LOG_WAIT_FLOOR: Duration = Duration::from_millis(100);
+/// A mean log wait at or below this never counts. A healthy log takes about 9 ms at 300 users and
+/// 24 ms at 3000 on one PC, because grouping keeps it nearly flat under load (D133, D218).
+const LOG_WAIT_FLOOR: Duration = Duration::from_millis(40);
+
+/// Nor does one at or below this many of this node's own disk saves. A write is a save here and a
+/// save on a follower, and a proposal waits for about one and a half writes, so a healthy wait is 3
+/// to 4.3 saves on any disk (3.1 and 4.3 measured, D218). On a slow disk of 25 ms the bar is 125 ms,
+/// so a slow disk cannot pass for a busy leader, and moving the leader would not cure it anyway.
+const LOG_WAIT_SAVES: u64 = 5;
 
 /// A node at or below this score is never overloaded, so that tiny numbers on an idle cluster cannot
 /// make a large ratio. In the score's own unit: 1 ms of expected wait, jobs or permille of CPU.
@@ -82,29 +88,48 @@ fn overloaded(load: u64, peer_scores: &[u64], ratio: u64, floor: u64) -> bool {
     load >= ratio.saturating_mul(lowest)
 }
 
-/// What the rule compares with the peers' bids: this node's bid, or how long its log is taking if
-/// that is over `LOG_WAIT_FLOOR` and higher. Only a score that is itself a time can be compared with
-/// a time, so a score counted in jobs or in permille of CPU is left as it is.
-fn leader_load(score: u64, log_wait_us: u64, kind: ScoreName) -> u64 {
-    let same_unit = matches!(kind, ScoreName::ExpectedWait | ScoreName::ExpectedWaitCpu);
-    if same_unit && log_wait_us > LOG_WAIT_FLOOR.as_micros() as u64 {
-        score.max(log_wait_us)
-    } else {
-        score
+/// What this node's log did in one reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogReading {
+    /// The mean time per proposal, from entering the queue to being answered.
+    wait_us: u64,
+    /// The mean disk save.
+    save_us: u64,
+}
+
+impl LogReading {
+    /// Between two readings of the log's counters, `over` apart. A reading with proposals waiting
+    /// and none answered took at least all of `over`: without this, a leader too slow to finish one
+    /// write in a second would have no log wait at all.
+    fn between(before: LogWork, now: LogWork, over: Duration) -> Self {
+        let answered = now.answered.saturating_sub(before.answered);
+        let wait_us = if answered > 0 {
+            now.answered_us.saturating_sub(before.answered_us) / answered
+        } else if now.waiting > 0 {
+            over.as_micros() as u64
+        } else {
+            0
+        };
+        let saves = now.saves.saturating_sub(before.saves);
+        let save_us = now.save_us.saturating_sub(before.save_us) / saves.max(1);
+        Self { wait_us, save_us }
+    }
+
+    fn is_slow(&self) -> bool {
+        let bar = self.save_us.saturating_mul(LOG_WAIT_SAVES);
+        self.wait_us > bar.max(LOG_WAIT_FLOOR.as_micros() as u64)
     }
 }
 
-/// The mean time per proposal between two readings of the log's counters, `over` apart. A reading
-/// with proposals waiting and none answered took at least all of `over`: without this, a leader too
-/// slow to finish one write in a second would have no log wait at all.
-fn mean_log_wait_us(before: LogWork, now: LogWork, over: Duration) -> u64 {
-    let answered = now.answered.saturating_sub(before.answered);
-    if answered > 0 {
-        now.answered_us.saturating_sub(before.answered_us) / answered
-    } else if now.waiting > 0 {
-        over.as_micros() as u64
+/// What the rule compares with the peers' bids: this node's bid, or how long its log is taking if
+/// that is slow and higher. Only a score that is itself a time can be compared with a time, so a
+/// score counted in jobs or in permille of CPU is left as it is.
+fn leader_load(score: u64, log: LogReading, kind: ScoreName) -> u64 {
+    let same_unit = matches!(kind, ScoreName::ExpectedWait | ScoreName::ExpectedWaitCpu);
+    if same_unit && log.is_slow() {
+        score.max(log.wait_us)
     } else {
-        0
+        score
     }
 }
 
@@ -232,7 +257,7 @@ async fn run(ctx: Arc<NodeContext>, policy: Policy) {
         tick.tick().await;
         let scores = ctx.bids.take_mean_scores();
         let work = ctx.consensus.log_work();
-        let log_wait_us = mean_log_wait_us(last_work, work, CHECK_INTERVAL);
+        let log = LogReading::between(last_work, work, CHECK_INTERVAL);
         last_work = work;
         let status = ctx.consensus.status();
         let now = Instant::now();
@@ -248,19 +273,19 @@ async fn run(ctx: Arc<NodeContext>, policy: Policy) {
         );
         let over = split_scores(ctx.id, &peers, &scores).filter(|(score, peer_scores)| {
             let peer_scores: Vec<u64> = peer_scores.values().copied().collect();
-            let load = leader_load(*score, log_wait_us, kind);
+            let load = leader_load(*score, log, kind);
             safe.holds(cooldown) && overloaded(load, &peer_scores, ratio, floor)
         });
         let held_long_enough = in_a_row.observe(over.is_some(), wanted, now);
         let (true, Some((score, peer_scores))) = (held_long_enough, over) else {
             continue;
         };
-        let load = leader_load(score, log_wait_us, kind);
+        let load = leader_load(score, log, kind);
         tracing::info!(
             node = ctx.id,
             term,
             score,
-            log_wait_us,
+            ?log,
             load,
             ?peer_scores,
             "overloaded: going quiet"
@@ -268,7 +293,8 @@ async fn run(ctx: Arc<NodeContext>, policy: Policy) {
         ctx.log.log(Event::LeaderSteppedAside {
             term,
             score,
-            log_wait_us,
+            log_wait_us: log.wait_us,
+            save_us: log.save_us,
             load,
             peer_scores,
         });
@@ -427,35 +453,51 @@ mod tests {
         assert!(overloaded(u64::MAX, &[u64::MAX], RATIO, FLOOR));
     }
 
+    fn log(wait_us: u64, save_us: u64) -> LogReading {
+        LogReading { wait_us, save_us }
+    }
+
     #[test]
-    fn a_slow_log_counts_only_over_its_floor_and_only_for_a_score_that_is_a_time() {
+    fn a_slow_log_counts_only_over_its_bar_and_only_for_a_score_that_is_a_time() {
         let floor = LOG_WAIT_FLOOR.as_micros() as u64;
         // A healthy log: the bid alone decides.
-        assert_eq!(leader_load(2_000, floor, ScoreName::ExpectedWait), 2_000);
+        let healthy = log(floor, 2_800);
+        assert_eq!(leader_load(2_000, healthy, ScoreName::ExpectedWait), 2_000);
         // A slow log on a leader whose bids look fine.
+        let slow = log(floor + 1, 2_800);
+        assert_eq!(leader_load(2_000, slow, ScoreName::ExpectedWait), floor + 1);
         assert_eq!(
-            leader_load(2_000, floor + 1, ScoreName::ExpectedWait),
-            floor + 1
-        );
-        assert_eq!(
-            leader_load(2_000, floor + 1, ScoreName::ExpectedWaitCpu),
+            leader_load(2_000, slow, ScoreName::ExpectedWaitCpu),
             floor + 1
         );
         // The higher of the two.
         assert_eq!(
-            leader_load(9 * floor, floor + 1, ScoreName::ExpectedWait),
+            leader_load(9 * floor, slow, ScoreName::ExpectedWait),
             9 * floor
         );
         // Jobs and permille are not microseconds.
-        assert_eq!(leader_load(5, floor + 1, ScoreName::QueueOnly), 5);
-        assert_eq!(leader_load(700, floor + 1, ScoreName::CpuOnly), 700);
+        assert_eq!(leader_load(5, slow, ScoreName::QueueOnly), 5);
+        assert_eq!(leader_load(700, slow, ScoreName::CpuOnly), 700);
+    }
+
+    /// The numbers measured on one PC, and a slow disk worked out from them (D218).
+    #[test]
+    fn a_slow_disk_is_not_a_slow_log_and_a_starved_leader_is() {
+        // 300 users, then 3000 users.
+        assert!(!log(8_800, 2_800).is_slow());
+        assert!(!log(24_400, 5_700).is_slow());
+        // 25 ms a save: a wait of 3.1 and 4.3 saves.
+        assert!(!log(77_500, 25_000).is_slow());
+        assert!(!log(107_500, 25_000).is_slow());
+        assert!(log(125_001, 25_000).is_slow());
+        // A starved leader, the mildest second that was measured.
+        assert!(log(44_600, 6_500).is_slow());
     }
 
     /// This is what the log wait is for: bids even, and a leader that cannot keep the log.
     #[test]
     fn a_slow_log_is_overloaded_against_idle_peers_but_not_against_busy_ones() {
-        let slow_log = 300_000;
-        let load = leader_load(2_000, slow_log, ScoreName::ExpectedWait);
+        let load = leader_load(2_000, log(300_000, 9_000), ScoreName::ExpectedWait);
         assert!(overloaded(load, &[2_000, 2_500], RATIO, FLOOR));
         assert!(!overloaded(2_000, &[2_000, 2_500], RATIO, FLOOR));
         // Everyone is overloaded, so moving the leader would help nobody.
@@ -463,20 +505,26 @@ mod tests {
     }
 
     #[test]
-    fn the_mean_log_wait_is_of_this_reading_only() {
-        let at = |answered, answered_us, waiting| LogWork {
+    fn a_log_reading_is_of_this_second_only() {
+        let at = |answered, answered_us, waiting, saves, save_us| LogWork {
             answered,
             answered_us,
             waiting,
+            saves,
+            save_us,
         };
         let over = Duration::from_secs(1);
-        assert_eq!(mean_log_wait_us(at(10, 500, 0), at(14, 900, 0), over), 100);
+        let before = at(10, 500, 0, 4, 80);
+        assert_eq!(
+            LogReading::between(before, at(14, 900, 0, 6, 180), over),
+            log(100, 50)
+        );
         // Nothing asked for.
-        assert_eq!(mean_log_wait_us(at(10, 500, 0), at(10, 500, 0), over), 0);
+        assert_eq!(LogReading::between(before, before, over), log(0, 0));
         // Waiting and nothing answered: at least the whole reading.
         assert_eq!(
-            mean_log_wait_us(at(10, 500, 0), at(10, 500, 7), over),
-            1_000_000
+            LogReading::between(before, at(10, 500, 7, 4, 80), over),
+            log(1_000_000, 0)
         );
     }
 
@@ -704,6 +752,7 @@ mod tests {
                     ctx.bids.saw_bid(2, 2_000);
                     ctx.bids.saw_bid(3, 2_000);
                     fake.add_log_work(1, 300_000, 0);
+                    fake.add_saves(1, 3_000);
                 }
             })
         };
@@ -722,6 +771,7 @@ mod tests {
             .expect("logged");
         assert_eq!(aside["score"], 2_000);
         assert_eq!(aside["log_wait_us"], 300_000);
+        assert_eq!(aside["save_us"], 3_000);
         assert_eq!(aside["load"], 300_000);
         let _ = std::fs::remove_dir_all(dir);
     }

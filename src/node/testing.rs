@@ -104,6 +104,13 @@ impl ScriptedConsensus {
         work.waiting = waiting;
     }
 
+    /// Adds disk saves, as if the log file had been written.
+    pub(crate) fn add_saves(&self, saves: u64, each_us: u64) {
+        let mut work = lock(&self.log_work);
+        work.saves += saves;
+        work.save_us += saves * each_us;
+    }
+
     /// What the last `set_quiet` said.
     pub(crate) fn is_quiet(&self) -> bool {
         self.quiet.load(Ordering::SeqCst)

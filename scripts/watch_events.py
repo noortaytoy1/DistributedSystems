@@ -51,7 +51,7 @@ def rare(e):
         peers = ", ".join(f"node {k} bids {v}" for k, v in sorted(e.get("peer_scores", {}).items()))
         return (
             f"TOO BUSY TO LEAD term {e.get('term')}: my load is {e.get('load')} "
-            f"(my bid {e.get('score')}, my log takes {ms(e.get('log_wait_us'))}), and {peers}. "
+            f"(my bid {e.get('score')}, my log takes {ms(e.get('log_wait_us'))} with disk saves of {ms(e.get('save_us'))}), and {peers}. "
             "Going quiet, so a normal vote picks another leader"
         )
     if ev == "leader_step_aside_ended":
