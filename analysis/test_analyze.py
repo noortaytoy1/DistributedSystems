@@ -219,6 +219,31 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(metrics["client_gap_max_ms"], 3500.0)
         self.assertAlmostEqual(metrics["client_gap_mean_ms"], 3250.0)
 
+    def test_a_client_that_never_hears_again_counts_its_whole_silence(self):
+        def event(name, at_s):
+            return {"ts_us": T0 + int(at_s * S), "ev": name}
+
+        # Fault from 5 s to 7 s. The last answer is at 4 s, and the client tries until 30 s.
+        events = {"client-1": [event("client_done", 3), event("client_done", 4), event("client_sent", 6),
+                               event("client_gave_up", 30)]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 26000.0)
+
+    def test_a_client_that_never_heard_at_all_counts_the_whole_run(self):
+        events = {"client-1": [{"ts_us": T0 + 1 * S, "ev": "client_sent"}, {"ts_us": T0 + 9 * S, "ev": "client_gave_up"}]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 8000.0)
+
+    def test_the_ends_of_a_normal_run_add_no_gap(self):
+        def answer(at_s):
+            return {"ts_us": T0 + int(at_s * S), "ev": "client_done"}
+
+        # The waits before the first answer and after the last do not overlap this fault.
+        events = {"client-1": [{"ts_us": T0, "ev": "client_sent"}, answer(4), answer(5.5), answer(7.5),
+                               {"ts_us": T0 + 20 * S, "ev": "client_sent"}]}
+        metrics = analyze.client_gap_metrics(events, T0 + 5 * S, T0 + 7 * S)
+        self.assertAlmostEqual(metrics["client_gap_max_ms"], 2000.0)
+
     def test_a_run_with_a_fault_reports_the_client_gap(self):
         self.assertGreater(self.m["client_gap_max_ms"], 0)
 

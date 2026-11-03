@@ -213,12 +213,16 @@ def elections_after_rejoin(events):
 def client_gap_metrics(events, fault_start, fault_end):
     """E3's client-visible gap: for each client, the longest time between two answers, on its own
     clock, that overlaps the fault. This is what failover looks like from outside. Only choosing
-    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock."""
+    which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock.
+
+    The client's first and last events close the two ends. Without them a client that never hears
+    again after the fault has no gap at all, and the worst run of a cell drops out of its mean."""
     longest = []
     for source, es in events.items():
-        if not source.startswith("client-"):
+        if not source.startswith("client-") or not es:
             continue
-        answered = sorted(e["ts_us"] for e in es if e["ev"] == "client_done")
+        ends = [e["ts_us"] for e in es]
+        answered = sorted([e["ts_us"] for e in es if e["ev"] == "client_done"] + [min(ends), max(ends)])
         gaps = [b - a for a, b in zip(answered, answered[1:]) if a < fault_end and b > fault_start]
         if gaps:
             longest.append(max(gaps))
