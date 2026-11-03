@@ -134,60 +134,95 @@ async fn a_restarted_follower_keeps_its_log_and_catches_up_before_serving() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A node back from disk reads an empty state until it catches up. It must not take that for an
-/// empty campus and propose the list again (D164).
+/// A node back from disk can read an empty state until it hears from a leader, because a power cut
+/// can lose its saved commit index, which is not synced. It must not take that for an empty campus
+/// and propose the list while it is not serving (D164). Back alone it never catches up, so a
+/// proposal shows in its log as soon as it fails, and a report line is a second, many timeouts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_node_does_not_load_the_campus_again() {
+async fn a_restarted_node_proposes_no_campus_before_it_serves() {
     let dir = storage_dir("campus");
     let (storage, metrics) = (dir.join("raft"), dir.join("runs"));
-    let events = metrics.clone();
-    let mut cluster = TestCluster::start_with(3, move |c| {
+    let log_file = metrics.join("node-3.jsonl");
+    // No campus in the log, so the state still reads empty after the restart.
+    let cluster = TestCluster::start_with(3, move |c| {
+        c.campus.responders = 0;
         c.storage.dir = Some(storage);
         c.metrics.dir = Some(metrics);
     })
     .await;
     leader_everywhere(&cluster.nodes).await;
-    let config = cluster.config.clone();
-    // The commit also means the campus is in the log ahead of it, or the plan would name nobody.
-    wait_until(Duration::from_secs(5), "the campus on every node", || {
-        cluster.nodes.iter().all(|n| n.ctx.status().responders > 0)
+    let mut config = cluster.config.clone();
+    cluster.shutdown().await;
+
+    config.campus.responders = 30;
+    config.timers.propose_timeout_ms = 100;
+    let alone = restart(&config, 3).await;
+    let log = || {
+        alone.ctx.log.flush();
+        std::fs::read_to_string(&log_file).unwrap()
+    };
+    let reports = |text: &str| text.matches(r#""ev":"messages""#).count();
+    let before = reports(&log());
+    wait_until(Duration::from_secs(15), "two more report lines", || {
+        reports(&log()) >= before + 2
     })
     .await;
-    commit(&config, 1).await;
+    assert!(!alone.ctx.serving.load(Ordering::SeqCst));
+    assert!(!log().contains("register_responders"));
 
-    let leader = cluster.nodes[0].ctx.consensus.status().leader.unwrap();
-    let victim = (1..=3).find(|id| *id != leader).unwrap();
-    let at = cluster
-        .nodes
-        .iter()
-        .position(|n| n.ctx.id == victim)
-        .unwrap();
-    cluster.nodes.remove(at).shutdown().await;
-    let proposals = || {
-        std::fs::read_to_string(events.join(format!("node-{victim}.jsonl")))
-            .unwrap()
-            .lines()
-            .filter(|line| line.contains("register_responders"))
+    alone.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A node started before its peers cannot commit. Once it is degraded it stops proposing the campus,
+/// so a long wait does not fill its log with failures, and it loads the list when a peer comes up
+/// (D164). The first run here only finds three free addresses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lone_node_waits_for_a_peer_to_load_the_campus() {
+    let dir = storage_dir("lone");
+    let metrics = dir.clone();
+    let log_file = dir.join("node-3.jsonl");
+    let cluster = TestCluster::start_with(3, move |c| {
+        c.campus.responders = 0;
+        c.metrics.dir = Some(metrics);
+        c.timers.degraded_after_ms = 300;
+        c.timers.propose_timeout_ms = 100;
+    })
+    .await;
+    let mut config = cluster.config.clone();
+    cluster.shutdown().await;
+
+    config.campus.responders = 30;
+    let first = restart(&config, 3).await;
+    wait_until(Duration::from_secs(15), "the lone node to go degraded", || {
+        first.ctx.status().degraded
+    })
+    .await;
+    let log = || {
+        first.ctx.log.flush();
+        std::fs::read_to_string(&log_file).unwrap()
+    };
+    let failures = |text: &str| {
+        text.lines()
+            .filter(|line| line.contains("propose_failed") && line.contains("register_responders"))
             .count()
     };
-    let before = proposals();
-
-    let back = restart(&config, victim).await;
-    wait_until(Duration::from_secs(10), "serving again", || {
-        back.ctx.serving.load(Ordering::SeqCst)
+    let reports = |text: &str| text.matches(r#""ev":"messages""#).count();
+    let (failed, before) = (failures(&log()), reports(&log()));
+    wait_until(Duration::from_secs(15), "two more report lines", || {
+        reports(&log()) >= before + 2
     })
     .await;
-    // A later commit reaching this node gives a proposal made at start the time to come back.
-    let later = commit(&config, 2).await;
-    wait_until(Duration::from_secs(5), "the later commit here", || {
-        back.ctx.state.with(|s| s.last_index()) >= later
+    // One may have been under way as the node went degraded.
+    assert!(failures(&log()) <= failed + 1, "{}", log());
+
+    let second = restart(&config, 2).await;
+    wait_until(Duration::from_secs(15), "the campus on both nodes", || {
+        first.ctx.status().responders == 30 && second.ctx.status().responders == 30
     })
     .await;
-    back.ctx.log.flush();
-    assert_eq!(proposals(), before);
-
-    back.shutdown().await;
-    cluster.shutdown().await;
+    first.shutdown().await;
+    second.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
