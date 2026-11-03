@@ -255,6 +255,55 @@ pub enum Event {
         node: NodeId,
         reason: String,
     },
+    /// Once a second, from one program on each client PC: the whole PC's CPU and memory (D185). A
+    /// saturated client PC reads as cloud latency, so the analysis must be able to see it. The tick
+    /// counts are cumulative.
+    MachineUsage {
+        cpu_busy_ticks: Option<u64>,
+        cpu_total_ticks: Option<u64>,
+        mem_available_kb: Option<u64>,
+    },
+}
+
+/// The whole machine's CPU and memory, as a `machine_usage` event. Blocking file reads: run it off
+/// the async runtime. A file that cannot be read leaves its fields out. It lives here, not in
+/// `node/usage.rs`, so a load generator never has to reach into the node's code (D185).
+pub fn machine_usage() -> Event {
+    let file = |path| fs::read_to_string(path).ok();
+    let (cpu_busy_ticks, cpu_total_ticks) = file("/proc/stat")
+        .as_deref()
+        .and_then(parse_machine_cpu)
+        .unzip();
+    Event::MachineUsage {
+        cpu_busy_ticks,
+        cpu_total_ticks,
+        mem_available_kb: file("/proc/meminfo")
+            .as_deref()
+            .and_then(parse_mem_available_kb),
+    }
+}
+
+/// `(busy, total)` from the first line of `/proc/stat`: user, nice, system, idle, iowait, irq,
+/// softirq, steal. The guest fields after them are already counted in user and nice. A CPU waiting
+/// on the disk has nothing to do, so iowait counts as idle.
+fn parse_machine_cpu(stat: &str) -> Option<(u64, u64)> {
+    let mut fields = stat.lines().next()?.split_whitespace();
+    if fields.next()? != "cpu" {
+        return None;
+    }
+    let ticks: Vec<u64> = fields
+        .take(8)
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let total: u64 = ticks.iter().sum();
+    let idle = ticks.get(3)?.saturating_add(*ticks.get(4)?);
+    Some((total.saturating_sub(idle), total))
+}
+
+fn parse_mem_available_kb(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
 }
 
 #[derive(Serialize)]
@@ -536,5 +585,37 @@ mod tests {
         assert_eq!(sent["bid"], 2);
         assert_eq!(received["raft_vote"], 1);
         assert_eq!(received["bid"], 0);
+    }
+
+    #[test]
+    fn machine_cpu_comes_from_the_first_stat_line() {
+        // 100 + 5 + 20 busy, 800 + 50 idle, 3 + 2 + 1 busy, and guest fields that are not added.
+        let stat = "cpu  100 5 20 800 50 3 2 1 70 0\ncpu0 1 1 1 1 1 1 1 1 0 0\nintr 12345\n";
+        assert_eq!(parse_machine_cpu(stat), Some((131, 981)));
+        assert_eq!(parse_machine_cpu("cpu0 1 1 1 1\n"), None);
+        assert_eq!(parse_machine_cpu("cpu  1 x 1 1\n"), None);
+        assert_eq!(parse_machine_cpu(""), None);
+    }
+
+    #[test]
+    fn mem_available_comes_from_meminfo() {
+        let meminfo =
+            "MemTotal:       16000000 kB\nMemFree:  1000 kB\nMemAvailable:    8000000 kB\n";
+        assert_eq!(parse_mem_available_kb(meminfo), Some(8_000_000));
+        assert_eq!(parse_mem_available_kb("MemTotal: 1 kB\n"), None);
+    }
+
+    #[test]
+    fn machine_usage_keeps_its_field_names() {
+        let event = Event::MachineUsage {
+            cpu_busy_ticks: Some(1),
+            cpu_total_ticks: Some(2),
+            mem_available_kb: None,
+        };
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(text.contains(r#""ev":"machine_usage""#), "{text}");
+        assert!(text.contains(r#""cpu_busy_ticks":1"#), "{text}");
+        assert!(text.contains(r#""cpu_total_ticks":2"#), "{text}");
+        assert!(text.contains(r#""mem_available_kb":null"#), "{text}");
     }
 }
