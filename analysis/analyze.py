@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -29,11 +30,19 @@ PERCENTILES = (50, 95, 99)
 
 
 def read_events(run_dir):
-    """Every event in a run, by source name, each source's events in file order."""
+    """Every event in a run, by source name, each source's events in file order. A program killed in the
+    middle of a write leaves half a line at the end of its log: that one is dropped and named. A bad line
+    anywhere else is real damage, and raises."""
     events = {}
     for path in sorted(Path(run_dir).glob("*.jsonl")):
-        with open(path, encoding="utf-8") as lines:
-            events[path.stem] = [json.loads(line) for line in lines if line.strip()]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in text.split("\n") if line.strip()]
+        try:
+            json.loads(lines[-1] if lines else "null")
+        except json.JSONDecodeError:
+            print(f"{path}: dropped a half-written last line")
+            lines.pop()
+        events[path.stem] = [json.loads(line) for line in lines]
     return events
 
 
@@ -63,6 +72,18 @@ def latency_metrics(prefix, latencies_us):
     return metrics
 
 
+def program_start(source_events):
+    """When a program's clock started, which is what its warm-up counts from, or None if it never sent
+    anything. Its first send can come much later: up to two think times under `random`, which for a program
+    with one user would quietly shorten the measured time (D182). A log from before `client_started` has
+    only its first send to go on."""
+    sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
+    if not sent:
+        return None
+    started = [e["ts_us"] for e in source_events if e["ev"] == "client_started"]
+    return min(started or sent)
+
+
 def client_requests(events, warmup_s):
     """Each client's measured `client_done` and `client_gave_up` events: started after warm-up,
     judged on that client's own clock."""
@@ -70,15 +91,23 @@ def client_requests(events, warmup_s):
     for source, source_events in events.items():
         if not source.startswith("client-"):
             continue
-        sent = [e["ts_us"] for e in source_events if e["ev"] == "client_sent"]
-        if not sent:
+        started = program_start(source_events)
+        if started is None:
             continue
-        measure_from = min(sent) + warmup_s * 1_000_000
+        measure_from = started + warmup_s * 1_000_000
+        # A request gives up about 30 s after it starts, so one started in the warm-up gives up well inside
+        # the measured time. Its first send says when it started, as loadgen's own count has it.
+        first_sent = {
+            e["request"]["seq"]: e["ts_us"]
+            for e in source_events
+            if e["ev"] == "client_sent" and e["attempt"] == 0
+        }
         for e in source_events:
             if e["ev"] == "client_done" and e["ts_us"] - e["latency_us"] >= measure_from:
                 done.append(e)
-            elif e["ev"] == "client_gave_up" and e["ts_us"] >= measure_from:
-                gave_up.append(e)
+            elif e["ev"] == "client_gave_up":
+                if first_sent.get(e["request"]["seq"], e["ts_us"]) >= measure_from:
+                    gave_up.append(e)
     return done, gave_up
 
 
@@ -88,14 +117,9 @@ def node_events(events):
 
 def measured_start(events, warmup_s):
     """Roughly when measuring began, for node events: machines agree only as far as NTP does."""
-    sent = [
-        e["ts_us"]
-        for s, es in events.items()
-        if s.startswith("client-")
-        for e in es
-        if e["ev"] == "client_sent"
-    ]
-    return min(sent) + warmup_s * 1_000_000 if sent else 0
+    starts = [program_start(es) for s, es in events.items() if s.startswith("client-")]
+    starts = [start for start in starts if start is not None]
+    return min(starts) + warmup_s * 1_000_000 if starts else 0
 
 
 def request_metrics(events, warmup_s, measured_s):
@@ -498,6 +522,14 @@ def client_program_metrics(events, meta):
     metrics = {"client_programs": programs}
     if meta.get("users") and programs:
         metrics["users_per_program"] = meta["users"] / programs
+    users = [
+        e["users"]
+        for es in client_sources(events).values()
+        for e in es
+        if e["ev"] == "client_started"
+    ]
+    if users:
+        metrics["client_users"] = sum(users)
     drops = [
         e["reason"]
         for es in client_sources(events).values()
@@ -508,6 +540,24 @@ def client_program_metrics(events, meta):
     for reason in set(drops):
         metrics[f"client_link_down_{reason.replace(' ', '_')}"] = drops.count(reason)
     return metrics
+
+
+def client_script_metrics(run_dir):
+    """What each machine's start-users.sh printed about its programs (D183, D186). A program that dies
+    half way has still sent something, so only these lines show it: programs that failed, programs a
+    signal stopped early, and scripts with no totals at all, because they were killed themselves."""
+    failed = stopped_early = no_totals = 0
+    for path in Path(run_dir).glob("users-*.out"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        totals = re.findall(r"started \d+, failed (\d+)", text)
+        failed += sum(int(n) for n in totals)
+        no_totals += 0 if totals else 1
+        stopped_early += text.count("stopped by a signal")
+    return {
+        "client_programs_failed": failed,
+        "client_programs_stopped_early": stopped_early,
+        "client_scripts_with_no_totals": no_totals,
+    }
 
 
 def arrival_peak_share(times_us):
@@ -587,8 +637,10 @@ def analyse_run(run_dir):
     metrics.update(resource_metrics(events, start))
     metrics.update(commit_metrics(events, start))
     metrics.update(client_program_metrics(events, meta))
+    metrics.update(client_script_metrics(run_dir))
     metrics.update(arrival_metrics(events, start))
     metrics.update(client_pc_metrics(events, start))
+    metrics["node_logs"] = len(node_events(events))
     metrics["silenced_events"] = sum(
         1 for es in node_events(events).values() for e in es if e["ev"] == "silenced"
     )
@@ -596,12 +648,22 @@ def analyse_run(run_dir):
 
 
 def run_problem(meta, metrics):
-    """Why this run must not be averaged in, or None (D186). Missing programs mean less load than the
-    cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
+    """Why this run must not be averaged in, or None (D186). Missing or dead programs mean less load than
+    the cell says, and a fault that never fired would pass for a fault with no effect. A run.json from
     before the runner wrote these keys skips the checks."""
     expected = meta.get("client_programs_expected")
     if expected is not None and metrics["client_programs"] != expected:
         return f"{metrics['client_programs']} of {expected} client programs sent anything"
+    if meta.get("users") and metrics.get("client_users", meta["users"]) != meta["users"]:
+        return f"{metrics['client_users']} users ran, and the cell says {meta['users']}"
+    if metrics["client_programs_failed"]:
+        return f"{metrics['client_programs_failed']} client programs failed; see users-*.out"
+    if metrics["client_programs_stopped_early"]:
+        return f"a signal stopped {metrics['client_programs_stopped_early']} client programs early"
+    if metrics["client_scripts_with_no_totals"]:
+        return f"{metrics['client_scripts_with_no_totals']} start-users.sh runs never printed their totals"
+    if meta.get("nodes") and metrics["node_logs"] != meta["nodes"]:
+        return f"{metrics['node_logs']} of {meta['nodes']} node logs were copied"
     victim = meta.get("victim", "none")
     if victim != "none" and metrics["silenced_events"] == 0:
         return f"the cell silences its {victim}, and no node logged a silence"
@@ -623,7 +685,12 @@ def summarise(root):
     """{(experiment, cell): {metric: (mean, half_width, n)}} over every run under `root`."""
     per_cell = defaultdict(list)
     for meta_path in sorted(Path(root).glob("*/*/*/run.json")):
-        meta, metrics = analyse_run(meta_path.parent)
+        try:
+            meta, metrics = analyse_run(meta_path.parent)
+        except json.JSONDecodeError as error:
+            # One run with a damaged log must not cost the summary of every other run.
+            print(f"left out {meta_path.parent}: a log is damaged ({error})")
+            continue
         problem = run_problem(meta, metrics)
         if problem:
             print(f"left out {meta_path.parent}: {problem}")
@@ -633,7 +700,7 @@ def summarise(root):
     for key, runs in per_cell.items():
         names = sorted({name for run in runs for name in run})
         summary[key] = {
-            name: confidence_interval([run.get(name, float("nan")) for run in runs])
+            name: confidence_interval([run.get(name, missing_value(name)) for run in runs])
             for name in names
         }
     return summary
@@ -652,6 +719,12 @@ def expired_warnings(summary):
                 "check how the client stamps ages before trusting this cell"
             )
     return warnings
+
+
+def missing_value(name):
+    """What a run with no such metric counts as. A link-drop reason that did not happen in a run is 0 there,
+    and leaving that run out would average the reason over only the runs that had it."""
+    return 0 if name.startswith("client_link_down_") else float("nan")
 
 
 def write_csv(summary, path):

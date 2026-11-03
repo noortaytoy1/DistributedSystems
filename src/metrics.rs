@@ -300,6 +300,12 @@ pub enum Event {
     },
 
     // --- client (F)
+    /// A load program's clock starts, and its warm-up with it. Its first send can come up to two
+    /// think times later, as its pattern says, so that send cannot stand in for this (D182). `users`
+    /// is 0 in an open loop, which has none.
+    ClientStarted {
+        users: u32,
+    },
     ClientSent {
         request: RequestId,
         attempt: u32,

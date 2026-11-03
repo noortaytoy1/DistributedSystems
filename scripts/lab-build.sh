@@ -17,7 +17,8 @@ for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
   if [[ "$host" != local ]]; then
     on_host "$host" "git fetch origin && git checkout --detach $COMMIT"
   fi
-  on_host "$host" 'source "$HOME/.cargo/env" 2>/dev/null; cargo build --release --bins'
+  # Not `source`: a login shell can be dash, as ssh does not ask for bash.
+  on_host "$host" '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"; cargo build --release --bins'
   have=$(on_host "$host" 'git rev-parse HEAD')
   if [[ "$host" != local && "$have" != "$COMMIT" ]]; then
     echo "$host is at $have, not $COMMIT" >&2

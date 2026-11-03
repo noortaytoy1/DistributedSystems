@@ -479,6 +479,33 @@ class ClientPrograms(unittest.TestCase):
         self.assertEqual(m["client_programs"], 3)
         self.assertAlmostEqual(m["users_per_program"], 10.0)
 
+    def test_warm_up_counts_from_the_programs_start_and_not_its_first_send(self):
+        # A random pattern's only user waited 1.5 s before its first send. Warm-up is 2 s, on the program's
+        # clock, so a request sent 2.5 s in is measured. Counting from the first send would drop it.
+        started = {"ts_us": T0, "ev": "client_started", "users": 1}
+        client = [started, sent(int(1.5 * S)), done(1.5, 10, 1), sent(int(2.5 * S)), done(2.5, 10, 1)]
+        self.assertEqual(self.analyse("late", {"client-10000": client})["count"], 1)
+        # Without the event, the first send is all there is.
+        self.assertEqual(self.analyse("old", {"client-10000": client[1:]})["count"], 0)
+
+    def test_a_request_started_in_the_warm_up_does_not_count_when_it_gives_up_later(self):
+        def sent_as(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_sent", "request": request(seq), "attempt": 0}
+
+        def gave_up(seq, at_s):
+            return {"ts_us": T0 + at_s * S, "ev": "client_gave_up", "request": request(seq), "attempts": 6}
+
+        # Warm-up is 2 s. Request 1 starts in it, and request 2 after it. Both give up after it.
+        client = [sent_as(1, 0), sent_as(2, 3), gave_up(1, 30), gave_up(2, 33)]
+        self.assertEqual(self.analyse("gave-up", {"client-10000": client})["gave_up"], 1)
+
+    def test_users_that_do_not_add_up_to_the_cell_are_left_out(self):
+        program = {"ts_us": T0, "ev": "client_started", "users": 33}
+        m = self.analyse("users", {"client-10000": [program, sent(0)], "client-20000": [program, sent(0)]})
+        self.assertEqual(m["client_users"], 66)
+        self.assertIn("66 users ran", analyze.run_problem({"users": 100}, m))
+        self.assertIsNone(analyze.run_problem({"users": 66}, m))
+
     def test_a_run_missing_programs_is_left_out_of_the_summary(self):
         events = synthetic_run()
         write_run(self.root / "e9" / "whole" / "run-1", events, 1, client_programs_expected=1)
@@ -543,6 +570,73 @@ class ClientPrograms(unittest.TestCase):
         self.assertAlmostEqual(m["client_pc_mem_available_min_mb"], 4.0)
         # A run with no samples has no such metric: nothing pretends the PC was idle.
         self.assertNotIn("client_pc_cpu_busy_p95", self.analyse("none", {"client-1": [sent(0)]}))
+
+    def whole_run(self, name, run, script_output=None, **extra):
+        """A good run, with what one machine's start-users.sh printed, if anything."""
+        directory = self.root / "e9" / name / f"run-{run}"
+        write_run(directory, synthetic_run(), run, **extra)
+        if script_output is not None:
+            (directory / "users-1-0.out").write_text(script_output)
+        return directory
+
+    def test_a_program_that_died_half_way_is_left_out(self):
+        # It sent requests, so it counts among the programs that took part. Only the script knows.
+        self.whole_run("whole", 1, "machine 1 batch 0: started 1, failed 0\n", client_programs_expected=1)
+        died = self.whole_run("whole", 2, "machine 1 batch 0: client 10000 exited with status 137\n"
+                              "machine 1 batch 0: started 1, failed 1\n", client_programs_expected=1)
+        summary = analyze.summarise(self.root)
+        self.assertEqual(summary[("e9", "synthetic")]["mean_ms"][2], 1)
+        meta, m = analyze.analyse_run(died)
+        self.assertIn("1 client programs failed", analyze.run_problem(meta, m))
+
+    def test_programs_a_signal_stopped_early_are_left_out(self):
+        cut = self.whole_run("cut", 1, "stopped by a signal: requests still in flight are not counted\n"
+                             "machine 1 batch 0: stopped early\nmachine 1 batch 0: started 1, failed 0\n")
+        meta, m = analyze.analyse_run(cut)
+        self.assertIn("stopped 1 client programs early", analyze.run_problem(meta, m))
+
+    def test_a_node_log_that_was_not_copied_is_left_out(self):
+        # A machine lost at the end of a run: without its log, fairness would read as two nodes' share.
+        whole = self.whole_run("nodes", 1, nodes=3)
+        meta, m = analyze.analyse_run(whole)
+        self.assertIsNone(analyze.run_problem(meta, m))
+        (whole / "node-2.jsonl").unlink()
+        meta, m = analyze.analyse_run(whole)
+        self.assertIn("2 of 3 node logs", analyze.run_problem(meta, m))
+
+    def test_a_script_that_never_printed_totals_is_left_out(self):
+        killed = self.whole_run("killed", 1, "plan machine=1 batch=0 users=1 programs=1\n")
+        meta, m = analyze.analyse_run(killed)
+        self.assertIn("never printed their totals", analyze.run_problem(meta, m))
+
+    def test_half_a_last_line_is_dropped_and_the_run_still_reads(self):
+        directory = self.whole_run("torn", 1)
+        whole, _ = analyze.analyse_run(directory)
+        log = directory / "client-1.jsonl"
+        log.write_text(log.read_text() + '{"ts_us":17000,"src":"client-1","ev":"client_do')
+        again, m = analyze.analyse_run(directory)
+        self.assertEqual(whole, again)
+        self.assertIsNone(analyze.run_problem(again, m))
+
+    def test_a_damaged_log_leaves_only_its_own_run_out(self):
+        self.whole_run("whole", 1)
+        damaged = self.whole_run("whole", 2)
+        log = damaged / "client-1.jsonl"
+        lines = log.read_text().split("\n")
+        lines[0] = lines[0][:20]
+        log.write_text("\n".join(lines))
+        summary = analyze.summarise(self.root)
+        self.assertEqual(summary[("e9", "synthetic")]["mean_ms"][2], 1)
+
+    def test_a_link_drop_reason_counts_as_zero_in_a_run_that_did_not_have_it(self):
+        down = {"ts_us": T0, "ev": "client_link_down", "node": 1, "reason": "send failed"}
+        quiet = synthetic_run()
+        loud = synthetic_run()
+        loud["client-1"] = loud["client-1"] + [down, down]
+        write_run(self.root / "e9" / "s" / "run-1", quiet, 1)
+        write_run(self.root / "e9" / "s" / "run-2", loud, 2)
+        mean, _, runs = analyze.summarise(self.root)[("e9", "synthetic")]["client_link_down_send_failed"]
+        self.assertEqual((mean, runs), (1.0, 2))
 
 
 if __name__ == "__main__":

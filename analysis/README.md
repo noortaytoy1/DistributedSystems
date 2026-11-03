@@ -47,12 +47,22 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Incident priority (D148) | `priority_mean`, in priority points. 0 only for a refused report |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
 | Commit latency, planning cost | `commit_*`, `service_mean_us` |
-| Client model, and whether the client PCs were the limit (D181, D185) | `client_programs`, `users_per_program`, `client_link_down`, `client_link_down_<reason>`, `client_pc_cpu_busy_p95` (share of the PC's CPU, 0 to 1), `client_pc_mem_available_min_mb` |
+| Client model, and whether the client PCs were the limit (D181, D185) | `client_programs`, `client_users` (users the programs say they ran), `users_per_program`, `client_programs_failed`, `client_programs_stopped_early`, `client_scripts_with_no_totals`, `client_link_down`, `client_link_down_<reason>`, `client_pc_cpu_busy_p95` (share of the PC's CPU, 0 to 1), `client_pc_mem_available_min_mb` |
 | Whether arrivals clump (D182) | `arrival_peak_100ms_share` over the measured time, `arrival_peak_100ms_share_first_s` for the first second of the run, `arrival_peak_100ms_share_after_fault`. Even arrivals read 0.1, and all together 1 |
 
-**Runs left out (D186).** `summarise` names a run on screen and does not average it in if fewer programs sent
-anything than `run.json` expected, which means less load than the cell says, or if the cell has a victim and no
-node logged `silenced`, which means the fault never fired. A `run.json` without these keys skips the checks.
+**Runs left out (D186).** `summarise` names a run on screen and does not average it in if:
+
+- fewer programs sent anything than `run.json` expected, or the programs' users do not add up to the cell's, which
+  means less load than the cell says;
+- a machine's `users-*.out` says a program failed or a signal stopped programs early, or has no totals at all. A
+  program that dies half way has still sent something, so only those lines show it;
+- a node's log did not get copied, which would make fairness read as the other nodes' share;
+- the cell has a victim and no node logged `silenced`, which means the fault never fired;
+- a log has a line that cannot be read, other than half a line at its very end. A killed program leaves that half
+  line, so it is dropped and named, and the run still counts unless one of the rules above catches it.
+
+A `run.json` without the newer keys skips the check on program counts. A cell with a run left out has fewer runs
+behind its interval, shown in the `runs` column of `summary.csv`, and needs a rerun.
 
 ## Conventions
 
