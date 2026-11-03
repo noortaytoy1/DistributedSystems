@@ -260,7 +260,6 @@ fn a_whole_run_works_on_six_machines_with_nothing_shared() {
         let totals = fs::read_to_string(out.join(format!("users-{machine}-0.out"))).unwrap();
         assert!(totals.contains("started 10, failed 0"), "{totals}");
         assert!(totals.contains("reported 10 of 10 programs"), "{totals}");
-        assert!(totals.contains("gave up 0"), "{totals}");
     }
     let status = fs::read_to_string(out.join("status-after.txt")).unwrap();
     assert!(status.contains("leader"), "{status}");

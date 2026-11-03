@@ -22,7 +22,7 @@
 #   --seed-base X    default 0. Each program's seed is X + its client ID
 #   --out DIR        default runs/users. The programs' printed output goes to DIR/users-M-B.out
 #   --dry-run        print the plan and start nothing
-#   --stop           stop what is running as this machine and batch
+#   --stop           stop what is running as this machine and batch, also if the script itself was killed
 #
 # BIN says where the binaries are (default $CARGO_TARGET_DIR/release, or target/release). PID_DIR says
 # where the PID file goes (default runs-config, which the runner's stop_all reads).

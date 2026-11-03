@@ -12,8 +12,8 @@
 # run into an existing folder moves the old one to runs/old/ first.
 #
 # Run scripts/lab-build.sh first, so every machine has the same commit. WARMUP, MEASURED, GAP and REPS
-# override the profile's values, and PROGRAMS_PER_PC the 10 real programs on each client machine (D181).
-# A cell's first line says how to run it:
+# override the profile's values, PROGRAMS_PER_PC the 10 real programs on each client machine (D181), and
+# STOP_WAIT_S the 10 s it lets things stop. A cell's first line says how to run it:
 #   # run: users=300 think_ms=1000 victim=leader silence_ms=15000 skew_work=0 programs=10 pattern=steady
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -162,8 +162,10 @@ run_once() {
     "$experiment" "$rest" "$rep" "$PROFILE" "$WARMUP" "$MEASURED" "$COMMIT" \
     "$users" "$programs" "$expected" "$pattern" "$think" "$victim" >"$out/run.json"
 
+  # Nothing of ours runs now, so any PID file left is stale, and stop_all must not kill what that number
+  # has become since.
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do
-    on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config'
+    on_host "$host" 'rm -rf runs/current data/raft; mkdir -p runs/current runs-config; rm -f runs-config/*.pid runs-config/*.programs'
     copy_to "$host" "$config" runs-config/run.toml
   done
   for i in "${!NODE_IDS[@]}"; do
