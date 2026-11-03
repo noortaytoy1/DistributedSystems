@@ -147,7 +147,7 @@ First check the disk on each node machine, because every figure depends on a sta
 mkdir -p data/raft && dd if=/dev/zero of=data/raft/.t bs=512 count=1000 oflag=dsync && rm data/raft/.t
 ```
 
-`dd` prints how long 1000 synced writes took. Note the number for each node machine in the report. Then the same machines' `raft_io` lines give the real figure under load (D133).
+`dd` prints how long 1000 synced writes took. Note the number for each node machine in the report. Then the same machines' `raft_io` lines give the real figure under load (D133). Over about 15 ms a save the log reaches its limit at 3000 users, on any leader: commits take seconds with nothing wrong, and that is the disk (D228).
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick e1-300-bidding

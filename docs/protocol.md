@@ -255,7 +255,7 @@ A leader that stays overloaded goes quiet, and a normal vote picks another (D218
 - `leader_stepped_aside { term, score, write_us, log_wait_us, save_us, load, peer_scores }`: this leader went quiet. `score` is its mean bid in the last second, `write_us` the mean time one log write took, `log_wait_us` the mean time per proposal with the queue in it, which the rule does not read (D228), `save_us` its mean disk save, `load` what the rule compared, and `peer_scores` the peers' mean bids.
 - `leader_step_aside_ended { term, outcome, new_term, new_leader, waited_ms }`: `outcome` is `changed`, `re_elected`, `timed_out` or `stopped`, and `term` is the term it went quiet in.
 
-`raft_io` gains `answered` and `answered_us`, both cumulative: the proposals this node's queue answered, and the time they took from entering it.
+`raft_io` gains `answered` and `answered_us`, both cumulative: the proposals this node's queue answered, and the time they took from entering it. It also gains `writes_done` and `write_us`: the writes finished, and the time they took with no queueing in them, which is what the rule reads (D228).
 
 ## Timers
 
