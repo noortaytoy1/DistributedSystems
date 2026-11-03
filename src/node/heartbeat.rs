@@ -11,6 +11,10 @@
 //! silenced it is the one cut off, so it evaluates nothing; on restore the clock of every peer it
 //! was not already suspecting starts fresh (D151).
 //!
+//! The same loop keeps the group's member list up to date (group.rs, D153): a peer suspected
+//! without a break for `timers.degraded_after_ms` leaves it. Heartbeats themselves go to every
+//! configured peer, on the list or not, so a peer off the list can come back.
+//!
 //! Owner: C (faults and failover).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -112,15 +116,27 @@ impl Suspicion {
     pub fn suspected(&self) -> BTreeSet<NodeId> {
         self.suspected.keys().copied().collect()
     }
+
+    /// Every peer suspected without a break for at least `hold` at `now`, as of the last `update`.
+    /// Hearing from a peer ends its suspicion in `update`, so a blip starts the count over.
+    pub fn suspected_for(&self, hold: Duration, now: Instant) -> BTreeSet<NodeId> {
+        self.suspected
+            .iter()
+            .filter(|&(_, &since)| now.saturating_duration_since(since) >= hold)
+            .map(|(&peer, _)| peer)
+            .collect()
+    }
 }
 
-/// Start sending heartbeats to every peer.
+/// Start sending heartbeats to every peer, and keeping the group's member list up to date.
 pub fn spawn(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
     let ctx = ctx.clone();
     Some(tokio::spawn(async move {
         let interval = ctx.config.timers.peer_heartbeat();
+        let hold = ctx.config.timers.degraded_after();
         let peers: Vec<_> = ctx.peers.iter().cloned().collect();
         lock(&ctx.suspicion).reset(peers.iter().map(|p| p.peer()), Instant::now());
+        ctx.group.log_first_view();
         let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut was_silenced = false;
@@ -135,14 +151,10 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
                 lock(&ctx.suspicion).reset(peers.iter().map(|p| p.peer()), Instant::now());
             }
 
-            let term = ctx.consensus.status().term;
-            let answers = ctx
-                .peers
-                .broadcast(term, interval, || PeerBody::Heartbeat)
-                .await;
+            let answers = ctx.group.probe(interval, || PeerBody::Heartbeat).await;
 
             let now = Instant::now();
-            let changes = {
+            let (changes, left) = {
                 let mut s = lock(&ctx.suspicion);
                 for (peer, answer) in answers {
                     // Any answer, even StaleTerm, proves the peer is up.
@@ -150,11 +162,14 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> Option<JoinHandle<()>> {
                         s.heard_from(peer, now);
                     }
                 }
-                s.update(now)
+                let changes = s.update(now);
+                (changes, s.suspected_for(hold, now))
             };
             for change in changes {
                 log_change(&ctx, change);
             }
+            // Once per tick, so two peers changing together make one view.
+            ctx.group.update(&left);
         }
     }))
 }
@@ -277,5 +292,26 @@ mod tests {
             }]
         );
         assert_eq!(s.suspected(), BTreeSet::from([3]));
+    }
+
+    #[test]
+    fn suspected_for_counts_only_unbroken_suspicion() {
+        let t0 = Instant::now();
+        let hold = ms(2_000);
+        let mut s = Suspicion::new(BEAT, 3);
+        s.reset([2], t0);
+
+        // Suspected at 150 ms, so the hold is over at 2150 ms.
+        s.update(t0 + ms(150));
+        assert!(s.suspected_for(hold, t0 + ms(2_149)).is_empty());
+        assert_eq!(s.suspected_for(hold, t0 + ms(2_150)), BTreeSet::from([2]));
+
+        // Heard once: it is out at once, and the count starts over from the next suspicion.
+        s.heard_from(2, t0 + ms(2_200));
+        s.update(t0 + ms(2_200));
+        assert!(s.suspected_for(hold, t0 + ms(2_200)).is_empty());
+        s.update(t0 + ms(2_350));
+        assert!(s.suspected_for(hold, t0 + ms(4_349)).is_empty());
+        assert_eq!(s.suspected_for(hold, t0 + ms(4_350)), BTreeSet::from([2]));
     }
 }

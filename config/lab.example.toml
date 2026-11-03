@@ -19,6 +19,7 @@ client_addr = "10.0.0.13:8001"
 
 [timers]
 # Every peer suspected this long, and a serving node answers without a commit (D121).
+# One peer suspected this long leaves this node's group member list (D153).
 degraded_after_ms = 2000
 
 [policy]

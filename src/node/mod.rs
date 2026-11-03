@@ -14,6 +14,7 @@ pub mod bids;
 pub mod cpu;
 pub mod degraded;
 pub mod faults;
+pub mod group;
 pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
@@ -46,6 +47,7 @@ use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
 use bids::BidState;
 use degraded::DegradedState;
+use group::CloudGroup;
 use heartbeat::Suspicion;
 use transport::{ClientHandler, FaultGate, PeerHandler, PeerSet, ReplyTx};
 use workers::{Overloaded, WorkerPool};
@@ -65,6 +67,8 @@ pub struct NodeContext {
     pub state: StateReader,
     pub gate: FaultGate,
     pub peers: Arc<PeerSet>,
+    /// The cloud nodes as one group: this node's member list, and sends through it (group.rs).
+    pub group: Arc<CloudGroup>,
     pub workers: WorkerPool,
     pub log: EventLog,
     /// Peer liveness from heartbeats (heartbeat.rs).
@@ -103,6 +107,7 @@ impl NodeContext {
             silenced: self.gate.is_silenced(),
             serving: self.serving.load(Ordering::SeqCst),
             degraded: self.degraded.is_active(),
+            members: self.group.view().members.into_iter().collect(),
         }
     }
 }
@@ -197,12 +202,20 @@ pub async fn start_with(
     tasks.push(raft.spawn_watcher());
     tasks.push(raft.spawn_heartbeat_summary());
 
+    let group = Arc::new(CloudGroup::new(
+        id,
+        &config.cluster,
+        peers.clone(),
+        raft.clone(),
+        log.clone(),
+    ));
     let ctx = Arc::new(NodeContext {
         id,
         consensus: raft,
         state,
         gate: gate.clone(),
         peers,
+        group,
         workers: WorkerPool::new(config.workers.threads, config.workers.queue_capacity),
         log: log.clone(),
         suspicion: Mutex::new(Suspicion::new(

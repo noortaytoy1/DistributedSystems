@@ -410,23 +410,39 @@ impl PeerSet {
         self.peers.values()
     }
 
-    /// Group send: one copy of a message to every peer, sent at once, so a slow peer holds up
-    /// nobody else. Best effort, with no ordering across senders: a peer that misses a copy is
-    /// reported here and not retried (D126). Anything that must be agreed goes through Raft.
+    /// One copy of a message to every peer, sent at once, so a slow peer holds up nobody else.
+    /// Best effort, with no ordering across senders: a peer that misses a copy is reported here
+    /// and not retried (D126). Anything that must be agreed goes through Raft. The primitive under
+    /// `CloudGroup`, which is what the rest of a node sends through (D152).
     pub async fn broadcast(
         &self,
         term: Term,
         timeout: Duration,
         body: impl Fn() -> PeerBody,
     ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
-        let calls = self.peers.values().map(|peer| {
-            let envelope = PeerEnvelope {
-                from: self.me,
-                term,
-                body: body(),
-            };
-            async move { (peer.peer(), peer.call(envelope, timeout).await) }
-        });
+        self.broadcast_to(|_| true, term, timeout, body).await
+    }
+
+    /// [`broadcast`](Self::broadcast) to the peers `addressed` picks.
+    pub async fn broadcast_to(
+        &self,
+        addressed: impl Fn(NodeId) -> bool,
+        term: Term,
+        timeout: Duration,
+        body: impl Fn() -> PeerBody,
+    ) -> Vec<(NodeId, Result<PeerReply, TransportError>)> {
+        let calls = self
+            .peers
+            .values()
+            .filter(|peer| addressed(peer.peer()))
+            .map(|peer| {
+                let envelope = PeerEnvelope {
+                    from: self.me,
+                    term,
+                    body: body(),
+                };
+                async move { (peer.peer(), peer.call(envelope, timeout).await) }
+            });
         futures::future::join_all(calls).await
     }
 }
