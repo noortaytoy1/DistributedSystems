@@ -194,9 +194,11 @@ async fn a_lone_node_waits_for_a_peer_to_load_the_campus() {
 
     config.campus.responders = 30;
     let first = restart(&config, 3).await;
-    wait_until(Duration::from_secs(15), "the lone node to go degraded", || {
-        first.ctx.status().degraded
-    })
+    wait_until(
+        Duration::from_secs(15),
+        "the lone node to go degraded",
+        || first.ctx.status().degraded,
+    )
     .await;
     let log = || {
         first.ctx.log.flush();
