@@ -59,7 +59,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | A machine physically off comes back                        | Raft log and vote on disk, then the same catch-up as a silence           | built; rehearsed on one PC with a killed process behind a dropped link; **a real power cut is still to do** | D118, D137, D214 |
 | Remote invocation through a ready-made RPC                 | tarpc on both paths: `PeerRpc` between nodes, `ClientRpc` from clients, typed methods, no hand-written request and reply left | built | D119, D150, D167, D175, D176 |
 | Group communication                                        | The client middleware's send to all nodes is the group send, and the application does not know it happens. The cloud's who's-alive list (`CloudGroup`'s view) is the membership. Raft for total order | built | D126, D152–D155, D157, D210 |
-| Middleware and application kept apart, on both sides       | Section 4.3. Client side in the code today; the cloud side's file split is D156 | client side built; cloud file split planned | D156, D211 |
+| Middleware and application kept apart, on both sides       | Section 4.3. `src/middleware.rs` is the line, and `tests/layers.rs` fails if application code reaches past it | built | D156, D211 |
 | Cloud nodes are peers; client and server are roles per transaction | Section 3.1                                                     | built | D212 |
 | Clients send to the cloud over UDP                         | `submit` through tarpc on a small datagram adapter; `ctl` on tarpc over TCP. Noor's decision, reverses D17 | built; **only on loopback so far: real switches and network cards are untested, and no run has had the buffer raised** | D167, D168, D170, D171 |
 | A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
@@ -81,7 +81,7 @@ log. The test is whether one node decides for another, not whether any node is e
 | Who fails next | All three, by the draw | Nothing. It can be drawn like anyone | Ours | D158, D159 | `node/faults.rs` |
 | Loading the responders | Any serving node. No selection, because it is idempotent | Orders the entry | Ours | D164 | `node/mod.rs::spawn_campus_seeding` |
 | Answering alone | The lone node | Nothing | Ours | D120, D121 | `node/degraded.rs` |
-| A retry of a decided request | Any node, from its own copy | Nothing | Ours | D27 | `node/mod.rs::handle_request` |
+| A retry of a decided request | Any node, from its own copy | Nothing | Ours | D27 | `node/service.rs::handle_request` |
 | Is a returning node current | The node's own gate | Answers one read | openraft and ours | D75, D76, D135 | `node/rejoin.rs` |
 | Who orders the log and sends the copies | Whichever node a majority elected. Every node stores, and 2 of 3 commit | These are its duties | openraft | D1, D14, D115 | `raft/` |
 
@@ -262,7 +262,7 @@ flowchart TB
     end
     subgraph PR["Protocol layer"]
         direction LR
-        C2["C2 Request intake<br/>node/mod.rs handle_request<br/>built"]
+        C2["C2 Request intake<br/>node/service.rs handle_request<br/>built"]
         C4["C4 Assignment<br/>leader dispatch: built<br/>bidding, node/bids.rs: built, the default (D114)"]
         C5["C5 Raft<br/>raft/ on openraft 0.9.25<br/>built"]
         C9["C9 Rejoin gate<br/>node/rejoin.rs<br/>built"]
@@ -287,7 +287,7 @@ flowchart TB
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
 | C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One multiplexed TCP connection per peer (D19) with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` on TCP (D20). `ClientPort`: UDP and TCP on one number (D168). |
 | —   | Datagram adapter          | `node/datagram.rs`                          | C     | built    | tarpc over UDP: one message is one datagram of at most 1,400 bytes, no error reaches tarpc, one channel per client program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
-| C2  | Request intake            | `node/mod.rs::handle_request`               | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. Checks `serving` again just before any reply leaves (D136). |
+| C2  | Request intake            | `node/service.rs::handle_request`           | A     | built    | Logs the request, checks `serving`, answers a decided request from state (D37), asks assignment for a decision, runs the executor path. Checks `serving` again just before any reply leaves (D136). |
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Assignment                | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (bidding, the default, D114; leader dispatch, the baseline, set by config, D3, D34) | Chooses the executor: the lowest bidder (D2) or the leader (D3). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): election, replication, forwarding (D26), Raft events. The elected node orders the log and decides nothing else (D163). |
@@ -418,7 +418,7 @@ flowchart TB
     subgraph NODE["Cloud side: each of the 3 nodes"]
         direction TB
         subgraph NAPP["Application: the incident service"]
-            SVC["handle_request, execute, plan_on_workers, send_done<br/>node/mod.rs today, node/service.rs under D156"]
+            SVC["handle_request, execute, plan_on_workers, send_done<br/>node/service.rs"]
             RULES["planner.rs, campus.rs, the rules in state.rs"]
         end
         subgraph NMW["Cloud middleware"]
@@ -445,10 +445,9 @@ flowchart TB
 | **Client side** | The web page and the simulated users. They hold reports and read answers | `MeshClient` | How many nodes there are, that its message was copied, that it was retried, and that a node failed |
 | **Cloud side** | The incident service: plan a report, record it, answer it | `CloudGroup`, bidding, the detector, takeover, rejoin, degraded mode, tarpc, openraft | Who else is alive, how a winner was chosen, and how a result reached the other replicas |
 
-**Status.** The client side is in the code today: `submit` is the application's one call. On the cloud side the middleware
-files are in the code today, but the incident service still sits beside the wiring in `node/mod.rs` and calls
-`consensus.propose` directly. D156 moves it to `node/service.rs`, adds `send_ordered` and `src/middleware.rs`, and
-`tests/layers.rs` keeps the split. It is required (D211) and **not built yet**.
+**Status.** Built on both sides. `submit` is the application's one call on the client side. On the cloud side the incident service is
+`node/service.rs`, and a result leaves it by one call, `ctx.group.send_ordered`. `src/middleware.rs` is the one interface the application layer
+may use, and `tests/layers.rs` fails if application code reaches past it (D156, D211).
 
 ---
 
@@ -1954,8 +1953,6 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219 and D220, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Decided and not built yet** (D216, D156). The cloud side's file split, labelled `planned` above. If it misses the time box
-  it is listed in the PR and in the report.
 - **Left out on purpose.** Publish-subscribe is Phase 2 (D209). A leader that steps aside when overloaded is not on this branch: D217 stands, and D218 is kept free in case the
   team later says Dr Amr asked for it.
 - **Lab results.** Nothing has run on the six machines; see [runbook.md](runbook.md). Every number in these docs is from tests or from

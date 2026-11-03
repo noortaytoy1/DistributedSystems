@@ -249,8 +249,8 @@ Every answer here comes from the spec, the class notes or the recordings, and no
   other their load. Client and server are the roles of one call, not of a node (D212, `docs/architecture.md` section 3.1).
 - **"Where is the middleware, and where is the application?"** On both sides, drawn in `docs/architecture.md` section 4.3. Client side: the page and
   the simulated users are the application, and `MeshClient` is the middleware. Cloud side: the incident service, the planner and the state
-  rules are the application, and the group, the election, the detector, tarpc and openraft are the middleware (D211). Say whether D156's file
-  split is in this build.
+  rules are the application, and the group, the election, the detector, tarpc and openraft are the middleware (D211). `src/middleware.rs` is the line in the code, and
+  `tests/layers.rs` fails if application code reaches past it (D156).
 - **"What is your group communication?"** The client middleware's send to all of the cloud nodes is the group send, and the application does not
   know it happens. The cloud's who's-alive list, `CloudGroup`'s view, is the membership, and it changes as nodes fail and return. Between the nodes,
   bids follow the list, pings go to everyone, and Raft orders results. Each list is one node's opinion, and we say so (D152–D155, D157, D210).

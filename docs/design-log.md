@@ -220,7 +220,7 @@ table below in sync.
 | D153 | View rule: a peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard; voters never change | C | Implemented |
 | D154 | Bids and the failure draw follow the view; pings probe every configured peer | C, B | Implemented |
 | D155 | `NodeStatus` gains `members`; `ctl status` shows them; the view number stays in `group_view` | C, all | Implemented |
-| D156 | Application layer to `node/service.rs`; `send_ordered`, `src/middleware.rs` and `tests/layers.rs` enforce the split | A, C, F | Accepted, required by D211, not built yet |
+| D156 | Application layer to `node/service.rs`; `send_ordered`, `src/middleware.rs` and `tests/layers.rs` enforce the split | A, C, F | Implemented, required by D211 |
 | D157 | Reading of the class note on group communication; D126's question withdrawn | all | Implemented, amended by D210 |
 | D158 | The three nodes elect the failed node: `FaultBid` rounds replace the leader's fault schedule | C | Implemented |
 | D159 | How a fault-election round runs: who calls it, what closes it, numbering, timers, who may bid | C | Implemented |
@@ -270,12 +270,12 @@ table below in sync.
 | D208 | The frontend may land after the data: proof by binary hashes | F | Accepted |
 | D209 | Publish-subscribe: first chosen to build small, then settled as Phase 2 by Lecture 9 | all | Implemented in the docs |
 | D210 | Group communication: the client middleware's send to all nodes is the group send | F, C, all | Implemented in the docs |
-| D211 | The middleware and application boundary, on both the client side and the cloud side | all | Docs and client side done; cloud file split is D156 |
+| D211 | The middleware and application boundary, on both the client side and the cloud side | all | Implemented, the cloud side through D156 |
 | D212 | Cloud nodes are peers, client and server are roles per transaction, and three system models | all | Implemented in the docs |
 | D213 | The questions once left for the instructor are closed | all | Implemented |
 | D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs |
 | D215 | The library boundary names tarpc | all | Implemented in the docs |
-| D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, built except D156 |
+| D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, built |
 | D217 | The Raft leader does not change with load | A, B | Decided |
 | D219 | 3000 responders in the top E1 cells | E, F | Implemented, amends D129 |
 | D220 | After three stale plans, commit that nobody could be sent | A, E | Implemented, amends D35, D36 |
@@ -284,6 +284,7 @@ table below in sync.
 | D223 | A run gets its `run.json` only when it is whole | C, F | Implemented, amends D130, D139 |
 | D224 | The client gap counts a client that never hears again | C | Implemented, amends D138 |
 | D225 | A Raft that has stopped is not asked in a tight loop | D | Implemented, amends D135 |
+| D226 | The split as built: what D156 left to settle | all | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -294,7 +295,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built; of those, only D156 is not.
+closes the ones older entries left. D216 lists Noor's decisions and what is built.
 
 ---
 
@@ -4620,8 +4621,7 @@ For the report's honesty, and so nobody repeats the work. All of it is one PC, s
 
 ### D156 · Application layer moved to node/service.rs; send_ordered, src/middleware.rs and tests/layers.rs enforce the split
 
-- **Date:** 2026-11-03 · **Part:** A, C, F · **Status:** Accepted, required by D211 (no longer optional), **not built yet**: it lands after all the parallel work has merged,
-  so the agent who builds it fills in the final call sites and marks this `Implemented` · **Decided by:** the agent on its recommendation,
+- **Date:** 2026-11-03 · **Part:** A, C, F · **Status:** Implemented, required by D211. Its "Where" and "How we check it" below were written as a plan: read `src/node/service.rs`, `src/middleware.rs` and `tests/layers.rs` for the final call sites · **Decided by:** the agent on its recommendation,
   on Noor's instruction to finish without more questions (2026-11-03)
 - **Context.** The Sept 13 class note says the application sends once and the middleware makes the copies, and to keep the two layers
   distinct in the implementation. `CloudGroup` gives the middleware side a name, but `node/mod.rs` still mixes both layers: the incident
@@ -7084,8 +7084,7 @@ line changes.
 
 ### D211 · The middleware and application boundary, on both the client side and the cloud side
 
-- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented in the docs and on the client side; the cloud side's file split is D156, not built
-  yet · **Decided by:** Noor Hany Emam (item 14 of the decisions of 2026-11-03)
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented in the docs and on both sides: the cloud side's file split is D156 · **Decided by:** Noor Hany Emam (item 14 of the decisions of 2026-11-03)
 - **Context.** Lecture 9 says the boundary must be visible on both the cloud side and the client side, in the design and in the implementation, and
   that it is asked about repeatedly. Lecture 8 says the same. D156 planned the split as an optional last commit.
 - **Options considered.**
@@ -7193,7 +7192,7 @@ line changes.
 
 ### D216 · Noor's decisions of 2026-11-03, and those still being built
 
-- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted, and built except for the cloud side's file split (D156). Its table says what is on `shared-phase1-gaps` now · **Decided by:** Noor Hany Emam, with the agent's picks in item 11 on Noor's
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted, and built. Its table says what is on `shared-phase1-gaps` now · **Decided by:** Noor Hany Emam, with the agent's picks in item 11 on Noor's
   instruction to finish. Noor can overrule any pick
 - **Context.** Noor settled the remaining questions in one sitting. Their own words on the deadline: finished in an hour, and whatever passes tests by then goes in the PR (item 12). Some builders had not finished when this entry was first written, so it held their record until their own entries landed. They have landed, and the last column below is brought up to date. Nothing has run on the six lab PCs yet, so "built" means in the code and passing its tests.
 - **Options considered.** Each item's rejected options are in the table.
@@ -7211,14 +7210,14 @@ line changes.
   | 9, 11 | Client PCs to the cloud over UDP, "group communication within machines", tarpc between them. Reverses D17. The way: tarpc over a small datagram adapter. `ctl` stays on tarpc over TCP, so a lost silence order cannot vanish | coap library; a small request-reply of our own | D167–D180 | built: reports go through tarpc over UDP, `ctl` through tarpc over TCP. Run on loopback only: no real switch or network card yet, and no run with the receive buffer raised (D171) |
   | 10 | Queue with grouped saves | see D133 | D133 | built |
   | 11 | Saves stay on in measured cells unless the queue numbers say otherwise. One branch and one PR, a commit per gap, since one person merges | | here | in force |
-  | 12 | Everything is time-boxed to about 20:00 on 2026-11-03. What passes tests by then goes in the PR, the rest is left out and listed, publish-subscribe first | | here | applied: publish-subscribe is left out (D209), and D156 is listed as not built |
+  | 12 | Everything is time-boxed to about 20:00 on 2026-11-03. What passes tests by then goes in the PR, the rest is left out and listed, publish-subscribe first | | here | applied: publish-subscribe is left out (D209) |
   | 13 | The document carries UML models, decisions with justification and assessment, changed decisions with their alternatives, who did what, all five scenarios, the stress testing, and the measurement analysis | | the report | in progress |
-  | 14 | What Lectures 8 and 9 changed | | D209–D212 | docs done; the cloud side's file split, D156, is not built |
+  | 14 | What Lectures 8 and 9 changed | | D209–D212, D156 | built, with the cloud side's file split (D156) |
   | 15 | The Raft leader does not change with load. The bid already moves work by load, for every report | Load-based leader change | D217 | in force, and no code was needed |
   | 16 | A small safe step-aside for a busy leader, kept on its own branch | | D218, only if it goes in | on `lane-handover`, not on this branch. It goes in only if Noor says yes. If the team later says Dr Amr asked for it, D218 amends D217 |
 
 - **Why.** The decisions list says these become log entries, and AGENTS.md says every decision goes in the log. A short record beat a gap while the builders were still working, and the table is now the short list of what is built.
-- **Consequences.** Items 1 and 9 landed, so their rows point at their entries, and D167 marks D17 as superseded. D156 is the one item still not built. If it misses the time box, it is listed in the PR and the report says it was decided but not built. The architecture labels it `planned` until then.
+- **Consequences.** Items 1 and 9 landed, so their rows point at their entries, and D167 marks D17 as superseded. D156 landed last.
 - **Where.** `docs/architecture.md` sections 2, 5.6, 6.11 and 14.
 - **How we check it.** `git grep UdpSocket` and `git grep spawn_campus_seeding` for items 9 and 1, and `ls src/node/service.rs` for D156.
 - **Report notes.** The report's changed-decisions list starts from this table.
@@ -7394,6 +7393,131 @@ them on the six PCs.
 - **Where.** `scripts/watch_events.py`, `README.md`, `docs/runbook.md`.
 - **How we check it.** Run on a real three-node cluster on one PC with a silenced leader, in `--once` mode: silence, suspicion, new leader, who's alive and catching up all printed correctly. Live mode was tried on a small hand-made log: old lines are skipped, new lines and new files appear. Not yet run on the six machines. No automated test.
 - **Report notes.** Useful in the demo for showing what the system is doing, next to `ctl status`.
+
+### D226 · The split as built: what D156 left to settle
+
+- **Date:** 2026-11-03 · **Part:** A, C, E, F, all · **Status:** Implemented, amends D156 · **Decided by:** the agent on its recommendation, on Noor's
+  instruction to finish without more questions (2026-11-03). Noor can overrule any of it.
+- **Context.** Lecture 9 asks for the middleware and the application to be kept apart in the implementation as well as the design, on the cloud side and on the
+  client side, and says it is asked about repeatedly. D211 made D156 required for that reason. D156 was written before the parallel work merged, so building it on
+  the merged code left some things it did not settle, and some that had since changed:
+  - `on_client_frame` no longer exists: it became a `RequestHandler` and a `ControlHandler` when the old client frames went (D175), so `handle_request` is the way in.
+  - `may_reply`, `ExecuteError` and `MAX_PLAN_ATTEMPTS` are not on D156's list and had to go somewhere.
+  - D156 names `bin/loadgen.rs` only, but D211 counts the web page as application too.
+  - Neither D156 nor D211 says which layer `node/release.rs` is in.
+  - D156 says `send_ordered` inherits a hang. With the proposal queue (D133) and D150, every path through `Consensus::propose` now has a deadline.
+  - The cross-cutting note warned that a ban on `rescuemesh::node` would break `bin/loadgen.rs` if it read `node/usage.rs`.
+- **What the three programs really use.** Read from the code, because the note above asked for it:
+
+  | Program | From the library | Layer | How the test treats it |
+  |---------|------------------|-------|------------------------|
+  | `bin/loadgen.rs` | `MeshClient`, `Submitted`, `ClientError` | middleware | only through `rescuemesh::middleware` |
+  | `bin/loadgen.rs` | `campus::random_incident` | application | direct |
+  | `bin/loadgen.rs` | `config`, `proto` data types, `metrics`, with `metrics::machine_usage` | beside both | direct. D185's parsers are in `metrics.rs`, not `node/usage.rs`, so the trap did not bite |
+  | `bin/frontend.rs` | `MeshClient`, `Submitted`, `ClientError`, `control` | middleware | only through `rescuemesh::middleware` |
+  | `bin/frontend.rs` | `campus::responders`, `campus::unseeded_incident` | application | direct |
+  | `bin/frontend.rs` | tokio's `TcpListener` and `TcpStream`, for its browser (D200) | its own | allowed, but `TcpStream::connect` is not: that could only be going past `MeshClient` |
+  | `bin/frontend.rs` | no library at all to start users: it runs `loadgen` as a program (D202) | | nothing to check |
+  | `scripts/start-users.sh` | no library at all: it runs `loadgen`, and adds up the first line of its summary | | nothing to check. `loadgen`'s flags and summary did not change |
+
+  A ban on `TcpStream` in the page, the rule every other application file has, would go red on working code, which is why the socket rule differs there.
+- **Options considered.**
+
+  Which layer `node/release.rs` is in. It frees responders after their time on scene, reads the replicated state and commits one command.
+  1. *Application, and the test guards it.* Chosen. It is a rule about responders. After the switch to `send_ordered` it names nothing below the line, so it costs one import.
+  2. *Middleware.* Then someone has to explain at the demo why freeing a responder is communication.
+  3. *Leave it out of the table.* The table is what a reader opens, and a missing file reads as a mistake.
+
+  Which programs go through the interface.
+  1. *`bin/loadgen.rs` and `bin/frontend.rs`, with `control` on the interface.* Chosen. D211 and Lecture 9 say both are application.
+  2. *`bin/loadgen.rs` only, as D156 says.* The page would keep importing `rescuemesh::client`, against D211.
+  3. *`bin/ctl.rs` as well.* It is an operator's tool, not application. It would need `udp_answers` on the interface too, and C's review, for no claim anyone makes.
+
+  How the test reads the source.
+  1. *A small hand-written reader. Comments go, strings are emptied, whitespace goes, and `#[cfg(test)] mod tests` is cut. Paths are checked against a list of what is
+     allowed, and there is a list of names from below.* Chosen. About 140 lines of test code, no dependency.
+  2. *D156's plain search with whitespace stripped.* It fails on a comment that names a forbidden call, and passes on `use rescuemesh::{client::MeshClient};`,
+     `use rescuemesh as rm;` and `let NodeContext { consensus, .. } = ctx;`.
+  3. *A Rust parser, `syn`.* The right tool in general. A new dependency on the night of the lab run is not worth it, and AGENTS.md says not to add one unasked.
+  4. *Let the compiler enforce it, with `pub(crate)` modules.* `tests/` uses `rescuemesh::node` and `rescuemesh::client`, so those modules must stay public.
+
+  What the interface hands the service.
+  1. *`NodeContext` whole, and the test keeps the service away from the fields below the line.* Chosen. The move stays pure.
+  2. *A narrower context type.* The compiler would then enforce it, but every `ctx.` line changes and this stops being a pure move. Better done in Phase 2, if at all.
+
+  The shape of `send_ordered`.
+  1. *A plain method that returns the same boxed future.* Chosen. It adds nothing between the caller and `Consensus::propose`, not even a poll, so "no behaviour change" is true by reading it.
+  2. *`async fn`.* It reads the same and adds a wrapper future. Harmless, but not nothing.
+
+  The client side's name.
+  1. *Keep `MeshClient::group_send`, private, and say what it is.* Chosen. `docs/architecture.md` section 5.1a and the note on D126 already use that name. Its comment and `client.rs`'s header now cite both entries,
+     `middleware.rs` and `lib.rs` point at it, and a test keeps it private.
+  2. *A new alias such as `ClientMiddleware`.* It adds a second name for one thing, late.
+
+  What reads the term through the group.
+  1. *Only code that builds a result: `node/service.rs` and `node/degraded.rs`.* Chosen. `CloudGroup::term` is that one read.
+  2. *Every `consensus.status()`.* `rejoin.rs`, `mod.rs` and the rest are middleware and may read Raft. It would only add changes.
+
+  How to try the test on a violation.
+  1. *On a copy of `src/`, with the test reading `CARGO_MANIFEST_DIR` at run time.* Chosen. Another agent builds in this same worktree, and a planted violation must not reach their build.
+  2. *In the real tree, then undo it.* Simpler, and it could have broken their build for the length of a run.
+- **Decision.** As chosen above, and:
+  - **Moved, as D156 says:** `handle_request`, `execute`, `plan_on_workers`, `send_provisional`, `send_done`, plus their helpers `may_reply`, `ExecuteError` and `MAX_PLAN_ATTEMPTS`, and the seven unit tests over them.
+  - **Stays in `node/mod.rs`, as D156 says:** `decide_executor`, `leader_dispatch`, `Decision`, `on_peer_message`, `on_control`, plus `spawn_campus_seeding` and `spawn_reporter`.
+  - **`src/middleware.rs`:** re-exports only. Client side: `MeshClient`, `Submitted`, `ClientError`, `control`. Cloud side: `CloudGroup`, `View`, `NodeContext`, `ReplyTx`, `Overloaded`, `degraded`, and inside the crate `Decision` and `decide_executor`.
+  - **Owners:** `node/service.rs` is A's, as D156 planned, because it came out of A's file. `middleware.rs`, `tests/layers.rs` and `lib.rs` are shared. `lib.rs` had no owner line, and gained one.
+  - **One commit,** as D156 says, with the order it asks for: the move first, the test seen red, then the rest.
+- **Why.** The note says "in implementation", so a drawing is not enough, and a test nobody has seen fail proves nothing. Reading the source is enough here, because the goal is to keep the
+  line visible and to stop it wearing away. It does not have to hold against someone working around it on purpose.
+- **Consequences.**
+  - **The limits, to say out loud.** The test reads text, so it is a check and not a wall. On the cloud side `NodeContext` is shared, and only the test keeps the service from `ctx.consensus`. On the client side the compiler
+    does enforce it for the group send, which is private.
+  - Two calls come up from below, and both are stated in `node/service.rs`: `node/mod.rs` hands each request to `handle_request`, and `node/degraded.rs` asks `plan_on_workers` for its plans. Middleware calling up is
+    normal for the first. The second is there because a lone node still plans, and planning is the application's.
+  - Two small application jobs stay in the wiring file, `spawn_campus_seeding` and `on_control`'s read of incident records. D156 left them there, seeding commits through `send_ordered`, and moving them adds no claim.
+  - `tracing` lines from the moved code now carry the target `rescuemesh::node::service`. A `RUST_LOG` directive for `rescuemesh::node` still matches them, and no script sets one. Event logs are not affected.
+  - D156's "`send_ordered` inherits a hang" no longer holds: `Consensus::propose` ends at `propose_timeout_ms` on every path since D133 and D150, and the doc comment says that instead. Its "give new callers their own timeout" is therefore not needed.
+  - Line numbers in older entries that cite `node/mod.rs` moved, as D156 expected.
+  - `git log --follow` will not follow the moved code, because it is a piece of a file. `git show --color-moved 8bb244e` shows the move, and `git blame -C -C` finds where each line came from.
+  - If someone adds a module the application should use, the test goes red until it is added to the allowed list on purpose. That is the point. The fix for a red test is to go through the interface, not to widen the list.
+- **Where.** `src/middleware.rs`, `src/node/service.rs`, `tests/layers.rs`, `src/lib.rs` (the table), `src/node/group.rs::{send_ordered, term}`, `src/node/mod.rs`, `src/node/release.rs`, `src/node/degraded.rs`, `src/client.rs`, `src/bin/loadgen.rs`, `src/bin/frontend.rs`.
+- **How we check it.** All on `shared-phase1-gaps`, one PC, in WSL.
+  - **The new tests.** `tests/layers.rs`: `application_files_stay_above_the_group`, `what_the_cloud_application_commits_goes_through_the_group`, `loadgen_imports_only_through_the_facade`,
+    `frontend_goes_through_the_interface_too`, `the_group_send_stays_behind_submit`, `the_interface_holds_no_code_of_its_own` and `the_check_is_not_blind`.
+  - **Seen red first, as D156 asks.** On the moved code, before `send_ordered` went in, the test reported `src/node/service.rs is application code: ["names consensus", "names super::"]`, and 6 of the 7 tests failed.
+    Only `the_check_is_not_blind` passed, and it reads no real file. The moved unit tests passed at that point, 7 of 7. Output: `build/split/red-on-the-moved-code.txt`.
+  - **Run against deliberate violations.** Each planted on a copy of `src/`, one at a time, with `CARGO_MANIFEST_DIR` pointing at the copy. Output: `build/split/violations.txt`.
+
+    | Planted | Result | Test that failed, and what it said |
+    |---------|--------|-----------------------------------|
+    | Nothing, a control | green | |
+    | `node/service.rs` calls `ctx.consensus.propose`, split across lines as rustfmt writes it | red | `application_files_stay_above_the_group`: names consensus |
+    | `node/service.rs` imports from `crate::raft` | red | the same: names `crate::raft::store::StateRe...` |
+    | `node/service.rs` imports `crate::node::{...}` instead of the interface | red | the same, and `what_the_cloud_application_commits_goes_through_the_group` |
+    | `node/release.rs` calls `ctx.consensus.propose` | red | both of those |
+    | `planner.rs` imports `tokio::net::TcpStream` | red | `application_files_stay_above_the_group`: names TcpStream, tokio::net |
+    | `bin/loadgen.rs` goes back to `rescuemesh::client` | red | `loadgen_imports_only_through_the_facade` |
+    | `bin/loadgen.rs` imports `rescuemesh::node::usage`, the cross-cutting trap | red | the same |
+    | `bin/frontend.rs` imports `rescuemesh::{client::{...}}`, nested | red | `frontend_goes_through_the_interface_too` |
+    | `bin/frontend.rs` calls `TcpStream::connect` itself | red | the same |
+    | `MeshClient::group_send` made `pub` | red | `the_group_send_stays_behind_submit` |
+    | `middleware.rs` gains `pub fn shortcut() {}` | red | `the_interface_holds_no_code_of_its_own` |
+    | A comment in `node/service.rs` naming the forbidden call | green, no false alarm | |
+
+  - **The move is pure.** `build/split/pure-move.diff` compares the text moved at `0ef783b` with `node/service.rs`, line by line: 452 lines became 454, and the only changed lines are 3 `pub(super)`s, 2 `ctx.group.term()`s, the two
+    `.consensus` `.propose(` pairs that became `.group` `.send_ordered(`, and the test module's imports. No test body changed.
+  - **Same tests.** `cargo test -- --list` gave 457 names before and 464 after. The difference is exactly the 7 tests of `tests/layers.rs`, and 7 tests whose path changed from `node::tests::` to `node::service::tests::`, with the same names. No test was changed or weakened. Files: `build/split/tests-before.txt`, `tests-after.txt`.
+  - **Same events.** `git diff 0ef783b` is empty for `src/metrics.rs`, and the count of every `Event::` name across `src/` is the same before and after (`build/split/events-before.txt`, `events-after.txt`, 42 names).
+    Then the same short scene, on real nodes, four times on each build: 20 users on 3 nodes for 16 s, with the leader silenced for 3 s partway through. The sets of event names logged were identical: 25 in node logs, 6 in client logs (`build/split/scene-events.txt`).
+    One rare name, `propose_failed`, showed up in only some scenes: 1 of 4 on the old build and 2 of 4 on the new. It is logged in `raft/mod.rs`, which did not change.
+  - **Same wire and timers.** `git diff 0ef783b` is empty for `src/proto.rs`, `src/config.rs`, `config/`, `src/state.rs`, `src/planner.rs`, `src/campus.rs`, `src/raft/`, `src/node/transport.rs`, `src/node/bids.rs`, `src/node/heartbeat.rs`, `Cargo.toml` and `Cargo.lock`.
+  - **Build and lint.** `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` are clean. The whole of `cargo test` ran 8 times on this code: 7 runs with 464 passed and 0 failed, the last on the commit itself, and one
+    earlier run with 462 passed and 2 failed, both flakes from before this change (below). Ten runs in a row each, twice, of `tests/degraded`, `tests/incidents`, `tests/bidding` and `tests/group`: all green. `tests/takeover`: see below.
+  - **To see it fail yourself.** Copy `src/` somewhere, plant a violation in the copy, and run the built test with `CARGO_MANIFEST_DIR` pointing at the folder above that `src/`: `CARGO_MANIFEST_DIR=/some/copy "$CARGO_TARGET_DIR"/debug/deps/layers-*` (skip the `.d` file). It reads the source at run time, so the copy does not have to compile.
+- **Report notes.** Say: "the application layer has one interface to the middleware, `src/middleware.rs`, on both sides, and a test fails if application code reaches past it. We saw it fail on violations we planted." Give the limits above: a check and not a wall, a shared `NodeContext`,
+  degraded mode calling up, two small jobs in the wiring file. Do not say the compiler enforces it, except for the private group send.
+
+---
 
 ### Notes on older entries
 

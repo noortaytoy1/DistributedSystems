@@ -102,8 +102,8 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 
 Review pairs: A↔D, B↔E, C↔F.
 
-`raft/` includes `raft/proposals.rs`, the proposal queue (D133). When D156 lands, row A gains `node/service.rs`, and
-`src/middleware.rs` goes in the shared row.
+`raft/` includes `raft/proposals.rs`, the proposal queue (D133). Row A also holds `node/service.rs`, and `src/middleware.rs` is
+shared (D156).
 
 Files outside a finished part are templates: signatures, doc comments and placeholder bodies that
 compile and never panic. One exception: `node/transport.rs` holds minimal working plumbing

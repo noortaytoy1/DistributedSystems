@@ -47,8 +47,7 @@ experiments have not been run there.
   TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
   group communication with a who's-alive list, the client middleware, reports over UDP through tarpc with `ctl` on tarpc over TCP (D167, D168),
   any serving node loading the responder list (D164), the load generator with 10 real programs per client
-  machine, a web page for each client machine, the experiment runner and the analysis.
-- **Decided, not built yet:** the cloud side's layer files (D156).
+  machine, a web page for each client machine, the middleware and application kept apart on both sides (D156), the experiment runner and the analysis.
 - **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe (D209).
 
 ## Requirements
