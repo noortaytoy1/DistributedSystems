@@ -63,6 +63,10 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// Plans per request before giving up on stale plans; the client's retry starts over.
 const MAX_PLAN_ATTEMPTS: u32 = 3;
 
+/// How often a node checks that the campus is registered. Small against starting three machines
+/// by hand, and nothing needs to tune it (D164).
+const CAMPUS_CHECK_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Everything a node's parts share.
 pub struct NodeContext {
     pub id: NodeId,
@@ -571,25 +575,31 @@ fn on_control(ctx: &Arc<NodeContext>, cmd: ControlRequest) -> ControlReply {
 // Background tasks
 // ---------------------------------------------------------------------------------------------
 
-/// Once a leader exists, it registers the campus responders through Raft (once per cluster).
+/// Any serving node registers the campus responders through the log, until the log holds them
+/// (D164). No node has to be picked for this: the command is idempotent, so the few extra entries
+/// from nodes proposing together change nothing, and the log decides the list, not one node's file.
+/// The check is the one `release.rs` uses. A node back from its log file starts not serving, so it
+/// never proposes while its state still reads empty, and a lone node could not commit anyway.
 fn spawn_campus_seeding(ctx: Arc<NodeContext>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let responders = campus::responders(&ctx.config.campus);
         if responders.is_empty() {
             return;
         }
-        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        let mut tick = tokio::time::interval(CAMPUS_CHECK_INTERVAL);
         loop {
             tick.tick().await;
             if ctx.state.with(|s| s.responder_count()) > 0 {
                 return;
             }
-            if ctx.consensus.status().leader == Some(ctx.id) {
+            if ctx.serving.load(Ordering::SeqCst) && !ctx.degraded.is_active() {
                 let cmd = Command::RegisterResponders {
                     responders: responders.clone(),
                 };
+                // Not a warning: a node started before its peers fails here until they come up,
+                // which is normal in the lab. `propose_failed` still counts it.
                 if let Err(e) = ctx.consensus.propose(cmd).await {
-                    tracing::warn!("registering responders failed: {e}");
+                    tracing::debug!("registering responders failed: {e}");
                 }
             }
         }

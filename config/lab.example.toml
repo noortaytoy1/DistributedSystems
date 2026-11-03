@@ -1,11 +1,16 @@
 # Three nodes on three lab machines. Copy to config/lab.toml and set the real addresses.
 # Peer and client ports must be open between the machines. Full steps: docs/runbook.md.
 # Anything left out uses the defaults in src/config.rs.
+#
+# Listed 3, 2, 1 for the demo. A node's place here sets its election timeout (D115), so with node 3
+# also started first, node 3 tends to lead, while an idle tie still goes to node 1. That keeps who
+# leads and who wins a tie apart on screen (D165). It only tends to: read ctl status, never assume.
+# The experiment runner builds its own list from experiments/hosts and never reads this file.
 
 [[cluster.nodes]]
-id = 1
-peer_addr = "10.0.0.11:7001"
-client_addr = "10.0.0.11:8001"
+id = 3
+peer_addr = "10.0.0.13:7001"
+client_addr = "10.0.0.13:8001"
 
 [[cluster.nodes]]
 id = 2
@@ -13,9 +18,9 @@ peer_addr = "10.0.0.12:7001"
 client_addr = "10.0.0.12:8001"
 
 [[cluster.nodes]]
-id = 3
-peer_addr = "10.0.0.13:7001"
-client_addr = "10.0.0.13:8001"
+id = 1
+peer_addr = "10.0.0.11:7001"
+client_addr = "10.0.0.11:8001"
 
 [timers]
 # Every peer suspected this long, and a serving node answers without a commit (D121).
@@ -63,9 +68,19 @@ enabled = true
 # Each node waits interval_min..max ms; the first to finish calls a fault election. All three draw
 # a random number, and the highest goes silent for its own silence_min..max ms. A node missing any
 # number does nothing. interval_min_ms must be >= silence_max_ms, or rounds cannot finish.
-# To stop elections without turning ctl silence off, set both interval keys to 100000000.
-interval_min_ms = 30000
-interval_max_ms = 60000
+#
+# Shipped so that no timer ever fires: in the demo only you cause faults, with ctl silence, and a
+# missed hand edit cannot silence a node in the middle of a scene (D165). ctl silence still works.
+interval_min_ms = 100000000
+interval_max_ms = 100000000
 silence_min_ms = 1000
 silence_max_ms = 20000
+# To let the nodes elect faults by themselves, replace the two interval lines, on all six machines:
+# interval_min_ms = 30000
+# interval_max_ms = 60000
+# For the demo's timed last scene (D162), use these four instead:
+# interval_min_ms = 20000
+# interval_max_ms = 30000
+# silence_min_ms = 20000
+# silence_max_ms = 20000
 # seed = 1   # repeats each node's numbers per round; unset picks a random seed and logs it

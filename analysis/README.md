@@ -35,6 +35,8 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Election frequency, duration, message overhead | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms`, `msgs_raft_vote_per_req`. Fault election: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All messages: `msgs_all_per_req` |
 | Fault election, its safety checks (D161) | `fault_split_decisions` (must be 0), `fault_elected_not_silenced`, `fault_refused` |
 | Load distribution and fairness | `share_node_<n>`, `fairness_jain`; plot `fairness.png` |
+| Whether holding the leader role moves work (D166) | `leader_plan_share`, read beside `elections` and `share_node_<n>`. `share_node_<leader>` when one node led all of the measured time. NaN if the leader changed, a node read another leader, or there was a moment with no leader, so a cell can average over fewer runs than it has |
+| What a follower pays for not leading (D26, D166) | `commit_local_*` and `commit_forwarded_*`, the same figures as `commit_*`, split by path |
 | Before, during and after a failure | `before_*`, `during_*`, `after_*`; plot `fault_phases.png`, which leaves out cells with faults on a timer (`ft8-*`, `e5-*`) |
 | Failover and recovery | `client_gap_mean_ms`, `client_gap_max_ms` (E3's client-visible gap), `detection_mean_ms`, `election_duration_mean_ms`, `recovery_mean_ms`, `elections_after_rejoin` (FT-6) |
 | Convergence after a rejoin (D138) | `digest_checkpoints_compared`, `digest_mismatches` (must be 0), `rejoins_digest_confirmed` against `rejoins`, `rejoin_targets_lowered` (D135) |
