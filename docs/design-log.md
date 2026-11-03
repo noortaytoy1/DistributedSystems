@@ -40,7 +40,6 @@ code or since. IDs are never reused: a changed decision gets a new entry, and th
 | `Open`        | Not decided. The entry lists the options and a recommendation. Needs a person.   |
 | `Amended`     | Still holds, but a later entry changed part of it (named in the entry).          |
 | `Superseded`  | Replaced by a later entry (named in the entry).                                  |
-| `Pending approval` | Decided by the team, waiting for the instructor.                            |
 
 **Template.** Copy this for a new entry and append it at the end of its section. Keep the index
 table below in sync.
@@ -78,74 +77,74 @@ table below in sync.
 | D9  | Request ID plus a replicated table of results                   | A    | Implemented, amended by D27 |
 | D10 | Optimistic check at commit instead of locks                     | A, E | Implemented, amended by D28 |
 | D11 | Single-owner tasks and channels; planner on a thread pool       | all  | Amended by D47    |
-| D12 | The Raft leader runs the fault schedule                         | C    | Implemented, amended by D78 |
+| D12 | The Raft leader runs the fault schedule                         | C    | Implemented, amended by D78, see D216 |
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
 | D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
 | D16 | Wire format: length-delimited frames with bincode | all | Implemented, amended by D119 |
-| D17 | Clients use TCP on a dedicated client port | C, F | Implemented, amended by D119 |
+| D17 | Clients use TCP on a dedicated client port | C, F | Implemented, amended by D119, see D216 |
 | D18 | Two ports per node; `ctl` shares the client port                | C    | Implemented       |
 | D19 | One multiplexed connection per peer | C | Superseded by D119 |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
-| D23 | Control frames bypass the fault gate                            | C    | Implemented       |
+| D23 | Control frames bypass the fault gate                            | C    | Implemented, see D200 |
 | D24 | In-memory Raft storage, no snapshots | A | Superseded by D118 |
-| D25 | Static membership; every node calls `initialize`                | A    | Implemented       |
-| D26 | Any node proposes; followers forward to the leader              | A    | Implemented       |
-| D27 | First commit wins; the outcome tells the proposer what happened | A    | Implemented       |
-| D28 | A plan is stale if its responder is held or unknown             | A    | Implemented       |
-| D29 | Three idempotent log commands                                   | A    | Implemented       |
+| D25 | Static membership; every node calls `initialize`                | A    | Implemented, amended by D137 |
+| D26 | Any node proposes; followers forward to the leader              | A    | Implemented, amended by D133 |
+| D27 | First commit wins; the outcome tells the proposer what happened | A    | Implemented, see D143 |
+| D28 | A plan is stale if its responder is held or unknown             | A    | Implemented, see D143, D147 |
+| D29 | Three idempotent log commands                                   | A    | Implemented, amended by D133 |
 | D30 | Deterministic state machine, integers only                      | A    | Implemented       |
-| D31 | State digest: an FNV-1a hash chain over the applied log         | A    | Implemented       |
+| D31 | State digest: an FNV-1a hash chain over the applied log         | A    | Implemented, amended by D138 |
 | D32 | Retry an unreachable peer after two heartbeats                  | A    | Implemented       |
 | D33 | No leader, no executor (leader dispatch)                        | A    | Implemented       |
 | D34 | Leader dispatch is the default until bidding lands | B | Superseded by D114 |
 | D35 | Re-plan a stale plan at most three times                        | A, E | Implemented       |
 | D36 | A node that cannot answer stays quiet | A, F | Implemented |
-| D37 | Any serving node answers a retry from its own state             | A    | Implemented       |
+| D37 | Any serving node answers a retry from its own state             | A    | Implemented, see D143 |
 | D38 | Responders seeded once through Raft by the leader               | A, E | Implemented       |
 | D39 | Responders released by the executor, peers as backup | A, E | Implemented |
-| D40 | Timer defaults and validation                                   | all  | Implemented       |
+| D40 | Timer defaults and validation                                   | all  | Implemented, amended by D133 |
 | D41 | Peer heartbeats as a failure detector for takeover              | C    | Implemented, amended by D79 |
 | D42 | Takeover trigger: suspicion first, backstop max(200 ms, 3 × bid) | B, C | Implemented by D110 |
 | D43 | When the bid window starts                                      | B    | Implemented |
 | D44 | No `Claim` message; `just_won` in the load score                | B    | Implemented, amended by D85 |
 | D45 | Load score formula and tie-break                                | B    | Implemented |
-| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D75 |
+| D46 | Rejoin gate: `serving` flag, current at the leader's commit     | D    | Implemented, amended by D75, D136 |
 | D47 | Shared node context instead of single-owner tasks               | A    | Implemented       |
 | D48 | Bounded worker pool that sheds load                             | E    | Implemented       |
-| D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented       |
-| D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Implemented       |
-| D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113 |
+| D49 | Planner: deterministic, integer cost, CPU knob                  | E    | Implemented, see D148 |
+| D50 | Domain model: integer campus, four capabilities, severity 1–5   | all  | Amended by D140, D141, D148 |
+| D51 | Request IDs and per-machine client IDs | F | Implemented, amended by D113, D184 |
 | D52 | Client retry budget | F | Implemented |
-| D53 | One client process, one connection per node, shared by users | F | Implemented |
-| D54 | Load generator: closed loop first, open loop as a mode | F | Implemented |
+| D53 | One client process, one connection per node, shared by users | F | Implemented, amended by D181 |
+| D54 | Load generator: closed loop first, open loop as a mode | F | Implemented, amended by D146, D181, D182 |
 | D55 | JSON Lines event logs written off the async runtime             | all  | Implemented       |
 | D56 | Durations on one clock; latency on the client                   | all  | Implemented       |
 | D57 | Heartbeat logging: one summary a second, details at debug       | A    | Implemented       |
-| D58 | Human logs through `tracing`, measurements through events       | all  | Implemented       |
+| D58 | Human logs through `tracing`, measurements through events       | all  | Implemented, amended by D134 |
 | D59 | One strict TOML config shared by every process                  | A    | Implemented       |
 | D60 | Deployment target: six Ubuntu machines on one LAN               | all  | Implemented       |
 | D61 | Peer port serves before Raft starts                             | A    | Implemented       |
 | D62 | `ctl` is the operator tool; the experiment runner is bash over SSH | C | Implemented (D130) |
-| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented       |
+| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented, qualified by D187 |
 | D64 | Analysis in Python                                              | all  | Implemented       |
 | D65 | Testing strategy                                                | all  | Implemented       |
 | D66 | Rust coding rules                                               | all  | Implemented       |
 | D67 | Team process: parts, owners, pull requests, CI                  | all  | Implemented       |
-| D68 | Library boundary: openraft is the only distributed library      | all  | Implemented       |
+| D68 | Library boundary: openraft is the only distributed library      | all  | Implemented, amended by D215 |
 | D69 | Phase 2 hooks                                                   | all  | Accepted, docs only |
 | D70 | Agents ask, recommend and record every decision; "grill with docs" | all | Implemented    |
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
-| D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented |
+| D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented, amended by D138 |
 | D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
-| D75 | Rejoin gate: serving off and elections off until current        | D, A | Implemented       |
-| D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented       |
+| D75 | Rejoin gate: serving off and elections off until current        | D, A | Implemented, amended by D135 |
+| D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented, amended by D135 |
 | D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
-| D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented       |
-| D79 | Peer heartbeat detector: heard-from, pause while silent, events | C    | Implemented       |
+| D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented, see D216 |
+| D79 | Peer heartbeat detector: heard-from, pause while silent, events | C    | Implemented, amended by D151, D155 |
 | D82 | CPU usage read from /proc/stat                                  | B    | Implemented |
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
 | D84 | One bid round per request and attempt; `attempt` added to `Bid` | B, A | Implemented |
@@ -157,46 +156,134 @@ table below in sync.
 | D90 | Reconnect cooldown = 2 × `raft_heartbeat_ms`, no new config key | C    | Implemented       |
 | D91 | `TransportError::Backoff`, treated as Unreachable by openraft    | A, C | Implemented       |
 | D92 | Peer outage events: `peer_unreachable`, `peer_reconnected`      | C    | Implemented       |
-| D93 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Amended by D101   |
-| D94 | Severe incidents fall back to any capability                    | E    | Amended by D101   |
-| D95 | Incident age in the planner needs a time from the node | A, E | Implemented |
+| D93 | Planner pick rule: exact capability, nearest, cost in metres    | E    | Amended by D101, see D148 |
+| D94 | Severe incidents fall back to any capability                    | E    | Amended by D101, see D148 |
+| D95 | Incident age in the planner needs a time from the node | A, E | Implemented, see D143, D148 |
 | D96 | CPU knob: fixed hash rounds, no built-in base work              | E    | Implemented       |
 | D97 | Campus layout: zone grid, even round-robin, seeded positions    | E    | Implemented       |
 | D98 | Campus RNG: our own SplitMix64                                  | E    | Implemented       |
-| D99 | Random incidents are uniform                                    | E, F | Amended by D102    |
+| D99 | Random incidents are uniform                                    | E, F | Amended by D102, D141 |
 | D100 | Planner and campus tests                                        | E    | Implemented       |
 | D101 | Planner zone penalty: +200 m for another zone                   | E    | Implemented       |
 | D102 | Unseeded random incidents from OS randomness                    | E, F | Implemented       |
 | D103 | Each request's task runs its own round, in `node/bids.rs`        | B, A | Implemented, amended by D108 |
-| D104 | Bids go out in the background; no waiting and no retry          | B    | Implemented       |
+| D104 | Bids go out in the background; no waiting and no retry          | B    | Implemented, amended by D150, D154 |
 | D105 | `[policy]` keys for scores, `just_won` and the starting planning time | B, A | Implemented, amended by D108 |
 | D106 | Events `bid_sent` and `bid_round_closed`                        | B    | Implemented       |
 | D107 | Planning time, CPU reading and hooks for takeover               | B, C | Implemented       |
 | D108 | Planning time: 1 µs minimum, and a 1 µs starting value           | B    | Implemented       |
 | D109 | Multi-node bidding tests: what they cover and how               | B    | Implemented       |
 | D110 | Takeover: stand by after a lost round, plan if the winner is silent | C, B | Implemented       |
-| D111 | Responder service time: 200 ms × severity | E, A | Implemented |
-| D112 | Client connections: ping through the gate, bounded send queues | F | Implemented |
-| D113 | Required client IDs; sequence numbers start at the clock | F | Implemented |
+| D111 | Responder service time: 200 ms × severity | E, A | Implemented, see D144 |
+| D112 | Client connections: ping through the gate, bounded send queues | F | Implemented, qualified by D186 |
+| D113 | Required client IDs; sequence numbers start at the clock | F | Implemented, amended by D184 |
 | D115 | A different election timeout range per node | A | Implemented |
 | D114 | Bidding is the default; the leader only sequences the log | B, A | Implemented |
-| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented |
+| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented, amended by D213, see D216 |
 | D117 | Richer faults are not built | C | Accepted |
 | D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
-| D119 | Peer calls through tarpc, with typed methods | C, A | Implemented |
-| D120 | Degraded mode: the last server answers without a commit | C, A, F | Implemented |
+| D119 | Peer calls through tarpc, with typed methods | C, A | Implemented, amended by D150, D213 |
+| D120 | Degraded mode: the last server answers without a commit | C, A, F | Implemented, amended by D213 |
 | D121 | Degraded trigger: every peer suspected for 2 s | C | Implemented |
-| D122 | Leaving degraded mode: replay through Raft, first commit wins | C | Implemented |
-| D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented |
+| D122 | Leaving degraded mode: replay through Raft, first commit wins | C | Implemented, see D142, D148 |
+| D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented, see D143 |
 | D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
 | D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
-| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented |
+| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented, amended by D152, D157, D210, D213 |
 | D127 | FT-6: count elections after each `rejoined` | D, A | Implemented |
-| D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented |
-| D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm |
-| D130 | Experiment cells and the runner | all | Implemented, to confirm |
-| D131 | Publish-subscribe: Phase 2, for zones, docs only | all | Accepted, docs only |
-| D132 | The "entries table" is the spec's demo table | all | Implemented |
+| D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented, amended by D185 |
+| D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm, amended by D205 |
+| D130 | Experiment cells and the runner | all | Implemented, to confirm, amended by D139, D183, D186 |
+| D131 | Publish-subscribe: Phase 2, for zones, docs only | all | Accepted, docs only, amended by D209 |
+| D132 | The "entries table" is the spec's demo table | all | Implemented, amended by D207 |
+| D133 | Proposal queue with grouped saves: disk saves cannot stop the heartbeats | A | Implemented |
+| D134 | Default log filter: tarpc's per-call lines are off | all | Implemented |
+| D135 | Rejoin: a wait runs out after 1 s, and the node asks the leader again | D, A | Implemented |
+| D136 | Reply gate: `serving` is checked again just before every reply | A, D | Implemented |
+| D137 | A node that is already initialized does not call `initialize` | A | Implemented |
+| D138 | What is measured: refused jobs, digests at fixed indexes, elections, takeovers and the client gap | all | Implemented |
+| D139 | Runner: silence is retried, a leftover program stops the batch, and a run with no fault is set aside | C, F | Implemented |
+| D25 | Implemented, amended by D137 | "Every node calls `initialize`" now holds only on a first start |
+| D31 | Implemented, amended by D138 | digests are also logged at fixed log indexes |
+| D46 | Implemented, amended by D75 and D136 | `handle_request` is no longer the only place that checks `serving` |
+| D58 | Implemented, amended by D134 | the default filter changed |
+| D73 | Implemented, amended by D138 | the `overloaded` event it asked for now exists |
+| D75 | Implemented, amended by D135 | the target is asked for again when a wait runs out |
+| D76 | Implemented, amended by D135 | the answer can be an index not committed yet, so it is not always "the commit index" |
+| D130 | Implemented, to confirm, amended by D139 | the runner gains its guards; its "to confirm" still stands, as it has not run over SSH |
+| D140 | Incident fields: owner, category and TTL; one report, one incident ID | all | Implemented |
+| D141 | Category decides the needed capability; `Security` becomes `Technical` | all, E | Implemented |
+| D142 | Incident status is worked out on read, not stored | A, F | Implemented |
+| D143 | Too old means not planned: the client states the age, the node commits nobody and answers `Expired` | all | Implemented |
+| D144 | Assignment times: `assigned_at_ms` in the log, `expires_at_ms` as the planned end | A, C | Implemented |
+| D145 | Reading records: `ControlRequest::Incidents` and `ctl incidents` | A, C | Implemented |
+| D146 | Report owners under open-loop load | F | Implemented |
+| D147 | Measuring refusals: `report_expired`, `reports_expired`, no TTL experiment cell | all | Implemented |
+| D148 | Incident priority: an integer in `Plan`, computed by the planner | E, all | Implemented |
+| D149 | What was left out of the incident model on purpose | all | Implemented |
+| D50 | `Amended by D140, D141, D148` | `Security` is now `Technical`; `Incident` gains `owner`, `category`, `ttl_ms`; `Plan` gains `priority`. Its reason names fire, medical and security as the project's examples, but the spec's list is the one in D141 |
+| D54 | `Amended by D146` | `--users` is no longer ignored with `--rate`: it sets how many owners the reports are shared among |
+| D99 | `Amended by D141` | One more draw per incident: a category of the drawn capability, last |
+| D49 | Note | The pick stays as settled; `Plan` now also carries a priority (D148) |
+| D95 | Note | Its age is unchanged and now also feeds the priority (D148). One request path has two ages on purpose: the too-old rule reads the client's stated age (D143) |
+| D9 | Note | `Incident.ttl_ms` is not the table trim this entry dropped. Records are never deleted (D149) |
+| D27 | Note | Still every reply for one ID carries one result. `Expired` carries the record like `Done` does (D143) |
+| D28 | Note | An expired report is still an answer and counts as served, like any plan with nobody on it. It also counts in `no_responder_share` (D143, D147) |
+| D37 | Note | A retry gets the same body: `Expired` if the record was too old on arrival, otherwise `Done`. The record decides, not the node (D143) |
+| D111 | Note | `expires_at_ms` is `assigned_at_ms` plus this service time: a planned end, not an enforced one (D144) |
+| D112 | Note | A frame waiting in the send queue keeps its young stamp, which is a stated limit of the too-old rule (D143) |
+| D122 | Note | After `responder_taken`, the record reads `Unassigned` although the client was told a responder was sent (D142). The conflict compares who goes, not priority (D148) |
+| D123 | Note | `Submitted` grows `id` and `status`. `ReplyBody::Expired` follows this entry's reason against a flag on `Done` |
+| D132 | Note | `ctl incidents` reads results, not the Raft log, so it does not bring back `ctl log` (D145) |
+| D150 | Peer calls enforce their own deadline, because tarpc times only what it has written | C | Implemented |
+| D151 | A suspected peer stays suspected through this node's own silence | C | Implemented |
+| D152 | Group communication built: `CloudGroup` with a per-node view, `send` and `probe` | C, B | Implemented, amended by D210 |
+| D153 | View rule: a peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard; voters never change | C | Implemented |
+| D154 | Bids and the failure draw follow the view; pings probe every configured peer | C, B | Implemented for bids and pings |
+| D155 | `NodeStatus` gains `members`; `ctl status` shows them; the view number stays in `group_view` | C, all | Implemented |
+| D156 | Application layer to `node/service.rs`; `send_ordered`, `src/middleware.rs` and `tests/layers.rs` enforce the split | A, C, F | Accepted, required by D211, not built yet |
+| D157 | Reading of the class note on group communication; D126's question withdrawn | all | Implemented, amended by D210 |
+| D79 | Implemented, amended by D151 and D155 | D151 changes item 4, fresh clocks on restore. D155 changes item 6, "No contract change now". |
+| D104 | Implemented, amended by D150 and D154 | D150 makes "each task ends within the timeout" true for a call queued behind a full socket. D154 sends bids to the view, not always to two peers. |
+| D119 | Implemented, amended by D150 | A call now enforces its own deadline. |
+| D126 | Implemented, amended by D152 and D157 | "Name existing sends" is no longer enough, and its closing note is withdrawn. Its rejection of a library and of our own multicast stands. |
+| D181 | User processes: 10 real programs per client PC share the users; the number is a setting | F | Implemented, amends D53, D54 |
+| D182 | Load patterns (steady, random, all-at-once) and spreading the first sends | F | Implemented, amends D54, qualifies D129 |
+| D183 | `scripts/start-users.sh`: one way to start and stop users | F | Implemented, amends D130, qualifies D132 |
+| D184 | Client IDs and seeds when one PC runs many programs | F | Implemented, amends D51, D113 |
+| D185 | `machine_usage`: the client PCs' own CPU and memory | F | Implemented, amends D128 |
+| D186 | Runner checks: exact shares, leftovers, old run folders, runs left out | F, all | Implemented, amends D130, qualifies D112 |
+| D187 | One control cell, no limit check, and what the analysis adds | F, all | Implemented, qualifies D63, D129 |
+| D51 | Implemented, amended by D113 and D184 | Its "(1, 2, 3)" IDs in the lab are now machine numbers; programs get five-digit IDs. |
+| D53 | Implemented, amended by D181 | Still one `MeshClient` per program, shared by its users; there are now 10 programs per client PC, not one. |
+| D54 | Implemented, amended by D181 and D182 | "One process with many tasks is the default" becomes 10 processes through the script. `--pattern` and the first-send spread are new. Closed and open loop stay. |
+| D113 | Implemented, amended by D184 | IDs stay required and unique; the script now gives them out. |
+| D128 | Implemented, amended by D185 | Its node event stays; client PCs get `machine_usage`. |
+| D130 | Implemented, to confirm, amended by D183 and D186 | The runner starts users through the script, and has new checks. Cell count 31 becomes 32 (D187). |
+| D63 | Implemented, qualified by D187 | Full is 32 cells. |
+| D112 | Implemented, qualified by D186 | On TCP, each node holds 30 client connections and answers 30 pings a second in every cell. |
+| D129 | Implemented, to confirm, qualified by D182 and D187 | Same settings; arrivals now spread in every cell, so a user's first request can come up to one think time later. |
+| D132 | Implemented, qualified by D183 | The demo's load lines move to the script. |
+| D197 | A Phase 1 frontend: a web page on a small program on each client PC | F | Implemented |
+| D198 | Frontend HTTP: hand-written on tokio, no new crate | F | Implemented |
+| D199 | Frontend listen address: a required --listen flag, and no access control | F | Implemented |
+| D200 | A second exception to the sockets rule, and status polls as another control sender | F, C | Implemented |
+| D201 | Report form and answer card: fields, input checks, provisional banner, no-answer wording | F | Implemented |
+| D202 | Load box: real loadgen programs, the split, the patterns, limits and Stop | F | Implemented |
+| D203 | Node table: columns, last known, the unreachable rule, no same-state badge | F | Implemented |
+| D204 | Zone updates panel: register a zone, its new reports and plans appear live | F | Superseded by D209, Phase 2 |
+| D205 | The demo runs E1's plan_work and responders (amends D129) | F, E | Implemented in the example config |
+| D206 | The runner refuses leftover frontend, loadgen and node programs | F, all | Implemented through D139 |
+| D207 | Demo script: page first, terminals as cross-check and fallback (amends D132) | all | Accepted |
+| D208 | The frontend may land after the data: proof by binary hashes | F | Accepted |
+| D209 | Publish-subscribe: first chosen to build small, then settled as Phase 2 by Lecture 9 | all | Implemented in the docs |
+| D210 | Group communication: the client middleware's send to all nodes is the group send | F, C, all | Implemented in the docs |
+| D211 | The middleware and application boundary, on both the client side and the cloud side | all | Docs and client side done; cloud file split is D156 |
+| D212 | Cloud nodes are peers, client and server are roles per transaction, and three system models | all | Implemented in the docs |
+| D213 | The questions once left for the instructor are closed | all | Implemented |
+| D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs |
+| D215 | The library boundary names tarpc | all | Implemented in the docs |
+| D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, items 1, 7 and 9 not on a branch yet |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -204,7 +291,10 @@ code, or a question nobody has answered. It stays open until someone implements 
 on it settles the decision first. During "grill with docs" the agent finds the open entries the task touches,
 asks the person to decide with the options and recommendation listed in the entry, and updates the entry
 (status, decided by, decision) in the same PR (AGENTS.md, "Design decisions"). D125, D129 and D130 were decided by
-the agent on the instruction not to be asked again, and are marked for the team to confirm.
+the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214
+and D215 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
+says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
+closes the ones older entries left. Noor's decisions still being built are listed in D216.
 
 ---
 
@@ -397,7 +487,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D25 · Static membership; every node calls `initialize`
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, amended by D137 · **Decided by:** A
 - **Context.** openraft forms a cluster only after `initialize` is called with the membership.
   Nodes start in any order on six machines.
 - **Options considered.** One designated node initializes and adds the others; every node
@@ -413,7 +503,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D26 · Any node proposes; followers forward to the leader
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, amended by D133 · **Decided by:** A
 - **Context.** With bidding, the executor is often a follower, and it must commit its own result.
   The Phase 1 document had a `ProposePlan` message from the winner to the leader.
 - **Options considered.**
@@ -467,7 +557,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D9 · Request ID plus a replicated table of results
 
-- **Date:** Phase 1 architecture · **Part:** A · **Status:** Implemented; amended by D27 ·
+- **Date:** Phase 1 architecture · **Part:** A · **Status:** Implemented; amended by D27, see D149 ·
   **Decided by:** team
 - **Context.** The network can duplicate and reorder messages, clients retry, and two nodes can
   compute the same request. We need at-most-once results that survive failover.
@@ -497,7 +587,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D27 · First commit wins; the outcome tells the proposer what happened
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, see D143 · **Decided by:** A
 - **Context.** Takeovers, retries and wrong bidding winners mean two nodes can propose results for
   one request. The proposer needs to know what happened to its proposal.
 - **Decision.** Applying `CommitResult` gives one of:
@@ -517,7 +607,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D28 · A plan is stale if its responder is held or unknown
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, see D143 and D147 · **Decided by:** A
 - **Context.** The concrete form of D10.
 - **Decision.** Each responder slot has `held_by: Option<RequestId>`. A `CommitResult` whose
   responder is held by another request returns `Stale { reason: HeldBy(holder) }`; one whose
@@ -533,7 +623,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D29 · Three idempotent log commands
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, amended by D133 · **Decided by:** A
 - **Context.** Raft entries carry our commands. A proposal can be retried after a leader change, so
   it may land in the log twice.
 - **Decision.** `Command` has three variants, each idempotent:
@@ -563,7 +653,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D31 · State digest: an FNV-1a hash chain over the applied log
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, amended by D138 · **Decided by:** A
 - **Context.** FT-4 passes when "its state hash equals the leader's". We need a cheap way to show
   that all nodes hold identical state.
 - **Options considered.** Hash the whole state on demand (O(state) per check, misses divergence that
@@ -674,7 +764,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D17 · Clients use TCP on a dedicated client port
 
-- **Date:** 2026-10-20 (scaffold), settled 2026-11-01 · **Part:** C, F · **Status:** Implemented; TCP confirmed for clients, peers amended by D119 · **Decided by:** A in the scaffold; omar.leithym
+- **Date:** 2026-10-20 (scaffold), settled 2026-11-01 · **Part:** C, F · **Status:** Implemented; TCP confirmed for clients, peers amended by D119; Noor reversed the client part, see D216 · **Decided by:** A in the scaffold; omar.leithym
 - **Context.** The Phase 1 document chose UDP for clients (D6). The scaffold built TCP.
 - **Options considered.**
   1. *UDP* as planned: no connection setup; one datagram per request per node. We would need our
@@ -867,7 +957,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 ### D12 · The Raft leader runs the fault schedule
 
 - **Date:** Phase 1 architecture · **Part:** C · **Status:** Implemented, amended by D78 (message,
-  timings, seeding, overlap rule) · **Decided by:** team
+  timings, seeding, overlap rule); to be replaced by the draw among the nodes, see D216 · **Decided by:** team
 - **Context.** The project requires random failures of up to 20 s, one node at a time.
 - **Options considered.** A separate election for each fault round; the leader decides.
 - **Decision.** Every 30–60 s (random), the Raft leader picks a victim uniformly from all three nodes,
@@ -910,7 +1000,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D23 · Control frames bypass the fault gate
 
-- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented · **Decided by:** A, C
+- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented, see D200 · **Decided by:** A, C
 - **Decision.** `ctl` commands (`Status`, `Silence`, `SkewLoad`) reach a silenced node and get
   answered.
 - **Why.** So we can watch a silenced node during a demo and end a fault by hand. Client and peer
@@ -959,7 +1049,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 ### D46 · Rejoin gate: `serving` flag, current at the leader's commit
 
 - **Date:** 2026-10-20 · **Part:** D · **Status:** Implemented, amended by D75 (how the target is
-  learned, when `serving` goes false) · **Decided by:** team (Phase 1 §9.6), shaped in the scaffold
+  learned, when `serving` goes false) and D136 · **Decided by:** team (Phase 1 §9.6), shaped in the scaffold
 - **Context.** A returning node's state is stale. If it bids or replies, it could plan against old
   state or answer with old information.
 - **Decision.** `NodeContext::serving` is the switch. When a node returns from a fault it clears
@@ -1017,7 +1107,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D75 · Rejoin gate: serving off and elections off until current
 
-- **Date:** 2026-11-01 · **Part:** D (with A for the Raft hooks) · **Status:** Implemented ·
+- **Date:** 2026-11-01 · **Part:** D (with A for the Raft hooks) · **Status:** Implemented, amended by D135 ·
   **Decided by:** Aabed, on the agent's recommendation; Raft hooks need Part A's review
 - **Context.** D46 says a returning node "learns the leader's commit index" and serves only once it
   has applied that far, but openraft 0.9.25 does not expose the leader's commit index to a follower
@@ -1092,7 +1182,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D76 · `ReadIndex` peer message: the catch-up target from the leader
 
-- **Date:** 2026-11-01 · **Part:** D, A (contract change) · **Status:** Implemented ·
+- **Date:** 2026-11-01 · **Part:** D, A (contract change) · **Status:** Implemented, amended by D135 ·
   **Decided by:** Aabed, on the agent's recommendation; needs Part A's review (`proto.rs`,
   `raft/`, `node/mod.rs`)
 - **Context.** The rejoin gate (D75) needs the leader's commit index as a target. The first
@@ -1174,7 +1264,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 ### D78 · The fault schedule: `FaultOrder`, timings, seeding, one fault at a time
 
 - **Date:** 2026-11-01 · **Part:** C (contract change; config keys in A's `config.rs`) ·
-  **Status:** Implemented · **Decided by:** Aabed, on the agent's recommendation
+  **Status:** Implemented; to be replaced by the draw among the nodes, see D216 · **Decided by:** Aabed, on the agent's recommendation
 - **Context.** D12 says the Raft leader runs the fault schedule: every 30–60 s it picks a victim
   uniformly from all three nodes, itself included, and orders it silent for 1–20 s, tagging the
   order with its term. It left the message, the timings' home, the randomness, what a recovering
@@ -1247,7 +1337,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D79 · Peer heartbeat detector: what counts as heard, pausing while silenced, events
 
-- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented, amended by D151 and D155 · **Decided by:** Aabed, on the
   agent's recommendation (also confirms D41)
 - **Context.** D41 put a peer-to-peer heartbeat failure detector in the template, waiting for the
   team to confirm it. Building it needed a few more choices: the cadence, what proves a peer is
@@ -1385,7 +1475,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D37 · Any serving node answers a retry from its own state
 
-- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented · **Decided by:** A
+- **Date:** 2026-10-20 · **Part:** A · **Status:** Implemented, see D143 · **Decided by:** A
 - **Decision.** When a request arrives and its result is already in the node's local state, the node
   replies at once with that result, whether or not it executed it.
 - **Why.** After a failover the client's retry is answered by whichever node is up, without planning
@@ -1689,7 +1779,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D104 · Bids go out in the background; no waiting and no retry
 
-- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented · **Decided by:** Ahmed Abdeen, on the
+- **Date:** 2026-11-01 · **Part:** B · **Status:** Implemented, amended by D150 and D154 · **Decided by:** Ahmed Abdeen, on the
   agent's recommendation
 - **Context.** A node must send its bid to two peers without letting a slow peer delay a 20 ms window.
 - **Options considered.**
@@ -1943,7 +2033,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D73 · Worker pool load report: queued and running only; no overload event yet
 
-- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Implemented, amended by D138 · **Decided by:** Yahia Kilany
 - **Context.** `load()` always returned zero, so bidding couldn't see a busy node.
 - **Options considered.**
   - What `load()` reports: (1) `queued` and `running` only; (2) also a count of refused jobs; or
@@ -1967,7 +2057,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D49 · Planner: deterministic, integer cost, CPU knob
 
-- **Date:** 2026-10-20 · **Part:** E · **Status:** Implemented (open part settled 2026-10-30)
+- **Date:** 2026-10-20 · **Part:** E · **Status:** Implemented (open part settled 2026-10-30), see D148
   · **Decided by:** Yahia Kilany (formula and open part)
 - **Decision.** `planner::plan(incident, free, knob)` chooses a responder from the free ones using
   severity, age, distance, availability and capability (project spec p. 3), breaks ties
@@ -1990,7 +2080,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D50 · Domain model: integer campus, four capabilities, severity 1–5
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented (generation: D97, D99)
+- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented (generation: D97, D99), amended by D140, D141 and D148
 - **Decision.** `Point { x, y }` in metres as `i32`, Manhattan distance. `Capability` is one of
   `Medical`, `Fire`, `Security`, `Rescue`. `Incident { zone, location, severity (1..=5), needs,
   reported_at_ms }`, where `reported_at_ms` is the client clock. `Responder { id, zone, location,
@@ -2001,7 +2091,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D93 · Planner pick rule: exact capability, nearest, cost in metres
 
-- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101 · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101, see D148 · **Decided by:** Yahia Kilany
 - **Context.** D49 settled on weighted scoring. We need the exact rule and the unit of `cost`.
 - **Options considered.**
   1. Exact capability match, nearest wins; ties go to the incident's zone, then the lowest ID.
@@ -2021,7 +2111,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D94 · Severe incidents fall back to any capability
 
-- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101 · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E · **Status:** Amended by D101, see D148 · **Decided by:** Yahia Kilany
 - **Context.** The spec wants severity in the decision. With one incident at a time, severity
   cannot change who is nearest. It can change what happens when no match is free.
 - **Options considered.**
@@ -2041,7 +2131,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D95 · Incident age in the planner needs a time from the node
 
-- **Date:** 2026-10-30, settled 2026-11-01 · **Part:** A, E · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-30, settled 2026-11-01 · **Part:** A, E · **Status:** Implemented, see D143 and D148 · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** The spec wants age in the decision. The planner has no clock (D30) and gets only
   `(incident, free, knob)`. `incident.reported_at_ms` is on the client clock. The node notes the
   arrival time (`started` in `handle_request`) only to measure latency.
@@ -2124,7 +2214,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D99 · Random incidents are uniform
 
-- **Date:** 2026-10-30 · **Part:** E, F · **Status:** Amended by D102 · **Decided by:** Yahia Kilany
+- **Date:** 2026-10-30 · **Part:** E, F · **Status:** Amended by D102 and D141 · **Decided by:** Yahia Kilany
 - **Options considered.**
   1. Everything uniform.
   2. Skewed severity (e.g. 35/25/20/12/8 %).
@@ -2209,7 +2299,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D51 · Request IDs and per-machine client IDs
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented · **Decided by:** A, F
+- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented, amended by D113 and D184 · **Decided by:** A, F
 - **Decision.** `RequestId { client: u64, seq: u64 }`, unique per client process. A retry reuses the
   ID and increments `attempt` (0 for the first send). Each load generator needs its own
   `--client-id`; when omitted it is random.
@@ -2246,7 +2336,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D53 · One client process, one connection per node, shared by users
 
-- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented (`client.rs`), retries per D52, connections per D112 · **Decided by:** team; details by omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-20 · **Part:** F · **Status:** Implemented (`client.rs`), retries per D52, connections per D112, amended by D181 · **Decided by:** team; details by omar.leithym, on the agent's recommendation
 - **Decision.** `MeshClient` keeps one connection per node, shared by all simulated users in the
   process via `Arc`. `submit` sends the request to every node, waits `client_retry_ms` for the
   first `Done` with that ID, resends with the same ID, and logs `client_sent`, `client_done`,
@@ -2256,7 +2346,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D54 · Load generator: closed loop first, open loop as a mode
 
-- **Date:** 2026-10-20, built 2026-11-01 · **Part:** F · **Status:** Implemented (`bin/loadgen.rs`) · **Decided by:** team; open-loop details by omar.leithym, on the agent's recommendation
+- **Date:** 2026-10-20, built 2026-11-01 · **Part:** F · **Status:** Implemented (`bin/loadgen.rs`), amended by D146, D181 and D182 · **Decided by:** team; open-loop details by omar.leithym, on the agent's recommendation
 - **Decision.** `loadgen --users N --duration-s S --think-ms T --seed X --client-id C`. Each user is a
   tokio task in a closed loop: send, wait for the reply or give up, think, repeat. An open-loop mode
   at a fixed rate is planned. Phase 1 used P processes × U users per machine; one process with many
@@ -2310,14 +2400,14 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D58 · Human logs through `tracing`, measurements through events
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented
+- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented, amended by D134
 - **Decision.** `tracing` to stderr for people (`warn!` unexpected but handled, `info!` rare lifecycle
   events, `debug!` per request). Default filter `info,openraft=warn`, overridden by `RUST_LOG`.
   Anything we measure goes to `metrics::Event`, never only to `tracing`.
 
 ### D63 · Experiment method: repetitions, warm-up, run length
 
-- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:**
+- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented, qualified by D187 · **Decided by:**
   omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §11.4: 5-minute runs after a 30 s warm-up, at least **10** repetitions per
   configuration with different seeds, load levels 30–3,000 users, 95% confidence intervals.
@@ -2360,7 +2450,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D40 · Timer defaults and validation
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented · **Decided by:** A, starting from
+- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented, amended by D133 · **Decided by:** A, starting from
   Phase 1 §6.3
 - **Decision.** Defaults in `config.rs::Timers` (LAN values):
 
@@ -2450,7 +2540,7 @@ the agent on the instruction not to be asked again, and are marked for the team 
 
 ### D68 · Library boundary: openraft is the only distributed library
 
-- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented
+- **Date:** 2026-10-20 · **Part:** all · **Status:** Implemented, amended by D215
 - **Decision.** openraft (D14) is the only library doing distributed-systems work. Everything else
   is ours: state machine, storage, network adapter, transport, fault gate, bidding, planner, client
   middleware, fault injection, rejoin. Libraries handle async I/O (tokio), encoding (serde, bincode,
@@ -2497,7 +2587,7 @@ exist because of them.
 
 ### D111 · Responder service time: 200 ms × severity
 
-- **Date:** 2026-11-01 · **Part:** E, A · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-11-01 · **Part:** E, A · **Status:** Implemented, see D144 · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** Releasing a responder (D39) needs a simulated time on scene. It sets capacity: with
   30 responders, holds averaging S seconds allow about 30/S assignments per second. Beyond that,
   plans correctly return `responder: None`.
@@ -2516,7 +2606,7 @@ exist because of them.
 
 ### D112 · Client connections: ping through the gate, bounded send queues
 
-- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented, see D143 and D200, qualified by D186 · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** A machine that loses power sends no TCP close, so the socket stays half-open for many
   minutes, and a restarted node would never be reconnected. "No reply" is no signal, because a node
   that is not the executor normally says nothing. Separately, frames for an unreachable node would
@@ -2545,7 +2635,7 @@ exist because of them.
 
 ### D113 · Required client IDs; sequence numbers start at the clock
 
-- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented, amends D51 · **Decided by:** omar.leithym, on the agent's recommendation
+- **Date:** 2026-11-01 · **Part:** F · **Status:** Implemented, amends D51, amended by D184 · **Decided by:** omar.leithym, on the agent's recommendation
 - **Context.** A random ID makes runs hard to match to machines (D51 already advised against it).
   With sequence numbers from 0, a rerun with the same ID against a running cluster reuses request IDs,
   and nodes return the old committed results as though they were new.
@@ -2613,7 +2703,7 @@ exist because of them.
 
 ### D116 · Raft and the leader-run fault schedule stay, despite "no coordinator"
 
-- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented · **Decided by:** omar.leithym
+- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented, amended by D213: its question is closed, and Noor's items 1 and 7 change the schedule, see D216 · **Decided by:** omar.leithym
 - **Context.** Dr Amr insists on peers with no coordinator (Sept 13, Oct 28). Raft has a leader. D12
   has that leader run the fault schedule.
 - **Options considered.**
@@ -2674,7 +2764,7 @@ exist because of them.
 
 ### D119 · Peer calls through tarpc, with typed methods
 
-- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19 · **Decided by:**
+- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19, amended by D150, question closed by D213 · **Decided by:**
   omar.leithym; typed methods on the agent's recommendation, tarpc against it
 - **Context.** Dr Amr's notes (Sept 13, Oct 4, Oct 28): provide a remote invocation mechanism, do not go
   low-level, use a ready-made RPC or RMI, pick one and say why, with the chapter 2 table (Java RMI,
@@ -2711,7 +2801,7 @@ exist because of them.
 
 ### D120 · Degraded mode: the last server answers without a commit
 
-- **Date:** 2026-11-02 · **Part:** C, A, F · **Status:** Implemented, a deliberate exception to D8 ·
+- **Date:** 2026-11-02 · **Part:** C, A, F · **Status:** Implemented, a deliberate exception to D8, question closed by D213 ·
   **Decided by:** omar.leithym, against the agent's recommendation
 - **Context.** Dr Amr's notes ask to see one machine physically off and another failed, with the one
   remaining server handling all three client nodes. Raft cannot commit on one of three nodes, so until
@@ -2770,7 +2860,7 @@ exist because of them.
 
 ### D122 · Leaving degraded mode: replay through Raft, first commit wins
 
-- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented · **Decided by:** omar.leithym, on the
+- **Date:** 2026-11-02 · **Part:** C · **Status:** Implemented, see D142 and D148 · **Decided by:** omar.leithym, on the
   agent's recommendation; event details by the agent, on the instruction not to be asked again
 - **Context.** Provisional answers must end up in the replicated state, or a node's table and the log
   disagree for good. The spec asks that speculative actions be reconciled.
@@ -2798,7 +2888,7 @@ exist because of them.
 
 ### D123 · `ReplyBody::Provisional`, and how the client reports it
 
-- **Date:** 2026-11-02 · **Part:** C, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+- **Date:** 2026-11-02 · **Part:** C, F · **Status:** Implemented, see D143 · **Decided by:** omar.leithym, on the
   agent's recommendation
 - **Context.** A client must be able to tell an uncommitted answer from a committed one, and the
   application must not mistake one for the other.
@@ -2868,7 +2958,7 @@ exist because of them.
 
 ### D126 · Group communication named: `PeerSet::broadcast` and `MeshClient`
 
-- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented · **Decided by:** omar.leithym, on the
+- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented, amended by D152, D157, D210 and D213 · **Decided by:** omar.leithym, on the
   agent's recommendation
 - **Context.** Dr Amr's notes ask for group communication, and for the application to send a message once
   while the middleware gives the replicas their copies, with the two layers kept distinct. We already
@@ -2919,7 +3009,7 @@ exist because of them.
 
 ### D128 · `resource_usage`: memory, CPU, network and queues once a second
 
-- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, amended by D185 · **Decided by:** omar.leithym, on the
   agent's recommendation; the network and queue fields by the agent, on the instruction not to be asked
 - **Context.** The spec lists CPU, memory, network and queue behaviour among the measurements, and
   nothing logged memory or network.
@@ -2939,7 +3029,7 @@ exist because of them.
 
 ### D129 · Experiment load: `plan_work`, responders and think time
 
-- **Date:** 2026-11-02 · **Part:** E, F · **Status:** Implemented, to confirm · **Decided by:** the agent,
+- **Date:** 2026-11-02 · **Part:** E, F · **Status:** Implemented, to confirm, amended by D205, qualified by D182 and D187 · **Decided by:** the agent,
   on omar.leithym's instruction not to be asked; to be confirmed in the PR review
 - **Context.** Two problems would have made the experiments measure the wrong thing. `workers.plan_work`
   defaults to 0, where a plan takes under a microsecond, while the spec wants a planner that creates real
@@ -2969,7 +3059,7 @@ exist because of them.
 
 ### D130 · Experiment cells and the runner
 
-- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, to confirm · **Decided by:** bash over SSH by
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, to confirm, amended by D139, D183 and D186 · **Decided by:** bash over SSH by
   omar.leithym (D62); the cell format and the extra `full` cells by the agent, on the instruction not to be asked
 - **Context.** The agreed `quick` cells are E1 (30, 300, 3000 users × 2 policies), E2/E6 (skew × 2 scores),
   E3/E4/FT-6 (2 loads × 2 victims), E5 (faults off). `full` was agreed at about 31 cells with the rest to be defined.
@@ -2990,7 +3080,7 @@ exist because of them.
 
 ### D131 · Publish-subscribe: Phase 2, for zones, docs only
 
-- **Date:** 2026-11-02 · **Part:** all · **Status:** Accepted, docs only · **Decided by:** omar.leithym: "we
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Accepted, docs only, amended by D209: its question is closed, and Lecture 9 settles Phase 2 · **Decided by:** omar.leithym: "we
   will use publish sub in phase 2 for the zones, for phase 1 we are not dealing with zones but add it to docs
   so we can do it later"
 - **Context.** Dr Amr's Oct 28 notes say "Implement publish-subscribe", and read as Phase 1. The spec lists
@@ -3007,7 +3097,7 @@ exist because of them.
 
 ### D132 · The "entries table" is the spec's demo table
 
-- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented · **Decided by:** omar.leithym, on the agent's
+- **Date:** 2026-11-02 · **Part:** all · **Status:** Implemented, amended by D207, qualified by D183, see D145 · **Decided by:** omar.leithym, on the agent's
   recommendation
 - **Context.** Dr Amr's Oct 28 note says to show "4 first entries + last entry" of the "entries table". That
   could mean a table in the project description, or a log of entries in the running system.
@@ -3022,3 +3112,2441 @@ exist because of them.
   stress is shown as prepared results, since it takes an hour. The demo has not been rehearsed on the lab machines.
 - **Where.** `docs/demo.md`, `docs/runbook.md`.
 - **How we check it.** A rehearsal on the six machines, still to do.
+
+### D133 · Proposal queue with grouped saves: disk saves cannot stop the heartbeats
+
+- **Date:** 2026-11-03 · **Part:** A · **Status:** Implemented, amends D26, D29 and D40 · **Decided by:** Noor Hany Emam
+  (the queue with grouping); the values and small choices below by the agent on its recommendation, on Noor's instruction to
+  finish without more questions (2026-11-03)
+- **Context.** The pretend network found the leader going silent while it saved a wave of reports, and the followers then voting
+  without end, though nothing had failed. openraft waits for one disk flush per log entry inside its core task, and the core can
+  work through up to 1000 queued writes before it looks at the tick that sends leader heartbeats (openraft 0.9.25,
+  `core/raft_core.rs:726-727`, `:990-1017`, `:1281`; our `raft/store.rs` flushes in `append`). So N proposals waiting in openraft
+  hold the core for N flushes. With saves on and 100 users on each of 3 load generators, the cluster moved to a new term 0.78 s
+  into the load and went through 225 new terms in the run, and not one report was answered: 600 gave up. `propose_timeout_ms`
+  also was no cap at all, because `client_write` was awaited with no limit. Noor's rule, their words:
+
+  > "You should either queue it or block it for 3 seconds... You should leave like 1% to 2% for the node to say I'm alive... The
+  > saving to disk and so on, these are like system necessities of the node. This shouldn't be overridden by something like
+  > processing requests."
+
+- **Options considered.**
+  1. *Our own queue in front of Raft, and everything waiting goes in one save.* One `client_write` in flight per node. A proposal
+     that waits over 3 s leaves the queue and the client resends. The core is free between saves, so heartbeats go out on time,
+     and the load decides how much one save carries instead of how many saves there are. It changes the log's payload type and
+     adds one module.
+  2. *The queue with no grouping: one command per write.* Same safety for the heartbeats and no new log type. By arithmetic about
+     200 to 400 reports a second, while experiments send up to 3000. Measured it was far worse than that arithmetic: 4.6 answered
+     per second per generator at 100 users.
+  3. *Saves off in the experiments.* No code. It measures a system that cannot survive power-off, which is the demo's own fault.
+  4. *Longer vote timers.* One line. But the wave grows with load, so no fixed timer is long enough, and every failover gets
+     slower.
+  5. *Block new work for 3 s*, the other half of Noor's rule. Blocking a caller and letting it wait in a queue cost the caller the
+     same. The queue also gives one place to group. The 3 s stays, as the wait limit.
+- **Decision.** Option 1. `raft/proposals.rs::ProposalQueue` is a node's one way into `raft.client_write`, and grouping is the only
+  path: no setting and no environment variable turns it off.
+  - **One write at a time.** One task owns the queue and starts a `client_write` only when the last has ended.
+  - **Groups.** Whatever waits when a write ends goes out together as the next write, as one log entry of the new type
+    `proto::CommandGroup(Vec<Command>)`, up to `proposals::GROUP_LIMIT` = 200 commands. openraft's types become `D = CommandGroup`
+    and `R = Vec<Outcome>`, with one outcome per command, in order. Under light load a group is one command and nothing waits.
+  - **Deadlines.** Each proposal has a deadline of `timers.propose_timeout_ms` (3 s) from when `propose` or `propose_local` was
+    called, and it leaves with `ProposeError::Timeout` at that moment, whether it is still waiting or its write is in flight. The
+    node sends no reply and the client's retry takes care of it, as for a full worker pool (D48). A proposal past its deadline
+    never costs a save.
+  - **The write cap.** A write in flight goes on after its proposals leave, and the next one waits for it: under overload the
+    head of the queue is always about to expire, and a new write for each of those would pile up inside openraft after all. Only a
+    write that outlasts `propose_timeout_ms` (a leader without a majority) stops being waited for.
+  - **Forwarding.** On the leader, forwarded proposals go through the same queue as its own (`propose_local`). A follower that
+    knows the leader forwards straight away, without touching its own queue, and a node asked to `propose_local` while it knows
+    another leader answers `NotLeader` at once. A forward now waits up to the proposal's deadline instead of
+    `peer_rpc_timeout_ms` (500 ms), because the leader's queue may rightly hold it that long and re-sending would only add the same
+    command to that queue. A change of leader ends the wait early (`RaftNode.leader`, a watch that changes only when the leader
+    does).
+  - **Applying.** `CloudState::apply_group` applies a group's commands in order, each through the existing `apply` at the entry's
+    log index, so inner commands stay idempotent and the digest is what the same commands one after another at that index give.
+    Results of one group share a `log_index`. A blank or membership entry answers with no outcomes.
+  - **Catch-up.** `store::MAX_COMMANDS_PER_MESSAGE` = 4096 caps one AppendEntries over its entries (at least one entry always
+    goes), through `limited_get_log_entries`. openraft gives each AppendEntries one `raft_heartbeat_ms` to be sent, saved and
+    answered, and on a timeout sends the same entries again, so a message too big for that never completes and a returning node
+    never catches up.
+  - **What is measured.** A new event, `raft_io`, once a second per node: `waiting`, `writes`, `commands`, `expired`,
+    `write_timeouts`, `syncs`, `sync_us`, `max_sync_us`, `saves`, `saved_entries`, `saved_commands`, `max_leader_gap_us`.
+- **Why.** It follows Noor's rule: the node's own necessities, here saying it is alive, are no longer overridden by processing
+  requests. The pile stays where the core cannot see it, and the queue costs nothing at low load. Measured with a prototype of
+  this design on one PC, saves on, 3 generators, 60 s measured, 2 runs where shown. Per second is per generator:
+
+  | Users per generator | No queue (today's path) | Queue, no grouping | Queue with grouping |
+  |---|---|---|---|
+  | 100 | 0.0 answered, 600 gave up, 225 new terms | 4.6 answered, 143 gave up, 0 new terms | 95.2 and 96.4 answered, 0 gave up, 0 new terms |
+  | 333 | 0.0 answered, 1995 gave up, 391 new terms | 5.1 answered, 1552 gave up, 0 new terms | 156.9 and 213.9 answered, 8 and 2 gave up, 0 new terms |
+  | 1000 | 0.0 answered, 6000 gave up, 517 new terms | 12.3 answered, 4877 gave up, 0 new terms | 128.0 and 129.4 answered, 1014 and 1003 gave up, 0 new terms |
+
+  The two columns on the right show what each half does: the queue alone stops the new terms, and grouping is what brings the
+  answers back. At 100 users a save carried 4.7 to 7.1 commands, at 1000 users 41 to 42. Every group run ended with equal digests on all
+  three nodes. 200 for `GROUP_LIMIT` is high enough never to limit a run: at one save per round of about 7 ms that is over 28,000
+  commands a second, and at 25 ms per round 8000, against about 3500 from 3000 users. It is low enough for the wire: 300 full
+  groups in one message would be at most 7.4 MB at 123 bytes per command, under the 16 MiB frame. The prototype ran with 256; it
+  never came near that limit, and the limit came down because D141 to D148 made a command longer, from 76 to 123 bytes at the
+  longest, and 256 would have left less than half a frame spare.
+- **Consequences.** A log entry no longer means one command: `log_index` is shared within a group, and `commit` events can repeat
+  one. Counting entries no longer counts commands, so use `saved_commands` or the `commit` events. The digests differ from any
+  earlier run, and the Raft log file's format changed, so `data/raft` from an older build must be wiped once. A report that waits
+  3 s gets no answer from that node, so under overload the client sees retries instead of elections. The queue has no length limit
+  but it has a time limit: it holds at most what arrives in one `propose_timeout_ms`, and arrivals are limited by the worker pool
+  and by the responders held. In the one case of a leader without a majority, a write can be abandoned at the cap while it is still
+  inside openraft, so at most one more per 3 s can be there, and if one commits later that is harmless, because every command is
+  idempotent. Peer calls for forwarded proposals can now be in flight for up to 3 s rather than 500 ms. This fixes the disk half
+  only. The CPU half stays D48: lab config threads at most cores minus 1. Grouping also did not make overload free: at 333 and
+  1000 users on this one PC, p99 was still 6 to 25 s and there were 20,000 or more takeovers per run. That was measured with every
+  program sharing one machine, so it needs its own check on the six PCs.
+- **Where.** `src/raft/proposals.rs::{ProposalQueue, GROUP_LIMIT, QueueStats}`, `src/raft/mod.rs::{RaftNode, write_group,
+  propose_with_retry, spawn_io_report}` and the `Consensus::propose_local` implementation, `src/raft/store.rs::{LogStats,
+  MAX_COMMANDS_PER_MESSAGE, limited_get_log_entries}`, `src/raft/network.rs::HeartbeatStats`, `src/proto.rs::CommandGroup`,
+  `src/state.rs::CloudState::apply_group`, `src/metrics.rs::Event::RaftIo`, the comments on `timers.propose_timeout_ms` and
+  `timers.peer_rpc_timeout_ms` in `src/config.rs`.
+- **How we check it.** Unit tests in `raft/proposals.rs`: `only_one_write_is_in_flight_and_the_next_carries_all_that_waited`,
+  `a_group_stops_at_the_limit_and_order_is_kept`, `a_proposal_past_its_deadline_leaves_with_timeout_and_is_never_written`,
+  `a_caller_that_leaves_does_not_let_a_second_write_start`, `a_write_that_never_ends_stops_holding_up_the_queue_after_the_cap`,
+  `a_failed_write_answers_everyone_in_its_group`, `a_short_answer_is_an_error_not_a_hang`, `a_stopped_queue_answers_with_fatal`,
+  and `a_full_catch_up_message_fits_in_a_frame`, which holds the sizes above to the real encoding. In `state.rs`:
+  `a_group_gives_the_same_state_and_digest_on_two_copies`, `a_group_is_the_same_as_its_commands_one_after_another_at_one_index`,
+  `the_order_inside_a_group_changes_the_digest`, `results_of_one_group_share_its_log_index`, `a_command_in_a_group_is_idempotent`.
+  In `store.rs`: `one_message_stops_at_the_command_cap` and its neighbours. On three real nodes, `tests/proposals.rs`:
+  `a_burst_shares_log_entries_and_every_proposal_gets_its_own_answer`,
+  `a_follower_forwards_straight_away_into_the_leaders_one_queue`, `a_leader_that_cannot_commit_answers_timeout_at_the_deadline`,
+  `a_returning_follower_catches_up_over_full_groups`. The table above is from the prototype on commit a98a1c3, before the other
+  gaps merged. The final code, after every gap's merge, had one short run on the same PC at the same load: saves on, 100 users on
+  each of 3 generators, 30 s measured, a debug build. It gave 95 answered per second per generator, 0 gave up, 0 retried, term 2
+  from start to end, equal digests at log index 3795, 6.4 commands per save, and a longest gap between AppendEntries of 44 ms. It
+  is one run, not a replacement for the table. **It has not run on the lab machines.** On the six PCs: one `e1-300-bidding` must
+  show no new terms, and `raft_io` gives the real disk: `sync_us / syncs` and `saved_commands / saves`.
+- **Report notes.** A good story for the design section: a saved disk write looked like a dead leader, and the fix came from
+  treating "I am alive" as more important than work. Worth one small figure of answered reports and new terms against the three
+  designs, but with lab numbers: the numbers above are rehearsal numbers. Say plainly that Raft still has one leader and that the
+  queue changes only how work reaches it.
+
+### D134 · Default log filter: tarpc's per-call lines are off
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented, amends D58 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D119 brought in tarpc for peer calls. tarpc logs through `tracing` like everything else: several `info`
+  lines for every call (`SendRequest`, `ReceiveResponse`, `ReceiveRequest`, `BeginRequest`, `CompleteRequest`,
+  `BufferResponse`, `SendResponse`), and an `error` line, `DeadlineExceeded`, for every call past its deadline, from its
+  two `in_flight_requests` modules. D58's default filter, `info,openraft=warn`, let all of them through. Each line is one
+  write to stderr from an async task, which is against the rule that nothing blocks the async runtime, and at load there
+  are thousands a second. Measured on this one PC, with 3 load generators at 100 users each, no disk saves and node output
+  going to the Windows disk: with the old filter each generator got 32 reports a second, the cluster reached term 19 and
+  the nodes wrote about 72 MB of output in 30 s. With `RUST_LOG=warn` each generator got 100 a second and the cluster
+  stayed on term 2. Another rehearsal, `nosync-50`, wrote 225,596 tarpc lines in 63 s. So logging alone was enough to slow
+  a node down until it lost its leader. Every load figure taken before this change partly measured the logging.
+- **Options considered.**
+  1. *`info,openraft=warn,tarpc=warn,tarpc::client::in_flight_requests=off,tarpc::server::in_flight_requests=off` as the
+     default in `src/lib.rs`.* The per-call lines go, tarpc's warnings stay (`Connection broken`, and what a mixed build
+     prints), and it holds for hand runs too. It is long, and it depends on tarpc's module names, which `Cargo.lock` pins.
+  2. *`info,openraft=warn,tarpc=off`.* Shorter, but it also hides the warning that gives away a broken connection or two
+     machines on different commits, which is exactly what you want to see in the lab.
+  3. *Set `RUST_LOG` in the scripts only.* No code change, but `docs/demo.md`, `docs/runbook.md` and the README all start
+     programs by hand, so the demo would run the slow way.
+  4. *`warn` for everything.* This is what was measured. It also loses our own rare `info` lines (`raft state`, `serving
+     again`, the one-a-second heartbeat summary), which people read during the demo.
+  5. *Write logs from a background thread (`tracing-appender`).* This would stop the blocking but not the volume, and it
+     adds a dependency a day before the deadline.
+- **Decision.** Option 1, as the public constant `rescuemesh::DEFAULT_LOG_FILTER`, used by `init_tracing`. `RUST_LOG`
+  still overrides it completely. No script sets `RUST_LOG`.
+- **Why.** It removes the cost and keeps every line that is rare enough to be worth reading. The more specific directive
+  wins in `EnvFilter`, so `tarpc::client::in_flight_requests=off` beats `tarpc=warn`. The two modules must be off rather
+  than `warn` because their `DeadlineExceeded` is at `error` level, and under load it fires for every late call.
+- **Consequences.** A late peer call no longer prints a line, but it still shows up as what it causes: `peer_suspected`,
+  `takeover_started`, `propose_failed`. Anyone debugging a call sets `RUST_LOG=info,tarpc=info`. Our own `info` lines are
+  still written to stderr from async code, but they are few and bounded, so that is accepted. Load figures from before
+  this change must not be compared with figures from after it.
+- **Where.** `src/lib.rs::{DEFAULT_LOG_FILTER, init_tracing}`.
+- **How we check it.** `tests::every_directive_in_the_default_filter_parses`, because `EnvFilter::new` silently drops a
+  directive it cannot read. `tests::the_default_filter_drops_tarpcs_call_lines_and_keeps_the_rest` writes one line for each
+  case through the real filter. And the same setting as the evidence above, run again on this PC with a release build and the
+  node output on the Windows disk: with the new default the first generator got 97.8 reports a second, the cluster stayed on
+  term 2 with equal digests, and the three nodes wrote 15,849 bytes in about 37 s with no tarpc line. With `RUST_LOG=warn`,
+  right after it, the figures were 98.8 a second and term 2. So the new default costs nothing against `warn`.
+- **Report notes.** A small lesson worth one sentence: logging is on the measured path. The numbers above are rehearsal
+  numbers, so report only the fact that logging was found and removed, and take any figure from the lab.
+
+### D135 · Rejoin: a wait runs out after 1 s, and the node asks the leader again
+
+- **Date:** 2026-11-03 · **Part:** D, with A for one comment in `raft/mod.rs` · **Status:** Implemented, amends D75 and D76 ·
+  **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A returning node asks the leader for a target index and serves once it has applied that far (D75, D76). D76
+  calls the answer the leader's commit index. It is not quite that: openraft's `get_read_log_id` returns the larger of the
+  commit index and the leader's first entry of its term, its no-op (`engine/handler/leader_handler/mod.rs:116-120`). For a
+  leader just elected, that entry is not committed yet. If that leader is then replaced, the entry can be cut from every
+  log. In the rehearsal `silence-leader/leader`, node 3 led term 101 and wrote its no-op at index 4004. It answered node
+  2's question with 4004, was replaced, and index 4004 was truncated. The final log ended at 3497, with equal digests on
+  all three nodes. Node 2 went on waiting for 4004, and 150 s after the load ended it was still `serving = false`:
+  `rejoined: NEVER`. That loses E4's number and would break scene 4 of the demo live.
+- **Options considered.**
+  1. *The wait lasts 1 s, then the node asks again and keeps the lowest answer.* It needs no new message, and it finishes
+     in every case where a leader exists. It adds up to 1 s to a recovery that hit such a target, and sends one more
+     `ReadIndex` a second while a node catches up.
+  2. *Ask again and always take the newest answer.* Simpler to say. But under load every answer is higher than the last,
+     so a node catching up at about the speed of the cluster keeps chasing a moving line, and E4 would measure that chase
+     instead of the catch-up.
+  3. *The leader answers only with an index it has applied*, the second half of `ensure_linearizable`. Then the answer
+     really is committed and never vanishes, so no asking again is needed. But the answer waits for a commit inside a peer
+     call with a 500 ms deadline, right when the cluster is unsettled and commits are slowest. It changes the leader's side
+     in `raft/mod.rs`, where another job is working, and it never answers a leader that cannot commit.
+  4. *Ask again only when the term or leader changes.* Fewest messages and exactly the case that goes wrong, but it adds a
+     second trigger to reason about, for one message a second that costs nothing.
+  5. *Serve anyway after a time limit.* Rejected: it breaks "a returning node serves nothing until it is current".
+- **Decision.** Option 1. `node/rejoin.rs::reach_target` takes its first target from `learn_target` as before: it waits for a
+  sign of a current leader and retries every Raft heartbeat. It then waits with `wait_applied(target, ASK_AGAIN_AFTER)`, where
+  `ASK_AGAIN_AFTER` is a constant of 1 s. When that runs out it asks once, within `peer_rpc_timeout_ms`, and keeps the lower of
+  the old target and the answer. A question that fails changes nothing, and it goes back to waiting on the target it has. A
+  lowered target logs the new event `rejoin_target_lowered { from, to }` and a `warn!`. `rejoined.leader_commit` is the target
+  the node finally reached. `WAIT_WARNING`, 5 s, now only limits how often it warns. No new config key and no wire change.
+- **Why.** Taking the lowest answer is safe. Every answer is at least the commit index at the moment it was given, and the
+  commit index only grows, so even the lowest answer covers everything that was committed before the first question. That
+  is all D76 ever promised: what was committed when the node asked. It also means a target never goes up because of load.
+  1 s is short enough to matter little in E4 and long enough to cost almost nothing. There is one question per wait, and no
+  retry loop like `learn_target`'s, because a leader confirms itself with a round of heartbeats for each question, and
+  retrying every heartbeat would add about 20 rounds a second to a cluster that is already struggling. A target from a leader
+  that is still there is not disturbed: the wait just goes on from where it was.
+- **Consequences.** Recovery can take up to 1 s longer after a lost target, and `rejoin_target_lowered` says when that
+  happened, so E4 can be read honestly. `read_index` counts rise by about one a second per node catching up, and they count
+  in E5. Under churn the leader's confirmation can print openraft's `timeout while confirming leadership` about once a
+  question. In a stretch with no leader the questions fail, and the node stays not serving until one answers or its target
+  is reached, as before. D125 is untouched: the 3 s election rule runs beside this.
+- **Where.** `src/node/rejoin.rs::{ASK_AGAIN_AFTER, catch_up, reach_target, learn_target}`,
+  `src/metrics.rs::Event::RejoinTargetLowered`, the comment on `Consensus::read_index` in `src/raft/mod.rs`,
+  `src/node/testing.rs` (a scripted `Consensus` for unit tests), `analysis/analyze.py` (`rejoin_targets_lowered`).
+- **How we check it.** Unit tests on the scripted `Consensus`, because a real cluster reaches this state only by luck
+  under churn: `a_target_that_never_commits_does_not_hold_the_node_back_for_ever` (replays 4004 and 3497),
+  `asking_again_does_not_raise_the_target`, `with_no_leader_to_ask_the_old_target_still_counts`,
+  `a_leader_with_nothing_committed_needs_no_wait`, `silenced_again_while_waiting_it_stays_not_serving`. With asking again
+  taken out, the first three fail by timing out. `tests/rejoin.rs` still passes unchanged. In the trial runs on one machine
+  (D139) every returning node finished, but no target was lowered, so this path has only run on the scripted `Consensus` so far.
+  Look for `rejoin_target_lowered` in the first real runs under churn.
+- **Report notes.** Library-provided: `get_read_log_id` and its majority check. Team-built: asking again and keeping the
+  lowest answer. A good small story for the report: a rehearsal found a real liveness bug that no test on an idle cluster
+  could, and reading openraft's source explained it. Cite the Raft thesis on ReadIndex, which waits for the leader's
+  first commit of its term, for why the no-op matters at all.
+
+### D136 · Reply gate: `serving` is checked again just before every reply
+
+- **Date:** 2026-11-03 · **Part:** A, D · **Status:** Implemented, amends D46 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** AGENTS.md says a returning node does not reply until it is current. `handle_request` checked `serving` only
+  when a request arrived (`node/mod.rs`). A handler can then wait on a commit for a long time. If the node is silenced
+  meanwhile and comes back, the gate is open again but the node is still catching up, and when the commit finishes the
+  handler replies. In the rehearsal `silence-leader/leader` the victim logged 109 `replied` events between `restored` and
+  `rejoined`, every one more than 3 s old, the oldest 46 s. No client took one of those answers first, and each answer was
+  committed, so it was safe, but it broke the written rule and it would have needed explaining in scene 4 of the demo.
+- **Options considered.**
+  1. *Check `serving` in `send_done` and `send_provisional`, the two places every reply goes through.* Two lines at the
+     point that matters, and no path can miss it.
+  2. *Check after each `await` in `handle_request`.* Many checks, and a new path could forget one.
+  3. *Check in `ReplyTx::send`, beside the fault gate.* One place, but the transport would need to know about `serving`,
+     and D23's control replies go through the same call. Another job is also changing the client path there.
+  4. *Change the written rule to "may reply with committed results while catching up".* It is safe, because the answer is
+     committed. But it gives up a simple rule for no gain, since the client's retry gets the answer anyway.
+- **Decision.** Option 1, through one small function, `may_reply`. A node that is not serving stays quiet and logs at
+  `debug`, as for any other answer it cannot give (D36). `replied` and `provisional_replied` are logged only for replies
+  that leave, as before. The check at the top of `handle_request` stays, so a request that arrives while not serving does
+  no work.
+- **Why.** The rule is about what a client can see from a node, so the check belongs where a reply leaves. Nothing is lost:
+  the result is committed, so the client's retry gets it from any serving node (D37), this node included once it is current.
+- **Consequences.** A request that was waiting on a commit when its node went silent costs its client one retry, about 2 s,
+  if no other node answers first. In the rehearsal no client got its answer from those late replies, so no measurable cost
+  is expected. There is still a tiny window between the check and the send, which is the same as any reply on its way.
+- **Where.** `src/node/mod.rs::{may_reply, send_done, send_provisional}`, `src/node/transport.rs::ReplyTx::for_tests`.
+- **How we check it.** `a_commit_done_while_the_node_is_not_serving_gets_no_reply` and its twin
+  `a_serving_node_replies_once_the_commit_is_done`, which hold a handler at the commit on a scripted `Consensus`;
+  `a_provisional_answer_also_needs_a_serving_node`. With the check taken out, the first and third fail. In a run, `replied`
+  events between `restored` and `rejoined` must be 0. They were 0 in the trial runs on one machine (D139), one of them at 300
+  users, but those ran a debug build and are not results.
+- **Report notes.** One line under the rejoin section: the gate is enforced at the moment of replying, not only at arrival.
+
+### D137 · A node that is already initialized does not call `initialize`
+
+- **Date:** 2026-11-03 · **Part:** A · **Status:** Implemented, amends D25 · **Decided by:** the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D25 has every node call `initialize` at startup and ignore `NotAllowed`. Since D118 a node can restart with
+  its log from disk, and then openraft refuses and logs an `ERROR`, `Can not initialize`
+  (`engine_impl.rs::check_initialize`). The refusal is harmless, but the line prints on every restart, including the power-off
+  scene of the demo, and it teaches people to ignore errors.
+- **Options considered.**
+  1. *Ask `raft.is_initialized()` first, and call `initialize` only if the answer is no.* It is openraft's own rule, so it
+     cannot disagree with `check_initialize`. The call is also a round trip to Raft's core, which keeps something else
+     working (see Why).
+  2. *Skip it when our `restarted` flag is set.* The first idea, and equal in effect: `Replayed::is_restart` is true in
+     exactly the cases `is_initialized` is. But this removes the round trip, and then
+     `consensus.status()` right after start can read empty metrics. `tests/durable.rs` caught this: "the log came back from
+     the file" failed in 3 of 6 runs.
+  3. *Filter the line out with `openraft::engine=off`.* Hides other errors from that module too.
+  4. *Leave it and explain it in the runbook.* The line would stay in every demo restart.
+- **Decision.** Option 1, in `RaftNode::start`. The `NotAllowed` arm stays on the `initialize` call. `restarted` still
+  decides `enable_elect` and what `rejoin::spawn` does.
+- **Why.** Nothing changes for a first start: peers' messages wait until the node's context exists (D61), so no vote can
+  arrive before `initialize`. Openraft's first metrics are published before its main loop starts (`do_main`), and
+  `is_initialized` is answered from inside that loop, so when it returns the metrics are there. `initialize` was giving us
+  that by accident, and `Event::Restarted`, the `rejoin_started` event and tests all read them straight away.
+- **Consequences.** A restart now prints no `ERROR`, so one that does appear means something. Membership on a restarted node
+  comes only from its file or from the leader, which was already true, because openraft refused the call anyway.
+- **Where.** `src/raft/mod.rs::RaftNode::start`, `tests/restart_log.rs`.
+- **How we check it.** `tests/restart_log.rs::a_restart_logs_no_error`: a one-node cluster with storage, stopped and started
+  again, with a global log subscriber catching what the process prints. It failed before the fix with `ERROR
+  openraft::engine::engine_impl: Can not initialize`. It is in its own test binary because a process has only one global
+  subscriber. `tests/durable.rs` ran 10 times in a row green after the change.
+- **Report notes.** None needed.
+
+### D138 · What is measured: refused jobs, digests at fixed indexes, elections, takeovers and the client gap
+
+- **Date:** 2026-11-03 · **Part:** all (metrics are shared), with A for `raft/store.rs` and E for the event at the worker
+  pool · **Status:** Implemented, amends D31, settles D73's note · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Five things stood between the logs and honest numbers.
+  1. A job the worker pool refuses left only a `debug` line, the client hears nothing and retries 2 s later, and so shed
+     work looked the same as slow work. D73 said this event must exist before E2 runs. It never got added.
+  2. The spec asks for convergence to be shown and reported. `state_digest` is logged once a second at whatever index the
+     node has reached, so under load two nodes almost never log the same index, and the logs cannot show equal state.
+  3. `analyze.py` counted elections as terms seen minus one, assuming the first term seen was already running. That term
+     logs nothing inside the window unless something changes, so a window that saw only new terms came out one too low.
+  4. `analysis/README.md` listed `takeover_wait_mean_ms` under failover. But a `backstop` takeover needs no fault at all, only
+     a busy winner. In the rehearsal `silence-leader/leader`, all 3,694 takeovers were backstops, and not one was on a round
+     the victim had won.
+  5. E3 promises a client-visible gap (`architecture.md` section 11.2, `experiments/README.md`), and nothing computed it. With
+     item 4 corrected, the failover row would have had nothing a client could see.
+  Items 1 and 2 cannot be added after the runs, because the logs would not hold them. Items 3 to 5 can, but they cost little.
+- **Options considered.**
+  - *Refused jobs:*
+    1. *A new event `overloaded { request, attempt, queued, running }` at `plan_on_workers`,* the one place all planning
+       passes through, including degraded mode.
+    2. *A counter in `resource_usage`.* Fewer lines, but it cannot say which request or attempt was refused.
+    3. *A `warn!`.* D73 already rejected it: thousands of lines a second to stderr, which D134 has just shown to be costly,
+       and it would not be a measurement anyway.
+  - *Digests at fixed indexes:*
+    1. *Log from `StateMachineStore::apply` at every index that is a multiple of 100,* with any entry counting.
+    2. *Log from `CloudState::apply`.* It would put logging in the deterministic core, against the architecture rule.
+    3. *Keep a record in `CloudState` and have the reporter log it.* It changes replicated state for a log line, and it
+       would miss checkpoints at high rates.
+    4. *Only commands count.* Then the index depends on which entries were commands, and a new leader's blank entry on a
+       multiple would skip the line. Counting any entry is simpler, and every node still agrees.
+    5. *A config key for the interval.* Nothing varies it, and every node must use the same value anyway.
+  - *Interval:* every 1000 gives about 4 lines in a whole quick run at 30 users, too few. Every 100 gives one every 2 s or
+    so at the lightest load, and at 3000 reports a second a few KB a second, nothing beside the per-request lines. Every 10
+    adds lines with no use.
+  - *Election count:* count terms above the highest logged before the window, or log a window-start marker from the runner.
+    The first needs nothing new.
+  - *Takeovers:* split by reason and take them out of the failover row, or filter to `suspected` under the old name. Keeping
+    the name would hide the change from anyone reading a table.
+- **Decision.**
+  - `Event::Overloaded { request, attempt, queued, running }`, with `queued` and `running` read from the pool when it refuses.
+  - `Event::StateCheckpoint { log_index, digest }`, from `StateMachineStore::apply`, right after applying each index that is
+    a multiple of `raft::store::CHECKPOINT_EVERY` (100), index 0 excepted. `StateMachineStore::new` now takes the `EventLog`.
+    `state_digest` stays as it is, so its field names do not move.
+  - `analyze.py`: `plans_refused` and `plans_refused_node_<n>` in the measured window. `digest_checkpoints_compared`
+    (indexes at least two nodes logged), `digest_mismatches` (indexes with more than one digest, which must be 0),
+    `rejoins_digest_confirmed` (rejoins where the first checkpoint the node logged afterwards matches another node's),
+    `rejoin_targets_lowered` (D135).
+  - `elections` counts terms above the highest logged before the window; a log with nothing before the window treats its first
+    term as the running one.
+  - `takeover_wait_mean_ms` is gone. New: `takeovers_suspected`, `takeovers_backstop`, `takeover_wait_suspected_mean_ms`,
+    `takeover_wait_backstop_mean_ms`, listed apart from failover. `takeovers` stays.
+  - New: `client_gap_mean_ms` and `client_gap_max_ms`. For each client, the longest time between two answers on its own clock
+    that overlaps the fault. The README's failover row now names these, `detection_mean_ms`, `election_duration_mean_ms` and
+    `recovery_mean_ms`.
+- **Why.** A digest chains over the whole log before it (D31), so one equal digest shows that everything before it was equal
+  too, and one checkpoint after a rejoin proves the whole catch-up. Every node applies every index, so every node reaches
+  every checkpoint, and that is what makes logs from different machines comparable with no clock involved. Logging in `apply`
+  goes through the event log's channel, and it writes no disk under the state lock (D55). A client gap is a real duration on
+  one clock; only choosing which gaps overlap the fault compares clocks, which is the same approximation the before, during
+  and after split already makes.
+- **Consequences.** A little more log volume. A restarted node logs its checkpoints again as it replays the log, which is
+  useful: a different digest at the same index from the same node counts as a mismatch. `ctl status` still shows a digest that
+  changes with every command, so under load the column can differ between nodes from one refresh to the next; putting
+  checkpoints in `NodeStatus` would be a `proto.rs` change and was not made. `rejoins_digest_confirmed` can be below `rejoins`
+  with nothing wrong if a run ends before the next checkpoint, so read it with `digest_mismatches`. The client gap
+  includes normal think-time spacing, which is small at the loads used. Per-node CPU and queue figures, the duplicate and stale
+  counts and the local against forwarded commit split are still missing from the analysis; all can be added after the data.
+- **Where.** `src/metrics.rs`, `src/node/mod.rs::plan_on_workers`, `src/raft/store.rs::{CHECKPOINT_EVERY,
+  StateMachineStore}`, `src/raft/mod.rs` (one line), `analysis/analyze.py::{refusal_metrics, convergence_metrics,
+  election_metrics, client_gap_metrics, fault_metrics}`, `analysis/README.md`.
+- **How we check it.** `a_refused_planning_job_is_logged`, `an_accepted_planning_job_logs_no_refusal`,
+  `a_digest_is_logged_at_every_checkpoint_index_however_entries_are_batched` (two stores given one log in different batches,
+  with a blank entry on a checkpoint), `tests/rejoin.rs::a_returning_node_logs_the_same_digests_at_the_same_indexes` (real
+  nodes, one silenced across a checkpoint). `analysis/test_analyze.py` has new tests for each metric, including a term running
+  before the window, which fails on the old count. `test_analyze.py` is not in CI, so run it by hand. In the trial runs on one
+  machine (D139, a debug build, so no result), `overloaded` appeared at 300 users and not at 30, 3 to 15 checkpoints were compared
+  in each run with 0 mismatches, and every rejoin was confirmed by a digest.
+- **Report notes.** This is the convergence metric the spec asks for: `digest_mismatches` and `rejoins_digest_confirmed` against
+  `rejoins`, with `recovery_mean_ms` as convergence time. E2 can now state shed work. Call the takeover figures what they are.
+
+### D139 · Runner: silence is retried, a leftover program stops the batch, and a run with no fault is set aside
+
+- **Date:** 2026-11-03 · **Part:** C, F (scripts) · **Status:** Implemented, amends D130 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Three ways a batch could lose hours or, worse, give wrong figures with no sign.
+  1. `ctl silence` was one call with a 2 s timeout under `set -euo pipefail`. A loaded node can miss 2 s, and one miss ended
+     the rest of the batch.
+  2. `stop_all` stops only what has a pid file. A leftover load generator keeps sending while its log is wiped. A leftover node
+     keeps the ports, so the new node cannot bind, `wait_for_leader` passes on the old one, and the run measures the old
+     config. Items 16 and 17 each planned their own check for this, with different patterns; the frontend and the zone feed
+     (items 17 and 14) add more programs that could be left running.
+  3. Writing the retry showed a third: `ctl status` shows a node that misses its 2 s as `unreachable`. So `victims_of` could
+     find no leader or no follower, and the cell ran with no fault, looking like a good run. With no follower, the `others`
+     victim's `grep -vx ""` named all three nodes.
+- **Options considered.**
+  - *The silence:*
+    1. *Up to 3 tries, 1 s apart, and "already silenced" counts as done.*
+    2. *Leave it.*
+    3. *Raise ctl's timeout.* A longer wait for a node that may not answer, and it slows every operator command.
+  - *The leftover check:*
+    1. *One function, `refuse_leftovers`, with `pgrep -af` on the path, at the start of each run; and again for load programs
+       right after the load ends.*
+    2. *`pgrep -x` on the names.* It also finds Node.js, including a VS Code server on a lab PC, and could stop an hour-long batch
+       for nothing.
+    3. *A runbook line only.* Nobody reads it at 03:00.
+    4. *Teach the runner to kill them.* It could kill someone's demo on a shared machine.
+  - *When a run cannot be trusted:*
+    1. *Delete its directory and stop the batch.* `analyze.py` reads every `run.json` it finds, so a bad run must not stay.
+       Right when the next run would be spoiled too, as with a leftover program. Wrong for a run that merely never got its
+       fault: a trial at 300 users on one machine (debug build, so no number from it counts) had `ctl status` find no leader,
+       and the batch ended there, which undoes what the retry is for.
+    2. *Set it aside and carry on.* It goes somewhere analysis does not read, with its logs, and the batch goes on.
+    3. *Mark it bad where it is and carry on.* It needs a marker every reader must honour.
+- **Decision.**
+  - `silence_with_retry` in `scripts/lab-common.sh`: up to 3 tries, 1 s apart. A refusal saying `already silenced` counts as
+    done, because a lost answer to an order that worked looks exactly like that (D74 refuses a second fault).
+  - `refuse_leftovers <programs> [grace_s]` in `scripts/lab-common.sh`, over `on_host`, one `pgrep -af` per machine. The pattern
+    is `[t]arget/release/(frontend|zonefeed|loadgen|node)( |$)`, built from `$BIN`. Exit 0 from pgrep means found, so it prints
+    the machine and the processes and fails. Exit 1 is clean. Anything else, like ssh's 255, fails as "cannot check".
+  - `LOAD_PROGRAMS='frontend|zonefeed|loadgen'` and `ALL_PROGRAMS` add `node`. `run_once` calls `refuse_leftovers
+    "$ALL_PROGRAMS" 10` before it wipes anything, and `refuse_leftovers "$LOAD_PROGRAMS"` right after its own load generators end.
+    The 10 s lets the last run's nodes finish stopping when `GAP` is short.
+  - `abandon_run` in `scripts/run-experiments.sh` deletes the run's directory, prints why and exits non-zero, and the `EXIT`
+    trap stops the nodes. It is used when the check after the load trips, and when there is no leader at the start.
+  - `set_aside`, in the same file, is used when 3 tries find no victim or 3 tries to silence fail. The run goes on to its end,
+    and then its directory, with its logs and a `dropped.txt` giving the reason, moves to `runs/dropped/<cell>-run-<n>/`. That
+    is one level too shallow for `analyze.py`, which reads `runs/<experiment>/<cell>/<run>/`. The batch goes on, and at the end
+    it lists those runs and exits non-zero.
+  - `victims_of others` gives nobody when there is no follower, instead of all three.
+- **Why.** Retrying fixes the common case, a slow answer, without hiding a real one. Matching by path is what makes it safe to
+  be strict. The first character in brackets stops the pattern from matching the shell that runs pgrep, whose command line
+  holds the pattern: over ssh that shell stays alive while pgrep runs. Checking before the wipe keeps a leftover's log for
+  looking at. Stopping is right for a leftover, because no figure taken next to one can be trusted, this run's or the next
+  one's. A run that missed its fault hurts only itself. At the top of the sweep it is an expected way to fail, so it must not
+  cost the rest of a batch, and its logs are evidence of why the cell collapsed.
+- **Consequences.** A program started outside `$BIN` is not caught: a `cargo run` debug build, or another copy of the repo. A
+  failed `cd` over ssh also exits 1 and reads as clean, but the wipe right after it then fails and stops the run. A silence
+  may start some seconds late after failed tries. Phases are computed from `silenced` and `restored` events, so the figures
+  stay right. A run set aside still takes its full time. A cell that is always set aside has no data, and the report must
+  say that plainly rather than leave the row out. Items 16 and 17 must call this function and not add their own check. Whoever
+  adds a program to the client machines adds it to `LOAD_PROGRAMS`.
+- **Where.** `scripts/lab-common.sh::{LOAD_PROGRAMS, ALL_PROGRAMS, refuse_leftovers, silence_with_retry}`,
+  `scripts/run-experiments.sh::{victims_of, abandon_run, set_aside, run_once}`, `tests/runner_script.rs`,
+  `analysis/test_analyze.py::test_a_run_the_runner_set_aside_is_not_read`.
+- **How we check it.** `tests/runner_script.rs` runs the real functions in bash, in `cargo test`, Linux only: every program
+  under the path is refused until it is gone; nothing running passes (so the check does not find its own shell); a program
+  with the same name elsewhere passes; a name that only starts the same passes; the check after the load leaves the run's nodes
+  alone; a program stopping within the grace time passes; the same over a stand-in for ssh; a machine that cannot be checked
+  stops the run; silence retried 1, 3 and 3-then-fail times; `already silenced` counts as done. `run_once` itself was tried with
+  `experiments/hosts.local` in a private network namespace, on real nodes: a pretend `loadgen` left over was refused and nothing
+  was wiped; a pretend `frontend` that appeared during a run got that run deleted and stopped the batch; a `ctl` made to find
+  nobody at the fault got the run set aside, the next cell ran, and the exit was non-zero with the list; and with `GAP=1` a
+  second run started cleanly after the first run's nodes had ended. **It has still not run over real SSH or on the lab
+  machines**, as D130 said of the runner.
+- **Report notes.** Part of the method section: runs with a leftover program or a missed fault are never counted. If any run
+  was set aside, say how many, and which cells, next to the figures.
+
+### D140 · Incident fields: owner, category and TTL; one report, one incident ID
+
+- **Date:** 2026-11-03 · **Part:** all (`proto.rs` is shared) · **Status:** Implemented · **Decided by:** Noor Hany
+  Emam for the owner, status and TTL fields (decisions item 5). The form of each field, and the incident ID, decided
+  by the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The spec says an incident should contain at least an incident ID, owner or reporter, category, logical
+  campus location, severity, timestamp, status and time-to-live. Before this change `Incident` held only `zone`,
+  `location`, `severity`, `needs` and `reported_at_ms`, so four of the eight were missing: nothing said who sent a
+  report, what kind of event it was, how long it stayed valid or where it stood. The list applies to Phase 1 because
+  the spec builds the incident service there, while resource offers and leases are Phase 2. Status has its own entry
+  (D142), the meaning of the TTL has its own entry (D143) and category has its own entry (D141). This entry is about
+  the fields as data.
+- **Options considered.**
+  - For the incident ID:
+    1. *An alias, `type IncidentId = RequestId`, documented as one report, one incident.* Retries already reuse this
+       ID and it already keys the results table. Nothing new can go wrong. It is a reading of the spec, and the report
+       must say so.
+    2. *A new `id` field inside `Incident`.* It would repeat the request ID in every record, and the two could
+       disagree.
+    3. *A separate random incident ID.* It needs randomness at the client, adds a second key to keep in step, and
+       a retry would have to carry the same one anyway.
+  - For the owner:
+    1. *`owner: UserId { client: ClientId, user: u32 }`.* A pair that needs no coordination: client IDs are unique
+       across machines (D113), and each client numbers its own users.
+    2. *`owner: u64` only.* Two load generators would have to agree on number ranges by hand.
+    3. *Reuse `RequestId.client`.* That names a process shared by all its users (D53), not a person. The spec's user
+       processes would all look like one person.
+  - For the TTL:
+    1. *`ttl_ms` on every report, with `campus.incident_ttl_ms` as the value a client uses.* A report says how long it
+       is valid, as the spec's list reads, and a page or a demo can set it per report.
+    2. *Config only, with no field.* Nothing in the record would say what TTL applied, and every node would have to
+       trust its own copy of the config when judging an old record.
+- **Decision.** `type IncidentId = RequestId`. `UserId { client, user }`, printed `3/17`. `Incident` gains `owner:
+  UserId`, `category: Category` and `ttl_ms: u64`; `needs` stays. The eight fields of the spec map like this:
+
+  | Spec's field | Where it lives |
+  |--------------|----------------|
+  | incident ID | `IncidentId`, an alias of `RequestId` |
+  | owner or reporter | `Incident.owner` |
+  | category | `Incident.category` |
+  | logical campus location | `Incident.zone`, `Incident.location` |
+  | severity | `Incident.severity` |
+  | timestamp | `Incident.reported_at_ms` |
+  | status | `IncidentStatus`, worked out on read (D142), shown in `IncidentView` |
+  | time-to-live | `Incident.ttl_ms` |
+
+  Every value is an integer or a plain enum, so the replicated state stays deterministic and hashable. All owners and
+  incidents are synthetic, as the spec requires.
+- **Why.** The ID alias has the fewest ways to fail: there is one key, and a retry cannot create a second incident. The
+  owner pair is unique without any agreement between machines, and Phase 2 needs an owner again for its offers and
+  conflict rules, so the name is right for later too. The TTL has to travel with the report because the executor judges
+  it, and the record must still say what it was after the config has changed.
+- **Consequences.** The wire format, the Raft log file and every digest value change. All six machines need one commit
+  and `data/raft` must be wiped once: an old log has good checksums but cannot be decoded, so it is cut at its first
+  report with only a warning (`raft/wal.rs`), and a mixed build looks like a dead link. No lab data exists yet, so
+  nothing is lost. A log entry grows by about 20 to 25 bytes with D144 and D148, by arithmetic: 2 to 6 for the owner, 1
+  for the category, 3 for the TTL, up to 3 for the age, 9 for the time and up to 3 for the priority. At 3000 reports a
+  second that is about 75 kB/s more log data on each node. Not measured. "TTL" now has four meanings in this project,
+  and the docs must keep them apart: this field, the table trim D9 dropped, the hop limit the spec describes for Phase
+  2 dissemination, and the deadline on one RPC in `raft/network.rs`.
+- **Where.** `proto.rs::{IncidentId, UserId, Incident}`, `campus.rs::{random_incident, unseeded_incident}`,
+  `config.rs::CampusConfig::incident_ttl_ms`, `bin/loadgen.rs`, every test literal.
+- **How we check it.** `proto::tests::client_frames_round_trip`, `commands_round_trip`,
+  `campus::tests::a_report_carries_its_owner_and_the_configured_ttl`,
+  `config::tests::incident_ttl_defaults_to_sixty_seconds_and_zero_is_rejected`.
+- **Report notes.** Put the field table above in the Incident Processing Service section. Say that one report is one
+  incident, and that status is a reading of the record and not a stored field. Both are our readings of the spec.
+
+### D141 · Category decides the needed capability; `Security` becomes `Technical` (amends D50, D99)
+
+- **Date:** 2026-11-03 · **Part:** all, E · **Status:** Implemented · **Decided by:** the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** `needs` says who can help, not what happened. A blocked road, a power outage or a flood could not be
+  expressed, and technical assistance had no capability at all. The spec's application scenario names the events:
+  a blocked road, a power outage, a lab incident, localized flooding, a network outage, or a request for medical or
+  technical assistance. D50 justified the four capabilities by "the project's incident examples (fire, medical,
+  security)", but fire and security are not on the spec's list.
+- **Options considered.**
+  - For the values:
+    1. *Seven: `BlockedRoad`, `PowerOutage`, `LabIncident`, `Flooding`, `NetworkOutage`, `MedicalAssistance`,
+       `TechnicalAssistance`.* The spec's own examples, one for one. Medical and technical help need different
+       responders, so they stay two values.
+    2. *Six, with one `Assistance` value.* It could not say which responder an assistance request needs.
+    3. *Reuse `Capability` as the category.* It says who helps, not what happened, which is the gap in the first place.
+  - For how category and `needs` relate:
+    1. *Keep `needs`, add a fixed table `Category::needs()`, and draw `needs` first, then a category of that
+       capability.* D99's uniform capability stays, and so do D129's capacity sums. A web form needs only one dropdown.
+    2. *Draw the category first and derive `needs`.* Three of the seven categories need `Technical`, so `Technical`
+       would become 3/7 of all load instead of 1/4, and every load figure sized on a quarter would move.
+    3. *Drop `needs` and let the planner call `category.needs()`.* A cleaner struct, but it edits the planner's rule and
+       every `needs` in the tests for no gain.
+  - For the capability names:
+    1. *Rename `Security` to `Technical`, in the same position.* Power, network and technical help do not fit
+       "Security". The position in `Capability::ALL` stays, so `campus.rs` still gives each responder the same slot.
+    2. *Keep all four names.* A power outage would then be answered by "Security", which a reader would ask about.
+  - For the planner:
+    1. *The planner does not read the category; `needs` stays its input.* The pick rule does not change, so E2 cannot
+       move because of this.
+    2. *A weight per category.* Nothing in the spec asks for it, and it would be one more thing to justify.
+- **Decision.** `Category` as listed. `Category::needs()`: `BlockedRoad` and `Flooding` need `Rescue`; `PowerOutage`,
+  `NetworkOutage` and `TechnicalAssistance` need `Technical`; `LabIncident` needs `Fire`; `MedicalAssistance` needs
+  `Medical`. `Capability::categories()` is the same table read the other way. `random_incident` draws the zone,
+  position, severity and needed capability as before, then, last, a category of that capability.
+- **Why.** The first option in each group changes the least that is measured and still answers the spec's list. The
+  table is our own reading, because the spec names the events but not who answers them, and it is one small function to
+  change if someone reads it differently.
+- **Consequences.** Each incident costs one more random draw, so a seed gives different incidents than it did before
+  this change, though the shape of the load is the same. The planner never reads the category, so a report whose
+  `needs` disagrees with its category is planned by `needs`. A page must set both from one choice, through
+  `Category::needs()`.
+- **Where.** `proto.rs::{Category, Capability}`, `campus.rs::random_incident`, the rename in `planner.rs` tests.
+- **How we check it.** `proto::tests::every_category_maps_to_its_capability`, `the_two_category_tables_agree`,
+  `campus::tests::every_category_occurs_and_agrees_with_needs`, `each_capability_stays_about_a_quarter_of_the_load`.
+- **Report notes.** One sentence: the categories are the spec's events, and the table from category to capability is
+  ours.
+
+### D142 · Incident status is worked out on read, not stored
+
+- **Date:** 2026-11-03 · **Part:** A, F · **Status:** Implemented · **Decided by:** the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03). That status must exist and be read by something
+  is Noor's (decisions item 5, which rejects "a stored label nothing reads")
+- **Context.** The spec lists status among an incident's fields and wants incident state consistent among the peers.
+  The replicated state already says almost everything: whether a result exists, who it sent, and whether that responder
+  is still held. The question is whether status should also be a stored value, and what its values mean.
+- **Options considered.**
+  - For where status lives:
+    1. *Worked out on read: `CommittedResult::status(held, now_ms)` and `CloudState::status_at(id, now_ms)`.* The result
+       and the hold already say it, `apply` does not change, and reading cannot move the digest.
+    2. *Stored beside each result: `results: BTreeMap<RequestId, IncidentRecord { result, status }>`, changed only by
+       log entries.* Every node agrees exactly with no clock involved. It costs a new record type and two transitions
+       in the state machine a day before the deadline, and it gives the TTL less to do: an accepted report with nobody
+       sent would say `Unassigned` for ever.
+    3. *A field inside `CommittedResult`.* A value that changes inside the record would make two replies for one ID
+       differ, against D27 and D37.
+    4. *Stored status plus a batched log sweep that expires old records.* No document requires it. A release already
+       frees every hold within about 2 s when a quorum exists, and without a quorum a sweep cannot commit. It would also
+       be the one way a bad clock could reach plans, because swept holds feed `free_responders`. About a new command, an
+       outcome, a task and an index to move a label. Dropped, and named as a Phase 2 idea.
+  - For the values:
+    1. *`Provisional`, `Unassigned`, `Assigned`, `Resolved`, `Expired`.* Each maps to real data today. `Provisional`
+       labels a lone node's answer on the client.
+    2. *The same without `Provisional`.* A client would have nothing true to show for a lone node's answer.
+    3. *Also `Reported`.* It would need a second log entry per request and change E1.
+    4. *Also `NeedsReconciliation`.* It is the spec's visible reconciliation state, listed under Phase 2 (D149).
+  - For what the words mean:
+    1. *`Resolved` means the responder's release committed. `Expired` means nobody was sent, and the report was too old
+       on arrival or its deadline has passed.* No new message, D111 already models time on scene, and a responder still
+       held past the deadline really is still out there. This is a reading.
+    2. *`Resolved` means a new close message from the client.* A new message and a new way to lose it.
+    3. *`Expired` means anything not `Resolved` past the deadline.* It would call a responder who is still on scene
+       expired.
+  - For whether a record that sent nobody turns `Expired` after its deadline:
+    1. *Yes, on read, against the reader's clock, drawn as a read rule and not a state change.* One comparison that
+       cannot touch a plan, a hold or the digest. Without it the TTL does nothing in any normal run.
+    2. *No: `Expired` means only too old on arrival.* No clock at all, but a report with nobody sent then says
+       `Unassigned` for ever.
+  - For which clock that deadline uses:
+    1. *`assigned_at_ms + ttl_ms - age_ms`, saturating: the executor's clock, counting from the report.* One wrong client
+       PC cannot change labels on every node.
+    2. *`reported_at_ms + ttl_ms`: the client's clock against the reader's.* A client PC a minute slow would make all its
+       nobody-sent reports read `Expired` on all three nodes.
+  - For how the client sees status:
+    1. *`Submitted.status`, from the reply and the record; `ClientReply` does not change.* No clock, lock or fallback on
+       the reply path.
+    2. *`ClientReply.status`, read from node state.* It would make a whole retry differ (D37), allow contradictory values
+       to be built, and need a state read on the reply path. It is the flag on `Done` that D123 rejected.
+    3. *Not shown on the client.* Then only `ctl` could ever read it.
+- **Decision.** The first choice in each group.
+
+  | The record | Reads |
+  |------------|-------|
+  | a responder was sent and is still held | `Assigned` |
+  | a responder was sent and its release committed | `Resolved` |
+  | nobody sent, and `age_ms >= ttl_ms` in the record | `Expired`, on any clock |
+  | nobody sent, and the reader's clock is at or past `assigned_at_ms + ttl_ms - age_ms` | `Expired` |
+  | nobody sent, otherwise | `Unassigned` |
+  | a lone node's answer, on the client only | `Provisional` |
+
+  `IncidentStatus` is in no `Command` or `Outcome`. `CommittedResult::status_at_commit()` is the same rule with no
+  clock and no hold, and it is what `Submitted.status` and `client_done.status` carry. Later changes are read with
+  `ControlRequest::Incidents` (D145).
+- **Why.** This answers what happens at TTL on every node for no log traffic and no new state-machine logic: no new peer
+  message, `Command`, `Outcome`, task, timer or dependency. So bidding, Raft, release and takeover run the same code in
+  every experiment. The time is an argument, so `state.rs` stays free of clocks.
+- **Consequences.** A wrong reader clock changes that node's labels. A wrong executor clock changes the times and labels
+  of every nobody-sent record it planned, on all nodes, for good, with equal digests, because `assigned_at_ms` is in the
+  log. Neither can change a plan, a hold or who is sent. A clock stepped back can turn `Expired` back to `Unassigned`,
+  so the diagram must draw it as a read rule. Nothing happens at the moment of expiry, so nothing can be pushed: a page
+  must poll. A retry after the release still gets the same `Done` body and the client still reads `Assigned`; the read
+  request shows `Resolved`. After `provisional_conflict` with `responder_taken`, a record reads `Unassigned` although
+  the client was told a responder was sent (D122). The report and the demo must say so; the conflict count is the
+  evidence.
+- **Where.** `proto.rs::{IncidentStatus, CommittedResult::{status, status_at_commit, deadline_ms, too_old_on_arrival}}`,
+  `state.rs::{status_at, is_held}`, `client.rs::Submitted`.
+- **How we check it.** `proto::tests::status_is_assigned_while_held_and_resolved_after`,
+  `nobody_sent_reads_unassigned_then_expired_at_the_deadline`, `too_old_on_arrival_reads_expired_at_any_clock`,
+  `the_deadline_counts_from_the_report_and_saturates`, `state::tests::status_at_follows_the_hold_through_release`,
+  `reading_status_changes_neither_state_nor_digest`, `tests/incidents.rs`.
+- **Report notes.** Say plainly that status is derived and that the step to `Expired` after acceptance uses wall clocks
+  and sits outside the digest. Those are the limits of this choice.
+
+### D143 · Too old means not planned: the client states the age, the node commits nobody and answers `ReplyBody::Expired`
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented · **Decided by:** Noor Hany Emam (decisions item 5).
+  The mechanism below, decided by the agent on its recommendation, on Noor's instruction to finish without more
+  questions (2026-11-03)
+- **Context.** Noor's rule: a report says, for example, that it is valid for 60 s; a node that gets it later answers
+  expired and sends nobody; 60 s is longer than the client's 30 s of retries. A TTL field that only sits in the record
+  is what Noor rejected. The mechanism has to fit "Commit, then reply" and must not compare clocks on different machines
+  in a way that could silently spoil a run.
+- **Options considered.**
+  - For the meaning (Noor's):
+    1. *Too old is not planned; the node answers expired and sends nobody.* Chosen.
+    2. *A stored label nothing reads, with late reports still planned.* Rejected by Noor. A report 90 s old would still
+       take a responder.
+  - For which age the rule reads:
+    1. *`ClientRequest.age_ms`, stated by the client on each send: one wall-clock difference at submit, then `Instant`
+       elapsed.* One machine's clock, so a wrong PC clock or a clock step cannot turn a whole run into "nobody sent" with
+       no error.
+    2. *The same from the wall clock on every send.* A clock step during the retries could fake an age.
+    3. *The node's `now - reported_at_ms`, as the planner's fallback does.* A client PC a minute behind would have all its
+       reports refused, with very low latency, which can pass for a good run.
+    4. *Time since this node received the request.* It restarts on each retry, as D95 found, so it would stay near zero.
+  - For where the rule sits:
+    1. *At the top of `plan_on_workers`, calling a pure `Incident::is_too_old(age_ms)`.* It covers `execute` and
+       `degraded::plan`. It runs after the election, so one node commits. It uses no worker slot and leaves the planning
+       time this node bids with as it was.
+    2. *The first line of `planner::plan`.* It would take a worker job and be counted as planning time.
+    3. *The top of `handle_request`.* All three nodes would act on it, before any election.
+    4. *On the client.* The decision belongs on the node, by Noor's wording, and a client that stopped itself would answer
+       nothing about the record.
+  - For how a refusal is answered:
+    1. *Commit `Plan { responder: None, cost: 0, priority: 0 }`, then reply `ReplyBody::Expired(result)`.* Commit then
+       reply stands, the node literally answers expired, and the fact is in the log, so every retry gets the same body.
+    2. *Commit the same, then reply plain `Done(result)`.* The client would have to work out what happened. Nothing would
+       literally answer expired.
+    3. *Reply without a commit.* It would be a second exception to "Commit, then reply" beside D120, and each node could
+       answer differently.
+    4. *Stay quiet.* The client would retry for 30 s and give up on a report the cloud had decided about.
+  - For the client at TTL:
+    1. *No change to retries: they stay per D52, and a node answers expired.* Every experiment depends on this loop, and
+       at 60 s the retries end first.
+    2. *The client stops at TTL, with a new `ClientError::Expired`.* A second place holding the same rule.
+  - For the value and the key:
+    1. *`campus.incident_ttl_ms = 60000`.* Noor's value, above the retries, and a simulated property like D111's key. All
+       31 cells stay valid through the default.
+    2. *`timers.incident_ttl_ms`.* It is not a timer anything waits on.
+    3. *120 000 ms.* No reason to differ from Noor's value.
+    4. *A TTL by severity.* More rules, and nothing asks for it.
+  - For config checks:
+    1. *Reject only 0.* No cell sets the TTL or the client timers, the demo's flag does not go through the check, and the
+       analysis warning catches a spoiled run.
+    2. *Also reject anything not above the worst-case retries.* A longer rule for a case nothing can reach.
+    3. *No check.* A config of 0 would refuse every report in silence.
+  - For `ttl_ms = 0` in a report:
+    1. *No special case: expired at once.* It gives the demo a one-step refusal. A page must refuse 0.
+    2. *0 means no TTL.* It contradicts the spec's list.
+  - For who sets the TTL, and how the demo shows a refusal:
+    1. *Each report carries it, and `loadgen --ttl-ms` overrides the config; no backdating flag.* `--ttl-ms 0` refuses at
+       once, and `--ttl-ms 1500` with all nodes silenced makes a really late retry: one flag and no faked report. The
+       runner must never pass it.
+    2. *The same plus `loadgen --backdate-ms`.* Backdating by 5 s or more also trips the old-age fallback of D95.
+    3. *Config only, lowered in a demo config.* Every client and node would have to share the demo value.
+  - For degraded mode:
+    1. *The same rule; the body stays `Provisional`; the client status is `Provisional`.* The answer is uncommitted and
+       must say so. It cannot fire at a valid TTL, and once replayed the record reads `Expired` from its own fields.
+    2. *Answer `Expired` without a commit.* That answer would pose as a decided one.
+    3. *No TTL while degraded.* A report could be planned long after it stopped mattering.
+  - For D95's age on the planner's fallback:
+    1. *Leave it as it is, and write down why one path has two ages.* This gap does not need it, and four test helpers
+       stamp `reported_at_ms: 0`, so switching would change what they plan.
+    2. *Switch it to `req.age_ms`, amending D95.* One age in one path, more churn the day before the deadline.
+  - For a frame stuck in the client's TCP send queue:
+    1. *State it as a limit.* It needs a client PC off the network for longer than the TTL, and item 11's UDP client has
+       no send queue, so the path ends there.
+    2. *Keep a deadline beside each queued frame and discard at dequeue.* About 6 lines that item 11 would delete.
+- **Decision.** `Incident::is_too_old(age_ms)` is `age_ms >= ttl_ms`. `ClientRequest` gains `age_ms`, set on each send
+  in `MeshClient::submit_from`. The top of `plan_on_workers`: if too old, log `report_expired { request, age_ms, ttl_ms }`
+  and return `planner::not_planned()`, with no worker job and no `record_service`. `execute` commits that as usual, and
+  `state.rs` holds nothing because the plan has no responder. `ResultProposal` and `CommittedResult` carry `age_ms`, so
+  the record itself shows it was too old on arrival. `send_done` sends `Expired(done)` when `done.too_old_on_arrival()`,
+  otherwise `Done(done)`, reading no state and no clock. `campus.incident_ttl_ms` defaults to 60000 and `validate` rejects
+  0. `loadgen --ttl-ms` overrides the client's copy of it. The loadgen summary gains `expired N` at the end of its first
+  line.
+
+  **The trap, and how it is closed.** A send loop that says "`Done` or `Provisional` returns, anything else keeps
+  waiting" would ignore `Expired` until the client gives up, so a report the cloud has answered would look lost.
+  `client::hand_over` now names every `ReplyBody` with no wildcard, so a new body cannot start out ignored: it is a
+  compile error. `client::finished` treats `Done` and `Expired` alike and takes the status from the record.
+  `tests/client.rs::an_expired_reply_ends_the_wait_at_once` holds this with retries an hour away. **Whoever rewrites the
+  send loop for gap 11 must carry `age_ms` into the new loop and keep this test green.**
+- **Why.** Stating the age keeps the decision on one machine's clock. The rule's place means one node commits, the
+  refusal goes through Raft like any result, and first commit wins settles every race: a fresh attempt that committed
+  first answers `Done` to a late retry, and a refusal that committed first answers `Expired` to a fresh retry, with no
+  hold taken. So every reply for one ID stays the same (D27, D37).
+- **Consequences.** One new branch sits on the request path. A stamping bug, such as milliseconds read as microseconds,
+  would turn every report into "nobody sent" with very low latency, which can pass for a good run. The guards are
+  `a_fresh_report_gets_a_responder_and_reads_assigned`, `reports_expired` in the smoke check before the long run, and the
+  warning in `analyze.py` (D147). With any TTL above the retries the refusal cannot fire without `--ttl-ms` or a page's
+  own TTL: the last send is at most 28.8 s old at +20% jitter (0, 2, 6, 12, 18 and 24 s, times 1.2) against 60 s, and no
+  cell sets client timers. The report must not imply it ran under load. A frame waiting in the TCP send queue keeps its
+  young stamp, so a client PC off the network for more than the TTL can still get reports planned after it gave up. A
+  lone node's refusal is `Provisional(Plan { None, 0, 0 })`, labelled provisional and not counted as expired; it reads
+  `Expired` only after the replay. It can only happen with a flag-set TTL. One request path now has two ages on purpose:
+  the too-old rule reads the client's stated age, and the planner's fallback reads D95's two-clock age.
+- **Where.** `proto.rs::{Incident::is_too_old, ClientRequest::age_ms, ReplyBody::Expired}`,
+  `node/mod.rs::{plan_on_workers, send_done}`, `node/degraded.rs::{plan, settle}`,
+  `client.rs::{submit_from, finished, hand_over}`, `config.rs::CampusConfig`, `bin/loadgen.rs`, `planner.rs::not_planned`.
+- **How we check it.** `tests/incidents.rs::a_too_old_report_commits_nobody_with_responders_free`,
+  `a_too_old_report_is_refused_under_leader_dispatch_too`, `a_report_one_millisecond_younger_than_its_ttl_is_planned`,
+  `a_zero_ttl_is_refused_through_the_client`, `a_retry_of_a_refused_report_gets_the_same_body`,
+  `a_report_planned_while_young_is_not_refused_by_a_late_retry`, `a_retry_that_arrives_too_late_is_refused`.
+  `tests/client.rs::each_retry_states_a_larger_age`,
+  `an_expired_reply_ends_the_wait_at_once`, `a_fresh_report_gets_a_responder_and_reads_assigned`.
+  `tests/degraded.rs::a_lone_node_answers_a_too_old_report_provisionally_and_the_record_reads_expired`.
+- **Report notes.** Cite `reports_expired = 0` for the runs. State the limits: the refusal fires only through a flag at a
+  valid TTL and never in a measured run, a queued TCP frame can escape it, and no event marks the moment a nobody-sent
+  record passes its deadline.
+
+### D144 · Assignment times: `assigned_at_ms` in the log, `expires_at_ms` as the planned end
+
+- **Date:** 2026-11-03 · **Part:** A, C · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The spec says a response assignment should identify who is assigned to which incident, when the assignment
+  was created and when it expires. `Plan` and the responder slot said who, but neither time existed: the end existed only
+  as a rule, timed by each node from when it first saw the hold, so it differed between nodes. The state machine has no
+  clock, so any time has to come in through the proposal.
+- **Options considered.**
+  - For the times:
+    1. *Store `assigned_at_ms`; compute `expires_at_ms` in the view, and document it as the planned end.* It is the next
+       bullet in the same spec list and cannot be added after the data is taken. Nothing enforces the end, so it is a plan
+       and not a promise.
+    2. *Store both.* The second can always be computed from the first, and storing it says more than is true.
+    3. *Leave both to Phase 2 and say so in the report.* The records would have no times at all.
+  - For where age and plan time sit:
+    1. *`age_ms` and `assigned_at_ms` in `ResultProposal` and `CommittedResult`.* Too old on arrival becomes a fact in the
+       log that reads the same on any clock.
+    2. *`assigned_at_ms` only.* The record could not show it was refused.
+    3. *A `Plan.expired: bool` flag.* It touches about 20 literals, and allows values that contradict each other.
+    4. *Times inside `Plan`.* Two plans made a moment apart would differ, which logs false conflicts in `settle`.
+  - For a replayed provisional answer:
+    1. *The time of the original answer, kept in `Provisional`.* The assignment was created when the client was told.
+    2. *The time of the replay.* It would hide how long the record was only provisional.
+- **Decision.** The first choice in each group. `execute` stamps `assigned_at_ms` from the node's clock on each proposal.
+  `state.rs` copies both fields into the record, with no clock of its own. `Provisional` in `node/degraded.rs` stores
+  `age_ms` and `assigned_at_ms`, and `settle` reuses them. `Table::store` now takes a built `Provisional`, because eight
+  parameters would fail clippy under `-D warnings`. `CommittedResult::planned_end_ms(ms_per_severity)` is `assigned_at_ms
+  + severity × ms_per_severity`, or `None` if nobody was sent. It appears in `IncidentView` as `expires_at_ms`.
+- **Why.** It meets the spec's list with one more field in the log. The stamp sits in the proposal, so all nodes hold the
+  same value and digests stay equal, whatever their clocks say.
+- **Consequences.** `expires_at_ms` is a planned end, not an enforced one: a backup releases at twice that time, a failed
+  proposal restarts the wait, and on a replay the hold starts later than the stored time. Docs must say so, and no test
+  may assert `Resolved` by that time. `reported_at_ms` is on the client's clock and `assigned_at_ms` on the executor's, so
+  they must never be subtracted: that is what `age_ms` is for (AGENTS.md, Measuring).
+- **Where.** `proto.rs::{ResultProposal, CommittedResult::planned_end_ms}`, `state.rs::commit_result`,
+  `node/mod.rs::execute`, `node/degraded.rs::{Provisional, Table::store, plan, settle}`.
+- **How we check it.** `state::tests::a_commit_keeps_the_proposals_age_and_time`,
+  `proto::tests::the_planned_end_is_the_time_on_scene_after_the_plan`,
+  `node::degraded::tests::a_stored_answer_keeps_its_age_and_time`, `tests/degraded.rs::a_replay_keeps_the_original_stamps`,
+  `tests/incidents.rs::rows_for_one_id_match_on_all_three_nodes`.
+- **Report notes.** The assignment record of the spec is `responder`, `assigned_at_ms` and `expires_at_ms` in
+  `IncidentView`. Say that the end is planned, not enforced.
+
+### D145 · Reading records: `ControlRequest::Incidents` and `ctl incidents`
+
+- **Date:** 2026-11-03 · **Part:** A, C · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Status only exists when someone reads it (D142), and Noor rejected a label nothing reads. Operators and the
+  demo need to see one incident's fields and compare them across nodes, and the web page needs a lookup too.
+- **Options considered.**
+  - For the request:
+    1. *One request: `ControlRequest::Incidents(IncidentQuery)`, with `One(RequestId)` or `OfClient { client, limit }`.*
+       A client range costs only the rows returned, and lookup by ID serves the page and the demo.
+    2. *`Incident { id }` plus `RecentIncidents { limit }` in reverse key order.* `RequestId` sorts by client first and
+       the table is never trimmed, so reverse order shows only the highest client ID that ever reported: clients 1 and 2
+       vanish once client 3 has 20 rows.
+    3. *The event log only.* It cannot answer "what does the record say now".
+    4. *`ctl log`.* D132 rejected it, and this reads results, not the Raft log.
+  - For what the reply carries:
+    1. *`ControlReply::Incidents { node: NodeStatus, rows }`.* Control frames pass the gate, so a silenced or returning
+       node still answers; the reply itself must say so. It reuses a struct, and adds digest and applied index for
+       comparing nodes.
+    2. *`{ serving, silenced, rows }`.* Less to send, and no digest to compare.
+    3. *Rows only, with a second `Status` call.* The two answers could disagree.
+    4. *`Error` while silenced or not serving.* The page could not show a silenced node's own view, and it would be one
+       more special case.
+  - For rows per reply and their order:
+    1. *Default 10, cap 20, newest first within one client.* `StateReader::with` holds up applying the log, and sequence
+       numbers start at the current time (D113), so the highest is the newest.
+    2. *Cap 50.* More time holding up apply, and more than a screen.
+    3. *No cap.* One careless call could stall a node under load.
+    4. *Sorted by `log_index`.* It needs a scan or a new index.
+  - For a lone node's stored answers:
+    1. *Not shown: rows are committed records.* The client labels `Provisional`, and `ctl status` shows degraded.
+    2. *Shown, through a read accessor in `node/degraded.rs`.* About 8 more lines with no spec line behind them. Add it
+       only if the page needs it.
+  - For `ctl incidents`:
+    1. *`--client C [--limit K]` or `--id C-SEQ`, all three nodes by default, `--node N` narrows, rows print `log_index`.*
+       The demo compares one ID across nodes. `ctl` asks one node after another, so under load lists can shift, and a
+       brief `Assigned` against `Resolved` is catch-up, which the digest settles.
+    2. *One node only.* Comparing nodes would take three commands.
+  - For `ctl status`:
+    1. *No new columns.* Counting on read would scan on the 1 s client ping, and the table is already wide under `watch`.
+    2. *Four count columns at the right end.* Nothing reads them.
+- **Decision.** The first choice in each group. `IncidentView { id, incident, status, responder, priority, executor,
+  age_ms, assigned_at_ms, expires_at_ms, log_index }`. `expires_at_ms` is an `Option`, `None` if nobody was sent.
+  `DEFAULT_INCIDENT_ROWS = 10`, `MAX_INCIDENT_ROWS = 20`; the node applies the cap whatever `limit` says.
+  `CloudState::incident_rows(query, now_ms, ms_per_severity)` builds the rows with `results.range` on one client.
+  `impl FromStr for RequestId` reads what `Display` writes, so `--id` takes an ID copied from `ctl`'s own output. Each
+  node's block prints its role, applied index, digest, serving and silenced, and a note when its rows may be behind.
+- **Why.** The first choice in each group keeps a read cheap, truthful about a node that is out of the group, and useful
+  for comparing nodes, with no new command, peer message or task.
+- **Consequences.** A page must discard rows unless `node.serving && !node.silenced`. If gap 11 moves control to typed
+  methods, this becomes an `incidents(query)` method, which must still skip the gate and carry `NodeStatus`. Decisions item
+  11 keeps `ctl` on TCP, so a full reply has no datagram limit to meet; it is about 1.4 kB by arithmetic in any case.
+- **Where.** `proto.rs::{IncidentView, IncidentQuery, ControlRequest::Incidents, ControlReply::Incidents}`,
+  `state.rs::incident_rows`, `node/mod.rs::on_control`, `bin/ctl.rs`.
+- **How we check it.** `state::tests::rows_of_one_client_come_newest_first_up_to_the_limit`,
+  `a_client_query_never_returns_more_than_the_cap`, `a_higher_client_id_does_not_hide_a_lower_one`,
+  `a_row_shows_the_record_and_its_status`, `tests/incidents.rs::rows_for_one_id_match_on_all_three_nodes`,
+  `a_client_query_reads_that_clients_newest_records`, `control_rows_say_whether_the_node_is_silenced_or_serving`, the two
+  tests in `bin/ctl.rs`.
+- **Report notes.** `ctl incidents --id` on three nodes is a good demo of replicated state: the same `log_index` on all
+  three.
+
+### D146 · Report owners under open-loop load (amends D54)
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Every report now needs an owner. In the closed loop each simulated user is a task, so its index is the
+  owner. D54's open loop has no users: `--rate` ignores `--users`.
+- **Options considered.**
+  1. *`user = sent % --users.max(1)`, so `--users` stops being ignored with `--rate`.* No extra random draw, and a
+     population of owners. `.max(1)` avoids a new panic with `--users 0`.
+  2. *A random draw from the seeded generator.* It would shift every later draw in a seeded run.
+  3. *Always user 0.* The records would say one person sent everything.
+- **Decision.** Option 1, in `bin/loadgen.rs::open_loop_owner`. The closed loop uses the user's index.
+- **Why.** It is the smallest change that gives open-loop reports real owners. It does not change the rate, and the runner
+  never uses open loop.
+- **Consequences.** `--users` has a meaning with `--rate` now, and the flag's help says so.
+- **Where.** `bin/loadgen.rs`.
+- **How we check it.** `bin/loadgen.rs` tests `open_loop_owner_survives_zero_users`,
+  `open_loop_reports_take_turns_among_the_users`.
+- **Report notes.** None needed.
+
+### D147 · Measuring refusals: `report_expired`, `reports_expired`, and no TTL experiment cell
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A refusal should be visible, and a stamping bug must be caught before an hour of runs is spent on it. Field
+  names must stay stable once a script reads them, so additions only.
+- **Options considered.**
+  - For events:
+    1. *A new rare `report_expired { request, age_ms, ttl_ms }`; `client_done` gains `status`; `no_responder` stays.*
+       Additions only, and analysis already reads `no_responder`.
+    2. *The rare event only.* The client side could not be counted.
+    3. *A JSONL event on each status change.* Thousands of lines a second.
+  - For analysis:
+    1. *Add `reports_expired` from `client_done.status`, warn above 0, and add it to the smoke grep in the runbook.* The
+       report can show the rule fired 0 times, and a stamping bug is caught by the short check before the long run.
+    2. *Add the metric only.* Nobody would look at one number among hundreds.
+    3. *No change.* A bad run would look like a very fast one.
+  - For an experiment cell:
+    1. *None: 31 and 13 cells stay.* The quick hour is fixed, and the spec's measurement list has no TTL item.
+    2. *A TTL cell.* It changes D63 and D130.
+  - For the clock check:
+    1. *Make the runbook's `chronyc tracking` a must before the six-PC test, with no runner code.* A bad clock here moves
+       labels and shown times, not plans, and D95's fallback already relies on it.
+    2. *A check in `scripts/run-experiments.sh`.* More runner code for something a person can read in a second.
+- **Decision.** The first choice in each group. `client_done.status` is `provisional`, `unassigned`, `assigned` or
+  `expired`. `client_done.priority` is the plan's priority points. `analyze.py` adds `reports_expired` and `priority_mean`,
+  and `expired_warnings` prints a warning to stderr for each cell with `reports_expired` above 0. `no_responder_share`
+  still counts an expired report, so it says so beside it.
+- **Why.** The rule should fire 0 times in a measured run, and the check that says so has to be loud.
+- **Consequences.** `analysis/test_analyze.py` is not in CI, so run it by hand. The runner must never pass `--ttl-ms`.
+- **Where.** `metrics.rs::Event::{ReportExpired, ClientDone}`, `client.rs::finished`, `analysis/analyze.py`,
+  `analysis/test_analyze.py`, `analysis/README.md`.
+- **How we check it.** `analysis/test_analyze.py`: `test_reports_expired`, `test_priority_mean_covers_every_answer`,
+  `test_a_cell_with_expired_reports_gets_a_warning`.
+- **Report notes.** Show `reports_expired = 0` next to `no_responder_share`.
+
+### D148 · Incident priority: an integer in `Plan`, computed by the planner
+
+- **Date:** 2026-11-03 · **Part:** E, all · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03); adding it with the incident fields is listed among
+  the picks in decisions item 11
+- **Context.** The spec has the selected peer compute "an incident priority and a response plan", and asks that the
+  computation combine severity, age, location or distance, resource availability and responder capability into a priority
+  or assignment decision. It also asks for an algorithm that is deterministic, explainable and tunable. The gap hunt found
+  nothing computed, stored or returned a priority: `Plan` held only who goes and how far, and severity and age mattered
+  only in the fallback when no matching responder was free (D94, D95). D93 says as much: "Severity and age do not change who
+  is nearest".
+- **Options considered.**
+  1. *A sum of points worked out after the pick and carried in `Plan`; the pick rule stays.* Every factor has a clear
+     effect, it costs nothing to compute, and E2 does not move. Nothing acts on the number yet, which the report must
+     say.
+  2. *Replace the pick with one weighted score over all factors.* It would truly combine them in the assignment, but it
+     rewrites D93, D94 and D101, loses "cost is metres", and changes who is sent in every measured run, a day before the
+     deadline.
+  3. *Order the worker queue by priority.* Urgent reports would be planned first, but the pool's queue is a fair FIFO
+     (D48), it would touch the load figures bids are made from, and mild reports could starve under load.
+  4. *Rank each incident among all the open ones.* It fits "currently known snapshot" best, but the planner sees one
+     incident at a time (D49), and a rank needs a scan over open incidents inside the deterministic core for each plan.
+  5. *A field outside `Plan`, on `ResultProposal` and `CommittedResult`.* A lone node answers `Provisional(Plan)`, so that
+     client would never see a priority, and the planner would not be the thing that returns it.
+  6. *Weights in the config.* It would meet "tunable" more fully, but no experiment reads the number, so nothing would
+     tune it, and each weight would be one more key to keep the same on six machines. It can be added later with no wire
+     change, because the value travels in the plan.
+  7. *Floats.* Forbidden in replicated data.
+- **Decision.** Option 1. `Plan.priority: u32`, in **priority points**: higher is more urgent, and one step of severity is
+  worth 100 points. It adds up five parts:
+
+  | Factor | Points | Range | Why this scale |
+  |--------|--------|-------|----------------|
+  | severity | 100 per point of severity | 100 to 500 | the unit everything else is measured against |
+  | age | 1 per 50 ms, at most 400 | 0 to 400 | waiting `OLD_AGE_MS` (5 s) counts as one severity step, the same age at which D95 already treats an incident as severe; the cap means the mildest report can wait its way level with a fresh severity 5 and no further |
+  | distance | 1 per 10 m to the responder, at most 100; nobody sent counts as 100 | 0 to 100 | help that has farther to come needs attention sooner, and 1000 m is about the widest inside one zone |
+  | availability | 100 / (free responders of any capability + 1) | 0 to 100 | it stays near 0 while plenty are free, and rises fast as the campus runs out |
+  | capability | 100 if no free responder has the needed capability | 0 or 100 | someone of the wrong capability goes, or nobody does |
+
+  For example, severity 4, 1 s old, with a matching responder 300 m away and 9 free scores 400 + 20 + 30 + 10 + 0 = 460.
+  The most it can be at severity 5 is 1200. `planner::not_planned()` gives priority 0 to a report too old to plan (D143),
+  because nobody looked at it; anything planned scores at least 100. `Plan::same_assignment` compares only who goes and how
+  far, and `node/degraded.rs::settle` uses it for `provisional_conflict`, because two plans made a moment apart can agree
+  on who goes and differ in priority. `IncidentView.priority` and `client_done.priority` show it.
+- **Why.** It gives the spec's five factors one explainable number, in integers, from inputs the planner already has: the
+  severity, the age it is passed, the distance it just worked out, `free.len()`, and whether the capability search found
+  anyone. There is no new loop, so planning costs what it did and E2 should not move, though that was not measured. The
+  pick rule keeps its tests. Priority is carried in the plan, so it goes through the log and every node holds the same
+  value, whatever its own view of the free responders is.
+- **Consequences.** The number is an output: it does not change who is sent, and it does not reorder the worker queue, so a
+  severity 5 report still waits and can be shed like a severity 1. The report must say so. The age is D95's, on two
+  machines' clocks, so a client PC with a wrong clock can move its reports' priority by up to 400 points, though never who
+  is sent. Test helpers with `reported_at_ms: 0` get the full 400. The constants need a rebuild to change, so "tunable" is
+  met by the load knob and not by these weights. Tests that compared whole plans now compare responder and cost through one
+  helper, `picked`, and `age_does_not_change_a_plan_with_a_matching_responder` has to, because priority rises with age on
+  purpose. A retried plan keeps the priority of the first commit, since first commit wins.
+- **Where.** `proto.rs::Plan`, `planner.rs::{plan, not_planned, Urgency}` and its constants, `node/mod.rs::plan_on_workers`,
+  `node/degraded.rs::settle`, `state.rs::incident_rows`, `client.rs::finished`, `metrics.rs`, `analysis/analyze.py`.
+- **How we check it.** `planner::tests`: `the_worked_example_from_the_module_docs_is_right`,
+  `each_step_of_severity_is_worth_the_same`, `age_raises_priority_up_to_a_cap`,
+  `the_mildest_incident_can_wait_its_way_level_with_a_fresh_worst_one_and_no_further`,
+  `a_farther_responder_raises_priority_and_nobody_sent_counts_as_farthest`, `fewer_free_responders_raise_priority`,
+  `no_free_match_raises_priority`, `the_capability_points_also_apply_when_a_fallback_is_sent`,
+  `with_nobody_free_every_factor_but_age_is_at_its_top`, `a_report_not_planned_has_no_priority_and_anything_planned_has_some`,
+  `priority_never_changes_who_is_sent`, and the older `the_same_input_always_gives_the_same_plan_in_any_order`.
+  `tests/degraded.rs::the_same_responder_with_another_priority_is_no_conflict`,
+  `tests/incidents.rs::rows_for_one_id_match_on_all_three_nodes`.
+- **Report notes.** Show the table and the worked example. Say what the number does not do: it is computed, returned and
+  replicated, but nothing is ordered by it. Name options 2 and 3 as what a later phase could do with it.
+
+### D149 · What was left out of the incident model on purpose
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented (nothing to build) · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A choice not to do something is a decision too (AGENTS.md). Each of these was weighed while designing
+  D140 to D148.
+- **Options considered.** For each, *leave it out and say so*, or *build it*:
+  1. *Deleting expired records.* Deleting at TTL would let a late retry plan again and hide a hold from `node/release.rs`,
+     which leaks the responder. Left out: D9 keeps the table.
+  2. *A `Reported` status.* It needs two log entries per request and changes E1. Left out.
+  3. *Planning a report again before its TTL when a responder comes free.* It needs a second plan for one ID, and first
+     commit wins allows only one. Left out.
+  4. *Attachments.* Optional in the spec. Left out.
+  5. *Owner permissions.* They need authentication, and the spec's owner rules are Phase 2. Left out.
+  6. *A visible reconciliation status, `told: Option<Plan>` on `ResultProposal` and `NeedsReconciliation`, about 1 more
+     hour.* The spec lists it under Phase 2, and it adds a rule inside first commit wins the day before the deadline. The
+     conflict count is the evidence meanwhile. Left out, and named in the report with the false-label limit of D142.
+  7. *A deadline beside each frame in the client's send queue.* Item 11's UDP client has no send queue. Left out, and
+     stated as a limit in D143.
+  8. *A time or scheduling crate.* Existing types cover all of it. No dependency was added.
+- **Decision.** All left out. Any of them can come later without undoing this work.
+- **Why.** Each one adds behaviour or risk the day before the deadline, and none is needed to meet Noor's rule or the
+  spec's Phase 1 list.
+- **Consequences.** The report names 2, 3, 4, 5 and 6 as not built, and 6 as Phase 2.
+- **Where.** Nothing in the code.
+- **How we check it.** Nothing to check.
+- **Report notes.** One short list under limits and future work.
+
+### D150 · Peer calls enforce their own deadline, because tarpc times only what it has written
+
+- **Date:** 2026-11-03 · **Part:** C · **Status:** Implemented, amends D119 and D104 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** `PeerClient::call` handed tarpc a deadline and then waited for tarpc's answer, with no timer of its own.
+  Reading tarpc 0.37.0 shows that tarpc starts a call's timer only when it takes the call off its queue and writes it:
+  in `src/client.rs`, `poll_write_request` calls `insert_request` only after `poll_next_request` has got past
+  `ensure_writeable`. If the socket is full, `ensure_writeable` never finishes, so every later call stays in the queue
+  with no timer at all. A machine that lost power sends no close and no ACK, so a socket to it fills up and stays full.
+  `PeerSet::broadcast` ends in `join_all`, and the heartbeat loop waits on that. So one such call stops the whole loop:
+  no more suspicion of any peer, no degraded mode, no member list, and no log line to say why. The group (D152) sits
+  directly on top of this, and so does the failure draw of Noor's item 7, whose round could never close if its own send
+  never returned. A silenced node does not trigger it, because it keeps reading its sockets
+  (`PeerServer::deliver`), so experiment cells E3 and E4 would never have shown it.
+- **Options considered.**
+  1. *A timer of our own around the tarpc call, inside `PeerClient::call`.* `timeout_at(deadline, invoke(...))`, with the
+     elapsed case mapped to `RpcError::DeadlineExceeded`. Three lines, in the one place every peer call passes. The rule
+     that replaces a connection after 1 s of no answers (D119) still fires, because it matches on that same error.
+     Dropping the call is safe: tarpc's `ResponseGuard` cancels it.
+  2. *An outer timeout in every caller.* Heartbeats, bids, forwarded proposals, the fault driver and the Raft network
+     would each need one. Any caller that forgets hangs again, and the next caller to be written has to know about it.
+  3. *A socket option such as `TCP_USER_TIMEOUT`.* The kernel would give up on the connection after a while. That does
+     not give each call its own deadline, which is 50 ms for a heartbeat and 500 ms for a bid. tokio's `TcpStream` does
+     not offer the option, so it needs a new dependency or `unsafe`, which is forbidden. It would also be one more thing
+     to tune on the lab machines.
+  4. *Leave it, because no rehearsal has shown it.* The one rehearsal cut, at 43 req/s, replaced the connection after
+     about 1 s and carried on. Rejected, because the demo's power cut is under load, and this failure is silent.
+- **Decision.** Option 1. `PeerClient::call` wraps `invoke` in `tokio::time::timeout_at(deadline, ...)` and maps an elapsed
+  timer to `RpcError::DeadlineExceeded`. No new key, message or timer: the deadline is the one the caller already passed.
+- **Why.** "Every call has a deadline" (D119) and "each task ends within the timeout" (D104) were true only for calls
+  tarpc had managed to write. One small change at the one choke point makes them true for all calls. Using the same
+  deadline and the same error means nothing above this line has to change.
+- **Consequences.**
+  - A call can now return `Timeout` without ever having been written. `Err(Timeout)` already meant "unknown", so no caller
+    changes.
+  - When our timer fires before tarpc's, tarpc sends a small cancel frame for a call it had written, which its own timer
+    would not have sent. It is harmless and is not counted in E5's message counts, only in `net_tx_bytes`.
+  - The tarpc task of a replaced, stuck connection stays alive with its queue until the kernel gives up on the socket, by
+    my reading about 15 minutes at Linux defaults. It is bounded: at most `CALL_BUFFER` calls on one connection per outage,
+    because a connect to a dead machine fails and then backs off (D89). Not changed here.
+  - This does not bound `client_write` in `raft/mod.rs`, which is a separate path with no deadline. It is not a peer call,
+    so this entry does not touch it.
+- **Where.** `node/transport.rs::PeerClient::call`, and two new tests at the bottom of that file.
+- **How we check it.**
+  - `transport::tests::a_call_to_a_peer_that_never_reads_returns_by_its_deadline`: a listener accepts and never reads, 12
+    calls of about 2 MiB each with a 300 ms deadline fill the socket, every call must return `Timeout` within 2 s of its
+    deadline, and the connection must then be replaced.
+  - `transport::tests::a_broadcast_returns_with_one_stuck_peer_and_reports_the_healthy_one`.
+  - Both were seen red on the code as it stood at a98a1c3, with calls still out 10 s after a 300 ms deadline. The messages
+    were "a call queued behind a full socket hung past its deadline" and "one stuck peer held up the whole group send".
+    Both are green with the fix.
+  - Rehearsal, one machine, debug build, no disk, about 440 req/s, private network namespace, with node 1 cut by SIGSTOP plus
+    dropped packets on its ports, on builds with and without this fix:
+
+    | Build | Send buffer limit | Result 8 s after the cut |
+    |-------|-------------------|--------------------------|
+    | without the fix | 64 KiB | no hang: the list changed as normal, because the socket did not fill inside the 1 s before the connection is replaced |
+    | without the fix | 8 KiB, staged so that it fills inside that second | **hang**: both survivors logged `peer_suspected` once, and their lists stayed at `1,2,3` |
+    | with the fix | 64 KiB | the list went to `2,3` about 2 s after `peer_suspected` |
+    | with the fix | 8 KiB | the same |
+
+    So the hang needs the socket to fill in about a second. How likely that is on the lab machines depends on their load and
+    send buffer sizes, and neither is known yet.
+  - Six-PC check, not done: a real power cut at the demo's load with `ctl status` on screen. Pass means `peer_suspected` on
+    both survivors within a second, and `degraded = true` on the last node in scene 6.
+- **Report notes.** A good example of a fault only a dead machine shows: silence alone never triggers it. Until the six-PC
+  test has run, say plainly that it is proven with a listener that never reads and with a staged small buffer on one machine,
+  not with a power cut. Library credit: this is about tarpc's behaviour, so name tarpc in the sentence.
+
+### D151 · A suspected peer stays suspected through this node's own silence
+
+- **Date:** 2026-11-03 · **Part:** C · **Status:** Implemented, amends D79 (item 4) · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D79 item 4 says that while a node is silenced it judges nobody, and that on restore every peer's clock starts
+  fresh. That was right for peers it trusted, because it could not have heard from them. It was wrong for a peer it already
+  suspected. Coming back from its own silence tells a node nothing about that peer, yet `Suspicion::reset` gave it a fresh
+  clock, so `update` trusted it again straight away and suspected it again 150 to 200 ms later. In demo scene 6 that means
+  node 2, back from a silence, lists the powered-off node 1 as alive. With the 2 s hold on the member list (D153), the wrong
+  entry would last about 2.2 s, which is long enough to see on screen and long enough to send it bids.
+- **Options considered.**
+  1. *`Suspicion::reset` skips peers already suspected.* One condition. A suspected peer stays suspected until it is heard.
+  2. *Leave it and explain it in the demo.* No code, but a list that says a dead machine is alive right after a fault is the
+     thing the list exists to get right.
+  3. *Keep suspected peers' clocks, but also throw away the suspicion start time.* The hold would start over on restore, so a
+     dead peer would stay listed for another 2 s. No benefit over option 1.
+- **Decision.** Option 1. `reset` gives a fresh clock only to peers this node does not suspect. A peer that was suspected
+  keeps its old clock and its old start time, so hearing from it is the only thing that ends the suspicion.
+- **Why.** The clock measures how long since a peer was heard, and a node's own silence is no evidence for a peer. Peers it
+  trusted get the benefit of the doubt, as D79 intended, because the node really could not hear them.
+- **Consequences.**
+  - `peer_trusted`'s `suspected_ms` can now include this node's own silence: 44,198 ms in the rehearsal below.
+  - E3's detection time is not affected, because a restored node no longer logs a second `peer_suspected` for a peer it
+    already suspected. That pair was noise.
+  - One test pinned the old behaviour and had to change: `reset_starts_every_clock_fresh` became
+    `reset_gives_a_peer_nobody_suspects_a_fresh_clock` and `a_suspected_peer_stays_suspected_through_reset`. The reason is in
+    the commit message, as AGENTS.md asks.
+  - `tests/heartbeat.rs::a_silenced_node_is_suspected_by_both_others_and_trusted_after` is unchanged and still passes,
+    because node 2 suspected nobody before its silence.
+- **Where.** `node/heartbeat.rs::Suspicion::reset`.
+- **How we check it.** `heartbeat::tests::a_suspected_peer_stays_suspected_through_reset`, seen red on a98a1c3 and green
+  after. `tests/group.rs::a_peer_suspected_before_a_silence_stays_out_after_restore`, which fails if this fix is taken out.
+  Rehearsal, one machine: node 2's `group_view` log went 1,2,3 then 2,3 then 1,2,3 only when node 1 really came back, with a
+  12 s silence of its own in between.
+- **Report notes.** A small point, but it is what makes scene 6's list true. It shows why a detector's state and a node's own
+  fault need separating.
+
+### D152 · Group communication built: CloudGroup with a per-node view, send and probe
+
+- **Date:** 2026-11-03 · **Part:** C, B · **Status:** Implemented, amends D126, amended by D210 · **Decided by:** Noor Hany Emam (item 8 of the
+  decisions of 2026-11-03: a named group of nodes with a who's-alive member list that changes when a node dies or returns;
+  send once to the group and it reports who got it; bids, pings and the failure draw all use it). The code shape, names and
+  return value were decided by the agent on its recommendation, on Noor's instruction to finish without more questions
+  (2026-11-03).
+- **Context.** D126 gave the sends we already had a name and a table of guarantees. Noor looked at that and rejected it as the
+  answer, because a grader may say it is just a loop. The Oct 28 class note says to implement group communication, and the
+  Sept 13 note says the application sends once and the middleware gives the replicas their copies, with the two layers kept
+  apart. As merged, nothing in the code held a list of members and no send depended on one.
+- **Options considered.**
+  1. *A cloud group whose view steers bids.* One object in one new file. It knows the members from the config and keeps this
+     node's own list. Bids go to the list, pings go to everyone, and each change is numbered and logged. Nothing new goes in
+     the Raft log, and no new message goes between nodes. Chosen.
+  2. *The same group, with the list only as a report.* `send` still goes to all three whatever the list says. It costs under
+     an hour less and leaves the bid path alone, but the copies, the addressees and the order are then identical to
+     `PeerSet::broadcast`, so Noor's objection stands: it is a loop with a list beside it. It also keeps about 22,500
+     unanswerable bids per survivor per 15 s fault at 1500 req/s (arithmetic).
+  3. *Agreed views through the Raft log.* Every node would have the same list. Nothing would read the agreement: heartbeats,
+     takeover, degraded mode and bid rounds all stay on local data. The list could not change without a majority, so in the
+     class-note case of one machine off and one failed it would still show two members with one alive. It also sends list
+     changes back through the leader, against Noor's items 1 and 7, and was estimated at 10 to 13 hours. No source we have
+     asks for agreement.
+  4. *D126 as it stood, naming only.* Rejected by Noor by name.
+  5. *Our own reliable, ordered multicast, or a full view-synchronous group.* Rejected by Noor: Raft already does ordering and
+     delivery for results, and bids are worthless late, so retrying them would be wrong.
+  6. *A group-communication library.* Another library doing distributed-systems work (AGENTS.md rule 6), to replace code that
+     works. D126 already rejected it, and that stands.
+
+  For the code shape: *`node/group.rs` with `NodeContext.group: Arc<CloudGroup>`, a `Mutex<View>` and a pure `next_view`*
+  (chosen: a file a grader can open, the same pattern as `BidState` and `Suspicion`); *inside `PeerSet`* (mixes who is alive
+  with sockets); *a tokio watch channel updated on each change* (two peers changing in one tick would make two views).
+
+  For the calls: *`send(timeout, body)` and `probe(timeout, body)`, with the group reading the term* (chosen: the term rule
+  lives in one place, and pings need 50 ms while bids need 500 ms); *`multicast`* (the slides use that word for the level
+  below); *`send(term, timeout, body)`* (every caller would have to get the term right).
+
+  For the return value: *each addressed peer's `Result`, as `broadcast` returns it* (chosen: callers change no logic); *a new
+  `Delivery` type* (a new type to learn, carrying the same facts).
+
+  For the level underneath: *keep `PeerSet::broadcast` and add `broadcast_to` with a filter* (chosen: the smallest change, the
+  test D126 cites keeps working, and it matches the course picture of multicast as the primitive below group communication);
+  *move the code into `group.rs` and delete `broadcast`* (a bigger change for no behaviour).
+- **Decision.** Option 1. `CloudGroup { me, all, peers, consensus, log, view: Mutex<View> }`, with `View { number, members }`.
+
+  | Call | Goes to | Guarantee | What covers a lost copy |
+  |------|---------|-----------|-------------------------|
+  | `CloudGroup::send`: bids | the peers in this node's view | best effort, unordered, no retry; reports who acknowledged in time | a split decision, settled by first commit (D27) |
+  | `CloudGroup::probe`: pings | every configured peer | best effort, unordered, no retry; reports who acknowledged in time | the next ping; a real loss becomes a suspicion (D79) |
+  | `MeshClient::submit`: from outside the group | all three nodes | best effort, unordered | the client's retry with the same ID (D52) |
+  | Committed state: Raft, from openraft | every replica | totally ordered; reaches every replica once committed; an error means unknown | openraft's log replication |
+
+  Each send is two unicasts from a node and three from a client, not IP multicast. How to read an answer: `Ok(Ack)` was
+  delivered, and only this counts as delivered. `Ok(StaleTerm)` was answered but dropped by the term rule. `Err(Timeout)` and
+  `Err(Closed)` are unknown, because it may still have arrived. `Err(Backoff)`, `Err(Connect)` and `Err(Silenced)` were never
+  sent.
+
+  Not added, on purpose: retries or ordering of our own, a new peer message, a group ID, a group library, IP multicast.
+  Results still call `Consensus::propose` directly; `send_ordered` is D156 and comes later. The receive side stays plain
+  dispatch in `on_peer_message`, and the sender's own copy stays with the caller, as `bids.rs` already does: a `GroupHandler`
+  upcall with a loopback would change no behaviour and break AGENTS.md rule 3, "hook in, don't rewire".
+- **Why.** Noor's item 8 asks for a group that is more than a name, and rejects building our own guarantees. A list that decides
+  where a send goes answers the first, and leaving order to Raft answers the second. The list costs no new log entries,
+  commands, tasks, timers or messages, so it cannot affect safety, which rests on Raft and first commit wins.
+- **Consequences.**
+  - It is not agreed views. Each list is one node's opinion. If a reader wants agreed views, this does not give them, and the
+    report says so.
+  - The primitive stays public and `tests/heartbeat.rs::a_group_send_reaches_every_peer_and_reports_who_missed_it` stays on it.
+  - `NodeContext` gains a field; the group must be built after Raft exists, which `start_with` already allows, so there is no
+    cycle. It is an `Arc` because `send_bid` moves it into a task.
+- **Where.** `node/group.rs`, `node/transport.rs::PeerSet::{broadcast, broadcast_to}`, `node/mod.rs::{NodeContext, start_with}`,
+  `node/bids.rs::send_bid`, `node/heartbeat.rs::spawn`.
+- **How we check it.** `tests/group.rs` (see D153 to D155). Each test there was seen to fail against a build broken on purpose
+  in the way it guards: pings following the list, `send` ignoring the list, `reset` forgiving a suspected peer, no hold, first
+  view not logged, status reporting an empty list. 10 runs in a row, all green, of `tests/group`, `tests/heartbeat`,
+  `tests/takeover`, `tests/bidding`, `tests/degraded`, `tests/faults` and the unit tests of the three files. Those runs were
+  on a machine with other jobs on it, so they say less than runs on a quiet machine would.
+- **Report notes.** The course picture fits the code: `PeerSet::broadcast` is multicast support, and `CloudGroup` sits on top as
+  group communication. Credit openraft for order and delivery on the ordered path. Reading of the term: D157.
+
+### D153 · View rule: a peer leaves after degraded_after_ms of unbroken suspicion and returns when heard; Raft's voters never change
+
+- **Date:** 2026-11-03 · **Part:** C · **Status:** Implemented · **Decided by:** the agent on its recommendation, on Noor's
+  instruction to finish without more questions (2026-11-03). That the list changes when a node dies or returns is Noor's, from
+  item 8.
+- **Context.** The list needs a rule for when a peer leaves and comes back, a timer, a start state, and an answer for what a
+  silenced node shows. It also has to say how it relates to Raft's membership, which D25 fixed.
+- **Options considered.**
+  1. *When a peer leaves:* after `degraded_after_ms` of unbroken suspicion, and back as soon as it is heard (chosen); as soon as it
+     is suspected, in about 150 to 200 ms (a 150 ms false alarm would cut rival bids from a live node, and it would then win
+     every round it sees, and the list would flicker on the demo screen); when it is unreachable or not serving, with `serving`
+     added to the heartbeat reply (a wire change on about 240 messages a second, D79).
+  2. *Which timer:* reuse `timers.degraded_after_ms` (chosen: one timer to prove on the lab, the same meaning as D121, no cell
+     file changes, and in scene 6 the list and degraded mode flip together); a new key `group_leave_after_ms`; a constant in
+     `group.rs` (a timer the config cannot reach).
+  3. *Members and Raft voters:* fixed from `cluster.nodes`, all three stay voters, and the view sits on top (chosen, D25 stands);
+     a join and leave protocol (nothing joins); call `change_membership` when the view changes (one false suspicion would
+     shrink the quorum, and a silent node keeps its vote and log, D75).
+  4. *View on a silenced node:* frozen, and `ctl` prints `-` (chosen: no extra code, because the heartbeat loop already skips a
+     silenced node, and `-` stops a frozen list reading as a live one); frozen, and `ctl` prints it; shrink to itself on silence
+     (a node that is cut off cannot judge others, D79).
+  5. *Starting view and number:* all members at start, with the number in memory, restarting at 1 and never compared (chosen: it
+     matches D79's reset at start, and the number only orders one process's changes); only itself until it hears from peers (a
+     healthy start would look like a failure); number stored on disk (nothing needs it).
+- **Decision.** The heartbeat loop reads `Suspicion::suspected_for(hold, now)` with `hold = timers.degraded_after()`, under the lock
+  it already holds, and after logging the suspicion changes calls `CloudGroup::update(&left)`. `update` uses a pure
+  `next_view(current, all, me, left)`, the one place the view changes. A node never removes itself. The number rises only on a
+  change, so two peers changing in one tick make one view. The first view is logged from `heartbeat::spawn`, not from
+  `CloudGroup::new`, which runs before `started` is logged.
+- **Why.** The detector stays underneath, quick and jumpy, as takeover needs. The list is a slower, steadier layer on top: a one-tick
+  false alarm changes nothing, and a peer can change the list at most about once per 2 s. Returning at once is safe in the other
+  direction, because hearing from a peer is good evidence, and a wrong return costs a few unanswered bids.
+- **Consequences.**
+  - The list lags. It changes about 2 s after `peer_suspected`, and a fault under about 2.2 s never shows, which is about 6% of a
+    uniform 1 to 20 s draw. Say so in the demo.
+  - Members means reachable, not able to serve. Between a node's return and `serving = true` it is listed and answers nobody, so
+    do not narrate `members` as health. Point at leader, serving and degraded as well.
+  - Lists differ between nodes, and a silenced node's list is frozen for up to 20 s.
+  - `timers.degraded_after_ms` now has two uses, so changing it moves both. Its comment says so in `config.rs` and in both config
+    files. D121 itself is unchanged.
+  - A log file is appended, so a restart drops the number back to 1 in the same file. Never compare numbers across a restart or
+    across nodes.
+- **Where.** `node/group.rs::{View, CloudGroup::update, next_view}`, `node/heartbeat.rs::{Suspicion::suspected_for, spawn}`,
+  `config.rs` and `config/*.toml` (comments only).
+- **How we check it.** `group::tests` (the number rises only on a change, two peers leaving in one tick make one view, a node never
+  removes itself, a peer under the hold stays, a heard peer returns at once). `heartbeat::tests::suspected_for_counts_only_unbroken_suspicion`.
+  `tests/group.rs::a_silenced_member_leaves_after_the_hold_and_returns_when_heard`, which also checks that `started` comes before
+  the first `group_view` and never asserts a view number. Rehearsal, one machine, in the shape of scene 6: node 3's `group_view`
+  log went 1,2,3 then 2,3 then 3 then 2,3 then 1,2,3, and `degraded_entered` came 2.05 s after it suspected node 2.
+- **Report notes.** State the limits: each list is one node's opinion, the members are fixed at three, and the view never reaches
+  Raft, a `Command` or the state digest.
+
+### D154 · Bids and the failure draw follow the view; pings probe every configured peer
+
+- **Date:** 2026-11-03 · **Part:** C, B · **Status:** Implemented for bids and pings; the failure draw adopts it when it lands;
+  amends D104 · **Decided by:** Noor Hany Emam for "bids, pings and the failure draw all use the group" (item 8). The split
+  between `send` and `probe`, and what reads the view, were decided by the agent on its recommendation, on Noor's instruction to
+  finish without more questions (2026-11-03).
+- **Context.** Once a list exists, each send class has to say whether it follows it. D104 said a bid always goes to the two peers.
+  A list nobody reads is the report-only group that D152 rejected, but a list that everything follows cannot heal.
+- **Options considered.**
+  1. *Who each send addresses:* `send` to view members and `probe` to every configured peer (chosen); every configured peer for
+     everything (the report-only group, D152 option 2); view members for everything (two live nodes that removed each other would
+     never hear each other again, and a 20 s fault would last for ever).
+  2. *What reads the view:* `send` and `status` only, while takeover and the degraded trigger keep reading `Suspicion` (chosen); also
+     swap the degraded trigger to a "the list is only me" check (it rereads the same suspected set, so it changes nothing and adds a
+     dependency on a fault path); also takeover (takeover must act in about 150 ms, not 2 s).
+  3. *Client side:* no change, clients are outsiders sending to an open group through `MeshClient` (chosen, a reading of the spec's
+     "multicast the request to the three cloud servers"); the client keeps its own view from ping replies (a lone node off a list
+     must still get requests, and the client path is being reworked separately).
+- **Decision.** `bids.rs::send_bid` calls `ctx.group.send`. `heartbeat.rs` calls `ctx.group.probe`. The failure draw of Noor's item 7
+  goes through `send`, under two rules: its round closes on `config.cluster.nodes`, never on the view, and only `Ok(Ack)` counts as
+  delivered, because `Ok(StaleTerm)` was answered but dropped. `node/takeover.rs` and `node/degraded.rs` are unchanged.
+- **Why.** Pings are how a node finds out a peer is back, so they must reach peers off the list. Bids to a peer that has been silent for
+  2 s cannot be answered in a 20 ms window, so sending them is wasted work: a bid is worthless late. Following the list is also the
+  one thing that makes it more than a report.
+- **Consequences.**
+  - Healthy runs do not change, because everyone is on the list.
+  - Bid counts fall in fault cells, so `msgs_bid_per_req` drops against any older run, and final data must come after this lands. At
+    1500 req/s and a 15 s silence that is about 3,300 unanswerable bids per survivor instead of 22,500. That is arithmetic, 2.2 s
+    against 15 s, not a measurement.
+  - A live node wrongly suspected for over about 2.2 s gets no rival bids from the peers that removed it, so it wins every round it
+    sees and plans the request as well. First commit wins keeps that safe (D27). A node that cannot answer a ping for 2 s is unlikely
+    to read a bid inside a 20 ms window anyway. That is from reading: no run at the top load or on the real PCs exists yet.
+  - One line reverts it: make `send` address every peer again.
+- **Where.** `node/bids.rs::send_bid`, `node/heartbeat.rs::spawn`, `node/group.rs::{send, probe}`.
+- **How we check it.** `tests/group.rs::send_reports_who_answered_and_skips_a_member_who_left`;
+  `tests/group.rs::probe_still_reaches_a_peer_outside_the_view`, which makes two live nodes remove each other by swapping which one is
+  silent, and fails if pings follow the list; `tests/group.rs::bids_reach_a_returned_node_again`, which counts node 1's bid copies
+  per round going 2, then 1, then 2, and waits for node 3 to see 3 bids in one round again. For the report: E5's `msgs_bid_per_req`
+  in fault cells.
+- **Report notes.** E5 can give one number here: wasted bids in fault cells, before and after. Measure it; do not quote the arithmetic
+  as a result.
+
+### D155 · NodeStatus gains members; ctl status shows them; the view number stays in group_view
+
+- **Date:** 2026-11-03 · **Part:** C, all (`proto.rs` contract) · **Status:** Implemented, amends D79 (item 6) · **Decided by:** the
+  agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A list only the code can see cannot be shown in a demo, or checked by the person running it. D79 item 6 said no contract
+  change for the suspicion list. This changes that for the member list.
+- **Options considered.**
+  1. *`NodeStatus`:* `members: Vec<NodeId>` as the last field, with no number (chosen, the same move as D121's `degraded`); also `view:
+     u64` (numbers restart with a process and mean nothing across nodes, so different numbers in adjacent rows would read as
+     disagreement); no change, with the view only in logs (then it is a grep on three machines).
+  2. *`ctl status`:* one new last column, `members`, printed as `1,3` (chosen: nothing read by position moves); one combined column like
+     `v2:1,2,3`; a separate `ctl group` command (one more thing to run in a demo).
+  3. *Event:* `group_view { view, members }` at start and on each change, with no change to analysis (chosen: `peer_suspected` and
+     `peer_trusted` already name the peer, and analysis filters by `ev`); add `left` and `joined` fields (repeats those events); add a
+     `view_changes` metric now (the first lab run is counted with one grep, and no rate should be claimed before that).
+  4. *Demo:* point at `members` in scenes 3, 4, 5 and 6, plus one grep of `group_view` (chosen: no new rehearsal step); a new scene of
+     its own.
+- **Decision.** As chosen above. `ctl status` prints `-` for a silenced node, whose list is frozen. The number stays only in `group_view`.
+- **Why.** The smallest change that lets someone point at the list. The last field and the last column leave everything else where it is.
+- **Consequences.**
+  - The wire format of `NodeStatus` changes. A stale binary on any PC fails to decode the longer frame. Every client ping gets one, so
+    its links churn with "bad frame", and `ctl` errors. Rebuild all six from one commit with `scripts/lab-build.sh`, as AGENTS.md already
+    requires.
+  - The table grows from 101 to 109 characters, so widen the demo terminals; `watch` cuts at the terminal width.
+  - `scripts/run-experiments.sh` reads columns 1 and 2 only, so it is unaffected. `status-after.txt` gains a column that nothing reads.
+  - The stub in `tests/client.rs` answers `Done`, so the longer `NodeStatus` does not reach it, and it is unchanged.
+- **Where.** `proto.rs::NodeStatus`, `node/mod.rs::NodeContext::status`, `bin/ctl.rs::{status, members_column}`, `metrics.rs::Event::GroupView`.
+- **How we check it.** `tests/group.rs::status_reports_members`, including over a real control frame to a silenced node. `ctl::tests::
+  members_print_as_a_list_and_as_a_dash_while_silenced`. Seen in a real `ctl status` table in the rehearsal above. Six-PC check, not done:
+  count `group_view` lines in the first `e1-3000` lab run and report the number.
+- **Report notes.** Events: `group_view { view, members }`. Do not narrate `members` as health (D153).
+
+### D156 · Application layer moved to node/service.rs; send_ordered, src/middleware.rs and tests/layers.rs enforce the split
+
+- **Date:** 2026-11-03 · **Part:** A, C, F · **Status:** Accepted, required by D211 (no longer optional), **not built yet**: it lands after all the parallel work has merged,
+  so the agent who builds it fills in the final call sites and marks this `Implemented` · **Decided by:** the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The Sept 13 class note says the application sends once and the middleware makes the copies, and to keep the two layers
+  distinct in the implementation. `CloudGroup` gives the middleware side a name, but `node/mod.rs` still mixes both layers: the incident
+  service sits beside the wiring, and it calls `consensus.propose` directly.
+- **Options considered.**
+  1. *`node/service.rs`, `src/middleware.rs`, a layer table and `tests/layers.rs`.* The move takes about 30 to 45 minutes and gives the
+     test one real file to guard. Chosen.
+  2. *Facade and test only, with the report saying `node/mod.rs` mixes the layers.* Cheaper, but the note says "in implementation".
+  3. *A table and file headers only.* Nothing enforces it.
+  4. *Physically move files into `src/middleware/`.* About 5 more hours for the same behaviour. It breaks AGENTS.md rule 3, collides with
+     all the other work, and leaves old log entries naming old paths.
+
+  For the ordered send: *`group.send_ordered` at the call sites, a plain pass-through to `consensus.propose`* (chosen: the application gets
+  one interface, and there is no ordering code of ours, so item 8's rejection holds; `propose_local` stays); *leave `consensus.propose` in
+  place and only document it*.
+
+  For the reading of which code is in which layer: *application: users, the incident service in `node/service.rs`, planner, campus, state
+  rules; middleware: `MeshClient`, `CloudGroup`, bidding, detector, rejoin, degraded mode, tarpc, openraft* (chosen, because users never
+  know who executes, so the election serves the application from below); *count bidding as application*.
+- **Decision.** Option 1, in this order, as one commit. Move `on_client_frame`, `handle_request`, `execute`, `plan_on_workers`,
+  `send_provisional` and `send_done` out of `node/mod.rs` into `node/service.rs`, with no behaviour change; `decide_executor`,
+  `leader_dispatch` and `on_control` stay in `mod.rs`, and `degraded.rs` changes its import. Run `tests/layers.rs` now: it must be red on
+  `.consensus`. Then add `send_ordered(cmd)` and `term()` to the group, switch the callers, add `src/middleware.rs` re-exporting
+  `MeshClient`, its types and `CloudGroup`, and make `bin/loadgen.rs` import through it. Add a layer table to `lib.rs`.
+- **Why.** Only the note's own words, "in implementation", make this worth doing, and a test nobody has seen fail proves nothing. Matching
+  `consensus.propose(` as first specified would be blind: rustfmt splits that call across lines, so it would pass on code that breaks the
+  rule. The test strips whitespace before matching, and must be shown red before `send_ordered` goes in.
+- **Consequences.**
+  - `send_ordered` inherits a hang: `client_write` has no deadline. Say so in its doc comment and give new callers their own timeout.
+  - The pure move touches the functions the client-path and incident-field work edit, which is why it goes last. Line numbers in older
+    entries move.
+  - The other work may give `bin/loadgen.rs` a reader in `node/usage.rs`. Re-export it through `src/middleware.rs` or move the parsers to
+    `metrics.rs`, or the second change to merge fails the first one's test.
+  - If this is dropped, drop the Sept 13 layer claims from the docs and the report as well. The Oct 28 note is answered without it.
+- **Where.** Planned: `node/service.rs`, `src/middleware.rs`, `tests/layers.rs`, `node/group.rs::{send_ordered, term}`, `lib.rs`,
+  `node/mod.rs`, `node/release.rs`, `node/degraded.rs`, `bin/loadgen.rs`.
+- **How we check it.** Planned: `tests/layers.rs::application_files_stay_above_the_group` (whitespace stripped; no `.consensus`, `.peers`,
+  `.broadcast(` or `TcpStream` in `node/service.rs`, `planner.rs`, `campus.rs` or `state.rs`), shown red first;
+  `tests/layers.rs::loadgen_imports_only_through_the_facade` (`rescuemesh::middleware`, and no `rescuemesh::client`, `rescuemesh::node` or
+  `rescuemesh::raft` in `bin/loadgen.rs`).
+- **Report notes.** Only claim the layers in the code once this is merged.
+
+### D157 · Reading of the class note on group communication; D126's question withdrawn
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented, amends D126, amended by D210 · **Decided by:** the agent on its recommendation, on Noor's
+  instruction to finish without more questions (2026-11-03). Noor's standing rule, that the spec and class notes decide and nothing is left
+  as a question for the instructor, is what this entry applies.
+- **Context.** D126 ends by leaving open whether group communication is expected in Phase 1. Noor's rule is that the spec and the class notes
+  decide. AGENTS.md also forbids rewriting an old entry. The sources we have do not define the term, and the chapter that would is not among
+  them, so the choice has to be stated as a reading.
+- **Options considered.**
+  1. *Reading: a named group with members, a view that decides who at least one send goes to, one call per class of send, and stated
+     guarantees.* Chosen.
+  2. *Any send-to-all with a name.* D126 as it stood. Noor rejected it, and the Oct 28 note says "implement".
+  3. *A full view-synchronous group with reliable multicast for every send.* Noor rejected our own guarantees, and Raft already orders results.
+
+  For the old note: *a new entry withdraws it, D126's text stays as history, and the current docs are edited* (chosen: it satisfies both the rule
+  and AGENTS.md); *edit D126 directly* (AGENTS.md forbids it).
+
+  For the words used about guarantees: *"who acknowledged in time"; "totally ordered, reaches every replica once committed, an error means unknown";
+  "two unicasts from a node, three from a client"; book terms only after checking the book* (chosen: true statements); *D126's table as it was*.
+- **Decision.** Option 1, and it is Phase 1 work. It rests on these sources:
+  - Class notes, Oct 28: implement group communication. Discovery is the only part that note moves to Phase 2, so this reads as Phase 1.
+  - Class notes, Sept 13: the message is sent once at the application layer and the middleware gives the replicas their copies. Here, one call each:
+    `submit`, `send`, `probe`.
+  - Chapter 2, slide 7, lists multicast under interprocess communication and group communication under indirect communication. Chapter 5 puts indirect
+    communication in the middleware above multicast support. The code has that shape: `PeerSet::broadcast` is the primitive and `CloudGroup` sits on top.
+  - Project spec: a node goes silent, "rejoin[s] the group", and must become consistent before it resumes. The list shows the first step, and `serving`
+    shows the second. That order is a reading.
+  - Project spec: the client middleware multicasts to the three servers. This stays, as an outsider sending to an open group. Reading.
+  - Class notes, Sept 13: one node off and one failed, then only one server left. Node 3's list ends at 3 alone.
+  - Class notes, Oct 28: no coordinator. No node manages the list, and the leader takes no part.
+
+  D126's closing note is withdrawn. Nothing is left to ask.
+- **Why.** A stated reading with its sources can be checked, and it can be disagreed with on its merits. An open question can only wait.
+- **Consequences.** If a reader wants agreed views, this loses marks on that one line; the report says plainly that each list is one node's opinion. The
+  same text goes in the report's decision list and Q&A, and the lines in `docs/architecture.md` section 14 and `docs/demo.md` that leave questions are
+  removed by whoever merges the docs.
+- **Where.** `docs/design-log.md`, `docs/architecture.md`, `docs/demo.md`, the report.
+- **How we check it.** A search for "Dr Amr" in the docs finds only citations of what the notes say and his named failure cases, and no open questions,
+  apart from old entries kept as history.
+- **Report notes.** Say "our reading", and give the limits. Publish-subscribe has its own entry.
+
+---
+
+## 16. Real user programs on the client PCs (November 2026)
+
+Rehearsal numbers in this section come from the pretend lab: one WSL kernel, one disk and one clock. They explain why a
+choice was made and must never be reported as six-PC results.
+
+### D181 · User processes: 10 real programs on each client PC share the users, and the number is a setting
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, amends D53 and D54 · **Decided by:** Noor Hany Emam
+  (the design and the number 10, decisions item 3); the name of the setting and the sharing rule by the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The spec says three machines each run "many simulated user processes", that adding them raises the
+  load with no change to the application, and that each user process represents a campus participant. It also says
+  one frontend may control many background client processes, and asks us to document the client parallelization
+  model we adopt. Until now the system ran one `loadgen` program per client PC, with every user a tokio task inside
+  it (D53, D54). So the process list on a client PC showed one program however many users it carried, and a grader
+  who looks would see that "processes" had only been renamed. The same model also meant 1000 users on a PC shared one
+  send queue per node and one runtime, and sent their first requests within a fraction of a millisecond (D182).
+- **Options considered.**
+  1. *Noor's design: one place to say how many users and which pattern; behind it, 10 real background programs share
+     the users, so 1000 users are 10 programs with 100 users each.* Real processes in the process list, each can be
+     killed on its own, gentle on the PC, and it is the only count near what has actually been run (30 programs over
+     three PCs in the rehearsals). In most cells one process is not one participant, which the report must state.
+  2. *1000 real programs, one per user.* Matches "each user process represents a campus participant" word for word.
+     Rejected by Noor: 1000 programs and, on TCP, 3000 connections on each client PC, and the client PC chokes first.
+     Nothing above 30 programs has ever been run, so the cost is unmeasured either way.
+  3. *1 program with many light users, as today.* Cheapest, nothing changes. Rejected by Noor: it stays a gap against
+     "processes".
+  4. *A setting that starts at 100 programs and moves to 1000 if a 6-minute check passes (the agent's own design
+     recommendation).* It would make every cell up to 300 users exact, and every cell if 1000 passes. Not taken: it
+     changes the number Noor fixed and could end at what Noor rejected. The code keeps the door open, because the
+     number is a setting, but nothing depends on it.
+- **Decision.** Option 1.
+  - A *program* is one real operating-system `loadgen` process. Its users are tokio tasks that share one `MeshClient`.
+  - The number of programs per client PC is a setting whose default is **10**: `--programs` on `scripts/start-users.sh`,
+    `PROGRAMS_PER_PC` in the environment, and `programs=` on a cell's run line. No TOML key and no `config.rs` key,
+    because nodes never need it and changing it needs no rebuild. `run.json` records the value that made each figure.
+  - A PC with N users runs P = min(N, programs) programs. Each carries N/P users, plus one for the first N mod P
+    programs, so the total is always exactly N and no program is empty. 1000 users are 10 x 100. 34 users are
+    4, 4, 4, 4, 3, 3, 3, 3, 3, 3. 3 users are 3 x 1.
+  - A failed program is not restarted (D183).
+- **Why.** Noor's words: real background programs behind one box, the load kept large. The agent's reading, for the
+  report: "user process" means an operating-system process that holds one or more simulated users. The spec's line
+  on the client model lets us choose a model if we document it, and its frontend line describes exactly one frontend
+  controlling many background processes. Other values of the setting cost nothing to keep, and only the control cell
+  in D187 uses one.
+- **Consequences.**
+  - One program is one participant only when a PC has 10 users or fewer: of today's cells, the 30-user ones. The report
+    must say so plainly and first, not leave it for a reader to find.
+  - The number of programs stays at 30 across all of E1 once a cell has 30 users or more, so E1 varies users, not
+    processes. "Throughput as clients or processes grow" must be read as users, and the figure should say so.
+  - 100 users share one send queue per node and one runtime, so the generator can shape results at the top of the
+    sweep. `e7-p1-300` and `machine_usage` (D185, D187) are there to show how much.
+  - The web page's box must not read "1000 user processes" when the process list shows 10. Noor's item 3 words the box
+    as "how many user processes"; the page should say "Simulated users", with a line below saying how they run. The
+    script's `plan` line gives the numbers for that line (`programs=` and `users_each=`). This is the page's decision
+    to record, and Noor can overrule it.
+  - On TCP, each node holds 30 client connections and answers 30 pings a second in every cell (D112). A transport
+    without per-client connections removes both.
+- **Where.** `scripts/start-users.sh`, `scripts/run-experiments.sh`, `src/bin/loadgen.rs`, `experiments/e7-p1-300.toml`.
+- **How we check it.** `tests/user_processes.rs`: `the_default_is_ten_programs_sharing_the_users`,
+  `the_number_of_programs_is_a_setting`, `dry_run_ids_are_unique_and_users_sum_exactly` (levels 30 to 3000 at limits 1
+  to 1000). On the lab: `pgrep -c -x loadgen` on a client PC prints 10 during a run.
+- **Report notes.** State the model first, as a reading: real programs per PC, tokio tasks inside, one program per
+  participant only at the smallest load, 10 programs per PC above it, chosen by Noor. Do not claim the client PC would
+  choke at 1000 programs unless `machine_usage` or a real run shows it: that reason has no data behind it yet.
+
+### D182 · Load patterns (steady, random, all-at-once) and spreading the first sends
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, amends D54, qualifies D129 · **Decided by:** Noor Hany
+  Emam (the three patterns, decisions item 4); the mechanics, the start spread and the choice not to re-space steady
+  after a stall by the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Noor asked for a load pattern option: steady (everyone waits exactly 1 s, what experiments use), random
+  (each user waits a random 0 to 2 s), all-at-once (every user sends at the same moment, for spikes). Separately, the
+  rehearsal in `normal-load/why.txt` shows how the worst collapse starts: each client's first 100 requests left within
+  0.1 ms, all 300 first requests left within 80.4 ms, and the leader then stayed busy long enough for a follower to
+  start an election less than a second later. So the very first wave needs fixing whatever else happens. Class notes
+  of Sept 9 ask us to document the workloads we test under.
+- **Options considered.**
+  - *The patterns.*
+    1. `--pattern steady|random|all-at-once` on `loadgen`, in the closed loop. Exactly Noor's three.
+    2. Steady and random only. Cheaper, but Noor asked for spikes.
+    3. All-at-once as "no start spread" only, with no alignment. Users would drift apart after one round, so only the
+       first moment would be a spike.
+    4. An all-at-once experiment cell. Rejected: all-at-once open loop at 3000 users ended with two nodes unreachable in
+       a rehearsal on shared CPUs, and a cell like that could abort a whole series.
+  - *Spreading first sends.*
+    1. Program k starts k*T/N after the script starts, and user j of U inside it first sends j*T/U later, with T the
+       think time and N the users on that PC. Every user on a PC gets its own slot, (k + j*P)*T/N, whatever P is.
+    2. k*T/P plus an offset per PC. The offset is a millisecond or so, and SSH start times swamp it.
+    3. A `--start-delay-ms` flag on `loadgen`. More Rust for what one `sleep` does in the script, and the wait would
+       fall inside the program's own clock.
+    4. No spread, as before. 100 users in one program fire within a few milliseconds, which is what the rehearsal
+       shows going wrong.
+  - *Steady after a stall.*
+    1. Wait exactly T after each reply, as Noor's item says and D54 did.
+    2. Wait for the user's next slot, phase + n*T. It removes the think time once latency passes T, so overloaded cells
+       would offer more load, N/max(R,T) instead of N/(R+T), and it contradicts item 4.
+    3. Add a little jitter to each wait. Also contradicts "exactly".
+- **Decision.**
+  - `loadgen --pattern steady|random|all-at-once`, default steady, closed loop only: naming a pattern with `--rate` is
+    refused.
+  - *steady:* the first send waits j*T/U, then every wait is exactly T after the reply.
+  - *random:* every wait, the first included, is uniform from 0 to 2T, so the mean load matches steady. With T = 1 s
+    that is Noor's 0 to 2 s. The draw comes from a second seeded generator, so the incident stream a seed repeats does
+    not change.
+  - *all-at-once:* every wait runs to the next wall-clock multiple of T, the first included, with no start spread in
+    the script. Exactly on a multiple means the next one. The wall clock is what lines up programs and machines, as
+    far as NTP agrees.
+  - random and all-at-once refuse T = 0, in `loadgen` and in the script: they would have nothing to randomise or to
+    line up on.
+  - No experiment cell uses random or all-at-once. They are for the demo, the web page and the burst test if someone
+    runs it. A cell can name one with `pattern=`.
+  - A user's wait never runs past the end of the run, so a long wait cannot make a program outlive its duration.
+- **Why.** The spread comes from arithmetic: when users divide evenly among programs, users on one PC never share a
+  slot, so changing the number of programs does not change the arrivals, and the setting in D181 stays honest. Steady
+  stays exact because that is what Noor decided and because a slot wait would quietly raise the offered load in the
+  overload cells.
+- **Consequences.**
+  - Arrivals change in every cell, which is the point, so all final data must come after this. Warm-up per client in
+    `analysis/analyze.py` shifts by up to one think time.
+  - The spread does not stop the collapse by itself. It removes the first wave. The later collapse comes from the
+    leader's disk saves, which is decision 10 and another change. In the scripts trial (D186: one shared machine, storage
+    on, not a result), 300 users with one program per machine had a perfectly even first second and the cluster still
+    went through many elections. Clumps clearly hurt, but the spread's own effect has not been measured on the six PCs.
+  - Steady can bunch up again after a stall, because every user waits exactly T after its reply. On the dev PC a first
+    burst at 1000 users took about 8 s to even out (rehearsal). `arrival_peak_100ms_share_after_fault` shows this
+    instead of hiding it.
+  - All-at-once really is all at once: at 3000 users it asks the cloud for 3000 plans in one moment, every T. Keep it
+    small in the demo.
+- **Where.** `src/bin/loadgen.rs` (`Pattern`, `Pacer`, `pause`), `scripts/start-users.sh` (`program_values`).
+- **How we check it.** Unit tests in `src/bin/loadgen.rs`: `steady_first_waits_are_even_and_zero_for_one_user`,
+  `steady_waits_exactly_the_think_time`, `random_waits_stay_within_twice_the_think_time_and_repeat_for_a_seed`,
+  `random_waits_leave_the_incident_stream_unchanged`, `all_at_once_waits_land_on_the_next_multiple_of_the_think_time`,
+  `a_pattern_that_needs_a_think_time_refuses_zero`, `a_pattern_cannot_be_named_with_an_open_loop`. In
+  `tests/user_processes.rs`: `dry_run_gives_every_user_its_own_slot`, `steady_spreads_the_first_sends_over_the_think_time`,
+  `all_at_once_users_send_on_a_multiple_of_the_think_time`, `every_pattern_gets_answers_from_a_real_cluster`. On the
+  lab: `arrival_peak_100ms_share_first_s` near 0.1 under steady.
+- **Report notes.** Name the three patterns as the workloads, say experiments use steady with a 1 s think time, and say
+  why the first sends are spread, citing the rehearsal only as the reason, never as a result.
+
+### D183 · `scripts/start-users.sh`: one way to start and stop users, for the runner, the demo and the web page
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, amends D130, qualifies D132 · **Decided by:** the agent
+  on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Something has to start 10 programs on each client PC, hand each its ID and its share of users, spread
+  their starts and stop them all. The experiment runner, the demo and the web page all need that. Before this, `loadgen`
+  also lost its summary and the end of its log on TERM, so a demo or page stopped early showed nothing behind it.
+- **Options considered.**
+  1. *A bash script, `scripts/start-users.sh`, called once per PC.* One path for all three uses, no rebuild to fix it,
+     and it can be read and run by hand. Bash has sharp edges around signals, which the tests pin down.
+  2. *A supervisor inside `loadgen`, in Rust.* Well tested, but a program that starts copies of itself is more code for
+     the same job, and every fix needs a rebuild on six PCs.
+  3. *A loop inside the runner's SSH string.* No new file, but the demo and the page would each need their own copy.
+  4. *One SSH per program, `pkill` to stop.* Many sessions, and `pkill` by name would also kill a second batch, or
+     anything else called `loadgen`.
+  - For the stop on a program: *TERM prints the summary and flushes* against *no signal handling, sum whatever is on
+    disk*. The second leaves a page with no totals.
+  - For failures: *no restart, exit 1 if any failed and 2 if more than a tenth failed* against *stop on any failure*
+    (one dead program ends an hour's series) and *restart* (hides the failure and skews the load, and `loadgen` only
+    fails on config or log errors, which repeat).
+  - For threads: *`TOKIO_WORKER_THREADS` = max(1, cores/P) per program* against *the default* (one worker per core in
+    each of 10 programs) and *a current-thread runtime* (a Rust change for a small saving).
+- **Decision.** Option 1, called as `bash scripts/start-users.sh`.
+  - Flags: `--config`, `--machine M` (1 to 9), `--users N`, `--batch B` (0 to 9, default 0), `--programs P` (default 10
+    or `PROGRAMS_PER_PC`), `--pattern`, `--think-ms` (default 1000), `--duration-s` (default 60), `--warmup-s` (default
+    0), `--seed-base`, `--out DIR` (default `runs/users`), `--dry-run`, `--stop`. `BIN` and `PID_DIR` come from the
+    environment. Paths are from the repo root.
+  - It stays in the foreground until the programs end. The first line of output is a `plan` line and the last two are
+    `started P, failed F` and `reported k of P programs: done, gave up, retried, no responder, provisional`, added up
+    from each program's summary. Percentiles come only from `analyze.py`.
+  - All programs on a PC and batch write to one file, `users-M-B.out`, emptied at each start, which saves files.
+    `loadgen` prints its summary in one write, so blocks from different programs do not mix.
+  - **To stop it:** send the script TERM, or Ctrl-C, or run `--stop --machine M --batch B` from anywhere. Either way the
+    programs get TERM, print their summaries and flush their logs, and exit 0. A program still stuck 5 s later gets
+    KILL and counts as failed. The traps cover TERM, INT and HUP, and EXIT catches a `set -e` abort.
+  - It writes its own PID to `$PID_DIR/users-M-B.pid` (default `runs-config/`, which `stop_all` already walks), removes
+    it on the way out, and refuses to start if that PID is alive and really is this script. A file left by a reboot
+    does not block it.
+  - Exit status: 0 all fine, 1 some program failed, 2 more than 10 percent failed or it refused to start.
+  - `exec` inside the background subshell keeps each program's PID. `--dry-run` prints the plan and starts nothing.
+- **For the web page.** `bash scripts/start-users.sh --config <file> --machine M --batch 9 --users N --pattern P
+  --duration-s S`, run as a child; read the `plan` line for "running as P programs x U users each" and the last lines
+  for totals; TERM the child or run `--stop --machine M --batch 9` to stop. The page's machine number is its own client
+  ID minus 10 (frontends are 11 to 13, D184).
+- **Why.** One fan-out to test. The script is independent of the transport: it knows nothing about TCP or UDP. A tenth
+  is a judgement: one of 10 programs lost is a small dent worth a warning, and two lost is a run to throw away and a
+  sign of something the next run would repeat.
+- **Consequences.**
+  - A long-lived script over SSH is new. It has run on one machine only; the runner's SSH path is still untested (D130),
+    and `on_host` with `local` cannot show SSH problems. First SSH run by hand on the lab: `ssh` returns when the script
+    ends, `pgrep` counts match, and TERM from `stop_all` leaves nothing.
+  - A program killed while it still waits for its start time prints nothing. That is under one think time at the very
+    start of a run, is not counted as a failure, and shows as `reported k of P`.
+  - A person who needs a second group of users on a PC must give it another `--batch`.
+- **Where.** `scripts/start-users.sh`, `src/bin/loadgen.rs` (`main`, `summary`).
+- **How we check it.** `tests/user_processes.rs`: `a_real_start_gives_one_log_per_program`,
+  `term_leaves_no_child_no_pid_file_and_a_summary_from_each_program`,
+  `a_second_start_is_refused_while_the_first_lives_and_stop_ends_it`, `a_stale_pid_file_does_not_block_a_start`,
+  `a_dead_program_counts_as_failed_and_the_rest_keep_going`, `more_than_a_tenth_failing_exits_with_two`,
+  `dry_run_refuses_what_would_collide_or_mean_nothing`; `the_summary_keeps_the_wording_the_start_script_adds_up` in
+  `src/bin/loadgen.rs`.
+- **Report notes.** One sentence is enough: one script starts and stops the background client programs, which is what
+  the spec's "single frontend controlling many background client processes" needs behind the page.
+
+### D184 · Client IDs and seeds when one PC runs many programs
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, amends D51 and D113 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A request ID is `(client, seq)`, and one client ID also names one log file, so two programs must never
+  share an ID (D113). Until now the hosts file's client number 1, 2 or 3 was the program's ID. With 10 programs per PC
+  and more than one batch that no longer works, and the web page and zone feed have IDs of their own to protect. The
+  old seed, run*100 + client ID, would also repeat across runs once IDs pass 100.
+- **Options considered.**
+  - *IDs.*
+    1. machine*10000 + batch*1000 + k, refusing batch above 9 and k above 999. The number shows PC, batch and program.
+    2. machine*1000 + k. Shorter, but no room for batches, so the page's programs would collide with the runner's.
+    3. Random IDs. D51 and D113 already rejected them: runs are hard to match to machines, and they can collide.
+    4. A new column in the hosts file. More to fill in, for what the machine number already gives.
+  - *Seeds.*
+    1. run*1000000 + client ID. Every program differs, and no seed repeats across runs while IDs stay below a million.
+    2. Keep run*100 + client ID. Repeats across runs.
+    3. One seed for all programs. One-user programs would then send identical incidents.
+- **Decision.** The ID map, for everything that can talk to the cloud:
+
+  | IDs | Who |
+  |-----|-----|
+  | 1 to 9 | `loadgen` by hand |
+  | 11 to 13 | frontends (the web page), one per client PC |
+  | 21 to 23 | zone feed programs |
+  | 10000 to 99999 | load programs from `scripts/start-users.sh`: machine*10000 + batch*1000 + k |
+
+  The script refuses a machine outside 1 to 9, a batch above 9 and more than 1000 programs, each of which would break
+  the digit pattern (machine 1 batch 10 would equal machine 2 batch 0, and k 1000 would equal batch 1 k 0). The client
+  number in the hosts file is now the machine number. Each program's seed is seed base + its ID, and the runner passes
+  run*1000000 as the base.
+- **Why.** It cannot collide, and a person reading a log name knows at once which PC and which program it came from.
+  Five digits stay clear of the small IDs by construction, because the machine digit is never 0. Batch 9 is the
+  web page's by convention, and the runner uses batch 0.
+- **Consequences.** Logs are now `client-10000.jsonl` to `client-30009.jsonl`. `loadgen` itself still takes any
+  `--client-id`, so the map for hand runs is a rule for people, stated in its help text. A hosts file with a client
+  numbered above 9 is refused, with a reason, at the first run.
+- **Where.** `scripts/start-users.sh` (`program_values`), `scripts/run-experiments.sh`, `scripts/lab-common.sh`,
+  `experiments/hosts.example`, `src/bin/loadgen.rs` (help text).
+- **How we check it.** `tests/user_processes.rs`: `dry_run_ids_are_unique_and_users_sum_exactly`,
+  `the_id_shows_the_machine_the_batch_and_the_program`, `dry_run_refuses_what_would_collide_or_mean_nothing`.
+- **Report notes.** None needed beyond the client model; keep the table in the architecture document.
+
+### D185 · `machine_usage`: the client PCs' own CPU and memory
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, amends D128 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A saturated client PC reads as cloud latency, and nothing measures the client PCs: `resource_usage`
+  (D128) comes from nodes only. The reason for 10 programs ("the client PC chokes first") has no data behind it either.
+  The spec asks for CPU and memory where they matter to a design choice. And `tests/layers.rs`, from another item,
+  forbids `rescuemesh::node` in `src/bin/loadgen.rs`, so `loadgen` cannot call `src/node/usage.rs`.
+- **Options considered.**
+  - *How to measure.*
+    1. A new event, once a second, from program k=0 of batch 0 on each PC. One log format, no extra process, nothing
+       that can hold an SSH session open or outlive the run.
+    2. A bash sampler writing `machine-<id>.jsonl`. A second log format, which D128 rejected, and a process that can be
+       left behind.
+    3. `/proc/loadavg` saved once per run. Cheap, but one number cannot say when the PC was busy.
+    4. Nothing, as D128 has it. A client limit would then pass for cloud latency.
+  - *Where the parsers live.*
+    1. In `src/metrics.rs`, beside the event, public to every program. Simple, and `loadgen` already imports `metrics`.
+    2. In `src/node/usage.rs`, with a re-export through `src/middleware.rs`. Depends on another item's file, and pretends
+       a client-side reading is a node matter.
+    3. In `src/bin/loadgen.rs`. Fine for now, but the event's parsers would sit far from the event.
+- **Decision.** Option 1 both times. Event `machine_usage { cpu_busy_ticks, cpu_total_ticks, mem_available_kb }`, each
+  optional, from `metrics::machine_usage()`. `/proc/stat`'s first line gives the ticks: total is user, nice, system,
+  idle, iowait, irq, softirq and steal; busy is total minus idle and iowait, because a CPU waiting on the disk has nothing
+  to do. `/proc/meminfo` gives MemAvailable. `loadgen --sample-machine` turns it on; the script passes it to program 0 of
+  batch 0. The reads run in `spawn_blocking`, and the task's handle is owned and aborted at the end.
+- **Why.** Same log, same analysis path, and a sampler that dies with its program. Program 0 of batch 0 is the one
+  program every experiment on a PC has.
+- **Consequences.** Ticks are per machine, so anything else on the PC counts: keep the client PCs quiet. If program 0
+  dies, that PC's samples stop, and the run is left out anyway (D186). A PC running only a web page's batch 9 has no
+  samples, which is fine, because that is not an experiment.
+- **Where.** `src/metrics.rs` (`Event::MachineUsage`, `machine_usage`, `parse_machine_cpu`, `parse_mem_available_kb`),
+  `src/bin/loadgen.rs` (`sample_machine`), `analysis/analyze.py` (`client_pc_metrics`).
+- **How we check it.** `metrics::tests::machine_cpu_comes_from_the_first_stat_line`,
+  `mem_available_comes_from_meminfo`, `machine_usage_keeps_its_field_names`;
+  `a_real_start_gives_one_log_per_program` checks real values come out and only from one program;
+  `test_machine_usage_gives_cpu_p95_and_memory_min` in `analysis/test_analyze.py`.
+- **Report notes.** Report `client_pc_cpu_busy_p95` and `client_pc_mem_available_min_mb` beside E1, as the evidence that
+  the client PCs were not the limit, or that they were.
+
+### D186 · Runner checks: exact shares, leftovers, old run folders, and runs left out of the summary
+
+- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented, amends D130, qualifies D112 · **Decided by:** the
+  agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Reading the runner against many programs per PC found several ways for a run to be wrong with no sign:
+  - `users / machines` rounded 100 users down to 99 per cell, so `e1-100` was not 100 users.
+  - A program left over from an earlier run keeps sending while its log is unlinked, adding load nobody counts.
+  - Logs are copied by merging, so a rerun with fewer programs keeps the old run's client logs in the folder and the
+    throughput adds them up.
+  - A program that died simply had no log, and a fault that never fired (`ctl` times out, and no error shows) just had no
+    phases. Both were then averaged in with good runs.
+- **Options considered.**
+  - *Sharing users.* Share out with the remainder, as 34, 33, 33; or round down as before; or shorten the think time to
+    make up the difference, which changes D129's one request a second per user.
+  - *Leftovers.* One function that looks for `loadgen`, `node`, `frontend` and `zonefeed` by path on every machine, and
+    refuses; or `pgrep -x loadgen` on client PCs only, which misses the page and zone feed and catches other jobs called
+    `loadgen`; or kill them, which a runner should not do to programs it did not start; or nothing.
+  - *Old folders.* Move to `runs/old/`, keeping the data; or delete, which loses it; or nothing.
+  - *Bad runs.* Name them on screen and leave them out of the summary; or only warn, so a bad number still reaches the
+    report; or stop the series at the first bad program, which costs an hour for one dead program.
+  - *A file-limit check on nodes (raise the limit, read it back, abort under 4096).* Needed at 150 or more programs per
+    PC over TCP. Dropped: 10 programs per PC is 30 connections per node, far below any default limit.
+- **Decision.**
+  - The runner gives machine i its share of the cell's users, users/machines plus one for the first remainder machines.
+    A machine whose share is 0 runs nothing.
+  - `refuse_leftovers` runs before every run and looks on all six machines, by path, for `$BIN/` `loadgen`, `node`,
+    `frontend` and `zonefeed`. It allows 10 s for things still stopping, then exits with the list. It never kills.
+    The same one function serves items 14 and 17, so neither needs its own guard.
+  - An existing run folder moves to `runs/old/<cell>-run-<n>-<time>/`, where `analysis/analyze.py` does not look.
+  - `run.json` gains `users`, `programs_per_pc`, `client_programs_expected`, `pattern`, `think_ms` and `victim`.
+  - The runner waits on each machine's script. Exit 1 gives a warning and goes on. Exit 2 or more, which includes `ssh`'s
+    255 for an unreachable machine, finishes this run's log copy and stops the series.
+  - `analysis/analyze.py` leaves a run out if `client_programs` differs from `client_programs_expected`, or if the cell has
+    a victim and no node logged `silenced`, and prints which run and why. A `run.json` without these keys skips the checks,
+    so older runs still read.
+- **Why.** Each of these failures gives a wrong figure with nothing to show for it. Refusing, moving and naming are all
+  cheap, and none of them changes a good run. Matching by path is what keeps other programs called `node` from stopping a
+  run, as VS Code's would.
+- **Consequences.** A series can stop itself, so check on it. A cell whose run is left out has fewer runs behind its
+  interval, shown in the `runs` column of `summary.csv`, and needs a rerun. The guard costs six quick SSH calls per run.
+- **Where.** `scripts/run-experiments.sh` (`refuse_leftovers`, `run_once`), `scripts/lab-common.sh` (`users_on_machine`),
+  `analysis/analyze.py` (`run_problem`, `summarise`).
+- **How we check it.** `the_runner_shares_a_cells_users_exactly` in `tests/user_processes.rs`.
+  `test_a_run_missing_programs_is_left_out_of_the_summary`, `test_a_victim_with_no_silenced_event_is_left_out`,
+  `test_a_run_json_without_the_new_keys_skips_the_checks` in `analysis/test_analyze.py`. The whole runner on one machine
+  with `hosts.local`, in a private network namespace, with short runs: see the trial record below. That proves the scripts
+  only. **It has still not run over SSH or on the lab machines.**
+- **Report notes.** The methods section can say that a run with missing programs or a fault that did not fire is left out
+  and rerun, and how many were.
+
+### D187 · One control cell, no limit check, and what the analysis adds
+
+- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented, qualifies D63 and D129 · **Decided by:** Noor Hany
+  Emam fixed the number at 10, which ends the limit check; the rest by the agent on its recommendation, on Noor's
+  instruction to finish without more questions (2026-11-03)
+- **Context.** The agent's design for this item planned cells `e7-cap-100`, `e7-cap-500` and `e7-cap-1000` to settle how
+  many programs a PC can carry, and proposed a limit of 100. Noor fixed the number at 10, so nothing is left for those
+  cells to settle. But 10 itself has no data behind it: nobody has compared it with anything.
+- **Options considered.**
+  - *Cells.*
+    1. `e7-p1-300` only: 300 users with one program per PC, to compare with `e1-300-bidding` at 10 per PC.
+    2. The `e7-cap-*` cells as well. Their question is closed, and with storage on they sit above the rehearsal ceiling,
+       where identical runs differ widely, so they would decide nothing.
+    3. `e7-p1-3000` and `e7-spike-3000`. Both sit at the retry wall, where noise hides any process effect, and a spike cell
+       could end a series.
+    4. No cell. Then the report has no way to say what 10 programs changed.
+  - *Analysis.*
+    1. Add the small metrics the runner's checks and the patterns need.
+    2. Also `node_accept_failed` from `node-*.out`, and users and programs on E1's tick labels. Accept failures only arise
+       near a file limit, which 30 connections cannot reach, and the text goes away with the TCP client path. The tick
+       labels would say 30 programs on almost every point.
+- **Decision.** One new cell, `e7-p1-300`, in the full profile only. Quick stays 13 cells, and full goes from 31 to 32. New
+  run-line keys: `programs=` and `pattern=`. New metrics: `client_programs`, `users_per_program`, `client_link_down`
+  and `client_link_down_<reason>`, `arrival_peak_100ms_share`, `arrival_peak_100ms_share_first_s`,
+  `arrival_peak_100ms_share_after_fault`, `client_pc_cpu_busy_p95`, `client_pc_mem_available_min_mb`, `silenced_events`.
+  No existing field or metric changes (D55). `arrival_peak_100ms_share` is the share of first sends in the busiest 100 ms
+  of their second, over all those seconds: even arrivals give 0.1, and all together give 1.
+- **Why.** 300 users sit below the knee where a model's cost can show at all, so if 1 program and 10 programs differ
+  anywhere, it should show there. Everything else is a small addition for a question somebody will ask.
+- **What we choose not to build.** A local proxy sharing connections between programs, because it is a new component and
+  a new hop in every latency figure; an OS thread per user, because it still shows one process; a `proto.rs` change or a
+  user number in `RequestId`, because nothing needs it; new dependencies; `--rate` through the script, because no cell uses
+  it. `e1-1000-bidding` stays in the full profile only, and it can be run by name after quick to show the knee.
+- **Consequences.** If other items add cells, the counts in `tests/experiment_cells.rs`, `scripts/run-experiments.sh` and
+  the docs change again. `e7-p1-300` is not in `quick`, so run it by name if time is short. Its own run line says
+  `programs=1`, so `PROGRAMS_PER_PC` does not move it.
+- **Where.** `experiments/e7-p1-300.toml`, `analysis/analyze.py`, `analysis/README.md`, `tests/experiment_cells.rs`.
+- **How we check it.** `tests/experiment_cells.rs`; `analysis/test_analyze.py`: `test_three_client_logs_count_as_three_programs`,
+  `test_link_drops_are_counted_by_reason`, `test_arrival_peak_share_is_a_tenth_when_even_and_one_when_all_together`,
+  `test_arrivals_are_read_at_the_start_in_the_measured_time_and_after_a_fault`.
+- **Report notes.** Compare `e7-p1-300` with `e1-300-bidding` on latency, `client_pc_cpu_busy_p95` and arrivals. State the
+  result either way: if they match, the number of programs did not matter at this load.
+
+### Trial record, for D182, D183 and D186 (not for the report)
+
+The whole runner ran on 2026-11-03 on one WSL machine, with `experiments/hosts.local`, in a private network namespace, with
+runs of a few seconds, while other builds shared the machine. It tests the scripts. Every number below only shows that
+the mechanism does what it says, and none of it is a RescueMesh result.
+
+| Step | What it showed |
+|------|----------------|
+| `e1-100-bidding` | Plans of 34, 33 and 33 users on 10 programs each. `pgrep` counted 30 programs at +8 s. `run.json` says `users` 100 and `client_programs_expected` 30. 30 client logs, one `machine_usage` stream per machine. |
+| The same cell again | The old folder moved to `runs/old/`. |
+| A stray `loadgen` from the same build left running | The runner refused before wiping anything, named the program and exited 1. |
+| `e3e4-300-leader` | 10 programs x 10 users on each machine, and the leader was silenced at the right moment. |
+| `e7-p1-300` | `programs=1` on the run line gave 3 programs in all, with 100 users each. |
+| Three patterns at 30 users | `arrival_peak_100ms_share` read 0.163 for steady, 0.207 for random and 1.000 for all-at-once, whose p50 was about three times steady's. `pattern=` on a run line reaches `loadgen`. |
+| `PROGRAMS_PER_PC=1001` | All three machines refused with the reason on screen. The runner copied what there was, printed "stopping the series", exited 1 and did not start the next cell. The analysis then named that run and left it out: "0 of 100 client programs sent anything". |
+| TERM to the runner in mid-run, 30 programs up | The runner exited, the programs printed "stopped early" and their totals, no program was left and no PID file was left. |
+| `client_pc_cpu_busy_p95` | It read 0.756 while other lanes' builds shared the machine: the metric notices a busy client PC. |
+| `e7-p1-300` with storage on | First second perfectly even (`arrival_peak_100ms_share_first_s` 0.100), and the cluster still went through 75 elections in the run. This is why D182 does not claim the spread stops the collapse. Decision 10 is the fix for that. |
+
+The first pass was cut short at 19:16 when the Windows disk that holds WSL's virtual disk filled up and WSL's root filesystem
+went read-only. WSL was restarted (not by this work), and the steps it lost were run again. Nothing in these results depends
+on that, but it is a warning for the data runs: check free space on all six PCs before a long series.
+
+---
+
+## 17. The web page on the client PC (November 2026)
+
+Publish-subscribe left this section's zone panel without a feed in Phase 1 (D209).
+
+### D197 · A Phase 1 frontend: a web page on a small program on each client PC
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented · **Decided by:** Noor Hany Emam (decisions.md item 2)
+- **Context.** Until now no person could report anything. `loadgen` sends random incidents and `ctl` only has
+  status, silence and skew. The spec says users report incidents and receive plans (spec lines 23-25), and says a
+  simple desktop or web frontend is enough (spec line 373). The demo paragraph (spec lines 202-205) describes client
+  machines that run one or more frontends plus many simulated user processes. The Phase 1 list (spec lines 216-231)
+  does not name a frontend, but the demo paragraph has no phase tag, so we read it as applying to the Phase 1 demo.
+  That is a reading, and the report says so.
+- **Options considered.**
+  1. *A small web page served by a new program on the client PC.* Nothing to install on six machines, no system
+     libraries, and it lives on the client PC, so cutting a server's power cannot take it down.
+  2. *A desktop window (egui or similar).* Big GUI libraries, it needs a desktop on the lab PCs, it cannot be driven by
+     a test, and an optional feature would not be built by `scripts/lab-build.sh` or CI. Nothing extra for marks.
+  3. *A terminal menu.* The spec names desktop or web. It also buys nothing over the terminal commands in
+     `docs/demo.md`, which are already the fallback.
+  4. *An HTTP server inside each node.* A browser pointed at one node is tied to it and dies with it, which is what
+     the system must not show, and it changes the measured program.
+  5. *The browser straight to the nodes by WebSocket.* The same problem, plus a new protocol on the nodes.
+- **Decision.** Option 1. A new binary `src/bin/frontend.rs` with its page in `src/bin/frontend.html`, embedded with
+  `include_str!`. Part F owns both. One frontend runs on each client PC and drives only that PC. Three required
+  flags: `--listen`, `--config`, `--client-id`. The first line on stdout is `listening on <addr>`.
+- **Why.** It is what Noor chose, it needs nothing installed, and it keeps the transparency story honest: a report has
+  no node parameter and goes only through `MeshClient`, so the page is the application and `MeshClient` is the
+  middleware that makes the copies. `--config` is required, unlike `ctl` and `loadgen`, because a forgotten flag on a
+  lab PC would load loopback addresses and show three unreachable rows, a false outage in a demo about failures.
+- **Consequences.** A new program to start in the demo, and a page that is one more thing to rehearse. It adds no
+  distributed mechanism and no data. It does not prove that wins shift with load: `NodeStatus` has no win or queue
+  field, and one card per click cannot show that, so the grep at `docs/demo.md:19` stays the evidence for scenarios 1
+  and 2. The page only says who planned each report.
+- **Where.** `src/bin/frontend.rs` (`Args`, `main`, `App`), `src/bin/frontend.html`, `tests/frontend.rs`.
+  `scripts/lab-build.sh` builds it already, because it uses `--bins`.
+- **How we check it.** `cargo test --bin frontend` and `cargo test --test frontend`. The page has been loaded in a real
+  browser on the development machine, against three real nodes on one machine, at 1366 x 768: all four panels fit one
+  screen, with no console errors. A browser on a lab PC is still to do: nobody has checked for one on those PCs (run
+  `which firefox` first).
+- **Report notes.** Name it as a reading of the demo paragraph. Spec line 372 says a sophisticated interface is not
+  the aim, so the report should spend one sentence on it. The layers slide gives the words: the page is the
+  application, `MeshClient` is the middleware.
+
+### D198 · Frontend HTTP: hand-written on tokio, no new crate
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A browser speaks HTTP, and `Cargo.lock` has no HTTP crate. Every program in the crate builds from one
+  lock file, so a new dependency also changes what the measured programs are built from. AGENTS.md says a dependency
+  needs a log entry and that agents add none unless asked.
+- **Options considered.**
+  1. *Hand-written on `tokio::net`.* About 250 lines with their tests beside them. The price is that a wrong byte means
+     a blank page, and no library's testing stands behind it.
+  2. *axum.* A grader sees no difference. About 20 new crates (from memory), Cargo.lock changes for `node`, `loadgen`
+     and `ctl`, a failed fetch on one lab PC stops all six builds, and it can no longer land after the data.
+  3. *tiny_http behind `spawn_blocking`.* The same lock file problem, and threads for a job tokio already does.
+- **Decision.** Option 1, kept deliberately small. One request per connection (`Connection: close`). Read until the
+  blank line over as many reads as it takes, at most 8 KiB and 5 s. No request bodies: values go in the query string,
+  and a request that declares a body gets 400. Replies carry `Content-Length`, `Connection: close`,
+  `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; the page also carries a
+  `Content-Security-Policy` that lets it talk only to itself. At most 64 open connections, then 503. Another path gets
+  404, another method gets 405 with `Allow`, an unknown or repeated parameter gets 400. API answers are JSON built with
+  `serde_json`. No percent-decoding: every value is digits or an enum name, so an encoded value simply fails its check.
+- **Why.** The only source changes are new files, so the measured programs and `Cargo.lock` stay exactly as they are.
+  The Oct 4 note about ready-made RPC covers the system's remote invocation; we read it as not covering a browser
+  talking to a program on its own PC. Option 2 is what to pick if someone reads that note more widely.
+- **Consequences.** Our own parser to keep. It is bounded: one kind of client, on one PC, no cloud traffic through it.
+  A cross-site POST from another page in the same browser is possible, because there is no token. We accept that on a
+  lab PC with synthetic data (D199).
+- **Where.** `src/bin/frontend.rs`: `read_head`, `parse_head`, `Response`, `Query`, `serve`, `connection`, `route`,
+  `ROUTES`, and the constants `MAX_HEAD_BYTES`, `HEAD_TIMEOUT`, `WRITE_TIMEOUT`, `MAX_CONNECTIONS`.
+- **How we check it.** Unit tests `request_parser_handles_split_reads_and_caps` and `bad_request_heads_are_refused`;
+  `a_node_parameter_and_bad_values_are_refused` and `the_page_and_info_are_served_as_a_browser_needs` over a real socket.
+- **Report notes.** Goes in the "ours, not a library" column, marked as demo plumbing and not an assessed mechanism.
+
+### D199 · Frontend listen address: a required --listen flag, and no access control
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented · **Decided by:** the agent on its recommendation, on
+  Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** AGENTS.md says every address comes from the config file. But the frontend's address is reached only by
+  a browser on its own PC, and every node and client reads one shared config, so a `[frontend]` key would need one
+  value per PC in a file that must be identical on all six.
+- **Options considered.**
+  1. *A required `--listen` flag with no default.* No change to `config.rs`, and the address can change on the day
+     without a rebuild.
+  2. *A `[frontend]` config key.* Edits `config.rs` and both test builders, and so changes measured programs.
+  3. *A hard-coded port.* Forbidden, and untestable with port 0.
+  For access: *none, on loopback, with load limits*; or a shared token; or a password.
+- **Decision.** Option 1, as a stated exception to the rule. The docs show `--listen 127.0.0.1:9001` with a browser on
+  that PC; `ssh -L 9001:127.0.0.1:9001 ubuntu@<client PC>` is the fallback, and `0.0.0.0:9001` with
+  `sudo ufw allow 9001/tcp` only if neither works. No token and no password.
+- **Why.** The data is synthetic (spec lines 36-37), and anyone on that PC can already run `loadgen`. Loopback means no
+  new open port. The load box has limits (D202), so a stray request cannot take the cloud down by itself.
+- **Consequences.** If someone does use `0.0.0.0`, anyone on the lab network can start 1000 users on that PC.
+- **Where.** `Args::listen`; AGENTS.md "No localhost assumptions" gains the exception.
+- **How we check it.** The tests start the real program with `--listen 127.0.0.1:0` and read the port from its first line.
+- **Report notes.** One sentence under deployment, so a reader who knows the rule sees why this is not a breach of it.
+
+### D200 · A second exception to the sockets rule, and status polls as another control sender
+
+- **Date:** 2026-11-03 · **Part:** F, C · **Status:** Implemented · **Decided by:** the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** AGENTS.md says only `node/` and `raft/network.rs` open sockets. `client.rs` already bends this (D112).
+  The frontend's listener is a new socket outside those places. D23 and AGENTS.md also name `ctl` as the sender of
+  control frames, and the page's status table sends them too.
+- **Options considered.**
+  1. *Name `bin/frontend.rs` as a second exception, and note it at D112 and D23.*
+  2. *Move the listener under `node/`.* `node/` must not gain client code.
+  3. *Leave the rules as written.* A false rule is worse than an amended one.
+- **Decision.** Option 1. The port carries no cloud traffic. Status polls use `client::control` with
+  `ControlRequest::Status` only. The page has no fault buttons, so `ctl` stays the fault tool (D62).
+- **Why.** The rule exists to keep the transport in one place, and this listener is not part of that transport.
+- **Consequences.** AGENTS.md, `docs/architecture.md` and D112, D23 need a line each. Three nodes get a few more
+  status frames: one poll per open page, about one a second.
+- **Where.** `src/bin/frontend.rs` module comment, `status_rows`.
+- **How we check it.** `a_lone_nodes_answer_is_labelled_provisional_and_silenced_is_not_unreachable` shows a silenced
+  node still answers the poll, so the fault gate holds.
+- **Report notes.** None needed beyond the rule's wording.
+
+### D201 · Report form and answer card: fields, input checks, provisional banner, no-answer wording
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented · **Decided by:** Noor Hany Emam (decisions.md items 2 and 5 for
+  the form and the TTL), the rest by the agent on its recommendation, on Noor's instruction to finish without more
+  questions (2026-11-03)
+- **Context.** The card is the point of the page: a grader types a report, reads who planned it, cuts that server, and
+  sees the next one answered. Nodes check none of a report's values, and severity sets how long a responder is held.
+- **Options considered.**
+  - *Location:* draw `campus::unseeded_incident` until the zone matches; a new `campus::point_in_zone`; or the person
+    types x and y. A new function edits Part E's file, and typed metres mean nothing to a demo audience.
+  - *Input checks:* in the frontend only; also in the nodes; or send what was typed. A node check changes the measured path.
+  - *The call:* the POST waits for the answer, one report at a time; or it returns a slot and the result comes by poll.
+  - *Provisional answers:* an amber banner; a small tag; a "check again" button; or hold the answer until the zone feed.
+  - *Giving up:* only `MeshClient`'s D52 budget; or the page re-sends with a new ID. A new ID is a second incident.
+- **Decision.** `POST /api/report?zone=&severity=&needs=&who=&valid_for_s=`. Zone must be below `campus.zones`, severity
+  1 to 5, capability a known name, who a whole number (default 1), valid-for 1 to 3600 s (default 60). Valid-for 0 is
+  refused, because a person never means it. Draw until the zone matches, capped at 256 draws per zone, then set severity
+  and needs. One click is one `MeshClient::submit`, and the POST waits for it, at most about 36 s. The button is off
+  until the answer, with a running timer. The last 10 cards stay in page memory.
+  The JSON is `{ok, request, answered_by, planned_by, responder, responder_zone, responder_capability, cost_m, status,
+  priority, provisional, expired, log_index, term, latency_us, attempts, zone, severity, needs, who, valid_for_s,
+  not_carried}`, or `{ok:false, error}`. `request`, `log_index` and `term` are null when provisional. The request ID is
+  text, because JavaScript rounds a number above 2^53.
+  The card shows the responder, or "No responder free right now", who planned it, who answered it, status, priority,
+  log index, the proposer's term, latency and attempts. A provisional answer gets an amber banner: "PROVISIONAL: not
+  committed, may change when peers return". An expired answer gets a red banner: "EXPIRED: too old when it reached the
+  cloud, nobody was sent". A give-up shows "No answer after 6 attempts; it may still be recorded later."
+- **Why.** "No responder free" must not read as a failure, since it is a correct committed answer. D122 says clients are
+  not told of a later change, so the banner promises nothing more. A give-up only removes the waiter (`src/client.rs`),
+  so no answer does not prove nothing was recorded, and the wording says so. The page never resends.
+- **Consequences.** A provisional card can go stale with no update unless the person also follows that zone. Nodes still
+  trust clients: only this program checks the values. Until the wire lane merges, `who` and `valid_for_s` are checked
+  and shown but not carried, the card says so in words (`not_carried`), priority says "not available yet", and
+  `Expired` cannot occur.
+- **Where.** `src/bin/frontend.rs`: `ReportForm`, `parse_report`, `draw_in_zone`, `build_incident`, `report`,
+  `report_json`, and stubs SWITCH-ON 1 to 4. `src/bin/frontend.html`: `renderCard`, `sendReport`.
+- **How we check it.** `a_typed_report_returns_a_committed_card` compares what was typed with what the cloud recorded;
+  `provisional_json_has_no_index_or_request`, `nobody_free_and_an_expired_answer_are_told_apart`,
+  `with_no_node_left_a_report_ends_in_no_answer_and_rows_say_why`. Switching on stubs 1 to 4 adds
+  `a_report_that_outlives_its_valid_for_time_comes_back_expired`, which passed against lane-wire: every node silenced for
+  longer than a 1 s valid-for time, then the card says expired. In a real browser the amber and red banners were looked at
+  with sample answers passed to the page's own `addCard`, not with a live provisional or expired answer.
+- **Report notes.** The card's "planned by" is what makes the failure scene work: it tells the grader which server to
+  cut. Use it in the demo description.
+
+### D202 · Load box: real loadgen programs, the split, the patterns, limits and Stop
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented, see D209: all three patterns run, so its text about `available` flags no longer applies · **Decided by:** Noor Hany Emam (decisions.md items 3 and 4), the rest by the agent on its recommendation,
+  on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The spec asks for many user processes on the client machines, and allows a frontend to control them
+  (spec lines 31, 202-205). Noor's own design is one box: "how many user processes", plus a pattern. Behind it the page
+  starts 10 real background programs sharing the users.
+- **Options considered.**
+  - *What runs:* real `loadgen` programs; tokio tasks inside the frontend, which would be a rename; or started by hand.
+  - *How many:* 1000 real programs, where the client PC chokes first; one program, which leaves the gap against
+    "processes"; or Noor's 10 sharing the users.
+  - *Who starts them:* this program directly; or `scripts/start-users.sh` as a child (gap-16's recommendation).
+  - *Stop:* SIGKILL only (gap-17's recommendation); or TERM, a short wait, then SIGKILL.
+- **Decision.** Each click of Start splits its users over at most 10 programs: 1000 = 10 x 100, 7 = 7 x 1,
+  1005 = 5 x 101 + 5 x 100. Another click adds a batch. Each program is a child started directly with
+  `tokio::process::Command`: the `loadgen` beside this binary, with `--config <same value> --client-id <frontend id x
+  10000 + n> --users --think-ms --duration-s --seed <its ID>`, stdin null, stdout piped and read to the end, stderr
+  inherited, `kill_on_drop(true)`, and `TOKIO_WORKER_THREADS` set to the cores over the programs in that click, at least 1
+  (gap-16's rule). Patterns are steady (everyone waits exactly T), random (each user waits 0 to 2T), and all-at-once (every
+  user sends at the same moment), passed as `loadgen --pattern steady|random|all-at-once`. T is the think time, default
+  1000 ms. The IDs are frontend ID x 10000 + n and not x 1000 as gap-17 designed: by the time this was built, five-digit
+  IDs belonged to `scripts/start-users.sh` (machine x 10000 + batch x 1000 + program, D184), so 11 x 1000 + 1 = 11001 would
+  have been its machine 1, batch 1, program 1, with one ID and one log file between two programs.
+  Refused: past 1000 running users, past 1500 offered reports a second (users x 1000 / think_ms, counting what already
+  runs), think under 200 ms, duration over 900 s, more than 20 running programs. Defaults: 30 users, 1000 ms, 600 s.
+  `GET /api/load` gives rows of `{client_id, pid, users, think_ms, pattern, state, exit_code, summary}`, with states
+  running, stopping, finished, stopped and failed. The summary is the program's stdout, shown as it is, and nothing
+  parses it. An early exit shows failed with its code and is not restarted. Stop sends TERM by process ID through
+  `kill(1)`, waits 2 s, then the child is dropped and killed. On shutdown the frontend does the same for every program,
+  then closes its log. The line under the box says what will really run: "Runs as 10 real background programs: 10 x 100
+  users."
+- **Why.** Direct children give one row per program with its own PID, exit code and printed summary, which is what Noor
+  asked to see; the script merges output into one file per PC. TERM first costs 10 lines and needs nothing from main:
+  today a `loadgen` dies on TERM with no summary, and once the load lane makes TERM print the summary, Stop shows it
+  with no change here. `kill(1)` because unsafe is forbidden and libc is not a direct dependency. Per-click limits alone
+  would allow 12,000 users on one PC, and overload can fake degraded mode (`docs/runbook.md:129`).
+- **Consequences.** Users inside the 10 programs are still tasks. Spec line 70 ties a participant to a user process, so
+  this is a reading, and the line under the box states it openly instead of hiding it. The page does not use gap-16's
+  script, so that script is one start path for the runner and the demo, not for the page, and its comment saying
+  otherwise must change. The page also does not get the script's start spread between programs: on steady, the first
+  user of each of the 10 programs sends at about the same moment. Each program adds 3 status frames a second on TCP,
+  which matters only if
+  experiments move to many programs (gap-16 settles that). Experiments do not use this box. A frontend SIGKILLed
+  itself leaves its programs running until their duration ends, which is why every program has a finite one.
+  `docs/demo.md` keeps a short shell loop for the same programs, so many processes do not depend on the page.
+- **Where.** `src/bin/frontend.rs`: `Pattern`, `split_users`, `LoadBox`, `check_limits`, `load_start`, `start_program`,
+  `program_command`, `watch_program`, `ask_to_end`, `record_end`, `load_stop`, and stub SWITCH-ON 5.
+- **How we check it.** `users_split_over_at_most_ten_programs`, `load_limits_are_refused`,
+  `the_box_starts_ten_real_programs_and_shows_each_summary`, `stop_ends_the_programs_and_marks_them_stopped`,
+  `shutdown_ends_every_program`; in `tests/frontend.rs`, with real `loadgen`:
+  `a_loadgen_that_reaches_its_duration_shows_its_summary`, `load_start_runs_real_loadgens_and_stop_ends_them`,
+  `sigterm_stops_the_children_and_closes_the_log`. By hand, against three real nodes: 1000 users gave 10 programs of 100,
+  `pgrep` counted 10, and each row showed its summary. Against lane-load's `loadgen`, Stop's rows carry the summary too.
+- **Report notes.** State the reading first: real programs, tokio tasks inside, the number used. A literal reader should
+  hear that from us.
+
+### D203 · Node table: columns, last known, the unreachable rule, no same-state badge
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Implemented ·
+  **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The recovery and failure scenes need node state on the same screen as the card. `ctl status` asks nodes
+  one after another with a 2 s wait each, so a dead node makes it slow.
+- **Options considered.**
+  - *Where the data comes from:* one poll per page asking all nodes at once; a background task per node; server-sent
+    events; a sequential loop like `ctl`.
+  - *When a row says unreachable:* only after the local program reported it across polls spanning 3 s; in the page
+    alone; on the first miss.
+  - *A same-state badge:* it could light up beside a PROVISIONAL card, because the digest covers only applied commands.
+- **Decision.** `GET /api/status` asks every node at once through `client::control`, capped at 800 ms. JSON is
+  `{ok, nodes:[{id, reachable:true, role, term, leader, last_log_index, last_applied, digest, results, responders,
+  silenced, serving, degraded, members} or {id, reachable:false, error}]}`. The digest is 16 hex characters, as `ctl`
+  prints it. The page polls 500 ms after the last answer, with a 2 s fetch timeout, and shows node, role, term, leader,
+  log, applied, digest, serving, silenced, degraded, members. A row says unreachable only after `reachable:false`
+  across polls spanning 3 s, and until then it keeps its last values, dimmed. A failed or slow `/api/status` shows a
+  separate banner: "Local program not answering. Node state unknown." A silenced row marks role, term and leader as
+  "(last known)". Under the table: "The leader only orders the log; there is at most one leader per term." No badge.
+- **Why.** No stored state, and no polling with no page open. A dead node costs one poll 800 ms, so with a machine off a
+  full cycle is about 1.3 s. A slow local program must not read as three dead servers, in a demo about failures. A silenced
+  leader still says leader (`src/node/rejoin.rs`), which is why those cells are marked.
+- **Consequences.** People compare digests by eye, as with `ctl status`. Results and responders are in the JSON but not
+  on screen, to fit one screen.
+- **Where.** `src/bin/frontend.rs`: `status`, `status_rows`, `node_json`, stub SWITCH-ON 6. `src/bin/frontend.html`:
+  `renderNodeRow`, `pollStatus`.
+- **How we check it.** `digest_is_text_and_survives_above_two_to_the_53`,
+  `a_lone_nodes_answer_is_labelled_provisional_and_silenced_is_not_unreachable`,
+  `with_no_node_left_a_report_ends_in_no_answer_and_rows_say_why`. By hand: SIGSTOP the frontend and see the local banner,
+  not three dead servers.
+- **Report notes.** None beyond the demo description.
+
+### D204 · Zone updates panel: register a zone, its new reports and plans appear live
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Superseded by D209: Phase 2. The page has no zone panel in Phase 1, and the code stays in the history of `lane-frontend` · **Decided by:** Noor Hany Emam (decisions.md item 6), the details by the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Noor's item 6: on the web page you register your zone, and new reports and plans for that zone appear
+  live. Reporting does not need it; it exists to tell others in a zone. Gap-17's own recommendation was to leave the
+  panel out of this change, and item 6 overrides that. Gap-14 gives `subscribe(zones)`, `next()` and `unsubscribe`. It has
+  no way to change zones in place, and gives each subscriber its own `MeshClient`.
+- **Options considered.**
+  - *How it reaches the page:* a bounded list the page polls; server-sent events; a WebSocket. Both of the others need
+    more hand-written HTTP for a panel that polling serves well enough.
+  - *Adding a zone:* subscribe again with the longer list, then end the old feed; or one feed per zone.
+  - *Before the API exists:* an empty panel that pretends; or a panel that says plainly it is not available yet.
+- **Decision.** `POST /api/zones/register?zone=` subscribes with the full list on the panel's own `MeshClient` (ID:
+  frontend ID x 10000, which no load program uses, since they start at + 1), made on first use. The new feed starts
+  before the old one ends, so no update falls between them, and the list drops any commit it already holds by its log
+  index. `POST /api/zones/clear` ends the feed. `GET /api/zones?after=<number>` gives
+  `{ok, unavailable, zones, note, last_seq, updates}`. One owned task reads `next()` into a list of the last 200. The
+  page polls every 500 ms and shows the last 50. A `GaveUp` from `next()` shows "No node is answering; waiting.", and the
+  feed resumes by itself. Until gap-14 lands, register answers 501 and the panel says "Zone updates are not available
+  yet", and the panel's client is not even made.
+- **Why.** Its own client means a burst of updates cannot delay a typed report. Polling needs no new HTTP. A panel that
+  says "not available yet" is honest, and a merge agent can switch it on by changing four small functions.
+- **Consequences.** Updates reach the screen up to 500 ms after they reach the frontend, so "live" means about half a
+  second here. This has never run against a real feed: gap-14 was not on any branch when this was written, so the
+  register, next and unsubscribe path is compiled but unproven. If gap-14 is cut (Noor's own rule: cut first if late), the
+  panel stays and keeps saying not available.
+- **Where.** `src/bin/frontend.rs`: `ZonePanel`, `FeedTask`, `update_json`, `run_zone_feed`, `zones_register`,
+  `zones_list`, `zones_clear`, stub SWITCH-ON 7. `src/bin/frontend.html`: `pollZones`, `registerZone`, `clearZones`.
+- **How we check it.** `the_zone_list_is_bounded_and_read_after_a_number` and
+  `what_other_lanes_build_says_not_available_yet`. After the merge: a test that registers a zone, reports in it and in
+  another zone, and sees only the first.
+- **Report notes.** Claim item 6 only if the merged build really shows a live update.
+
+### D205 · The demo runs E1's plan_work and responders (amends D129)
+
+- **Date:** 2026-11-03 · **Part:** F, E · **Status:** Implemented in `config/lab.example.toml`; `docs/demo.md` waits for the merge ·
+  **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D129's last sentence keeps the demo on the defaults. At those defaults the page defeats itself. 30
+  responders hold about 0.63 s each, so at the 90 reports a second of `docs/demo.md:25` about half get nobody (Erlang-B,
+  computed, not run). With `plan_work = 0` an idle score is 0, all nodes tie, and node 1 plans every typed report.
+- **Options considered.**
+  1. *`plan_work = 1000` and `responders = 300` in `config/lab.example.toml`, the E1 values.*
+  2. *Responders 300 only.* Node 1 still wins every idle tie.
+  3. *Keep the defaults, and hold load near 30 reports a second while typing.*
+- **Decision.** Option 1. `docs/demo.md:49` then says `--work 1000` to put a node back, because skew replaces `plan_work`.
+- **Why.** The runner builds each run's config from the hosts file and the cell and never reads `lab.toml`, so data
+  cannot change. Under about 390 reports a second the block rate is then near 0, and the first three cards should read
+  nodes 1, 2, 3 (read from code, not run).
+- **Consequences.** These settings are untried: `plan_work 1000` was timed on a development machine, and 300 responders
+  rests on arithmetic. Look at the first rehearsal.
+- **Where.** `config/lab.example.toml`, `docs/demo.md`.
+- **How we check it.** `config::tests::shipped_configs_are_valid`, and the first rehearsal.
+- **Report notes.** None; the demo settings are not data.
+
+### D206 · The runner refuses leftover frontend, loadgen and node programs
+
+- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented through D139 ·
+  **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** A page left open with load running, during an experiment, adds load nobody counts. `stop_all` kills only
+  programs in pidfiles, so a leftover gives a wrong figure with no sign. A hand-started node is worse: it holds the
+  ports, the new node fails to bind, `wait_for_leader` passes on the old one, and the run measures the wrong config.
+- **Options considered.**
+  1. *At each run's start, refuse on frontend, loadgen and node by path with `pgrep -f`; check frontend and loadgen again
+     after the load ends. Exit 0 refuses, 1 is clean, anything else stops as cannot check.*
+  2. *Once at the start with `pgrep -x`.* It also matches Node.js, including a VS Code server, and could stop an hour's
+     run for nothing.
+  3. *A runbook line only.* 4. *Teach the runner to kill them.*
+- **Decision.** Option 1: `refuse_leftovers` with one `pgrep -af '[t]arget/release/(frontend|loadgen|node)( |$)'` per host,
+  at the top of `run_once`, and again for frontend and loadgen right after the run's own loadgens end. A trip after the
+  load deletes that run's directory and stops, because analysis reads every `run.json`.
+- **Why.** Matching by path keeps other programs out of it. Reading exit codes properly means an unreachable host stops
+  the run instead of passing.
+- **Consequences.** A program started outside the build folder is not caught. By the time this was built, lane-load had
+  written `refuse_leftovers` in `scripts/run-experiments.sh`: by path, at each run's start, with a short wait, naming
+  loadgen, node, frontend and zonefeed. So this lane did not edit the runner, because a second copy would only conflict.
+  Two parts of this decision are not in lane-load's version and are left for the merge: the second check right after the
+  run's own loadgens end, and reading exit codes, since it runs `pgrep ... || true`. Untried over SSH (D130).
+- **Where.** `scripts/run-experiments.sh` on lane-load.
+- **How we check it.** `experiments/hosts.local` with a leftover, clean, and an unreachable host.
+- **Report notes.** One clause in the method: runs start from a clean machine, and this is checked.
+
+### D207 · Demo script: page first, terminals as cross-check and fallback (amends D132)
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted; the text is in `doc-notes/gap-17.md` · **Decided by:** the
+  agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D132's consequence says the live part uses `ctl status`, event logs and the load generators' output. With a
+  page, the audience should see the page first. But the page has never met a real lab network.
+- **Options considered.**
+  1. *Page first; every `ctl status`, log and `loadgen` command stays as cross-check and fallback.*
+  2. *Replace the terminals.* If the page fails in the lab the demo fails.
+  3. *Leave `docs/demo.md` as it is.* Then nobody uses the page.
+- **Decision.** Option 1. One frontend on each client PC, started after the wipe. In the failure scene, cut the node the
+  last card names. Also name location and failure transparency from the slides, plus access as in the Sept 6 note. A short
+  bash loop in `docs/demo.md` starts the same 10 programs by hand, so the box is droppable.
+- **Why.** If the page fails on the day, the demo still runs exactly as written today.
+- **Consequences.** Stop loses a program's printed summary until the load lane merges, so `docs/demo.md:64` and `:107` say
+  to let the run reach its duration, or to count with grep on `runs/lab/client-*.jsonl`.
+- **Where.** `docs/demo.md`, `docs/runbook.md`.
+- **How we check it.** A rehearsal on the six machines, still to do.
+- **Report notes.** The demo section can say the page and the terminals show the same state.
+
+### D208 · The frontend may land after the data: proof by binary hashes
+
+- **Date:** 2026-11-03 · **Part:** F · **Status:** Accepted · **Decided by:** the agent on its recommendation, on Noor's
+  instruction to finish without more questions (2026-11-03)
+- **Context.** Final data must come from the final code. The page is the kind of thing that lands late. Noor's item 12 also
+  time-boxes all remaining work.
+- **Options considered.**
+  1. *In the six-PC commit if ready; otherwise after the experiments, with `sha256sum` of `node`, `loadgen` and `ctl`
+     before and after, both in the report. Any library edit the page needs waits until after the report, or the data is
+     rerun.*
+  2. *Before the experiments only.* 3. *Skip it if late.*
+- **Decision.** Option 1. Note that the plain "two new files only" check of the design no longer applies by itself once
+  the stubs are switched on: switching them on changes only `src/bin/frontend.rs`, but other lanes change the library, so
+  the hashes are compared around the frontend commit alone.
+- **Why.** It never holds up the six-PC test or the data, and hashes turn a reading into a fact.
+- **Consequences.** If it lands after the experiments, the page has never seen a real power cut, which notes line 83
+  asks to see. It then needs its own short rehearsal on one client PC.
+- **Where.** The report, and `docs/runbook.md`.
+- **How we check it.** `git diff <before> -- src Cargo.toml Cargo.lock` lists only frontend files, and the hashes match.
+- **Report notes.** Put both hash lists in the report if this path is taken.
+
+---
+
+## 18. Lectures 8 and 9, and closing what was left open (November 2026)
+
+Noor attached the Lecture 8 and Lecture 9 notes on 2026-11-03 at 19:29. Noor's rule is that recordings and docs decide, and that
+nobody is told to go and ask the instructor. These entries apply that rule. Old entries keep their text, and only their status
+line changes.
+
+### D209 · Publish-subscribe: first chosen to build small, then settled as Phase 2 by Lecture 9
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented, amends D131 and supersedes D204; nothing of it is in Phase 1's
+  build · **Decided by:** Noor Hany Emam (items 6 and 14 of the decisions of 2026-11-03). Noor can overrule it
+- **Context.** D131 put publish-subscribe in Phase 2 and ended by telling the team to ask the instructor. That question is closed
+  here. On 2026-11-03 Noor first chose the other way (item 6): build it small and cut it first if late. On the web page you would
+  register your zone, and new reports and plans for that zone would appear live. Noor's point on record: reporting does not need it;
+  it exists to tell others in a zone. Leaving it for Phase 2 was the rejected option then. Later that evening the lecture notes
+  arrived. Lecture 9 sections 2.1 and 2.3 and its summary place publish-subscribe in Phase 2: it needs a publish step and a discovery
+  service, so that clients and peers can come to know of each other. Lecture 8 section 10.3 says the same in more detail, with the
+  cloud as the directory of service, and its action items say that both paradigms must appear in the design.
+- **Options considered.**
+  1. *Phase 2. Show it in the design, keep any code on its own branch, and say why in the report.* Chosen.
+  2. *Keep item 6: a small version in the Phase 1 PR.* It reverses what the notes say, it would have no discovery behind it, and it
+     adds a client-path change while the deadline is a day off. Item 6's own rule was to cut it first if late, and item 12 time-boxes the
+     work.
+  3. *Leave D131 as it stood, with its question.* Noor's rule rejects leaving it to someone else's answer.
+- **Decision.** Option 1. Reverses item 6.
+  - It stays out of the Phase 1 PR. If any code exists it stays on its own branch for Phase 2.
+  - `docs/architecture.md` section 13 shows the design as `planned`: publish, directory, subscribe, push.
+  - The web page has no zone panel in Phase 1. The panel's code (D204) was taken out and stays in the history of `lane-frontend`,
+    commit e47e9d4, for Phase 2. The `/api/zones` routes are gone.
+  - D131's question is closed. Nobody needs to ask anything about it.
+- **Why.** The lecture answers the question D131 left open, in the course's own words. Noor said Phase 2 first, then chose small, and
+  had said to cut it first if late. Group communication is the paradigm the lecture places in Phase 1 (D210).
+- **Consequences.** No live zone updates in the Phase 1 demo. If someone asks at the demo: Phase 2, and why, with the design in section
+  13. Noor's reason for wanting it, telling others in a zone, is kept here for Phase 2. Decisions the gap-14 work made for its branch
+  are recorded when that branch merges.
+- **Where.** `docs/architecture.md` sections 2 and 13, `docs/demo.md`, `README.md`, the report.
+- **How we check it.** A search for "publish-subscribe" in the docs finds it only as Phase 2 or as this history.
+- **Report notes.** State both steps, because the course asks for changed decisions with their alternatives: built small (item 6), then
+  Phase 2 (item 14), and why.
+
+### D210 · Group communication: the client middleware's send to all nodes is the group send
+
+- **Date:** 2026-11-03 · **Part:** F, C, all · **Status:** Implemented in the docs, amends D126, D152 and D157 · **Decided by:** Noor Hany
+  Emam (item 14 of the decisions of 2026-11-03)
+- **Context.** D126 named the sends. D152 built `CloudGroup`, and D157 stated a reading from the notes we had then, treating the client as
+  an outsider sending to an open group. Lecture 9 section 2.2 is more direct: "The client middleware uses group communication to send to
+  all of the cloud nodes." The application does not know this happens, and the client does not notice it. Lecture 8 section 9 adds that
+  the set of members is dynamic, because failures are simulated, and that the middleware, not the application, takes care of it.
+- **Options considered.**
+  1. *`MeshClient`'s send to all nodes is the main group send; `CloudGroup`'s who's-alive list is the membership.* Chosen: both things the
+     lectures ask for exist, and each has a name a reader can open.
+  2. *`CloudGroup` alone is the group communication, as D157 reads it, with the client outside.* It leaves out the send the lecture points at.
+  3. *Move the membership list into the client.* A client that knows who is alive stops being transparent, and the lecture puts failures on
+     the cloud side.
+- **Decision.** Option 1. In every doc and in the report:
+  - **The group send** is `MeshClient::submit`, in `client.rs`. The application makes one call. The middleware makes the copies, retries with
+    the same ID and keeps the first answer. One source, many recipients, driven by the sender.
+  - **The membership** is the cloud's who's-alive list, `CloudGroup`'s view, in `node/group.rs`. It changes when a node dies or returns (D153).
+  - **Inside the cloud,** `CloudGroup::send` and `probe` use the same idea for bids and pings. Results are ordered by Raft, from openraft (D126,
+    D152).
+  - `MeshClient` always sends to all the configured nodes. It does not read the view, so a report can reach a node that is coming back, and
+    that node stays quiet until it is serving.
+- **Why.** It is what the lecture says. D157's outside view of the client is not wrong about how the code runs, but it put the weight on the wrong
+  send.
+- **Consequences.** "Client middleware" and "group send" must be the words at the demo. Item 14 asks for this to show in code names: today
+  `MeshClient`, `submit` and the file header of `client.rs` say it; D156's `src/middleware.rs` adds the name. Limits stay as D157 states them:
+  each list is one node's opinion, and each send is three unicasts from a client, not IP multicast.
+- **Where.** `client.rs::MeshClient`, `node/group.rs::CloudGroup`, `docs/architecture.md` sections 2, 4.3 and 5.1a, `docs/demo.md`.
+- **How we check it.** `tests/client.rs` for the send to all nodes and the retry, `tests/group.rs` for the view. `docs/demo.md` says the same thing.
+- **Report notes.** Say "the client middleware's send to all of the cloud nodes is our group send, and the application does not know it happens".
+
+### D211 · The middleware and application boundary, on both the client side and the cloud side
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented in the docs and on the client side; the cloud side's file split is D156, not built
+  yet · **Decided by:** Noor Hany Emam (item 14 of the decisions of 2026-11-03)
+- **Context.** Lecture 9 says the boundary must be visible on both the cloud side and the client side, in the design and in the implementation, and
+  that it is asked about repeatedly. Lecture 8 says the same. D156 planned the split as an optional last commit.
+- **Options considered.**
+  1. *Draw it on both sides in `docs/architecture.md`, and make D156 required.* Chosen.
+  2. *Draw it only.* Lecture 9 says implementation as well as design.
+  3. *Keep D156 optional.* Cutting it would drop the layer claims from the report, which the lecture says will be asked about.
+- **Decision.** Option 1.
+  - **Client side.** Application: the simulated user in `bin/loadgen.rs`, and the web page in `bin/frontend.rs` and `bin/frontend.html`. Middleware:
+    `client.rs::MeshClient`.
+  - **Cloud side.** Application: the incident service (`handle_request`, `execute`, `plan_on_workers`, `send_done`, today in `node/mod.rs`, moving to
+    `node/service.rs` under D156), `planner.rs`, `campus.rs`, and the rules in `state.rs`. Middleware: `node/group.rs`, bidding (`bidding.rs`,
+    `node/bids.rs`), the detector (`node/heartbeat.rs`), `node/takeover.rs`, `node/rejoin.rs`, `node/degraded.rs`, `node/transport.rs` with tarpc, and
+    `raft/` with openraft.
+  - D156 is required, no longer optional. Until it merges, the docs say the cloud side's boundary runs through `node/mod.rs`, and say so plainly.
+- **Why.** The lecture asks for it by name. Users never know who executes, so the election serves the application from below (D156's reading).
+- **Consequences.** D156's note "If this is dropped, drop the Sept 13 layer claims" no longer applies: it must not be dropped. If it misses the deadline, the
+  report says the boundary is drawn and the file split is not finished. Cloud nodes talk through their middleware and never call each other directly
+  (Lecture 9 section 7.1), which `CloudGroup` and `Consensus` provide.
+- **Where.** `docs/architecture.md` section 4.3. D156's files when built: `node/service.rs`, `src/middleware.rs`, `tests/layers.rs`.
+- **How we check it.** `tests/layers.rs` when D156 lands. Until then, section 4.3 names each file.
+- **Report notes.** Use the diagram in section 4.3. Claim the files' split only after D156 merges.
+
+### D212 · Cloud nodes are peers, client and server are roles per transaction, and three system models
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented in the docs · **Decided by:** Noor Hany Emam (item 14 of the decisions of 2026-11-03)
+- **Context.** Lecture 9 section 3 says the cloud is not to be seen as client-server. Its nodes are peers that update each other's state, detect failures,
+  distribute work and share their load. Client and server are the roles of one transaction, not properties of a node. Lecture 8 section 6 asks for three
+  models of one system: physical, architectural and fundamental. The docs called the nodes "server nodes" in places and had no such split.
+- **Options considered.**
+  1. *Say it in section 2 of the architecture, with a table of transactions and their roles.* Chosen.
+  2. *Leave it to the report.* The report draws on these docs, and the words at the demo come from them.
+- **Decision.** Option 1. `docs/architecture.md` gets the three models in section 2 and "Peers, and roles per transaction" in section 3.1. "Server" is used only
+  for a role in one call, or for the spec's own wording.
+- **Why.** The code is already like this: every node sends and receives bids, heartbeats and Raft calls, and any node can answer a client.
+- **Consequences.** Client PCs remain clients in Phase 1 because they offer nothing yet. That changes in Phase 2, where each peer both publishes and consumes (Lecture 8 section
+  10.3).
+- **Where.** `docs/architecture.md` sections 2 and 3.1, `README.md`.
+- **How we check it.** Reading the docs, and the demo's questions list.
+- **Report notes.** Item 14 also asks for a short sheet per person on what they must be able to explain. That belongs to the report, not this log.
+
+### D213 · The questions once left for the instructor are closed
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented, amends D116, D119, D120, D126 and D131 · **Decided by:** Noor Hany Emam (their standing rule: the spec, the notes
+  and the recordings decide, and nobody is told to ask Dr Amr). The answers are Noor's items where a number is given
+- **Context.** Several places left a question for the instructor. Old entries keep their text under AGENTS.md, so a new entry has to close them.
+- **Options considered.**
+  1. *Close each in one table here, mark the old entries' status lines, and remove the questions from the live docs.* Chosen.
+  2. *Rewrite the old entries.* AGENTS.md forbids it.
+- **Decision.** Each question is closed as follows.
+
+  | Where it was left | The question | The answer |
+  |-------------------|--------------|------------|
+  | D116, section 14 of the architecture | Does Raft with a leader-run fault schedule meet "no coordinator"? | Noor's items 1 and 7. Keep Raft and shrink the leader: it only orders results. Its other jobs move to all nodes, and the failure is chosen by a draw among the nodes. The rewrite to a leaderless method is rejected. Being built; see D216 |
+  | D120, section 14 | Is degraded mode's trade-off acceptable? | Yes. The class notes ask for one server left to handle the clients, and the spec's clause on speculative action says to label it and reconcile. The demo states the trade-off first, as its own script says |
+  | D126, D131, section 14 | Are group communication and publish-subscribe expected in Phase 1? | Lecture 9. Group communication is Phase 1 (D157, D210). Publish-subscribe is Phase 2 (D209) |
+  | D119, section 14 | Does tarpc suit the remote invocation question? | Yes. The Oct 4 note asks for a ready-made RPC, and Noor's item 9 says tarpc between the nodes. Client PCs go over UDP: see D216 |
+
+  The status value `Pending approval`, which no entry ever used, is removed from this file's table, because nothing here waits for the instructor.
+- **Why.** Noor's rule. A stated reading with its source can be checked at the demo. An open question can only wait.
+- **Consequences.** If a reader disagrees, the report still shows the source and the reasoning. Citations of what the notes say stay, including the demo scenes named after Dr Amr's failure
+  cases: those are what he asked to see, not questions.
+- **Where.** `docs/architecture.md` section 14, `docs/demo.md`, `README.md`, the status lines of the old entries.
+- **How we check it.** A search for "Dr Amr" in the live docs finds only citations and the named scenes. In this log it also finds old entries' text, each closed here.
+- **Report notes.** Use the answers above in the report's question list. Do not write any of these as open.
+
+### D214 · Test plan corrected: FT-2's target, FT-9, and names nobody had defined
+
+- **Date:** 2026-11-03 · **Part:** A, C, D · **Status:** Implemented in the docs · **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions
+  (2026-11-03). Noor can overrule it
+- **Context.** `docs/architecture.md` section 11.2 had three kinds of error.
+  1. *FT-2 said "failover within 600 ms".* That cannot pass. openraft waits `election_timeout + leader_lease` once a vote is committed (`core/raft_core.rs:1475-1476`), and `leader_lease` is
+     `election_timeout_max`, 300 ms (`engine/engine_config.rs:56`). D115 gives nodes 1, 2 and 3 the ranges 150–225, 300–375 and 450–525 ms, on a 75 ms tick. So with node 1 gone, node 2 stands at about 600 to 750 ms
+     before any vote. In the one-PC power-cut rehearsal (three 90 s runs and one 300 s run, 90 reports a second, node 1 leading and cut), the first candidate came at +0.77 to +0.81 s, the new leader at +0.82 to +0.94 s, the first
+     answer to a new request at +0.84 to +0.94 s, and the longest time with no answer to anyone was 0.84 to 0.98 s. 150–300 ms also appeared in sections 6.1, 6.8, 8.2 and 9.2.
+  2. *FT-9 said "dropped for Phase 1 (D24)",* while section 12 said it is back in scope, D118 superseded D24, and `tests/durable.rs` covers it. Lines for FT-3, FT-4, FT-5 and FT-8 still said they needed parts that are now built.
+  3. *LB-1, LB-3 and P-1 were cited but defined nowhere in the repo.*
+- **Options considered.**
+  - *FT-2's target:*
+    1. *0 lost, and a new leader and the first new answer within 1 s, checked on the lab machines in E3.* Chosen: it matches the rule above and the rehearsal, with a little to spare.
+    2. *Keep 600 ms and shorten the timers.* The lease and D115's ranges would both have to change, against D115's reason, while the leader is already the thing under repair (D133).
+    3. *No number.* The test could then never fail.
+  - *The undefined names:* define them from what the log already says each one checks, or delete them. Defining keeps the citations in D2 and D3 meaningful.
+- **Decision.** FT-2 passes on 0 lost, with a new leader and the first new answer within 1 s. FT-9 is a live test: under load, a node is cut hard and restarted; it passes on 0 lost and equal digests. The expected times in the architecture now read about 0.45 to 0.85 s. LB-1 is even
+  shares under bidding at each load in E1. LB-2 is one overloaded node, as D83 defines it. LB-3 is bidding against leader dispatch, as D3 says. P-1 is E1's latency and throughput sweep. P-2 is the bid window sweep, as D83 defines it.
+- **Why.** A target that cannot pass teaches nothing, and D115 itself said E3 measures the real figure.
+- **Consequences.** The report states 1 s, says it came from the rule above, and gives the lab figure. The rehearsal figures are one PC only, and the rehearsal did **not** test losing unsynced disk writes, because the one kernel keeps its page cache across the cut. A real power cut on the
+  six PCs is still to do.
+- **Where.** `docs/architecture.md` sections 6.1, 6.8, 8.2, 9.2 and 11.2, `docs/protocol.md` timers.
+- **How we check it.** E3 for FT-2. `tests/durable.rs`, `tests/restart_log.rs` and scene 5 of the demo for FT-9.
+- **Report notes.** Give the openraft rule, because it explains the number. It is a fair "found by testing" point.
+
+### D215 · The library boundary names tarpc
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Implemented in the docs, amends D68 · **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D68 and AGENTS.md coordination rule 6 say openraft is the only library doing distributed-systems work. D119 added tarpc for remote calls, so the rule had been false since then, and the report must separate library code from ours.
+- **Options considered.**
+  1. *Name both in the rule: openraft for Raft, tarpc for remote calls.* Chosen.
+  2. *Argue that tarpc is not distributed-systems work.* Remote invocation is exactly what the course calls it.
+- **Decision.** Option 1. Anything new of that kind still needs team agreement and a design-log entry.
+- **Why.** The rule exists so the report can be honest about what is a library.
+- **Consequences.** None for the code.
+- **Where.** `AGENTS.md` coordination rule 6, `README.md`, `docs/demo.md`.
+- **How we check it.** Reading them. `Cargo.toml` lists only these two of that kind.
+- **Report notes.** State both in the library table.
+
+### D216 · Noor's decisions of 2026-11-03, and those still being built
+
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted. Items 1, 7 and 9 are not on a branch yet, and this entry holds their record until their own entries land · **Decided by:** Noor Hany Emam, with the agent's picks in item 11 on Noor's
+  instruction to finish. Noor can overrule any pick
+- **Context.** Noor settled the remaining questions in one sitting. Their own words on the deadline: finished in an hour, and whatever passes tests by then goes in the PR (item 12). Some builders had not finished when these docs were written.
+- **Options considered.** Each item's rejected options are in the table.
+- **Decision.**
+
+  | Item | Decided | Rejected | Recorded in | State when this was written |
+  |------|---------|----------|-------------|-----------------------------|
+  | 1 | No coordinator: keep Raft and shrink the leader. It only orders results. Picking who fails and loading the responder list move to all nodes | Replacing Raft with a leaderless method: a rewrite one day before the deadline | here, then D158–D166 | not on a branch |
+  | 2 | A small web page on the client PC | A desktop window app; a terminal menu | D197 | built |
+  | 3, 4 | One box for user processes, 10 real programs sharing the users; steady, random and all-at-once | 1000 real programs; 1 program with light users | D181, D182 | built |
+  | 5 | Too old means not planned, 60 s | A stored label nothing reads | D143 | built |
+  | 6, 14 | Publish-subscribe: small, then Phase 2 | see D209 | D209 | Phase 2 |
+  | 7 | Fault election by random draw: every 30 to 60 s each node draws a number and sends it to the other 2. The highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing, so two cannot go down at once. No leader is involved | Saving the result in Raft: it goes back through the leader | here, then D158–D166 | not on a branch; the leader-run schedule (D12, D78) is what runs today |
+  | 8 | A named group with a who's-alive list | Our own ordering and delivery; only naming what exists | D152–D155 | built |
+  | 9, 11 | Client PCs to the cloud over UDP, "group communication within machines", tarpc between them. Reverses D17. The way: tarpc over a small datagram adapter. `ctl` stays on tarpc over TCP, so a lost silence order cannot vanish | coap library; a small request-reply of our own | here, then D167–D180 | not on a branch; TCP is what runs today |
+  | 10 | Queue with grouped saves | see D133 | D133 | built |
+  | 11 | Saves stay on in measured cells unless the queue numbers say otherwise. One branch and one PR, a commit per gap, since one person merges | | here | in force |
+  | 12 | Everything is time-boxed to about 20:00 on 2026-11-03. What passes tests by then goes in the PR, the rest is left out and listed, publish-subscribe first | | here | in force |
+  | 13 | The document carries UML models, decisions with justification and assessment, changed decisions with their alternatives, who did what, all five scenarios, the stress testing, and the measurement analysis | | the report | in progress |
+  | 14 | What Lectures 8 and 9 changed | | D209–D212 | docs done; D156 not built |
+
+- **Why.** The decisions list says these become log entries, and AGENTS.md says every decision goes in the log. A short record now beats a gap if a builder runs out of time.
+- **Consequences.** When a builder's entries land, this entry's row points at them, and their entries mark D17, D12, D78 and D116 as superseded. If item 1, 7 or 9 is cut by the time box, it is listed in the PR and the report says it was decided but not built. The architecture labels each of them `planned` until then.
+- **Where.** `docs/architecture.md` sections 2, 6.11 and 14.
+- **How we check it.** `git grep UdpSocket` and the status of each builder's branch.
+- **Report notes.** The report's changed-decisions list starts from this table.
+
+### Notes on older entries
+
+These add to older entries without changing their text (gap-15's list).
+
+| Entry | Note |
+|-------|------|
+| D49 | The pick stays as settled; `Plan` now also carries a priority (D148) |
+| D93, D94 | Still true that severity and age do not change who is nearest; they now also feed the priority (D148) |
+| D95 | Its age is unchanged and now also feeds the priority (D148). One request path has two ages on purpose: the too-old rule reads the client's stated age (D143) |
+| D9 | `Incident.ttl_ms` is not the table trim this entry dropped. Records are never deleted (D149) |
+| D27 | Still every reply for one ID carries one result. `Expired` carries the record as `Done` does (D143) |
+| D28 | An expired report is still an answer and counts as served, like any plan with nobody on it. It also counts in `no_responder_share` (D143, D147) |
+| D37 | A retry gets the same body: `Expired` if the record was too old on arrival, otherwise `Done`. The record decides, not the node (D143) |
+| D111 | `expires_at_ms` is `assigned_at_ms` plus this service time: a planned end, not an enforced one (D144) |
+| D112 | A frame waiting in the send queue keeps its young stamp, a stated limit of the too-old rule (D143). On TCP each node holds 30 client connections and answers 30 pings a second in every cell (D186). See D200 for the frontend's status polls |
+| D122 | After `responder_taken` the record reads `Unassigned` although the client was told a responder was sent (D142). The conflict compares who goes, not priority (D148) |
+| D123 | `Submitted` grows `id` and `status`. `ReplyBody::Expired` follows this entry's reason against a flag on `Done` |
+| D132 | `ctl incidents` reads results, not the Raft log, so it does not bring back `ctl log` (D145) |
+| D23 | See D200: the frontend's status polls are a second sender of control frames |
+| D25, D117, D121 | Stand unchanged by the group work. D121's key gains a second use, recorded in D153, but its rule does not change |
