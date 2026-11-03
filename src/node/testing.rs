@@ -24,7 +24,9 @@ use super::workers::WorkerPool;
 use super::{NodeContext, lock};
 use crate::config::Config;
 use crate::metrics::EventLog;
-use crate::proto::{Command, CommittedResult, NodeId, Outcome, PeerReply, ProposeError, RaftRpc};
+use crate::proto::{
+    Command, CommittedResult, NodeId, Outcome, PeerReply, Plan, ProposeError, RaftRpc, StaleReason,
+};
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, ConsensusStatus, Role};
 
@@ -57,6 +59,10 @@ pub(crate) struct ScriptedConsensus {
     proposed: Semaphore,
     /// One permit for each proposal the test lets commit.
     commits: Semaphore,
+    /// How many more results come back `Stale`.
+    stale_left: AtomicUsize,
+    /// The plan of every result proposed so far, oldest first.
+    plans: Mutex<Vec<Plan>>,
 }
 
 impl ScriptedConsensus {
@@ -71,6 +77,8 @@ impl ScriptedConsensus {
             heard: watch::channel(None).0,
             proposed: Semaphore::new(0),
             commits: Semaphore::new(0),
+            stale_left: AtomicUsize::new(0),
+            plans: Mutex::new(Vec::new()),
         })
     }
 
@@ -118,6 +126,16 @@ impl ScriptedConsensus {
     pub(crate) fn commit_one(&self) {
         self.commits.add_permits(1);
     }
+
+    /// The next `count` results come back `Stale`, as if their responder had just been taken.
+    pub(crate) fn make_stale(&self, count: usize) {
+        self.stale_left.store(count, Ordering::SeqCst);
+    }
+
+    /// The plan of every result proposed so far, oldest first.
+    pub(crate) fn proposed_plans(&self) -> Vec<Plan> {
+        lock(&self.plans).clone()
+    }
 }
 
 impl Consensus for ScriptedConsensus {
@@ -127,16 +145,27 @@ impl Consensus for ScriptedConsensus {
             self.proposed.add_permits(1);
             self.commits.acquire().await.expect("never closed").forget();
             Ok(match cmd {
-                Command::CommitResult(p) => Outcome::Committed(CommittedResult {
-                    request: p.request,
-                    incident: p.incident,
-                    executor: p.executor,
-                    term: p.term,
-                    plan: p.plan,
-                    age_ms: p.age_ms,
-                    assigned_at_ms: p.assigned_at_ms,
-                    log_index: 1,
-                }),
+                Command::CommitResult(p) => {
+                    lock(&self.plans).push(p.plan.clone());
+                    if self.stale_left.load(Ordering::SeqCst) > 0 {
+                        self.stale_left.fetch_sub(1, Ordering::SeqCst);
+                        return Ok(Outcome::Stale {
+                            request: p.request,
+                            responder: p.plan.responder.expect("only a named responder is taken"),
+                            reason: StaleReason::UnknownResponder,
+                        });
+                    }
+                    Outcome::Committed(CommittedResult {
+                        request: p.request,
+                        incident: p.incident,
+                        executor: p.executor,
+                        term: p.term,
+                        plan: p.plan,
+                        age_ms: p.age_ms,
+                        assigned_at_ms: p.assigned_at_ms,
+                        log_index: 1,
+                    })
+                }
                 _ => Outcome::Applied,
             })
         })

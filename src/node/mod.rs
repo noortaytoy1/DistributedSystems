@@ -64,7 +64,7 @@ use workers::{Overloaded, WorkerPool};
 /// How often a node logs its message counts and state digest.
 const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Plans per request before giving up on stale plans; the client's retry starts over.
+/// Plans per request before the node answers that nobody could be sent (D220).
 const MAX_PLAN_ATTEMPTS: u32 = 3;
 
 /// How often a node checks that the campus is registered. Small against starting three machines
@@ -400,13 +400,12 @@ enum ExecuteError {
     Overloaded(#[from] Overloaded),
     #[error(transparent)]
     Propose(#[from] ProposeError),
-    #[error("plan still stale after {MAX_PLAN_ATTEMPTS} attempts")]
-    StillStale,
     #[error("unexpected outcome {0}")]
     Unexpected(&'static str),
 }
 
-/// Plan on the worker pool and commit through Raft; plan again if the plan went stale.
+/// Plan on the worker pool and commit through Raft; plan again if the plan went stale, and after
+/// [`MAX_PLAN_ATTEMPTS`] stale plans commit that nobody could be sent (D220).
 async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResult, ExecuteError> {
     for _ in 0..MAX_PLAN_ATTEMPTS {
         let free = ctx.state.with(|s| s.free_responders());
@@ -430,7 +429,28 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             other => return Err(ExecuteError::Unexpected(other.kind())),
         }
     }
-    Err(ExecuteError::StillStale)
+    // Every plan lost the race for a responder. Say so now: silence would leave the client to its
+    // retry, which only starts the race again. A plan with no responder cannot go stale, and with no
+    // list to search and no load knob it needs no worker job.
+    let age_ms = now_ms().saturating_sub(req.incident.reported_at_ms);
+    let plan = planner::plan(&req.incident, &[], age_ms, CostKnob::default());
+    let proposal = ResultProposal {
+        request: req.id,
+        incident: req.incident.clone(),
+        executor: ctx.id,
+        term: ctx.consensus.status().term,
+        plan,
+        age_ms: req.age_ms,
+        assigned_at_ms: now_ms(),
+    };
+    match ctx
+        .consensus
+        .propose(Command::CommitResult(proposal))
+        .await?
+    {
+        Outcome::Committed(done) | Outcome::Duplicate(done) => Ok(done),
+        other => Err(ExecuteError::Unexpected(other.kind())),
+    }
 }
 
 /// Plan one request from `free` on the worker pool.
@@ -734,6 +754,88 @@ mod tests {
         let events = logged(&ctx.log, &dir);
         assert!(events.iter().any(|e| e["ev"] == "request_received"));
         assert!(!events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Runs one request on a state with free responders, whose first `stale` plans lose the race,
+    /// and returns what went back to the client.
+    async fn race(
+        ctx: &Arc<NodeContext>,
+        fake: &ScriptedConsensus,
+        stale: usize,
+    ) -> Vec<ClientReply> {
+        let responders = (1..=2)
+            .map(|id| Responder {
+                id,
+                zone: 0,
+                location: Point { x: 0, y: 0 },
+                capability: Capability::Medical,
+            })
+            .collect();
+        ctx.state
+            .apply_for_tests(Command::RegisterResponders { responders });
+        fake.make_stale(stale);
+        let (reply, mut answer) = ReplyTx::for_tests(ctx.gate.clone());
+        let handler = tokio::spawn(handle_request(ctx.clone(), request(), reply));
+        for _ in 0..=stale {
+            fake.proposal_arrived().await;
+            fake.commit_one();
+        }
+        handler.await.unwrap();
+        replies(&mut answer)
+    }
+
+    /// The client hears at once, and not after its retry wait, which would start the race again.
+    #[tokio::test]
+    async fn three_stale_plans_are_answered_with_nobody_sent() {
+        let dir = log_dir("three-stale-plans");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = race(&ctx, &fake, MAX_PLAN_ATTEMPTS as usize).await;
+
+        let plans = fake.proposed_plans();
+        assert_eq!(plans.len(), 4, "{plans:?}");
+        assert!(
+            plans[..3].iter().all(|p| p.responder.is_some()),
+            "{plans:?}"
+        );
+        assert_eq!(plans[3].responder, None, "{plans:?}");
+        let [
+            ClientReply {
+                body: ReplyBody::Done(done),
+                ..
+            },
+        ] = &replies[..]
+        else {
+            panic!("expected one answer, got {replies:?}");
+        };
+        assert_eq!(done.plan.responder, None);
+        let events = logged(&ctx.log, &dir);
+        assert!(events.iter().any(|e| e["ev"] == "replied"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Nobody is only for when all three plans lost: a plan that wins on the last try keeps its
+    /// responder, and no fourth proposal follows.
+    #[tokio::test]
+    async fn a_plan_that_wins_on_its_last_try_keeps_its_responder() {
+        let dir = log_dir("stale-then-won");
+        let (fake, ctx) = planning_leader(&dir);
+
+        let replies = race(&ctx, &fake, MAX_PLAN_ATTEMPTS as usize - 1).await;
+
+        let plans = fake.proposed_plans();
+        assert_eq!(plans.len(), 3, "{plans:?}");
+        let [
+            ClientReply {
+                body: ReplyBody::Done(done),
+                ..
+            },
+        ] = &replies[..]
+        else {
+            panic!("expected one answer, got {replies:?}");
+        };
+        assert!(done.plan.responder.is_some(), "{done:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
