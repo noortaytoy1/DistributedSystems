@@ -34,7 +34,11 @@ On the three node machines, open the ports:
 ```bash
 sudo ufw allow 7001/tcp      # peers: reachable from the other two nodes
 sudo ufw allow 8001/tcp      # clients and ctl: reachable from the client machines
+sudo ufw allow 8001/udp      # ONLY with the UDP client path (D216), which has not merged yet. Reports then use UDP and ctl stays on TCP
 ```
+
+The UDP line depends on that work: skip it until the build you are running has it. Then `ctl status` says `udp no answer` if the rule is
+missing.
 
 The frontend needs no open port when the browser is on the same machine. Only if neither that nor `ssh -L` works, use
 `--listen 0.0.0.0:9001` and `sudo ufw allow 9001/tcp` on that client machine. There is no password (D199).
@@ -92,13 +96,13 @@ this script. A second group of users on one machine needs its own `--batch`.
 Node output: `RUST_LOG=info,tarpc=info` brings tarpc's per-call lines back for debugging. Never run an experiment that way: they
 slow a node enough to cost it its leader (D134).
 
-`faults.enabled = true` in the lab config means the leader also silences a random node every 30 to 60 s. For
-anything you want to control yourself, such as the demo, set this in `config/lab.toml` first:
+`faults.enabled = true` in the lab config means the three nodes also elect one of themselves to go silent every 30 to 60 s (D158). For
+anything you want to control yourself, set this in `config/lab.toml` first:
 
 ```toml
 [faults]
 enabled = true                # keeps ctl silence working
-interval_min_ms = 100000000   # the schedule never fires
+interval_min_ms = 100000000   # no election ever fires
 interval_max_ms = 100000000
 ```
 
@@ -125,8 +129,8 @@ defaults (D40) that have only ever run on one machine.
 ## 5. Run the experiments
 
 ```bash
-scripts/run-experiments.sh experiments/hosts quick      # 13 cells, about 1 hour
-scripts/run-experiments.sh experiments/hosts full       # 32 cells, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick      # 15 cells, about 70 minutes
+scripts/run-experiments.sh experiments/hosts full       # 33 cells, about 8 hours
 ```
 
 **Stop every frontend first.** The runner refuses to start a run while a `frontend`, `zonefeed`, `loadgen` or `node` from `$BIN`
@@ -173,6 +177,7 @@ work in that cell, and `elections` well above 0 means the cell is above what the
 | A node logs `Address already in use` | its old process is still running |
 | A node refuses to start: unknown key | the config is from another commit; rebuild and copy it again |
 | Digests stay different after everything is serving | a real bug: keep the logs, it is what the digest exists to catch. Under load the column can differ from one refresh to the next; compare `state_checkpoint` at the same `log_index` instead (D138) |
+| `fault_election` lines with `victim` null, over and over | a round could not finish: one node is off, silenced, catching up or degraded, or has `--faults off`. That is the rule working (D158, D159) |
 | `degraded` is true with both peers running | the peers miss heartbeats for 2 s: an overloaded machine or a bad network (D121) |
 | A returning node stays `serving = false` | it hears no leader; after 3 s it may stand itself (D125), but it needs one peer for a majority. It asks the leader again every second (D135), so it is not waiting on a lost index. Look for `rejoin: still applying` in its log |
 | The runner says `left over on <host>` | a program from an earlier run or a person's terminal. Stop it by hand and run again (D139) |

@@ -77,7 +77,7 @@ table below in sync.
 | D9  | Request ID plus a replicated table of results                   | A    | Implemented, amended by D27 |
 | D10 | Optimistic check at commit instead of locks                     | A, E | Implemented, amended by D28 |
 | D11 | Single-owner tasks and channels; planner on a thread pool       | all  | Amended by D47    |
-| D12 | The Raft leader runs the fault schedule                         | C    | Implemented, amended by D78, see D216 |
+| D12 | The Raft leader runs the fault schedule                         | C    | Superseded by D158 |
 | D13 | Faults injected in the network endpoint                         | C    | Implemented       |
 | D14 | openraft 0.9.25 behind a `Consensus` trait                      | A    | Implemented       |
 | D15 | Rust 2024 on a pinned toolchain, tokio runtime                  | all  | Implemented       |
@@ -87,7 +87,7 @@ table below in sync.
 | D19 | One multiplexed connection per peer | C | Superseded by D119 |
 | D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
-| D22 | Fault gate semantics                                            | C    | Implemented, amended by D78 |
+| D22 | Fault gate semantics                                            | C    | Implemented, see D160 |
 | D23 | Control frames bypass the fault gate                            | C    | Implemented, see D200 |
 | D24 | In-memory Raft storage, no snapshots | A | Superseded by D118 |
 | D25 | Static membership; every node calls `initialize`                | A    | Implemented, amended by D137 |
@@ -128,7 +128,7 @@ table below in sync.
 | D60 | Deployment target: six Ubuntu machines on one LAN               | all  | Implemented       |
 | D61 | Peer port serves before Raft starts                             | A    | Implemented       |
 | D62 | `ctl` is the operator tool; the experiment runner is bash over SSH | C | Implemented (D130) |
-| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented, qualified by D187 |
+| D63 | Experiment method: repetitions, warm-up, run length             | all  | Implemented, qualified by D162, D187 |
 | D64 | Analysis in Python                                              | all  | Implemented       |
 | D65 | Testing strategy                                                | all  | Implemented       |
 | D66 | Rust coding rules                                               | all  | Implemented       |
@@ -139,11 +139,11 @@ table below in sync.
 | D71 | Worker pool mechanism: admission counter plus a fair semaphore  | E    | Implemented       |
 | D72 | Worker pool: cancelled and panicking jobs                       | E    | Implemented       |
 | D73 | Worker pool load report: queued and running only; no overload event yet | E | Implemented, amended by D138 |
-| D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented       |
+| D74 | Manual faults: one at a time, 1 ms to 20 s, rejected otherwise  | C    | Implemented, see D159 |
 | D75 | Rejoin gate: serving off and elections off until current        | D, A | Implemented, amended by D135 |
 | D76 | `ReadIndex` peer message: the catch-up target from the leader   | D, A | Implemented, amended by D135 |
-| D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented       |
-| D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Implemented, see D216 |
+| D77 | Fault injection on/off: `faults.enabled`, `--faults` override   | C, A | Implemented, see D158 |
+| D78 | Fault schedule: `FaultOrder`, timings, seeding, no overlap      | C, A | Amended by D158, D159, D160 |
 | D79 | Peer heartbeat detector: heard-from, pause while silent, events | C    | Implemented, amended by D151, D155 |
 | D82 | CPU usage read from /proc/stat                                  | B    | Implemented |
 | D83 | Part B tests: variants, order and decision rules                | B    | Accepted          |
@@ -179,7 +179,7 @@ table below in sync.
 | D113 | Required client IDs; sequence numbers start at the clock | F | Implemented, amended by D184 |
 | D115 | A different election timeout range per node | A | Implemented |
 | D114 | Bidding is the default; the leader only sequences the log | B, A | Implemented |
-| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Implemented, amended by D213, see D216 |
+| D116 | Raft and the leader-run fault schedule stay, despite "no coordinator" | A, C | Superseded by D158 |
 | D117 | Richer faults are not built | C | Accepted |
 | D118 | Raft log and vote on disk, for physical power-off | A, D | Implemented |
 | D119 | Peer calls through tarpc, with typed methods | C, A | Implemented, amended by D150, D213 |
@@ -189,7 +189,7 @@ table below in sync.
 | D123 | `ReplyBody::Provisional`, and how the client reports it | C, F | Implemented, see D143 |
 | D124 | Degraded holds: a local table on the service timer | C, E | Implemented |
 | D125 | A returning node with no leader may stand for election after 3 s | D, C | Implemented |
-| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented, amended by D152, D157, D210, D213 |
+| D126 | Group communication named: `PeerSet::broadcast` and `MeshClient` | C, B, F | Implemented, amended by D152, D157, D158, D210, D213 |
 | D127 | FT-6: count elections after each `rejoined` | D, A | Implemented |
 | D128 | `resource_usage`: memory, CPU, network and queues once a second | all | Implemented, amended by D185 |
 | D129 | Experiment load: `plan_work`, responders and think time | E, F | Implemented, to confirm, amended by D205 |
@@ -239,7 +239,7 @@ table below in sync.
 | D151 | A suspected peer stays suspected through this node's own silence | C | Implemented |
 | D152 | Group communication built: `CloudGroup` with a per-node view, `send` and `probe` | C, B | Implemented, amended by D210 |
 | D153 | View rule: a peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard; voters never change | C | Implemented |
-| D154 | Bids and the failure draw follow the view; pings probe every configured peer | C, B | Implemented for bids and pings |
+| D154 | Bids and the failure draw follow the view; pings probe every configured peer | C, B | Implemented |
 | D155 | `NodeStatus` gains `members`; `ctl status` shows them; the view number stays in `group_view` | C, all | Implemented |
 | D156 | Application layer to `node/service.rs`; `send_ordered`, `src/middleware.rs` and `tests/layers.rs` enforce the split | A, C, F | Accepted, required by D211, not built yet |
 | D157 | Reading of the class note on group communication; D126's question withdrawn | all | Implemented, amended by D210 |
@@ -247,6 +247,21 @@ table below in sync.
 | D104 | Implemented, amended by D150 and D154 | D150 makes "each task ends within the timeout" true for a call queued behind a full socket. D154 sends bids to the view, not always to two peers. |
 | D119 | Implemented, amended by D150 | A call now enforces its own deadline. |
 | D126 | Implemented, amended by D152 and D157 | "Name existing sends" is no longer enough, and its closing note is withdrawn. Its rejection of a library and of our own multicast stands. |
+| D158 | The three nodes elect the failed node: `FaultBid` rounds replace the leader's fault schedule | C | Implemented |
+| D159 | How a fault-election round runs: who calls it, what closes it, numbering, timers, who may bid | C | Implemented |
+| D160 | The fault gate has no exception again: `FaultOrder` and the last word are gone | C | Implemented |
+| D161 | `fault_election` event and what is measured | C, all | Implemented |
+| D162 | Elected faults in the experiments and the demo: FT-8 first in quick, `ft8-election-rate`, a timed last scene | C, F | Implemented for the cells |
+| D12 | Superseded by D158 | One leader no longer runs the schedule. |
+| D116 | Superseded by D158 | The fault schedule no longer stays with the leader. Raft staying is unchanged (item 1 of Noor's decisions). Its closing line about showing someone the argument is replaced by D158: nothing waits on an answer. |
+| D78 | Amended by D158, D159 and D160 | Gone: `FaultOrder`, the seed-per-term scheme, `fault_ordered`, the last word, the wait-out. Kept: the config keys and their values, the ranges, `fault_refused`, the refusal while recovering, and the validation rule with a new reason. |
+| D22 | Implemented; D78's amendment undone by D160 | The gate has no exception again. |
+| D74 | Implemented. Note: "the leader-side schedule must treat 'already silenced' as a skipped round" now reads: an elected node that is already silenced logs `fault_refused` (D159). | |
+| D77 | Implemented. Note: one `--faults off` node now stops every election in the cluster (D158). | |
+| D63 | Implemented. Note: quick is 15 cells and full is 32 (D162); with the user-process cells, 15 and 36. | |
+| D119 | Implemented. Note: in its list of methods, `fault_order` is now `fault_bid` (D158). | |
+| D126 | Implemented, amended by D152, D157 and D158. Add a row to its table, marked as not agreed: | |
+| D154 | Implemented | Implemented |
 | D181 | User processes: 10 real programs per client PC share the users; the number is a setting | F | Implemented, amends D53, D54 |
 | D182 | Load patterns (steady, random, all-at-once) and spreading the first sends | F | Implemented, amends D54, qualifies D129 |
 | D183 | `scripts/start-users.sh`: one way to start and stop users | F | Implemented, amends D130, qualifies D132 |
@@ -956,8 +971,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
 
 ### D12 · The Raft leader runs the fault schedule
 
-- **Date:** Phase 1 architecture · **Part:** C · **Status:** Implemented, amended by D78 (message,
-  timings, seeding, overlap rule); to be replaced by the draw among the nodes, see D216 · **Decided by:** team
+- **Date:** Phase 1 architecture · **Part:** C · **Status:** Superseded by D158 · **Decided by:** team
 - **Context.** The project requires random failures of up to 20 s, one node at a time.
 - **Options considered.** A separate election for each fault round; the leader decides.
 - **Decision.** Every 30–60 s (random), the Raft leader picks a victim uniformly from all three nodes,
@@ -986,8 +1000,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
 
 ### D22 · Fault gate semantics
 
-- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented, amended by D78 (the `FaultOrder(Ok)`
-  reply leaves a node that has just been silenced) · **Decided by:** A, C
+- **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented; D78's amendment undone by D160 · **Decided by:** A, C
 - **Decision.** While silenced, a node:
   - reads and discards every incoming peer and client frame without replying, so callers see a
     timeout, as with a pulled cable;
@@ -1066,7 +1079,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
 
 ### D74 · Manual faults: one at a time, 1 ms to 20 s, rejected otherwise
 
-- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented · **Decided by:** Aabed, on the
+- **Date:** 2026-11-01 · **Part:** C · **Status:** Implemented, see D159 · **Decided by:** Aabed, on the
   agent's recommendation
 - **Context.** `faults::silence_for` (behind `ctl silence`, and later behind the fault schedule,
   D12) was a stub. Its TODO said overlapping faults must not cut each other short. Three questions
@@ -1228,7 +1241,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
   Ongaro's thesis.
 ### D77 · Fault injection on/off: `faults.enabled`, `--faults` override
 
-- **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented ·
+- **Date:** 2026-11-01 · **Part:** C (config key in A's `config.rs`) · **Status:** Implemented, see D158 ·
   **Decided by:** Aabed, on the agent's recommendation, at the team's request ("enable or disable
   the fault injection through a flag" before launch)
 - **Context.** Experiments need a no-fault baseline, and teammates want to run the cluster
@@ -1264,7 +1277,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
 ### D78 · The fault schedule: `FaultOrder`, timings, seeding, one fault at a time
 
 - **Date:** 2026-11-01 · **Part:** C (contract change; config keys in A's `config.rs`) ·
-  **Status:** Implemented; to be replaced by the draw among the nodes, see D216 · **Decided by:** Aabed, on the agent's recommendation
+  **Status:** Amended by D158, D159 and D160 · **Decided by:** Aabed, on the agent's recommendation
 - **Context.** D12 says the Raft leader runs the fault schedule: every 30–60 s it picks a victim
   uniformly from all three nodes, itself included, and orders it silent for 1–20 s, tagging the
   order with its term. It left the message, the timings' home, the randomness, what a recovering
@@ -2407,7 +2420,7 @@ closes the ones older entries left. Noor's decisions still being built are liste
 
 ### D63 · Experiment method: repetitions, warm-up, run length
 
-- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented, qualified by D187 · **Decided by:**
+- **Date:** 2026-10-27, settled 2026-11-02 · **Part:** all · **Status:** Implemented, qualified by D162 and D187 · **Decided by:**
   omar.leithym, on the agent's recommendation
 - **Context.** Phase 1 §11.4: 5-minute runs after a 30 s warm-up, at least **10** repetitions per
   configuration with different seeds, load levels 30–3,000 users, 95% confidence intervals.
@@ -2703,7 +2716,7 @@ exist because of them.
 
 ### D116 · Raft and the leader-run fault schedule stay, despite "no coordinator"
 
-- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Implemented, amended by D213: its question is closed, and Noor's items 1 and 7 change the schedule, see D216 · **Decided by:** omar.leithym
+- **Date:** 2026-11-01 · **Part:** A, C · **Status:** Superseded by D158: Raft stays, the fault schedule does not. Its question is closed by D213 · **Decided by:** omar.leithym
 - **Context.** Dr Amr insists on peers with no coordinator (Sept 13, Oct 28). Raft has a leader. D12
   has that leader run the fault schedule.
 - **Options considered.**
@@ -2764,7 +2777,7 @@ exist because of them.
 
 ### D119 · Peer calls through tarpc, with typed methods
 
-- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19, amended by D150, question closed by D213 · **Decided by:**
+- **Date:** 2026-11-01 · **Part:** C, A · **Status:** Implemented, amends D16, D17, D19, amended by D150, see D158, question closed by D213 · **Decided by:**
   omar.leithym; typed methods on the agent's recommendation, tarpc against it
 - **Context.** Dr Amr's notes (Sept 13, Oct 4, Oct 28): provide a remote invocation mechanism, do not go
   low-level, use a ready-made RPC or RMI, pick one and say why, with the chapter 2 table (Java RMI,
@@ -2958,7 +2971,7 @@ exist because of them.
 
 ### D126 · Group communication named: `PeerSet::broadcast` and `MeshClient`
 
-- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented, amended by D152, D157, D210 and D213 · **Decided by:** omar.leithym, on the
+- **Date:** 2026-11-02 · **Part:** C, B, F · **Status:** Implemented, amended by D152, D157, D158, D210 and D213 · **Decided by:** omar.leithym, on the
   agent's recommendation
 - **Context.** Dr Amr's notes ask for group communication, and for the application to send a message once
   while the middleware gives the replicas their copies, with the two layers kept distinct. We already
@@ -4535,6 +4548,301 @@ exist because of them.
   apart from old entries kept as history.
 - **Report notes.** Say "our reading", and give the limits. Publish-subscribe has its own entry.
 
+### D158 · The three nodes elect the failed node: FaultBid rounds replace the leader's fault schedule
+
+- **Date:** 2026-11-03 · **Part:** C (contract change in `proto.rs`; hooks in A's `node/mod.rs` and `raft/network.rs`;
+  comments in A's `config.rs`) · **Status:** Implemented, supersedes D12 and D116, amends D78 · **Decided by:** Noor Hany
+  Emam (item 7 of the 2026-11-03 sitting). One difference from Noor's words, flagged under Decision, was decided by the
+  agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03).
+- **Context.** The spec asks that the servers periodically elect one machine to ignore communication for a random time
+  of up to 20 s, and the class notes say to mimic failure using election and that the servers are peers with no
+  coordinator (Sept 13, Oct 28). Until now one node did all of it: the Raft leader drew a victim alone and ordered it
+  silent (D12, D78), and D116 kept that, on the reading that a schedule run by an elected node might fit. A literal reader
+  finds no election there. Three other things were wrong with it:
+  - It was the clearest coordinator job left on the leader, the job D78 itself said must be justified or changed.
+  - With one machine off, the leader's draw picked a live node and silenced it 2 times in 3, so a power cut plus the
+    schedule gave two nodes down.
+  - Neither the demo nor the quick profile ever ran it, so the report had no data on it.
+  D116's closing line left the question with a person outside the team. Noor's rule is that the spec and class notes
+  decide, so this entry replaces that line and nothing here waits on anyone's answer.
+- **Options considered.**
+  1. *All three nodes draw a number over the group, and the highest goes silent (chosen).* A round held for this purpose,
+     all three in it, the result is the machine that fails, that machine silences itself, no leader involved, and the
+     round can be counted. It needs a new message and a small state machine, and all three logging the same line is usual,
+     not guaranteed.
+  2. *Votes through the Raft log.* Each node commits a ticket as a `Command`, so the result is agreed. Noor's item 7
+     rejected this by name, because it goes back through the leader and adds a saved command. Checked against the code as
+     well: log order picks which two tickets compete, every ballot passes through the leader, a node replaying its log
+     after a power cut needs a guard so it does not silence itself again, and that guard is racy as sketched. Votes need
+     commits, and one rehearsal had no commits at all for over a minute. It would change `Command`, `CloudState`, apply
+     and the digest a day before the deadline. Its one gain, an agreed record, is something no document asks for.
+  3. *The elected Raft leader silences itself.* Raft's own election would be the election. No round is held for the
+     fault, so the spec's sentence stays unmet. Node 3 would almost never fail, because of D115's election ranges. With
+     one machine off every round would still leave one node up. A fresh Raft election per fault is not available either:
+     openraft 0.9.25 rejects votes during the leader lease, and has no leader-transfer trigger.
+  4. *Keep the leader's draw and report an accepted risk.* No code. A literal reader finds no election, it goes against
+     Noor's items 1 and 7, the leader keeps its last coordinator job, and the power-cut hazard is managed only by a setting.
+  5. *The winner of a real request's bid round goes silent, every Nth request.* It touches the hot path of every cell,
+     ties the fault rate to load and not to a timer, and mostly hits node 1 on ties.
+- **Decision.** Option 1.
+  - Every `faults.interval_*` (30 to 60 s) the three nodes draw: each picks a random ticket and a random silence (1 to
+    20 s) and sends both to the other two as `PeerBody::FaultBid { round, ticket, ms }`, through the group of D152.
+  - A node acts only when it holds a bid from **every node in `config.cluster.nodes`**, never only the ones on its
+    who's-alive list. A node missing any of the 3 numbers does nothing.
+  - The highest ticket is elected, ties to the lower node ID. The elected node closes its own gate for the `ms` in its
+    own bid. Nobody orders anybody.
+  - A node that is off, silenced, catching up or degraded sends no bid, so no new round can finish until it is back. That
+    is the whole of the rule that keeps two nodes from going down together.
+  - No leader check anywhere on this path. Nothing goes into the log: `state.rs`, `Command`, the digest and the Raft log
+    file are unchanged.
+  - `ctl silence` stays as it is (D74). `FaultOrder` is removed in both directions (D160).
+  - **The one difference from Noor's item 7.** Noor's words read as each node on its own timer. Machines with no shared
+    clock would not land in one round that way, so the first timer to run out starts the round, and the others draw at
+    once when they hear of it. The caller's ticket is as random as anyone's, so calling a round gives it no power. Noor can
+    overrule this: it changes `FaultRounds::step` and nothing else.
+- **Why.** It is the only option where the spec's sentence can be seen happening in the running system. D12's reason for
+  having no election was that one leader means exactly one victim at a time. The all-numbers rule now gives that with no
+  leader, and the argument has no timer in it:
+
+  > Say X silences itself for round `a` at time `t`, and Y closes round `b` after `t`, before X is back. Y needs X's bid in
+  > `b`, which X sent before `t`. If `b = a`, both hold the same first bids, so Y names X and stays up. If `b > a`, X replaced
+  > `a` when it bid in `b`, so X never closed `a`. If `b < a`, X needed Y's bid in `a`, so Y had already left `b` and cannot
+  > close it.
+
+  This holds for one driver per node, one draw per round, and no restart inside a round. It also removes the 2-in-3 chance
+  of a second silence with a machine off, and the gate's only exception (D160). Lost bids and stale terms only reduce the
+  number of nodes that close a round, so they are safe by construction: a missed fault harms nothing.
+- **Consequences.**
+  - No Raft agreement on the outcome. Agreement here comes from identical inputs, and a node that misses a bid logs a null
+    victim while the others name one. The report must say so, and must not call the round agreement.
+  - A winner that misses a bid does not know it won, so that round has zero victims. `fault_elected_not_silenced` counts it.
+  - With one machine off, no election can run. The notes' case of one machine off and one failed uses `ctl silence` for the
+    second failure (demo scenario 6).
+  - One node started with `--faults off` stops all elections in the cluster. It is safe, but new against D77's consequences.
+  - The all-numbers rule needs every bid on time, so faults can come less often than configured. A term storm makes this
+    worse: a bid from an older term is dropped by the term rule, so the round dies. This fails safe, and
+    `fault_rounds_abandoned` shows it.
+  - Three limits on "one at a time", to be stated plainly. A `ctl silence` landing inside an open round can overlap an
+    elected fault: that is operator-caused, and the demo's `ctl` scenes run with the timers set never to fire. A machine that
+    sends its ticket and then loses power before the round closes can give two nodes down, in a window of a few ms on a LAN;
+    degraded mode (D120) covers the result. A process restarted inside a round can draw a second number. So say "no second
+    silence on this path", never "never two down".
+  - D116 was omar.leithym's decision and D78 Aabed's. Noor accepted the reversal with item 7; they should be told.
+- **Where.** `node/faults.rs::{FaultRounds, FaultElection, on_bid, on_elected, draw, spawn_schedule, run_schedule}`,
+  `proto.rs::{FaultBid, PeerBody::FaultBid, PeerRpc::fault_bid}`, `node/mod.rs::{NodeContext::fault_election,
+  on_peer_message}`, `node/transport.rs::invoke`, `config.rs::FaultConfig`.
+- **How we check it.** `tests/faults.rs`: `the_schedule_injects_faults_one_victim_at_a_time`,
+  `no_two_nodes_name_different_victims`, `no_election_finishes_with_a_node_down`,
+  `no_election_finishes_while_a_node_is_silenced`, `the_schedule_resumes_after_two_nodes_were_out`,
+  `elected_faults_lose_no_request`. FT-8 under load, and the six-PC power-cut check in the runbook. Broken builds, run by hand,
+  are listed in D159.
+- **Report notes.** Add to the decisions changed during development. Rewrite decision 13 of the report draft, which says the
+  team refused a separate election per fault and calls `FaultOrder` its weakest point. Call this a separate, added election: it
+  shares the group send and the idea of a bid with D2, but not its rounds, code or load criterion. Highest number wins is the
+  Bully rule, with the number drawn fresh each round, which the spec's "adapted algorithm" allows. State the readings as
+  readings: the thing elected is the machine, not a chooser; "the three servers elect" means all three must take part; the
+  criterion is a lottery, since the spec names criteria only for load balancing. Limit to state: "ignore communication" is not
+  total, because `ctl` frames still pass the gate (D23).
+
+### D159 · How a fault-election round runs: who calls it, what closes it, numbering, timers, who may bid
+
+- **Date:** 2026-11-03 · **Part:** C · **Status:** Implemented, amends D78's timings and D77's consequences ·
+  **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D158 settles what is elected. Everything about how a round actually runs was still open, and each choice is
+  one a grader could ask about. This entry records them together because they follow from one rule, and each one lists what was
+  rejected.
+- **Options considered and the decision, choice by choice.**
+
+  | Question | Chosen | Rejected, and why |
+  |----------|--------|-------------------|
+  | Who calls a round | Any node whose timer runs out first; the others join at once | Each node on its own timer: no shared clock, so they would not land in one round. A fixed node, or the Raft leader: a coordinator again. |
+  | How many bids a node must hold | All nodes in `config.cluster.nodes` | Two of three, or whatever arrived in a window: nodes can split, or leave one node running. The who's-alive list: a dead machine would shrink the round to two. |
+  | What wins | The highest random ticket, ties to the lower ID, as Noor's item 7 says | Lowest through `bidding::pick_winner`: the odds are equal, and the case for it comes to three shared lines. A real load score: it would keep silencing the idlest node. Rotation by ID: a rota, not an election. |
+  | Ticket range | `0..1_000_000` | Full `u64`: not readable on screen in a live demo. A tie is a few in a million, and has a rule. |
+  | Message | New `PeerBody::FaultBid { round, ticket, ms }`, method `fault_bid`, replacing `FaultOrder` | Reuse `PeerBody::Bid` with a reserved request ID: it would raise `just_won` and mix into the bid counts. Keep `FaultOrder` too: it keeps the gate exception. A `Command`: see D158. |
+  | Reply | `PeerReply::Ack` | A new reply carrying the receiver's round: nothing reads the content, as with `Bid` (D104). |
+  | Whose silence length | The winner's own `ms`, a field in its bid | Derived from the ticket: needs a modulo argument. Drawn by the winner after the election: the others could not log it. The lowest of the three: a node would act on a number it did not draw. |
+  | When a round closes | On holding every bid, once this node's own send has finished, with a deadline to give up | A fixed window on every node: then the duration the spec asks for would only report the window. |
+  | What code holds a round | A small pure `FaultRounds` in `node/faults.rs`, with time and draws passed in, like `Suspicion` | A second `BidRounds` keyed by a fake request: it closes only at its deadline and brings `just_won`. New code in `bidding.rs`: this leaves Part B's file untouched. |
+  | How the driver waits | One wake time, a fresh `sleep_until` each pass, `select!` with `Notify`, woken by `notify_one` from a sync `on_bid` | A pinned `Sleep` reused across passes: an elapsed one stays ready and spins. Polling every Raft heartbeat: 50 ms would swamp the time being measured. A task per bid: more tasks for no gain. |
+  | The timer fires while a round is open, or while the node may not bid | Ignored while a round is open; if the node may not bid, `next_call_at = now + a random interval` | Disarm until the next close: it can stop the schedule for good with no log line. Open `left + 1` anyway: it breaks the late rule. |
+  | Round numbers | A local counter: highest seen + 1, not saved. The same number merges and a higher one replaces. A round at or below the highest one left, or below the open one, is late and changes nothing, not even the timer | `max(left + 1, unix seconds)`: needs clocks to mean something across machines. Raft term mixed with a counter: ties the path to Raft again. Written to disk: nothing needs it. A lagging node wastes at most one round until a peer's timer lifts it. |
+  | Timer values | Keep `interval_min_ms = 30000`, `interval_max_ms = 60000` | Shorter defaults: Noor said 30 to 60 s. The first of three timers calls the round, so the wait averages 37.5 s at 30 to 60 s and 22.5 s at 20 to 30 s, plus the silence. The report states that. |
+  | When the wait restarts | After closing: `ms` + a new random interval. After abandoning: a new random interval | A fixed period: D78 already rejected it. A new interval only: rounds would be called during the silence. |
+  | Rounds called while a node waits | Join if it may bid, with no skip rule | A skip rule: one rule more, and a round with a node out costs at most 6 calls and one deadline. |
+  | Round deadline | Derived: 2 x `peer_rpc_timeout_ms`, 1 s by default | A new key, or a constant: a caller's bid can take one timeout to reach a joiner and the joiner's another to come back, so the timeout already says it. |
+  | `interval_min_ms >= silence_max_ms` | Keep the validation rule, with a new reason | Drop it: no longer needed for safety, but it avoids rounds that cannot finish, and it leaves the cells and `rejects_bad_configs` alone. |
+  | Who may bid | Serving, gate open, not degraded | Also suspecting no peer: adds no safety. Any node that is up: AGENTS.md says a returning node does not bid. The gate is checked as well as `serving`, because `serving` goes false a moment after the gate closes (`rejoin.rs`). |
+  | A winner that is not serving when it closes | Log `fault_refused` and stay up | Silence anyway: `silence_for` looks only at the switch, the duration and the gate, so a short `ctl silence` could stack a fault on an unfinished catch-up, which D78 rejected. |
+  | A node with `--faults off` | It does not bid, so no election finishes anywhere | The other two elect between themselves: it breaks the all-numbers rule. |
+  | A lost bid, or a `StaleTerm` answer | No retry: the round dies at its deadline and the next timer tries again. Only `Ack` means a peer holds the bid | Resend once: a resend cannot help a term that lags by seconds. Send through Raft: see D158. Same reasoning as D104 and D126. |
+  | A winner that misses a bid | Accept it: zero victims that round, and the analysis counts it | A second confirm round: a two-phase problem for a simulated fault. |
+  | Order of the winner's own steps | Finish its own send, then close its gate | Close at once: a call fails at once on a closed gate, so its ticket might never leave. |
+  | A complete round whose deadline has passed | It closes: the deadline is checked after the all-numbers rule | The other order: the driver's own send can run past the deadline, and a node holding every number would throw them away for no reason. The design did not say which check comes first. |
+  | Randomness | Per round and node: `seed ^ round*K1 ^ id*K2`. Waits come from a separate per-node stream | One stream per process: the same round number would then give a different ticket depending on timing. |
+  | An operator's way to call a round | None | `ctl elect-fault`: no document asks for it, it adds a contract item and its error states, and the timed demo scene shows the election with nobody typing (D162). |
+  | What happens if rounds misbehave on the six PCs | Keep the code; set both interval keys to `100000000` in the config; run `quick` with an explicit cell list that leaves out the `ft8` cells; use `ctl silence` in the demo; report an accepted risk | Revert the commit, or fall back to option 3 of D158: new code at the moment time has run out. |
+
+  **Not done, on purpose:** no Raft, no change to `CloudState`, no agreement guarantee, no saved counter, no retries, no new
+  dependency, no new source file, no new config key, no `ctl status` column. D23 stays.
+- **Decision.** As the table says. In code: `FaultRounds::{add_bid, step, send_finished, set_next_call}` hold the rules and
+  `Step::{Sleep, Rearm, Send, Ended}` is what they tell the driver to do. `FaultRounds::step` records this node's bid inside the
+  same lock that decided to make it, so a node can never draw twice for one round, and a higher round landing between the
+  decision and the send cannot mix up which round a bid belongs to. The design named this as a separate step. It is one step here
+  because that removes the race rather than handling it.
+- **Why.** Most of this follows from the all-numbers rule: once a round needs everyone, a silent node blocks it just by saying
+  nothing, so there is no need for a skip rule, a suspicion check, a saved counter or a confirm round. Each of those would be one
+  more thing to get wrong a day before the deadline.
+- **Consequences.**
+  - The wait between faults is shorter than the configured range suggests, and longer than it when rounds die. The report states
+    both.
+  - A node logs one `fault_election` line per round it heard of, even if it was not allowed to bid, so a line with a null victim
+    on one node is the soft rule at work. Be ready to explain it at the demo.
+  - Six calls per complete round, and fewer once a dead peer has left a node's list (D154).
+  - `ctl silence` inside an open round: see D158.
+  - Experiment cells that set `seed` repeat the numbers per round, not the timing. A run cannot be replayed, because the seed goes
+    to `tracing` and not to the event log. The logs hold every ticket, which is what the replay claim was for.
+- **Where.** `node/faults.rs`, `proto.rs::FaultBid`, `config.rs::{FaultConfig, Config::validate}`, `node/group.rs` (the send).
+- **How we check it.** Unit tests in `node/faults.rs`: `the_first_bid_per_node_stands`,
+  `a_late_bid_changes_nothing_not_even_the_timer`, `a_higher_round_replaces_the_open_one_and_hands_it_back`,
+  `a_round_closes_only_with_every_node_and_after_the_own_send`, `the_highest_ticket_wins_and_ties_go_to_the_lower_id`,
+  `every_node_can_win_and_the_silence_stays_in_range`, `the_same_seed_round_and_node_give_the_same_numbers`,
+  `a_node_draws_once_per_round`, `an_incomplete_round_is_abandoned_at_its_deadline`, `a_complete_round_closes_even_past_its_deadline`,
+  `a_timer_that_fires_while_not_eligible_rearms`, `a_timer_is_ignored_while_a_round_is_open`,
+  `a_timer_calls_the_round_after_the_last_one_left`, `the_election_time_runs_from_my_bid_to_the_last_bid`.
+
+  In `tests/faults.rs`: `a_fault_bid_from_an_old_term_is_dropped`, `a_node_that_is_not_serving_does_not_bid`,
+  `a_silenced_node_calls_no_round_even_while_still_serving`, `a_degraded_node_calls_no_round`,
+  `a_winner_that_is_not_serving_refuses`, `the_winner_goes_silent_for_its_own_time`.
+
+  Each rule was broken by hand once to see a test fail. "Two bids are enough" failed `no_election_finishes_with_a_node_down`,
+  `no_election_finishes_while_a_node_is_silenced` and `a_node_that_is_not_serving_does_not_bid`. Each of these also failed the named
+  test: closing before the own send, a later bid overwriting the first, lowest ticket wins, a late round not ignored, a node not
+  serving still bidding, the gate not checked, a degraded node still bidding, a winner that is not serving going silent anyway, the
+  winner using another node's silence, and the bid skipping the term rule.
+- **Report notes.** The table is the raw material for the "alternatives considered" part of this decision. The driver is a good
+  example for the concurrency section: a sync message handler, a single owned task, and a wake-up that cannot be lost.
+
+### D160 · The fault gate has no exception again: `FaultOrder` and the last word are gone
+
+- **Date:** 2026-11-03 · **Part:** C · **Status:** Implemented, undoes D78's amendment of D22 · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** D78 let one reply through a closed gate: the `FaultOrder(Ok)` that a victim sent after obeying, so the leader could
+  tell an obeyed order from an unreachable victim. With no order there is nothing to answer. The first design for this gap said to
+  remove the whole block in `PeerServer::deliver`. The design for the leader's jobs (gap 10) corrected that: the block holds the
+  general check as well, so removing all of it would let replies leave a silenced node, which breaks the fault gate rule.
+- **Options considered.**
+  1. *Remove only the exception and keep the check (chosen).* Delete the comment and the `last_word` line, turn the condition into
+     `if self.gate.is_silenced()`, and keep the two lines after it.
+  2. *Remove the whole block, as first written.* Any handler that was running when the gate closed would answer through it.
+     Rejected: a silenced node must look like a pulled cable (D22).
+  3. *Keep the exception for some other message.* Nothing else needs a last word: a winner closes its own gate after its own send,
+     and a peer's unanswered bid just waits out its timeout, which costs nothing.
+- **Decision.** Option 1. `PeerBody::FaultOrder`, `PeerReply::FaultOrder`, `PeerRpc::fault_order`, `Event::FaultOrdered` and
+  `MsgKind::FaultOrder` are gone. `MsgKind::FaultBid` takes the old one's place, so `MsgKind::ALL` stays 11 long. The serving check
+  from `on_order` stays, as `on_elected`, the winner's own check.
+- **Why.** "The fault gate drops everything but control" (AGENTS.md) now holds with no exception. The simplest rule is the one a
+  reader can check by looking at `deliver`.
+- **Consequences.** A winner's closing gate can drop the `Ack` to a peer's bid, so that peer's send waits out `peer_rpc_timeout_ms`,
+  and its `fault_election` line comes up to 500 ms late. That is why the third bid's time is stamped as the bid is recorded, not when
+  the line is logged (D161). `analysis/analyze.py` needs no change for the message rename: `msgs_fault_order_per_req` becomes
+  `msgs_fault_bid_per_req` by itself.
+- **Where.** `node/transport.rs::PeerServer::deliver`, `proto.rs`, `metrics.rs`, `raft/network.rs::reply_name`.
+- **How we check it.** `node::transport::tests::no_reply_leaves_a_node_whose_gate_closes_mid_call`: the handler closes the gate before
+  it returns, and the caller must see a timeout. It fails if the check is removed (seen). `an_obeyed_order_is_acknowledged` is deleted
+  with the order. Its stale-term sibling is ported to `FaultBid`, on the same path, as `a_fault_bid_from_an_old_term_is_dropped`. Gap 10's
+  design wanted to port it to `Heartbeat`; `FaultBid` is the new message on the same line of code, so the cross-gap review chose that.
+- **Report notes.** D78's "last word" bug was offered as a report example. It now has an ending: the exception it needed is gone.
+
+### D161 · `fault_election` event and what is measured: tickets, election time, abandoned rounds, split check
+
+- **Date:** 2026-11-03 · **Part:** C, with analysis for all · **Status:** Implemented · **Decided by:** the agent on its
+  recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** The spec asks for election frequency, duration and message overhead. Nothing measured the fault path except
+  `fault_ordered`, which no analysis read. The all-numbers rule also makes claims that only logs can check: nobody disagrees, and a
+  named node really does go down.
+- **Options considered.**
+  1. *One line per round on each node (chosen):* `fault_election { round, tickets, victim, ms, called, election_us }`. One grep shows
+     the numbers, the victim and the caller, in the shape of `bid_round_closed`.
+  2. *Three separate events* (bid sent, bid received, round closed): more lines and more joins for the same facts.
+  3. *Also keep `fault_ordered`:* nothing would ever log it.
+
+  For duration: *own bid to last bid recorded, on this node's clock (chosen)*; or from the caller's bid across machines, which AGENTS.md
+  forbids; or after the send returns, which can add 500 ms when the winner's gate drops an answer.
+
+  For outputs: *the list below (chosen)*; also a victim share per node, which from a few rounds per run proves nothing; or counts
+  only, which misses duration.
+- **Decision.**
+  - `Event::FaultElection`. `victim`, `ms` and `election_us` are null for a round this node did not finish. `tickets` holds the numbers it
+    had. `called` is true if this node's timer started the round. `fault_refused { victim, reason }` stays, and now means an elected
+    node stayed up. `fault_ordered` is deleted. `silenced`, `restored` and `rejoined` do not change, so E3 and E4 are unaffected.
+  - `election_us` is this node's own bid to the last bid it needed, on this node's `Instant`. The time is stamped in `on_bid`. A joiner whose
+    own bid came last reads 0, so a joiner's figure is shorter by construction. The analysis averages only lines with `called` true.
+  - `analysis/analyze.py::fault_election_metrics`, grouped by round per run, in the measured time:
+    `fault_elections` (rounds where any line names a victim), `fault_rounds_abandoned` (no line does),
+    `fault_election_mean_ms` (called lines, nulls filtered), `fault_split_decisions` (rounds naming two victims, must be 0, mirroring
+    `bid_split_decisions`), `fault_elected_not_silenced` (the named node's own line is null), `fault_refused`, and
+    `fault_bids_per_round` (per request it would be about 0.0007 and say nothing). `fault_refused` was not in the design; it is one line,
+    and it answers the same question as `fault_elected_not_silenced` for the other way a named node can stay up.
+  - `fault_phases.png` leaves out cells with faults on a timer, because their "during" runs from the first silence to the last restore.
+    The design named `ft8`. `e5-faults-on` has the same problem, so it is left out too.
+- **Why.** These are the spec's three numbers plus the two checks on the rule. `mean_or_nan` does no null filtering, so without the filter
+  the first real log would crash the analysis or skew it.
+- **Consequences.** Field names are stable from here: a script reads them. A lagging node can reuse the number of a round the others gave up on,
+  which merges two abandoned rounds into one in the count; it cannot reuse a closed round's number, because closing needs its bid. The new
+  analysis fields first meet real logs in the FT-8 cell, which is why it runs first (D162). Analysis is not in CI, so run
+  `python analysis/test_analyze.py` by hand.
+- **Where.** `metrics.rs::{Event::FaultElection, Event::FaultRefused, MsgKind::FaultBid}`, `node/faults.rs::log_round`,
+  `analysis/analyze.py::{fault_election_metrics, sent_in_window, plot_phases}`, `analysis/test_analyze.py`, `analysis/README.md`.
+- **How we check it.** `analysis/test_analyze.py::test_fault_elections` on a synthetic log: counts, the mean from called lines, null lines skipped, a split
+  detected, an elected node that did not go silent, bids per round. `test_a_run_with_no_fault_election_has_counts_of_zero_and_no_mean`.
+  `tests/faults.rs::no_two_nodes_name_different_victims` reads real JSONL from a real cluster, and needs one round closed by all three.
+  `the_election_time_runs_from_my_bid_to_the_last_bid` covers the stamp.
+- **Report notes.** Report `fault_split_decisions` beside `fault_elections`, so a reader sees that 0 is out of a real count. Say the mean is from the caller's
+  line on its own clock. Do not claim a victim distribution: the unit test shows every node can win, and that is all a few rounds can show.
+
+### D162 · Elected faults in the experiments and the demo: FT-8 first in quick, `ft8-election-rate`, a timed last scene
+
+- **Date:** 2026-11-03 · **Part:** C, F · **Status:** Implemented for the cells; the demo text is in the docs pass · **Decided by:** the agent on
+  its recommendation, on Noor's instruction to finish without more questions (2026-11-03)
+- **Context.** Neither the demo nor the quick profile ever ran the schedule, so the report had nothing on it. A quick run of `ft8-random-faults`
+  holds about 2 elections, which is too few to say how long an election takes. The cell list's order also meant a bug here would cost the whole hour
+  before anyone saw it.
+- **Options considered.**
+  1. *Which measured cells:* `ft8-random-faults` first in `quick.list`, plus a new `ft8-election-rate`: 15 cells, about 67.5 minutes (chosen). Only
+     `ft8-random-faults`: 14 cells, and about 2 rounds per run. Append FT-8 last: a bug costs the hour. Neither: no data.
+  2. *FT-8's seed:* drop `seed = 2` and say plainly a run cannot be replayed (chosen). Keep it: a fixed seed repeats the same tickets per round in all three
+     runs. Have the runner write a per-run seed: one more thing to test the day before the deadline.
+  3. *E3 and E4 cells, and `ctl silence`:* keep them as they are (chosen). Switching them to elections cannot work, because those cells need a chosen role at a
+     chosen moment, which an election cannot promise. The forced-failure row and demo scenario 6 use `ctl silence`.
+  4. *Demo:* a timed last scene with nobody typing: schedule on, interval 20000 to 30000, both silence keys at 20000, then `grep fault_election` on each node
+     machine (chosen). A typed `elect-fault` step: the spec says periodically, so it should be seen happening by itself. Only FT-8's logs: nothing to watch.
+  5. *Silence values:* random 1 to 20 s in the defaults, fixed 20 s only in the timed scene (chosen). This is a reading: the spec says random up to 20 s, the Oct 28 note
+     says 20 s, and validation allows the fixed value. Fixed 20 s everywhere: not random. Random in the demo: a 1 s silence shows nothing.
+- **Decision.** `experiments/quick.list` starts `ft8-random-faults`, `ft8-election-rate`. `ft8-election-rate` is new: 300 users, think time 1000 ms, interval 1000 to 1500 ms,
+  silence 100 to 1000 ms, valid under the config rules, for an estimated 40 rounds per run. Its short silences are for measuring the election, and are not spec-sized
+  faults. `ft8-random-faults` drops its seed. `e5-faults-on` keeps its seed, and its comment now says a seed repeats tickets per round number, not the timing. All the other
+  cells keep the never-firing interval, and send no bid. `e5-faults-off` now means no node bids. Quick becomes 15 cells and full becomes 32.
+- **Why.** First in the list means a bug costs about 4.5 minutes, not an hour. The rate cell gives tens of rounds for the spec's numbers. The other cells stay as they are, so they
+  pay nothing: with the timer never firing, this code sends nothing.
+- **Consequences.**
+  - The run time rises by about 9 minutes in quick, to about 70 minutes.
+  - The lab config does not reach the cells, because `write_config` builds from the cell file. To stop elections in a measured run, pass an explicit cell list that leaves out
+    the `ft8` cells. To stop them in the demo or by hand, set both interval keys to `100000000` in `config/lab.toml`.
+  - The gap for user processes adds its own cells (quick stays 13 there, full 35), so together they are quick 15 and full 36. Whichever merges second fixes
+    `tests/experiment_cells.rs`.
+  - A load above the sync ceiling starts a term storm, in which bids are dropped by the term rule and FT-8 holds few elections. It fails safe, but the check that
+    `e1-300-bidding` shows elections near 0 with nothing else on the machines has not been run; see the build report. If the storm is real on the lab's disks it blocks every cell, and it comes first.
+- **Where.** `experiments/quick.list`, `experiments/ft8-random-faults.toml`, `experiments/ft8-election-rate.toml`, `experiments/e5-faults-on.toml`,
+  `scripts/run-experiments.sh` (comment), `tests/experiment_cells.rs`.
+- **How we check it.** `tests/experiment_cells.rs`: 32 valid cells, 15 quick cells, and `ft8-random-faults` first. The runner and analysis were tried on the two cells on one machine with real
+  processes (scripts only, never results). On the six PCs: run the two cells first; rehearse the timed scene; power one node machine off with the schedule on and check the other two log only
+  null-victim rounds and no second `silenced`; try the 1 s round deadline on the real network.
+- **Report notes.** State the profile with each figure (D63). Say that `ft8-election-rate` measures the election, not the failure model. About 2 elections per run in `ft8-random-faults`, so no distribution
+  claim comes from it.
+
+EVIDENCE_PLACEHOLDER
+
 ---
 
 ## 16. Real user programs on the client PCs (November 2026)
@@ -5447,7 +5755,7 @@ line changes.
 
   | Where it was left | The question | The answer |
   |-------------------|--------------|------------|
-  | D116, section 14 of the architecture | Does Raft with a leader-run fault schedule meet "no coordinator"? | Noor's items 1 and 7. Keep Raft and shrink the leader: it only orders results. Its other jobs move to all nodes, and the failure is chosen by a draw among the nodes. The rewrite to a leaderless method is rejected. Being built; see D216 |
+  | D116, section 14 of the architecture | Does Raft with a leader-run fault schedule meet "no coordinator"? | Noor's items 1 and 7. Keep Raft and shrink the leader: it only orders results. Its other jobs move to all nodes, and the failure is chosen by a draw among the nodes. The rewrite to a leaderless method is rejected. See D158 for the draw, and D216 for the rest |
   | D120, section 14 | Is degraded mode's trade-off acceptable? | Yes. The class notes ask for one server left to handle the clients, and the spec's clause on speculative action says to label it and reconcile. The demo states the trade-off first, as its own script says |
   | D126, D131, section 14 | Are group communication and publish-subscribe expected in Phase 1? | Lecture 9. Group communication is Phase 1 (D157, D210). Publish-subscribe is Phase 2 (D209) |
   | D119, section 14 | Does tarpc suit the remote invocation question? | Yes. The Oct 4 note asks for a ready-made RPC, and Noor's item 9 says tarpc between the nodes. Client PCs go over UDP: see D216 |
@@ -5502,7 +5810,7 @@ line changes.
 
 ### D216 · Noor's decisions of 2026-11-03, and those still being built
 
-- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted. Items 1, 7 and 9 are not on a branch yet, and this entry holds their record until their own entries land · **Decided by:** Noor Hany Emam, with the agent's picks in item 11 on Noor's
+- **Date:** 2026-11-03 · **Part:** all · **Status:** Accepted. Part of item 1, and item 9, are not on a branch yet, and this entry holds their record until their own entries land · **Decided by:** Noor Hany Emam, with the agent's picks in item 11 on Noor's
   instruction to finish. Noor can overrule any pick
 - **Context.** Noor settled the remaining questions in one sitting. Their own words on the deadline: finished in an hour, and whatever passes tests by then goes in the PR (item 12). Some builders had not finished when these docs were written.
 - **Options considered.** Each item's rejected options are in the table.
@@ -5510,14 +5818,14 @@ line changes.
 
   | Item | Decided | Rejected | Recorded in | State when this was written |
   |------|---------|----------|-------------|-----------------------------|
-  | 1 | No coordinator: keep Raft and shrink the leader. It only orders results. Picking who fails and loading the responder list move to all nodes | Replacing Raft with a leaderless method: a rewrite one day before the deadline | here, then D158–D166 | not on a branch |
+  | 1 | No coordinator: keep Raft and shrink the leader. It only orders results. Picking who fails and loading the responder list move to all nodes | Replacing Raft with a leaderless method: a rewrite one day before the deadline | D158 for who fails; here, then D163–D166 for loading the list | who fails: built, on `lane-peer`; loading the list: not on a branch |
   | 2 | A small web page on the client PC | A desktop window app; a terminal menu | D197 | built |
   | 3, 4 | One box for user processes, 10 real programs sharing the users; steady, random and all-at-once | 1000 real programs; 1 program with light users | D181, D182 | built |
   | 5 | Too old means not planned, 60 s | A stored label nothing reads | D143 | built |
   | 6, 14 | Publish-subscribe: small, then Phase 2 | see D209 | D209 | Phase 2 |
-  | 7 | Fault election by random draw: every 30 to 60 s each node draws a number and sends it to the other 2. The highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing, so two cannot go down at once. No leader is involved | Saving the result in Raft: it goes back through the leader | here, then D158–D166 | not on a branch; the leader-run schedule (D12, D78) is what runs today |
+  | 7 | Fault election by random draw: every 30 to 60 s each node draws a number and sends it to the other 2. The highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing, so two cannot go down at once. No leader is involved | Saving the result in Raft: it goes back through the leader | D158–D162 | built, on `lane-peer` |
   | 8 | A named group with a who's-alive list | Our own ordering and delivery; only naming what exists | D152–D155 | built |
-  | 9, 11 | Client PCs to the cloud over UDP, "group communication within machines", tarpc between them. Reverses D17. The way: tarpc over a small datagram adapter. `ctl` stays on tarpc over TCP, so a lost silence order cannot vanish | coap library; a small request-reply of our own | here, then D167–D180 | not on a branch; TCP is what runs today |
+  | 9, 11 | Client PCs to the cloud over UDP, "group communication within machines", tarpc between them. Reverses D17. The way: tarpc over a small datagram adapter. `ctl` stays on tarpc over TCP, so a lost silence order cannot vanish | coap library; a small request-reply of our own | here, then D167–D180 | being built, not committed; TCP is what runs today |
   | 10 | Queue with grouped saves | see D133 | D133 | built |
   | 11 | Saves stay on in measured cells unless the queue numbers say otherwise. One branch and one PR, a commit per gap, since one person merges | | here | in force |
   | 12 | Everything is time-boxed to about 20:00 on 2026-11-03. What passes tests by then goes in the PR, the rest is left out and listed, publish-subscribe first | | here | in force |
@@ -5525,7 +5833,7 @@ line changes.
   | 14 | What Lectures 8 and 9 changed | | D209–D212 | docs done; D156 not built |
 
 - **Why.** The decisions list says these become log entries, and AGENTS.md says every decision goes in the log. A short record now beats a gap if a builder runs out of time.
-- **Consequences.** When a builder's entries land, this entry's row points at them, and their entries mark D17, D12, D78 and D116 as superseded. If item 1, 7 or 9 is cut by the time box, it is listed in the PR and the report says it was decided but not built. The architecture labels each of them `planned` until then.
+- **Consequences.** When a builder's entries land, this entry's row points at them, and their entries mark D17 as superseded. If item 1 or 9 is cut by the time box, it is listed in the PR and the report says it was decided but not built. The architecture labels each of them `planned` until then.
 - **Where.** `docs/architecture.md` sections 2, 6.11 and 14.
 - **How we check it.** `git grep UdpSocket` and the status of each builder's branch.
 - **Report notes.** The report's changed-decisions list starts from this table.
@@ -5549,4 +5857,9 @@ These add to older entries without changing their text (gap-15's list).
 | D123 | `Submitted` grows `id` and `status`. `ReplyBody::Expired` follows this entry's reason against a flag on `Done` |
 | D132 | `ctl incidents` reads results, not the Raft log, so it does not bring back `ctl log` (D145) |
 | D23 | See D200: the frontend's status polls are a second sender of control frames |
+| D74 | "The leader-side schedule must treat 'already silenced' as a skipped round" now reads: an elected node that is already silenced logs `fault_refused` (D159) |
+| D77 | One `--faults off` node now stops every election in the cluster (D158) |
+| D63 | Quick is 15 cells (D162). Full is 33: the 31 here, `e7-p1-300` (D187) and `ft8-election-rate` (D162). The count of 36 in D162 assumed cells that were not built |
+| D119 | In its list of methods, `fault_order` is now `fault_bid` (D158) |
+| D126 | Its table gains a row, not agreed: fault bids through `CloudGroup::send`, best effort and unordered, and nothing covers a lost copy, because the round dies at its deadline and the next timer tries again (D159) |
 | D25, D117, D121 | Stand unchanged by the group work. D121's key gains a second use, recorded in D153, but its rule does not change |

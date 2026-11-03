@@ -44,7 +44,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Requirement (project description)                         | Mechanism                                                               | Status   | Decisions |
 |-----------------------------------------------------------|-------------------------------------------------------------------------|----------|-----------|
 | Transparency: the client never knows which node works     | Client sends every request to all three nodes; any node may reply        | built | D6, D17, D53, D112 |
-| An election picks the node that orders results             | Raft leader election (openraft). The leader only orders results (D114). Moving its last other jobs to all nodes is planned (D216) | built | D1, D14, D114, D216 |
+| An election picks the node that orders results             | Raft leader election (openraft). The leader only orders results (D114). Picking who fails moved to all nodes (D158); loading the responder list on any node is planned (D216) | built | D1, D14, D114, D158, D216 |
 | An election picks the node for each request, by load       | Per-request load bidding; leader dispatch as baseline                   | built | D2, D3, D45, D114 |
 | A node may go silent up to 20 s; the others continue       | 2 of 3 is a Raft majority; takeover of in-flight requests               | built    | D12, D13, D41, D42, D110 |
 | The revived node rebuilds state before it participates     | Raft log replay, then the `serving` gate                                 | built | D24, D46, D75 |
@@ -62,7 +62,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Middleware and application kept apart, on both sides       | Section 4.3. Client side in the code today; the cloud side's file split is D156 | client side built; cloud file split planned | D156, D211 |
 | Cloud nodes are peers; client and server are roles per transaction | Section 3.1                                                     | built | D212 |
 | Client PCs reach the cloud over UDP                        | Noor's decision, reverses D17. TCP is what runs today                    | planned | D216 |
-| A failure is chosen by an election among the nodes         | Noor's decision: a draw among the nodes. The leader-run schedule is what runs today | planned | D216 |
+| A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved | built | D158–D162 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
 | Publish-subscribe                                          | Phase 2, by Lecture 9. In the design only, section 13                    | planned | D131, D209 |
 
@@ -186,7 +186,7 @@ sequenceDiagram
 | Replication | the leader | each follower | openraft over tarpc |
 | A vote | a candidate | the other nodes | openraft over tarpc |
 | A rejoin target | a returning node | the leader | tarpc, `ReadIndex` |
-| A fault order | the leader, today (D78) | the victim | tarpc, `FaultOrder` |
+| A fault bid | every node that may bid | the other two | `CloudGroup::send`, `FaultBid` |
 | Status, silence, skew, incidents | `ctl` or the web page | one node | `client::control` |
 
 Nodes talk through their middleware and never call each other directly (Lecture 9, section 7.1). Client PCs only
@@ -243,7 +243,7 @@ flowchart TB
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`, `raft/wal.rs`    | A     | built    | On disk in `node-<id>.wal` when `storage.dir` is set, which every lab run does; in memory for tests. Never purged, no snapshots (D118, which supersedes D24). |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). Logs its digest at every log index that is a multiple of 100 (`state_checkpoint`, D138). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target learned after the silence (D46, D75, D5). A wait that runs out after 1 s asks the leader again and keeps the lowest answer (D135). |
-| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); scheduled faults from the leader, never overlapping (D12, D78), with a draw among the nodes planned to replace them (D216); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
+| C10 | Fault gate and injector   | `transport.rs::FaultGate`, `node/faults.rs` | C     | built    | Drops all traffic but control (D13, D22, D23); manual faults, one at a time, 1 ms to 20 s (D74); elected faults: the nodes draw, and the highest ticket silences itself, with no second silence on this path (D158, D159); all of it switchable off with `faults.enabled` / `--faults off` (D77). |
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | —   | Peer heartbeats           | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
 | —   | Cloud group               | `node/group.rs`                             | C     | built    | The nodes as one named group: the membership. Keeps this node's view of who is in it, `send` goes to the view and `probe` to everyone. A peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard (D152–D154, D210). |
@@ -449,6 +449,7 @@ flowchart LR
 | `MeshClient::submit`, the group send | all three nodes | best effort, unordered | the client's retry with the same ID (D52) |
 | `CloudGroup::send`: bids | the peers in this node's view | best effort, unordered, no retry; reports who acknowledged in time | a split decision, settled by first commit (D27) |
 | `CloudGroup::probe`: pings | every configured peer | best effort, unordered, no retry; reports who acknowledged in time | the next ping; a real loss becomes a suspicion (D79) |
+| `CloudGroup::send`: fault bids | the peers in this node's view | best effort, unordered, **not agreed** | nothing: the round dies at its deadline and the next timer tries again (D159) |
 | Committed state, `consensus.propose` | every replica | totally ordered; reaches every replica once committed; an error means unknown. From openraft, not us | openraft's log replication |
 
 Each send is two unicasts from a node and three from a client, not IP multicast. The receive side is plain dispatch
@@ -479,7 +480,7 @@ Phase 2: providers publish, a directory lets others find them, and they are noti
 | `PeerBody::Heartbeat`           | every node → every peer | failure detector for takeover; any answer counts as alive (D41, D79) | built | — (new) |
 | `PeerBody::ReadIndex` / `PeerReply::ReadIndex` | returning node → leader | the larger of the leader's commit index and its first entry of the term, confirmed by a majority: the rejoin target (D76, D135) | built | — (new) |
 | `PeerReply::StaleTerm { current }` | receiver → sender   | non-Raft message from an older term (D21)            | built    | — |
-| `PeerBody::FaultOrder { ms }` / `PeerReply::FaultOrder` | leader → victim | scheduled fault; the reply says obeyed or why not (D12, D78) | built | `FaultOrder` |
+| `PeerBody::FaultBid { round, ticket, ms }` | every node that may bid → the peers | elects the failed node. Nobody orders anybody, and nothing goes in the log (D158). It replaces `FaultOrder` (D160) | built | `FaultOrder` |
 | Claim                           | winner → peers         | not planned; replaced by local `just_won` (D44)      | —        | `Claim` |
 | PreVote                         | —                      | not available in openraft 0.9.25 (D5)                | open     | `PreVote` |
 
@@ -525,10 +526,12 @@ flowchart TD
     KIND -->|"Propose"| PL["propose_local: commit if leader,<br/>else NotLeader with a hint"]
     KIND -->|"Heartbeat"| HB["suspicion.heard_from(peer, now)<br/>reply Ack"]
     KIND -->|"Bid"| BID["Add to the round for this request and attempt<br/>reply Ack"]
+    KIND -->|"FaultBid"| FB["Add to the fault round, and bid at once if it is new<br/>reply Ack"]
     OR --> REPLY["Reply, unless the gate closed meanwhile"]
     PL --> REPLY
     HB --> REPLY
     BID --> REPLY
+    FB --> REPLY
     STALE --> REPLY
 ```
 
@@ -879,38 +882,34 @@ sequenceDiagram
     Note over N: 10 s later: gate.restore(), log restored, rejoin starts (6.9)
 ```
 
-### 6.11 Scheduled fault injection (built, D12, D78; a draw among the nodes is planned, D216)
+### 6.11 The nodes elect the node that fails (built, D158, D159)
 
-This is what runs today. Noor has decided to replace it with a draw that needs no leader: every 30 to 60 s each node draws a
-random number and sends it to the other 2, the highest goes silent for 1 to 20 s, and a node missing any of the 3 numbers does
-nothing, so two cannot go down at once. That work is not on a branch yet. Until it lands this section stays true.
+Every `faults.interval_*` (30 to 60 s) the three nodes draw. Nobody orders anybody, the Raft leader has no part in it, and nothing goes
+through the log. The first node whose timer runs out calls the round, and its ticket is as random as anyone's, so calling gives it no power.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant L as Leader (term t, serving)
-    participant V as Victim (may be the leader itself)
-    loop while L leads term t
-        L->>L: wait 30-60 s (faults.interval), checking leadership every heartbeat
-        L->>L: draw a victim uniformly from nodes 1, 2, 3 and a silence of 1-20 s, log fault_ordered
-        L->>V: FaultOrder (ms) in an envelope with term t
-        alt V's term is newer than t
-            V-->>L: StaleTerm, L logs fault_refused
-        else V is not serving yet (recovering)
-            V-->>L: FaultOrder(Err recovering), L logs fault_refused
-        else
-            V->>V: silence_for(ms): gate closes, log silenced
-            V-->>L: FaultOrder(Ok), the last word through the closed gate
-            L->>L: sleep the silence out
-        end
-    end
-    Note over L: no leader, no faults (a few hundred ms per election)
+    participant A as Node 1
+    participant B as Node 2
+    participant C as Node 3
+    Note over A: A's random timer runs out first. It draws a ticket and a silence of 1 to 20 s
+    A->>B: FaultBid(round 7, ticket 410, ms 12000)
+    A->>C: FaultBid(round 7, ticket 410, ms 12000)
+    Note over B,C: Each hears of the round, draws its own and sends it at once
+    B->>A: FaultBid(round 7, ticket 930, ms 4000)
+    B->>C: FaultBid(round 7, ticket 930, ms 4000)
+    C->>A: FaultBid(round 7, ticket 77, ms 19000)
+    C->>B: FaultBid(round 7, ticket 77, ms 19000)
+    Note over A,C: Each holds all 3 numbers. Highest ticket wins, ties to the lower node ID. Each logs fault_election
+    B->>B: closes its own gate for its own 4 s. log silenced
+    Note over A,C: Nodes 1 and 3 stay up and go on serving
 ```
 
-A leader that silences itself cannot tell its successor. The successor starts its own wait when
-it takes over, and validation requires `interval_min_ms >= silence_max_ms`, so its first order
-comes after the old silence has ended (D78). The RNG is seeded per term from `faults.seed`, so a
-run can be repeated.
+A node acts only when it holds a bid from every node in `config.cluster.nodes`, never only those on its who's-alive list. A node that is
+off, silenced, catching up or degraded sends no bid, so no round can finish until it is back, and that is the whole of the rule that keeps
+two nodes from going down together. Each node gives up on a round after 2 x `peer_rpc_timeout_ms`, logs that it did nothing, and waits again.
+`ctl silence` stays as it is (D74). `FaultOrder` and the last word through the gate are gone, so the gate has no exception again (D160).
 
 ### 6.12 What a node does with a client request (built)
 
@@ -1128,7 +1127,7 @@ table is in D133. The final code has passed its tests but has not been measured 
 | Raft log, vote, commit index            | `LogStore`, and `node-<id>.wal` on disk (D118) | per node   | Raft rules |
 | Load inputs, bid rounds, suspicion, the group view | `NodeContext`, `node/bids.rs`, `bidding.rs`, `node/group.rs` | no         | soft state, rebuilt within one bid window; each view is one node's opinion (D153) |
 | `serving`, `plan_work`, fault gate      | `NodeContext` atomics                | no         | per node |
-| Fault schedule                          | leader only                          | no         | a new leader starts a new schedule, seeded with its term |
+| Fault rounds                            | each node, `node/faults.rs`          | no         | soft state, nothing in the log or the digest (D158) |
 
 **Who may change what.**
 
@@ -1138,7 +1137,7 @@ table is in D133. The final code has passed its tests but has not been measured 
 | Raft log, vote, commit index | openraft on that node | Through `LogStore` and the `.wal` file |
 | Provisional answers and local holds | The node in degraded mode | Replayed through Raft when a peer returns (D122, D124) |
 | `serving`, and whether this node may stand for election | `node/rejoin.rs` on that node | It goes false when the gate closes and true when current (D75) |
-| The fault gate | `node/faults.rs` on that node | From `ctl` or the schedule, one fault at a time (D74) |
+| The fault gate | `node/faults.rs` on that node | From `ctl`, or when this node is elected, one fault at a time (D74, D158) |
 | The group view | The heartbeat loop on that node, only | At most one change per tick (D153) |
 | Bid rounds and load inputs | `node/bids.rs` and the worker pool on that node | Rebuilt from new traffic |
 | Incidents' fields | The client, once, when it reports | Never changed afterwards. Status is derived (D142) |
@@ -1324,7 +1323,7 @@ told a responder was sent (D122).
 stateDiagram-v2
     [*] --> Starting
     Starting --> Serving: peer server up, Raft initialized, context built
-    Serving --> Silenced: fault gate closes (ctl or schedule)
+    Serving --> Silenced: fault gate closes (ctl, or elected by the nodes)
     Silenced --> CatchingUp: fault gate opens
     CatchingUp --> Serving: applied index reaches the leader commit
     Serving --> Stopped: SIGTERM or Ctrl-C
@@ -1482,7 +1481,7 @@ flowchart TB
         REP["reporter: messages and state_digest, 1 s"]
         SEED["campus seeding: 200 ms until done"]
         HBT["peer heartbeats"]
-        FLT["fault schedule"]
+        FLT["fault election rounds"]
         RJ["rejoin watcher"]
     end
     subgraph POOL["worker pool: node/workers.rs (built)"]
@@ -1579,7 +1578,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph NODE["Each node"]
-        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>silenced, restored, fault_ordered, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
+        NE["Events: started, stopped, raft_state, commit, propose_failed, raft_io,<br/>state_digest, state_checkpoint, messages, resource_usage,<br/>request_received, replied, report_expired, overloaded,<br/>bid_sent, bid_round_closed, takeover_started, release_proposed,<br/>silenced, restored, fault_election, fault_refused,<br/>peer_suspected, peer_trusted, peer_unreachable, peer_reconnected, group_view,<br/>degraded_entered, degraded_left, provisional_replied, provisional_conflict,<br/>restarted, rejoin_started, rejoin_target_lowered, rejoined"]
     end
     subgraph CLIENT["Each client machine"]
         CE["Events: client_sent, client_done (with status and priority), client_gave_up,<br/>client_link_up, client_link_down, machine_usage from one program"]
@@ -1622,7 +1621,7 @@ sweep, as D83 defines it.
 | FT-5 | Rejoin under load                             | recovery completes at every load                | built (D75, D135); needs lab runs |
 | FT-6 | Returning node with a stale term              | 0 elections caused by the return                | `elections_after_rejoin` in the analysis (D127); needs lab runs |
 | FT-7 | Client retry after commit                     | cached reply, 1 execution                       | tested in `tests/cluster.rs` |
-| FT-8 | Random faults over a long run                 | 0 lost, 0 duplicate commits                     | schedule built (D78), load generator built; `ft8-random-faults` cell, needs lab runs |
+| FT-8 | Elected random faults over a long run         | 0 lost, 0 duplicate commits, never two nodes down by election | elected faults built (D158); `ft8-random-faults` and `ft8-election-rate` cells, first in `quick`, need lab runs (D162) |
 | FT-9 | A machine loses power and restarts, under load | 0 lost; the node comes back from its file and the leader, digest equal at the same index, no `ERROR` line (D137) | tested in `tests/durable.rs` and `tests/restart_log.rs`. One-PC rehearsal with a hard cut of about 25 s, 4 of 4 runs: 0 lost and equal digests. **Not tested: losing unsynced disk writes, because the one kernel keeps its page cache. A real power cut on the six PCs is still to do** (demo scene 5) |
 
 Method (D56, D63): latency on the client clock, durations with a monotonic clock on one machine,
@@ -1678,7 +1677,7 @@ The report should say what changed between the submitted design and the built sy
 | Bid window from the first bid seen                     | From request arrival; P-2 confirms or overturns it            | D43 |
 | `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
 | Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
-| `FaultOrder` message                                   | `PeerBody::FaultOrder { ms }` with an explicit reply          | D12, D78 |
+| `FaultOrder` message, from the leader                  | No order at all: the three nodes elect the failed node with `FaultBid` | D158, D160 |
 | Client: 5 retries, exponential backoff with jitter     | 5 retries; waits of 2, 4, 6, 6, 6, 6 s, ±20% jitter           | D52 |
 | CSV metrics                                            | JSON Lines                                                    | D55 |
 | Experiment runner on a control port                    | `ctl` on the client port; the runner is bash over SSH         | D62, D130 |
@@ -1744,7 +1743,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214 and D215, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Decided and not on a branch yet** (D216, D156). The fault draw among the nodes and any-node
+- **Decided and not merged yet** (D216, D156). Any-node
   seeding, the client path over UDP, and the cloud side's file split. Each is labelled `planned` above. Whatever misses the time box
   is listed in the PR and in the report.
 - **Lab results.** Nothing has run on the six machines; see [runbook.md](runbook.md). Every number in these docs is from tests or from

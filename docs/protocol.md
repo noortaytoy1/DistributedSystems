@@ -94,7 +94,7 @@ maps to one method.
 | `Raft(Vote)`                 | candidate                  | `Vote(Result<..>)`                 |
 | `Raft(InstallSnapshot)`      | leader                     | `InstallSnapshot(Result<..>)`      |
 | `Propose(Command)`           | follower, to the leader    | `Proposed(Result<Outcome, ProposeError>)`. One command. The leader puts it in the same queue as its own proposals (D133) |
-| `FaultOrder { ms }`          | leader, to the victim      | `FaultOrder(Result<(), String>)`: obeyed, or why not (disabled, already silenced, recovering). The `Ok` is sent although the gate has just closed (D78) |
+| `FaultBid { round, ticket, ms }` | every node that may bid, to the peers in its view | `Ack`. No retry. A node acts only when it holds a bid from all 3 configured nodes: the highest ticket closes its own gate for its own `ms` (D158, D159). It replaces `FaultOrder` (D160) |
 | `ReadIndex`                  | returning node, to the leader | `ReadIndex(Result<Option<u64>, ProposeError>)`: the larger of the leader's commit index and its first entry of the term, confirmed by a majority, or `NotLeader { leader }` (D76). Everything committed before the question is at or below the answer, but the answer itself may not be committed yet, so a waiting node asks again after 1 s and keeps the lowest answer (D135) |
 | `Bid(Bid { request, attempt, score })` | every serving node, to the peers in its view, not waited for (D104, D154) | `Ack`. Each request and attempt has its own round (D84) |
 | `Heartbeat`                  | every node, to every configured peer, in its view or not (D154) | `Ack`                              |
@@ -247,10 +247,11 @@ Defaults from `config.rs`, tuned for a LAN:
 | (derived) reconnect cooldown  | 2 × `raft_heartbeat_ms` | after a failed connect, calls to that peer fail fast this long (D90) |
 | `campus.service_ms_per_severity` | 200       | executor releases a responder after this × severity; other nodes after twice that (D111) |
 | `campus.incident_ttl_ms`      | 60000        | how long a client says its reports stay valid. A node refuses an older one. Above the client's retries: 30 s, at most 36 s with jitter (D143). `loadgen --ttl-ms` sets it for one run. 0 is refused in the config |
-| `faults.interval_min_ms`      | 30000        | leader waits at least this long after a silence before the next fault |
-| `faults.interval_max_ms`      | 60000        | ... and at most this long (random; must be >= `silence_max_ms`) |
-| `faults.silence_min_ms`       | 1000         | shortest scheduled silence                                 |
-| `faults.silence_max_ms`       | 20000        | longest scheduled silence (at most 20000)                  |
+| `faults.interval_min_ms`      | 30000        | each node waits at least this long, from the end of the last round and any silence it elected. The first to finish calls the next fault election, so the wait averages less than the middle of the range (D159) |
+| `faults.interval_max_ms`      | 60000        | ... and at most this long (random) |
+| `faults.silence_min_ms`       | 1000         | shortest silence a node draws                              |
+| `faults.silence_max_ms`       | 20000        | longest silence a node draws (at most 20000)               |
+| (derived) fault round deadline | 2 × `peer_rpc_timeout_ms` | a node gives up on a round after this, and waits again (D159) |
 
 Do not confuse `incident_ttl_ms` with the `hard_ttl` openraft gives one RPC. The deadline on one record is
 `assigned_at_ms + ttl_ms - age_ms`, and no timer waits on it.

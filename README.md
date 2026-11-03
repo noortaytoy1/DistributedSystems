@@ -44,10 +44,10 @@ experiments have not been run there.
 
 - **Built:** Raft replication with the log on disk, load-based bidding (the default), takeover from a silent
   winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), the planner with incident priority,
-  TTL and status, fault injection, rejoin, degraded mode for one server left,
+  TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
   group communication with a who's-alive list, the client middleware, the load generator with 10 real programs per client
   machine, a web page for each client machine, the experiment runner and the analysis.
-- **Decided, not on a branch yet:** a failure draw among the nodes, and clients over UDP (D216).
+- **Decided, not merged yet:** clients over UDP, and any node loading the responder list (D216). The cloud side's layer files (D156).
 - **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe (D209).
 
 ## Requirements
@@ -125,9 +125,10 @@ Fault injection can be switched off for no-fault baseline runs: `enabled = false
 `[faults]` in the config, or `--faults off` when starting a node (D77). `ctl silence` is then
 refused.
 
-With fault injection on, the Raft leader also injects faults by itself: every 30 to 60 s it
-silences a random node (possibly itself) for 1 to 20 s, one fault at a time. The `[faults]`
-section sets the ranges and an optional `seed` to repeat a run (D78).
+With fault injection on, the three nodes also elect one of themselves to fail: every 30 to 60 s each draws a random
+number and sends it to the other two, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does
+nothing, so two cannot go down at once this way, and no leader is involved (D158). The `[faults]` section sets the ranges and an
+optional `seed`.
 
 With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled,
 uncommitted `Provisional` answers, then commits them through Raft when a peer returns. First commit wins, so a
@@ -154,7 +155,7 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 ```bash
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
-scripts/run-experiments.sh experiments/hosts quick # 13 cells, about 1 hour; `full` is 32, about 8 hours
+scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 33, about 8 hours
 python analysis/analyze.py runs                    # analysis/out/: summary.csv and plots
 ```
 
