@@ -8,8 +8,8 @@
 //! "Heard from" means its heartbeat arrived, or it answered ours with anything: a `StaleTerm`
 //! answer still proves the peer is up. Suspicions change once per interval, in [`Suspicion::update`],
 //! and each change is logged (`peer_suspected`, `peer_trusted`) for E3. While this node is
-//! silenced it is the one cut off, so it evaluates nothing; on restore every peer's clock starts
-//! fresh.
+//! silenced it is the one cut off, so it evaluates nothing; on restore the clock of every peer it
+//! was not already suspecting starts fresh (D151).
 //!
 //! Owner: C (faults and failover).
 
@@ -62,10 +62,14 @@ impl Suspicion {
         self.interval * self.missed
     }
 
-    /// Start every peer's clock at `now`, as if all were just heard from.
+    /// Start each peer's clock at `now`, as if just heard from, except a peer already suspected.
+    /// Coming back from this node's own silence says nothing about that peer, so re-trusting it
+    /// would list a dead machine again until it is suspected over again (D151).
     pub fn reset(&mut self, peers: impl IntoIterator<Item = NodeId>, now: Instant) {
         for peer in peers {
-            self.last_heard.insert(peer, now);
+            if !self.suspected.contains_key(&peer) {
+                self.last_heard.insert(peer, now);
+            }
         }
     }
 
@@ -238,14 +242,40 @@ mod tests {
     }
 
     #[test]
-    fn reset_starts_every_clock_fresh() {
+    fn reset_gives_a_peer_nobody_suspects_a_fresh_clock() {
+        let t0 = Instant::now();
+        let mut s = Suspicion::new(BEAT, 3);
+        s.reset([2], t0);
+        s.update(t0 + ms(100));
+        assert!(s.suspected().is_empty());
+        // 500 ms after it was last heard, which would be over the limit on the old clock.
+        s.reset([2], t0 + ms(500));
+        assert!(s.update(t0 + ms(500)).is_empty());
+        assert!(s.suspected().is_empty());
+    }
+
+    #[test]
+    fn a_suspected_peer_stays_suspected_through_reset() {
         let t0 = Instant::now();
         let mut s = Suspicion::new(BEAT, 3);
         s.reset([2, 3], t0);
         s.update(t0 + ms(500));
         assert_eq!(s.suspected(), BTreeSet::from([2, 3]));
+
+        // Coming back from this node's own silence says nothing about those peers.
         s.reset([2, 3], t0 + ms(1_000));
-        s.update(t0 + ms(1_000));
-        assert!(s.suspected().is_empty());
+        assert!(s.update(t0 + ms(1_000)).is_empty());
+        assert_eq!(s.suspected(), BTreeSet::from([2, 3]));
+
+        // Only hearing from one ends its suspicion.
+        s.heard_from(2, t0 + ms(1_010));
+        assert_eq!(
+            s.update(t0 + ms(1_010)),
+            vec![Change::Trusted {
+                peer: 2,
+                suspected_for: ms(510)
+            }]
+        );
+        assert_eq!(s.suspected(), BTreeSet::from([3]));
     }
 }
