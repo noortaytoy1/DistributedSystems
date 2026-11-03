@@ -44,7 +44,7 @@ use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{connect_client, datagram_client};
 use crate::node::usage;
 use crate::proto::{
-    self, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult, ControlReply,
+    ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult, ControlReply,
     ControlRequest, Incident, IncidentStatus, NodeId, Plan, ReplyBody, RequestId,
 };
 
@@ -69,8 +69,6 @@ pub enum ClientError {
     Timeout,
     #[error("connection closed")]
     Closed,
-    #[error("encoding: {0}")]
-    Wire(#[from] proto::WireError),
 }
 
 /// A request that got a reply.
