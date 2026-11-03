@@ -19,6 +19,7 @@
 //!
 //! Owner: F (client and scale).
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -366,14 +367,15 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Duration::from_secs(args.duration_s - args.warmup_s)
     };
-    print!(
-        "{}",
-        summary(args.client_id, &mut lock(&stats), measured, stopped_early)
-    );
+    let text = summary(args.client_id, &mut lock(&stats), measured, stopped_early);
     drop(client);
     tokio::task::spawn_blocking(move || log.close())
         .await
         .context("closing the event log")?;
+    // Last, and no panic if it fails: `print!` panics when the reader has gone or the disk is full, and
+    // that must not cost the log or count as a failed run. The script says how many programs reported.
+    let mut out = std::io::stdout();
+    let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
     Ok(())
 }
 
