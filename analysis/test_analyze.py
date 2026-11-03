@@ -138,6 +138,63 @@ class Arithmetic(unittest.TestCase):
         self.assertTrue(math.isnan(half))
 
 
+def raft_state(at_s, leader):
+    return {"ts_us": T0 + at_s * S, "ev": "raft_state", "term": 2, "leader": leader, "role": "follower",
+            "last_applied": 1}
+
+
+def commit(at_s, latency_us, forwarded, kind="commit_result"):
+    return {"ts_us": T0 + at_s * S, "ev": "commit", "kind": kind, "outcome": "committed",
+            "latency_us": latency_us, "forwarded": forwarded, "log_index": 1, "request": request(1)}
+
+
+class TheLeadersRole(unittest.TestCase):
+    """Measuring starts at T0 + 10 s in these cases."""
+
+    def share(self, node1, node2):
+        events = {"node-1": node1, "node-2": node2, "client-1": []}
+        return analyze.leader_plan_share(events, T0 + 10 * S, {"share_node_1": 0.2, "share_node_2": 0.5})
+
+    def test_it_is_the_share_of_the_node_that_led_throughout(self):
+        self.assertEqual(self.share([raft_state(1, 2)], [raft_state(1, 2)]), 0.5)
+
+    def test_a_change_before_measuring_starts_does_not_count(self):
+        self.assertEqual(self.share([raft_state(1, 1), raft_state(2, 2)], [raft_state(3, 2)]), 0.5)
+
+    def test_a_change_inside_the_measured_time_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([raft_state(1, 1), raft_state(11, 2)], [raft_state(1, 1)])))
+
+    def test_a_moment_with_no_leader_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([raft_state(1, 2), raft_state(11, None)], [raft_state(1, 2)])))
+        # Even if the same node leads again afterwards: it did not lead throughout.
+        node = [raft_state(1, 2), raft_state(11, None), raft_state(12, 2)]
+        self.assertTrue(math.isnan(self.share(node, [raft_state(1, 2)])))
+
+    def test_two_nodes_naming_different_leaders_gives_nan(self):
+        # A silenced leader keeps reading itself while the others move on.
+        self.assertTrue(math.isnan(self.share([raft_state(1, 1)], [raft_state(1, 2)])))
+
+    def test_no_raft_state_at_all_gives_nan(self):
+        self.assertTrue(math.isnan(self.share([], [])))
+
+    def test_commit_latency_splits_on_whether_the_proposal_was_forwarded(self):
+        events = {
+            "node-1": [commit(11, 1000, False), commit(11, 3000, False), commit(1, 9000, False)],
+            "node-2": [commit(12, 8000, True), commit(12, 5000, True, kind="release_responder")],
+        }
+        m = analyze.commit_metrics(events, T0 + 10 * S)
+        self.assertEqual(m["commit_count"], 3)
+        self.assertEqual(m["commit_local_count"], 2)
+        self.assertAlmostEqual(m["commit_local_mean_ms"], 2.0)
+        self.assertEqual(m["commit_forwarded_count"], 1)
+        self.assertAlmostEqual(m["commit_forwarded_mean_ms"], 8.0)
+
+    def test_a_run_with_one_path_has_nothing_on_the_other(self):
+        m = analyze.commit_metrics({"node-1": [commit(11, 1000, False)]}, T0 + 10 * S)
+        self.assertEqual(m["commit_forwarded_count"], 0)
+        self.assertTrue(math.isnan(m["commit_forwarded_mean_ms"]))
+
+
 class OneRun(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -178,6 +235,9 @@ class OneRun(unittest.TestCase):
         self.assertAlmostEqual(self.m["election_duration_mean_ms"], 200.0)
         self.assertEqual(self.m["detection_mean_ms"], 150)
         self.assertEqual(self.m["recovery_mean_ms"], 40.0)
+
+    def test_a_run_whose_leader_changes_has_no_leader_share(self):
+        self.assertTrue(math.isnan(self.m["leader_plan_share"]))
 
     def test_an_election_right_after_a_rejoin_counts_against_it(self):
         self.assertEqual(self.m["elections_after_rejoin"], 1)  # term 4, 100 ms after

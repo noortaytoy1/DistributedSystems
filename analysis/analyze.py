@@ -178,6 +178,25 @@ def election_metrics(events, start_us):
     }
 
 
+def leader_plan_share(events, start_us, metrics):
+    """Share of plans made by the node leading, or NaN unless one node led all of the measured time
+    (D166). A term with no leader counts as a change, and so does a node still reading an old leader.
+
+    Each node's last `raft_state` before the start says who it followed going in, and any inside say
+    who it followed after. `client_done` already names the winning executor, so the share needs no
+    attribution of plans to a role over time, and no correction for duplicate commits.
+    """
+    leaders = set()
+    for es in node_events(events).values():
+        states = [e for e in es if e["ev"] == "raft_state"]
+        before = [e for e in states if e["ts_us"] < start_us]
+        leaders.update(e["leader"] for e in before[-1:])
+        leaders.update(e["leader"] for e in states if e["ts_us"] >= start_us)
+    if len(leaders) != 1 or None in leaders:
+        return float("nan")
+    return metrics.get(f"share_node_{leaders.pop()}", float("nan"))
+
+
 def elections_after_rejoin(events):
     """FT-6: new Raft terms within 10 s after each `rejoined`. A returning node with a stale term
     should cause none (D5, D127)."""
@@ -355,8 +374,8 @@ def resource_metrics(events, start_us):
 
 
 def commit_metrics(events, start_us):
-    latencies = [
-        e["latency_us"]
+    commits = [
+        e
         for es in node_events(events).values()
         for e in es
         if e["ev"] == "commit" and e["ts_us"] >= start_us and e["kind"] == "commit_result"
@@ -367,7 +386,11 @@ def commit_metrics(events, start_us):
         for e in es
         if e["ev"] == "bid_sent" and e["ts_us"] >= start_us
     ]
-    metrics = latency_metrics("commit_", latencies)
+    metrics = latency_metrics("commit_", [e["latency_us"] for e in commits])
+    # What a node pays for not leading: `forwarded` means this proposal went through a peer (D26, D166).
+    for path, forwarded in (("local", False), ("forwarded", True)):
+        latencies = [e["latency_us"] for e in commits if e["forwarded"] == forwarded]
+        metrics.update(latency_metrics(f"commit_{path}_", latencies))
     metrics["service_mean_us"] = float(np.mean(service)) if service else float("nan")
     return metrics
 
@@ -381,6 +404,7 @@ def analyse_run(run_dir):
     metrics = request_metrics(events, warmup_s, measured_s)
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
+    metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(fault_election_metrics(events, start))
     metrics.update(message_metrics(events, start, len(done)))

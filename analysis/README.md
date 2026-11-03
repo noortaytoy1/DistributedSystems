@@ -41,7 +41,8 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Duplicates and in-flight requests | `gave_up`, `retried_share`, `takeovers` |
 | Plans with no responder (D111) | `no_responder_share` |
 | Degraded mode (D120) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `conflicts_*` |
-| Commit latency, planning cost | `commit_*`, `service_mean_us` |
+| Commit latency, planning cost | `commit_*`, split by path as `commit_local_*` and `commit_forwarded_*` (D26, D166); `service_mean_us` |
+| Whether holding the leader role moves work (D166) | `leader_plan_share`, read beside `elections` and `share_node_<n>`. `share_node_<leader>` when one node led all of the measured time. NaN if the leader changed, a node read another leader, or there was a moment with no leader, so a cell can average over fewer runs than it has |
 
 ## Conventions
 
