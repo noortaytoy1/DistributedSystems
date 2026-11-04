@@ -278,42 +278,51 @@ impl Inner {
         }
     }
 
+    /// The highest round every member has passed, and a peer holds of this node's own stream.
+    fn frontier(&self, core: &Core) -> Option<u64> {
+        let mut frontier = u64::MAX;
+        let mut own_limit = 0;
+        let mut any_peer = false;
+        for member in &core.members {
+            let covered = core.covered.get(member).copied().unwrap_or(0);
+            frontier = frontier.min(covered);
+            if *member != self.id {
+                any_peer = true;
+                own_limit = own_limit.max(core.acked.get(member).copied().unwrap_or(0));
+            }
+        }
+        any_peer.then_some(frontier.min(own_limit))
+    }
+
     /// Applies every round all members have passed, and answers this node's own commands.
     fn apply_ready(&self, core: &mut Core) {
         if core.joining {
             return;
         }
-        let mut frontier = u64::MAX;
-        let mut own_limit = 0;
-        let mut any_peer = false;
-        for member in &core.members {
-            if *member == self.id {
-                frontier = frontier.min(core.covered.get(member).copied().unwrap_or(0));
-            } else {
-                any_peer = true;
-                frontier = frontier.min(core.covered.get(member).copied().unwrap_or(0));
-                own_limit = own_limit.max(core.acked.get(member).copied().unwrap_or(0));
-            }
-        }
-        if !any_peer {
-            return;
-        }
-        frontier = frontier.min(own_limit);
-        if frontier <= core.applied_round {
-            return;
-        }
         let mut applied_any = false;
-        while let Some((&(round, node), _)) = core.pending.first_key_value() {
-            if round > frontier {
+        'again: while let Some(frontier) = self.frontier(core) {
+            if frontier <= core.applied_round {
                 break;
             }
-            let Some(batch) = core.pending.remove(&(round, node)) else {
-                break;
-            };
-            self.apply_batch(core, &batch);
-            applied_any = true;
+            while let Some((&(round, node), _)) = core.pending.first_key_value() {
+                if round > frontier {
+                    break;
+                }
+                let Some(batch) = core.pending.remove(&(round, node)) else {
+                    break;
+                };
+                self.apply_batch(core, &batch);
+                applied_any = true;
+                // A change to who takes part changes how far is safe. The frontier from before it
+                // could run past the new member's first round, and then its batches would be lost.
+                if batch.control.is_some() {
+                    core.applied_round = core.applied_round.max(round);
+                    continue 'again;
+                }
+            }
+            core.applied_round = frontier;
+            break;
         }
-        core.applied_round = frontier;
         if applied_any {
             self.applied.send_replace(Some(core.index));
         }
@@ -796,7 +805,7 @@ async fn run_sender(inner: Arc<Inner>, peer: NodeId) {
                 }
                 Ok(PeerReply::Rounds(RoundsReply::NotMember { view })) => {
                     // The others went on without this node.
-                    if view > core.view && !core.joining {
+                    if view >= core.view && !core.joining {
                         tracing::info!(node = inner.id, view, "left out: catching up to return");
                         start_joining(&inner, &mut core);
                     }
@@ -934,6 +943,13 @@ async fn try_drop(inner: &Inner, target: NodeId, other: NodeId, view: u64) {
 async fn run_catch_up(inner: Arc<Inner>) {
     let mut asked = Instant::now() - Duration::from_secs(10);
     loop {
+        {
+            let mut core = lock(&inner.core);
+            // Not a member and not on the way back: nothing else would ever bring this node back.
+            if !core.joining && !core.members.contains(&inner.id) {
+                start_joining(&inner, &mut core);
+            }
+        }
         if !lock(&inner.core).joining {
             tokio::time::sleep(inner.round.max(CATCH_UP_PAUSE)).await;
             continue;
@@ -974,6 +990,10 @@ async fn run_catch_up(inner: Arc<Inner>) {
                     .applied
                     .send_replace((core.index > 0).then_some(core.index));
                 core.max_seen = core.max_seen.max(applied_round);
+                // Added and then dropped again before getting back: that entry no longer counts.
+                if done && !members.contains(&inner.id) {
+                    core.join_from = core.ordered.len();
+                }
                 match core.start_round_of(inner.id) {
                     Some(start_round) => {
                         if done && applied_round >= start_round - 1 {
