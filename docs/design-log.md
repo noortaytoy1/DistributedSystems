@@ -290,7 +290,7 @@ table below in sync.
 | D228 | A busy leader's log is read as one write, not as a queue | A | Implemented, amends D218 |
 | D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227, amended by D233 |
 | D230 | The lab guide after the full rehearsal | all | Implemented in the docs |
-| D231 | Each node's lease is its own, so a failover takes about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
+| D231 | Each node's lease is its own, so the first candidate usually stands after about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
 | D232 | Three corrections from the study sheets: `write_group`, the true reply rule, the parts table | all | Implemented in the docs, amends D163 |
 | D233 | FT-2 reads figures on one clock, and each run says how far apart its clocks were | all | Implemented, amends D229 |
 
@@ -7760,7 +7760,7 @@ them on the six PCs.
 - **How we check it.** A fresh venv on Python 3.10.12, in WSL Ubuntu-22.04, installed numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.7 from the one line, and `test_analyze.py` passed its 97 tests. A one-off lint script over the docs: 48 Mermaid blocks, 0 problems. `bash -n` on each `bash` block in the guides finds no quote left open. The team's first lab session is the real check, and the guide says to fix it when it is wrong.
 - **Report notes.** State the choice about `plan_work`, the measured `service_mean_us`, and whether the top cell is past the knee. A closed-loop interval of 0 is arithmetic, not stability.
 
-### D231 · Each node's lease is its own, so a failover takes about 0.38 to 0.83 s
+### D231 · Each node's lease is its own, so the first candidate usually stands after about 0.38 to 0.83 s
 
 - **Date:** 2026-11-04 · **Part:** A, C, D · **Status:** Implemented in the docs, amends D214 · **Decided by:** Noor Hany Emam, on the agent's recommendation
 - **Context.** Every diagram and table was checked against the code on 2026-11-04. D214 says that `leader_lease` is `election_timeout_max`, 300 ms, for every node, and that the expected times read about 0.45 to 0.85 s. The code does not do that. `election_timeout_max_ms` only limits the width of each node's range. openraft builds a node's lease from that node's own config (`engine/engine_config.rs:56`), and `src/raft/mod.rs` gives each node its own range (D115), so the lease is the top of that range: 225, 375 or 525 ms.
@@ -7768,12 +7768,12 @@ them on the six PCs.
   1. *Say what the code does, and keep the target (chosen).* A follower that knows its leader waits its range plus its lease: 375 to 450, 675 to 750 or 975 to 1050 ms, on a 75 ms tick. So the first follower stands after about 0.38 to 0.53 s, or 0.68 to 0.83 s if the first-listed node was the leader. FT-2's target stays at 1 s.
   2. *Make the code match D214, with one lease for all nodes.* Rejected: openraft takes the lease from the node's own timeout, D115's ranges would have to change, and this would be a change to the leader on the day of the lab.
   3. *Leave D214 as it is.* Rejected: the docs would contradict it, and it is the number someone will ask about at the demo.
-- **Decision.** Option 1. `docs/architecture.md` and `docs/protocol.md` carry the real lease, waits and range. D214 keeps its text, with this entry named in its status. The rest of D214 stands: FT-2 passes on 0 lost, with a new leader and the first new answer within 1 s.
+- **Decision.** Option 1. `docs/architecture.md` and `docs/protocol.md` carry the real lease, waits and range. D214 keeps its text, with this entry named in its status. The rest of D214 stands: FT-2 passes on 0 lost, with a new leader and the first new answer within 1 s. 0.38 to 0.83 s is when the first candidate stands in the usual case. It is no limit on a failover: see Consequences.
 - **Why.** The rehearsal agrees: with node 1 leading and silent, the first candidate came 694 to 814 ms later and the new leader 704 to 828 ms later, inside the 0.68 to 0.83 s the rule gives, plus the vote. It fits D115's reason too: the first-listed node, with the shortest range, is the one that takes over from a leader that goes quiet.
-- **Consequences.** **Nothing here changes the wire format or what a node does:** this is the docs. FT-2's margin is smallest when the first-listed node leads, about 0.17 s on these numbers. The same review pass also reworded and redrew diagrams in the two files with no change to what any arrow means. The notable layout changes are in diagrams d08, d26, d39, d41 and d43, checked with mermaid-cli 11.4.2 and not on GitHub. Those docs still say that nothing has run on the six PCs: change that when the lab runs are in.
+- **Consequences.** **Nothing here changes the wire format or what a node does:** this is the docs. Two waits in openraft come on top of these times, so FT-2 can miss 1 s with no bug. A voter still inside its own lease refuses a vote (`engine_impl.rs:305`): with the second-listed node lost, the first-listed node stands at 375 to 450 ms, before the third-listed voter's 525 ms lease is over, so it needs a second term. A candidate refused by a voter with a longer log waits 2 x the top of its range more before it tries again (`engine_impl.rs:389`, `engine_config.rs:55`, `raft_core.rs:1481`). One PC, `unshare -Urn`, 30 and 300 users, 74 leader silences: with the first-listed node lost, 33 of 35 took 0.68 to 0.81 s. With the second-listed lost, 30 of 36 took 2 terms and 0.60 to 0.72 s. 5 of the 74 took over 1 s: 1.07, 1.62, 2.65, 5.92 and 5.93 s, the last three only after the old leader had returned. D214's own runs read up to 0.94 s. E3 mostly silences the first-listed node, so it will rarely show these waits. The same review pass also reworded and redrew diagrams in the two files, and corrected arrows where the code differed: 5.4 (the fault gate comes after decoding), 6.1 (who leads first), 6.8 (the plan goes by bid and forward), 6.9 (the order of a rejoin), 6.13 (the replay path) and 8.2 (the first start). The notable layout changes are in sections 5.1a, 6.12, 8.1b, 8.3 and 10, checked with mermaid-cli 11.4.2 and not on GitHub. Those docs still say that nothing has run on the six PCs: change that when the lab runs are in.
 - **Where.** `docs/architecture.md` (the failure-detector table in section 9), `docs/protocol.md` (timers).
-- **How we check it.** E3, through `failover_to_leader_ms_mean` (D229). For the diagrams: `docs_lint.py` reads 48 blocks and 0 problems, and mermaid-cli 11.4.2 drew 48 of 48.
-- **Report notes.** Give the rule with the per-node numbers, because it explains the measured figure. Do not repeat "300 ms for every node" or "0.45 to 0.85 s" from D214.
+- **How we check it.** E3, through `failover_gap_ms_max` (D233). For the diagrams: a one-off lint script read 48 blocks and 0 problems, and mermaid-cli 11.4.2 drew 48 of 48.
+- **Report notes.** Give the rule with the per-node numbers, because it explains the measured figure, and the two waits, so that a run over 1 s is no surprise. Do not repeat "300 ms for every node" or "0.45 to 0.85 s" from D214.
 
 ### D232 · Three corrections from the study sheets: `write_group`, the true reply rule, the parts table
 
@@ -7918,7 +7918,7 @@ These add to older entries without changing their text. An entry can have more t
 | D186 | "It never kills" and "finishes this run's log copy" are now true of the code. More reasons to leave a run out (D189, D191) |
 | D200 | `client.rs`'s exception to the sockets rule ended with D175, so the frontend's listener is the only one left |
 | D205 | D165 keeps the same values and text, and adds the load rule, the start order and the fault timers |
-| D214 | The lease is each node's own, and the times read about 0.38 to 0.83 s (D231) |
+| D214 | The lease is each node's own, and the first candidate usually stands after about 0.38 to 0.83 s (D231) |
 | D216 | Row 16 is settled: Noor said yes, and the step-aside is built (D218) |
 | D218 | The log half of the rule now reads one write's time, with its own two bars, and not the log wait. "A slow disk alone does not pass for a busy leader" and "the peers' bids keep a cluster overloaded everywhere from moving" did not hold for a log at its limit (D228) |
 | D224 | The gap is per program, so it understates one user's wait. `worst_request_ms` says that (D229) |

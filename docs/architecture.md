@@ -971,7 +971,7 @@ sequenceDiagram
     Note over N1: fault gate closes
     N1-xN2: AppendEntries (heartbeats stop arriving)
     N1-xN3: AppendEntries (heartbeats stop arriving)
-    Note over N2,N3: No heartbeat for a node's own wait:<br/>its range plus openraft's lease (9.2, D115, D214)
+    Note over N2,N3: No heartbeat for a node's own wait:<br/>its range plus openraft's lease (9.2, D115, D231)
     Note over N3: Node 3 times out first: the lab config lists 3, 2, 1,<br/>and the first listed has the shortest wait (D115, D165)
     N3->>N2: Vote (term t+1)
     N2-->>N3: granted
@@ -1759,7 +1759,7 @@ would make the client wait out its retries and give up on a report the cloud had
 
 | Who fails            | Who notices     | How                                                     | Expected time         | Status |
 |----------------------|-----------------|---------------------------------------------------------|-----------------------|--------|
-| The leader           | Followers       | No `AppendEntries` within a follower's own wait: its range (150–225, 300–375 or 450–525 ms, D115) plus openraft's lease, which is the top of that same range (225, 375 or 525 ms), on a 75 ms tick (D214) | about 0.38 to 0.53 s until the first follower stands, or 0.68 to 0.83 s if the first-listed node was the leader; a new leader within 1 s (FT-2) | built |
+| The leader           | Followers       | No `AppendEntries` within a follower's own wait: its range (150–225, 300–375 or 450–525 ms, D115) plus openraft's lease, which is the top of that same range (225, 375 or 525 ms), on a 75 ms tick (D214, D231) | about 0.38 to 0.53 s until the first follower stands, or 0.68 to 0.83 s if the first-listed node was the leader, in the usual case. A vote refused inside a voter's lease, or a candidate behind on the log, adds to that, and can pass 1 s with no bug (D231). The target for a new leader is 1 s (FT-2) | built |
 | A follower           | The leader      | `AppendEntries` calls time out if it is silent. If its PC is off they fail at once, and openraft waits 100 ms before it tries again (D32) | next heartbeat  | built |
 | Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D79) | 150–200 ms | built |
 | A bidding winner     | Other bidders   | The peer detector above, or the backstop, with nothing final for the report (takeover) | 150 ms; backstop ≥ 200 ms (D42, D110) | built |
@@ -1781,7 +1781,7 @@ deadline even if tarpc could not write it, so the detector keeps running (D150).
 | Victim                          | Effect                                               | How the report still completes | Status |
 |---------------------------------|------------------------------------------------------|---------------------------------|--------|
 | The winner, while planning      | Its result never reaches the leader                  | Takeover by the next bidder (6.7, D110); a late proposal from the victim is a `Duplicate` | built |
-| The leader                      | Proposals to it are lost; log lines not yet final may be lost | New leader in one vote; forwarded proposals retry (D26); the client retries with the same ID (6.4) | built |
+| The leader                      | Proposals to it are lost; log lines not yet final may be lost | New leader, usually in one or two votes (D231); forwarded proposals retry (D26); the client retries with the same ID (6.4) | built |
 | An idle follower                | Nothing visible to clients                           | The other two are a majority    | built |
 | The node that plans under leader dispatch, which is the leader | as "the leader"                              | The client's retry reaches the new leader | built |
 | Both peers, with the report in flight | Its proposal cannot become final | The client's retry gets a `Provisional` once the node is degraded (6.13); the old proposal may still become final later, and the first plan to become final wins | built |
