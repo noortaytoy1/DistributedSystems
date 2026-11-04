@@ -286,8 +286,9 @@ table below in sync.
 | D224 | The client gap counts a client that never hears again | C | Implemented, amends D138 |
 | D225 | A Raft that has stopped is not asked in a tight loop | D | Implemented, amends D135 |
 | D226 | The split as built: what D156 left to settle | all | Implemented |
-| D227 | The UDP loss shares count over each process's whole log | F, all | Implemented, amends D172 |
+| D227 | The UDP loss shares count over each process's whole log | F, all | Implemented, amends D172, amended by D229 |
 | D228 | A busy leader's log is read as one write, not as a queue | A | Implemented, amends D218 |
+| D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7591,7 +7592,7 @@ them on the six PCs.
 
 ### D227 · The UDP loss shares count over each process's whole log
 
-- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented, amends D172 · **Decided by:** the agent on its recommendation, on
+- **Date:** 2026-11-03 · **Part:** F, all · **Status:** Implemented, amends D172, amended by D229 · **Decided by:** the agent on its recommendation, on
   Noor's instruction to finish without more questions (2026-11-03)
 - **Context.** **One-PC rehearsal, never six-PC results.** In the rehearsal of the final code, `8bb244e`, `analyze.py` read `udp_request_loss_share` as
   2.4 to 2.9% in steady and random cells where nothing was lost: the kernel's counters in the run's own network namespace said every datagram
@@ -7674,6 +7675,37 @@ them on the six PCs.
 - **How we check it.** `step_aside.rs::a_full_queue_with_writes_of_the_usual_length_is_not_a_slow_log` and `a_slow_disk_is_not_a_slow_log_and_a_starved_leader_is` hold the rule to the numbers above. `proposals.rs::a_write_counts_its_own_time_and_not_the_time_its_proposals_queued`. `tests/step_aside.rs::a_skewed_follower_moves_nothing`. The rehearsal above. None of it has run on the six machines, where a real disk replaces the shim.
 - **Report notes.** Say that D218's first version passed every run it was tried on and still moved the leader for nothing on a slow disk, what showed it, and how the signal changed. Keep the two ideas apart: a queue says how much is arriving, a write says how fast this machine is.
 
+### D229 · The analysis reads failover, lost copies and real answers from events that cannot miss
+
+- **Date:** 2026-11-04 · **Part:** all (the analysis) · **Status:** Implemented, amends D227 · **Decided by:** Noor Hany Emam, on the agent's recommendation
+- **Context.** **One-PC rehearsal, never six-PC results.** The whole series ran on one PC at `e4ab477`: 18 cells, 54 runs, 2,484,114 requests. A separate script counted the raw logs and compared them with `summary.csv`. Latency and throughput agreed to within 0.004%. Five other readings did not say what they seemed to say.
+  1. *`udp_request_loss_share`* read 0.67 to 1.23%, and 1.4 to 1.7% in 35 s runs. The same copies counted from both ends gave 0.000% in nearly every run, and at most 0.11%. A node's last `udp_counters` line lands about 0.6 s before the last client send, and it writes none as it stops. D227 fixed the start of the window, not the end. On a real run this would hide any real loss below about 1%.
+  2. *`election_duration_mean_ms`* read 10 to 14 ms where, over 9 runs, it took 704 to 828 ms from the silence or step-aside to a new leader, and 712 to 844 ms to the first commit. Its description said "how long each node had no leader", but a node logs no missing leader until it stands for election, so the figure is only the vote. The report draft tied it to FT-2's "new leader within 1 s", which it would pass by a factor of 100 whatever the real time was.
+  3. *`before_*`, `during_*` and `after_*` in degraded cells* mix provisional answers with committed ones, though the main latency figures keep them apart. `degraded-300` read `before_p50_ms` 31.7 and `during_p50_ms` 2.8, the same as `provisional_p50_ms`: a median 11 times better during a two-node failure. `no_responder_share` read 2.4%, while 77 to 79% of the clients told a responder was coming did not have that on record (about 3953 `responder_taken` per run, of about 5068 provisional answers).
+  4. *`throughput_rps`* counts answers that sent nobody, and those are about as fast as real ones. `e3e4-1500-leader` read 1320 a second with `no_responder_share` 69.9%, so about 398 a second sent somebody.
+  5. *`client_gap_*`* is per program, and a program holds many users, so another user's answer ends the gap. `e3e4-300-follower` read a mean of 189 ms and a maximum of 271 ms while 1 to 3 requests per run waited 2.2 to 2.4 s, and `e3e4-1500-leader`'s worst single request waited 13.8 s.
+- **Options considered.**
+  1. *Add figures that read what they say, and keep the old names with corrected descriptions (chosen).* AGENTS.md says to keep field names stable once a script reads them. Old and new runs stay comparable, and the report has one name for each idea.
+  2. *Change what the old names mean.* Rejected: a figure that changes its meaning under one name is the fault being fixed, and D172, D227 and the rehearsal tables quote the old readings.
+  3. *Delete the old columns.* Rejected by the same rule, and the report's slots name them until the report is rewritten.
+  4. *Fix the source: make a node write a last `udp_counters` line as it stops, and log the moment it loses a leader.* Rejected today. It changes what a node does on the morning of the lab, so all six would rebuild onto a build the rehearsal did not cover. The logs already hold the truth, so no rerun is needed.
+  5. *Only warn in the guide.* Rejected: the report is filled from the CSV, and the CSV would still hold a number that looks like the answer.
+- **Decision.** New columns, per run and then per cell like every metric:
+  - `failover_to_leader_ms_mean`: from the leader's own `silenced` or `leader_stepped_aside` line, in the measured time, to the first `raft_state` line, on any node, of a leader in a higher term. A step-aside that ended `timed_out` lost nothing and does not count. A leader that goes both ways in one term counts once.
+  - `failover_to_commit_ms_mean`: the same start, to the first `commit` of kind `commit_result` and outcome `committed` at or after that line.
+  - `failovers` counts the losses, and `failovers_without_leader` those with no later leader in the log, which are in neither mean.
+  - `udp_copies_lost_share`: 1 minus (`request_received` lines plus each gate's `rx_gate_dropped`) over (`client_sent` lines times the number of nodes), over the whole log, and never below 0.
+  - `answered_with_responder_rps`: answers that sent somebody, per measured second, which is `throughput_rps` x (1 - `no_responder_share`).
+  - `provisional_conflicts`: all `provisional_conflict` lines. It sorts beside `provisional_count` and `provisional_replied` in `summary.csv`, and `analyze.py` prints a note for each cell with provisional answers, saying that its `before_*`, `during_*` and `after_*` mix them with committed ones.
+  - `worst_request_ms`: the longest any one measured request waited, answered or given up on.
+
+  `election_duration_mean_ms`, `udp_request_loss_share`, `udp_cancel_loss_share`, `client_gap_*` and the phases stay, computed as before, with descriptions that say what they are.
+- **Why.** Each new figure reads events that cannot miss. `client_sent` is logged once per attempt, as its copies go. `request_received` is logged once per copy a node handles, and the fault gate counts the requests it turns away and no cancels, so in the rehearsal the two sides matched to the copy in nearly every run: `degraded-300` run 1 sent 62076, and 51212 received plus 10864 turned away is 62076. A leader's own line says when it went, and the next leader's says when it stood. Worst is a maximum, and a mean of programs cannot hide it.
+- **Consequences.** **Nothing here changes the wire format or what a node does:** this is `analysis/` and the docs, so no PC rebuilds for it and logs already taken read the same. `failover_to_*` subtracts `ts_us` written by different machines, a second stated exception to the rule in AGENTS.md: a few ms of NTP error against hundreds, and `client_gap_*` and T1's one-clock reading are there as checks. With no majority left, as in `degraded-*`, `failover_to_*` reads about the length of the outage. A power cut logs no `silenced`, so `failover_to_*` stays empty, as `client_gap_*` does, and the guide's T1 reads it from a survivor's log. A copy sent to a node that is off reads as lost, so a `kill -9` run is not all network. A gate's count can be a second old when a run ends, which only matters if a silence outlasts the clients: at most 0.11% in the rehearsal. A leader that was already replaced without knowing it, and is then silenced, finds no later leader line and counts in `failovers_without_leader`.
+- **Where.** `analysis/analyze.py` (`failover_metrics`, `udp_copy_metrics`, `worst_request_ms`, `provisional_notes`), `analysis/test_analyze.py`, `analysis/README.md`, `experiments/README.md` section 2, `docs/runbook.md` section 6, `docs/architecture.md` section 11.
+- **How we check it.** `analysis/test_analyze.py`: classes `Failover`, `TheCopiesThatWereLost` and `WhatABusyLookingRunMeans`, on synthetic logs. On real logs, from the guide check's runs at `e4ab477` on one PC, with a second script that counts the raw logs on its own: a silenced leader read `failover_to_leader_ms_mean` 769.1 and `failover_to_commit_ms_mean` 794.9, with the vote alone at 22.0, and the count agreed to the decimal. `udp_copies_lost_share` read 0 in all five runs with nothing lost, where `udp_request_loss_share` read up to 9.8%. It read 9.5% with a node killed for part of a run, as it should. `worst_request_ms`, `provisional_conflicts` (185 of 368) and `answered_with_responder_rps` matched the count. One `e8-step-aside` run through the real runner at this commit read `failover_to_leader_ms_mean` 760.7 and `failover_to_commit_ms_mean` 766.9, and the count agreed, with `udp_copies_lost_share` 0 where `udp_request_loss_share` read 0.59%. These are short one-PC runs: they check the arithmetic, and are never results.
+- **Report notes.** Check FT-2 against `failover_to_leader_ms_mean` and `failover_to_commit_ms_mean`, and call `election_duration_mean_ms` vote time. Print `answered_with_responder_rps` beside `throughput_rps`, `worst_request_ms` beside the gap, `provisional_conflicts` beside the provisional count, and say that `during_*` in degraded cells is mostly uncommitted answers. It is a fair "found by testing" point: the code was right, and a figure's name promised more than it measured.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -7738,6 +7770,7 @@ These add to older entries without changing their text. An entry can have more t
 | D119 | A call now enforces its own deadline (D150) |
 | D119 | The clause "The client port keeps its own framing" no longer holds, and its report note is closed by D176 (D167, D175) |
 | D122 | After `responder_taken` the record reads `Unassigned` although the client was told a responder was sent (D142). The conflict compares who goes, not priority (D148) |
+| D122 | `analyze.py` now prints the conflict count beside the provisional count, as this entry asks (D229) |
 | D123 | `Submitted` grows `id` and `status`. `ReplyBody::Expired` follows this entry's reason against a flag on `Done` |
 | D126 | Its table gains a row, not agreed: fault bids through `CloudGroup::send`, best effort and unordered, and nothing covers a lost copy, because the round dies at its deadline and the next timer tries again (D159) |
 | D126 | "Name existing sends" is no longer enough, and its closing note is withdrawn. Its rejection of a library and of our own multicast stands (D152, D157) |
@@ -7759,6 +7792,7 @@ These add to older entries without changing their text. An entry can have more t
 | D143 | A report no longer waits in a client's send queue, because there is none, so the limit D143 stated about a frame keeping a young stamp while off the network goes away: a datagram goes now or never (D167) |
 | D162 | The timed scene's values are now comments in `config/lab.example.toml` (D165) |
 | D172 | `udp_request_loss_share` and `udp_cancel_loss_share` are now over each process's whole log, not the measured time (D227) |
+| D172 | `udp_request_loss_share` and `udp_cancel_loss_share` still read about 1% with nothing lost. `udp_copies_lost_share` is the one to quote (D229) |
 | D182 | Warm-up no longer shifts with the first send: it counts from `client_started` (D191) |
 | D183 | The script also stops what a killed run left, and programs ignore HUP (D190). Its title names the web page, but the page starts `loadgen` itself (D202) |
 | D185 | `client_started` joins `machine_usage` as a new client event (D191) |
@@ -7767,3 +7801,5 @@ These add to older entries without changing their text. An entry can have more t
 | D205 | D165 keeps the same values and text, and adds the load rule, the start order and the fault timers |
 | D216 | Row 16 is settled: Noor said yes, and the step-aside is built (D218) |
 | D218 | The log half of the rule now reads one write's time, with its own two bars, and not the log wait. "A slow disk alone does not pass for a busy leader" and "the peers' bids keep a cluster overloaded everywhere from moving" did not hold for a log at its limit (D228) |
+| D224 | The gap is per program, so it understates one user's wait. `worst_request_ms` says that (D229) |
+| D227 | It fixed the start of the window, not the end: a node's last counters are older than a client's last send (D229) |

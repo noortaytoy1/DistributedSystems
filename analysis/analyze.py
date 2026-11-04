@@ -7,12 +7,14 @@ Reads runs/<experiment>/<cell>/<run>/ as scripts/run-experiments.sh writes them.
 computed per run, then averaged across the cell's runs with a 95% Student's t confidence interval.
 Writes summary.csv (long format, one row per cell and metric) and PNG plots to the output directory.
 
-Durations come from `latency_us`-style fields, measured on one machine. The one exception is the
-before/during/after split, which compares client timestamps with the victim's: those machines are only
-as aligned as NTP makes them, so the phase edges are approximate (AGENTS.md, Measuring).
+Durations come from `latency_us`-style fields, measured on one machine. There are two exceptions, which
+compare timestamps from different machines, so they are only as good as NTP (AGENTS.md, Measuring): the
+before/during/after split, whose phase edges are approximate, and failover_to_*, which is hundreds of
+milliseconds against the few that NTP is off by on a LAN (D229).
 """
 
 import argparse
+import bisect
 import csv
 import json
 import math
@@ -123,6 +125,25 @@ def measured_start(events, warmup_s):
     return min(starts) + warmup_s * 1_000_000 if starts else 0
 
 
+def worst_request_ms(events, done, gave_up):
+    """The longest any one measured request waited: an answered one's latency, or how long one that gave up
+    kept trying. client_gap_* cannot say this, because it is per program and a program holds many users, so
+    its other users' answers cut the gap short (D229)."""
+    waits = [e["latency_us"] for e in done]
+    if gave_up:
+        first_sent = {
+            (e["request"]["client"], e["request"]["seq"]): e["ts_us"]
+            for es in client_sources(events).values()
+            for e in es
+            if e["ev"] == "client_sent" and e["attempt"] == 0
+        }
+        for e in gave_up:
+            started = first_sent.get((e["request"]["client"], e["request"]["seq"]))
+            if started is not None:
+                waits.append(e["ts_us"] - started)
+    return max(waits) / 1000 if waits else float("nan")
+
+
 def request_metrics(events, warmup_s, measured_s):
     done, gave_up = client_requests(events, warmup_s)
     committed = [e for e in done if not e.get("provisional")]
@@ -134,6 +155,12 @@ def request_metrics(events, warmup_s, measured_s):
     answered = len(done)
     retried = sum(1 for e in done if e["attempts"] > 1)
     no_responder = sum(1 for e in done if e.get("no_responder"))
+    # An answer that sent nobody counts in throughput_rps and is about as fast as a real one, so a cell
+    # that ran out of responders still reads as busy (D229).
+    metrics["answered_with_responder_rps"] = (
+        (answered - no_responder) / measured_s if measured_s else float("nan")
+    )
+    metrics["worst_request_ms"] = worst_request_ms(events, done, gave_up)
     metrics["retried_share"] = retried / answered if answered else float("nan")
     metrics["no_responder_share"] = no_responder / answered if answered else float("nan")
     # An expired report also counts in no_responder_share. See expired_warnings.
@@ -182,8 +209,12 @@ def silent_spans(events):
 
 
 def election_metrics(events, start_us):
-    """Raft elections: new terms seen, and how long each node had no leader, leaving out the times
-    it was silenced or catching up itself.
+    """Raft elections: new terms seen, and how long each one's vote took, leaving out the times the node
+    was silenced or catching up itself.
+
+    election_duration_mean_ms is only the vote, not how long the cloud had no leader, whatever its name
+    says. A node logs no missing leader until it stands for election, so the wait before that is not in it:
+    about 10 ms of a failover near 700 ms. failover_metrics has the wait (D229).
 
     An election is a term above the one already running when the window opened. That term is the
     highest logged before the window; it logs nothing inside the window unless something changes,
@@ -216,6 +247,68 @@ def election_metrics(events, start_us):
         "election_duration_mean_ms": float(np.mean(durations_us)) / 1000
         if durations_us
         else float("nan"),
+    }
+
+
+def failover_metrics(events, start_us):
+    """How long the cloud had no leader after losing one (FT-2, D229).
+
+    Each loss starts at the leader's own `silenced` or `leader_stepped_aside` line, if that falls in the
+    measured time. failover_to_leader_ms_mean runs to the first `raft_state` line, on any node, of a leader in
+    a higher term, and failover_to_commit_ms_mean to the first result committed after that line, when clients
+    can have answers again. A step-aside nobody took up (`timed_out`) lost nothing, so it does not count, and
+    a leader that goes both ways in one term counts once. A loss with no later leader in the log adds to
+    failovers_without_leader and to neither mean, so that the worst case cannot read as a good average.
+
+    These subtract `ts_us` written by different machines. client_gap_* is the same story on one clock."""
+    logs = node_events(events)
+    leader_lines = sorted(
+        (e["ts_us"], e["term"])
+        for es in logs.values()
+        for e in es
+        if e["ev"] == "raft_state" and e["role"] == "leader"
+    )
+    commits = sorted(
+        e["ts_us"]
+        for es in logs.values()
+        for e in es
+        if e["ev"] == "commit" and e["kind"] == "commit_result" and e["outcome"] == "committed"
+    )
+    to_leader, to_commit = [], []
+    failovers = without_leader = 0
+    watched = ("raft_state", "silenced", "leader_stepped_aside", "leader_step_aside_ended")
+    for es in logs.values():
+        losses = []
+        led = None
+        for e in sorted((e for e in es if e["ev"] in watched), key=lambda e: e["ts_us"]):
+            if e["ev"] == "raft_state":
+                led = e["term"] if e["role"] == "leader" else None
+            elif e["ev"] == "silenced":
+                if led is not None:
+                    losses.append((e["ts_us"], led))
+            elif e["ev"] == "leader_stepped_aside":
+                losses.append((e["ts_us"], e["term"]))
+            elif e["outcome"] == "timed_out" and losses and losses[-1][1] == e["term"]:
+                losses.pop()
+        terms_counted = set()
+        for at, term in losses:
+            if at < start_us or term in terms_counted:
+                continue
+            terms_counted.add(term)
+            failovers += 1
+            new_leader = next((ts for ts, t in leader_lines if t > term and ts >= at), None)
+            if new_leader is None:
+                without_leader += 1
+                continue
+            to_leader.append(new_leader - at)
+            first_commit = bisect.bisect_left(commits, new_leader)
+            if first_commit < len(commits):
+                to_commit.append(commits[first_commit] - at)
+    return {
+        "failovers": failovers,
+        "failovers_without_leader": without_leader,
+        "failover_to_leader_ms_mean": float(np.mean(to_leader)) / 1000 if to_leader else float("nan"),
+        "failover_to_commit_ms_mean": float(np.mean(to_commit)) / 1000 if to_commit else float("nan"),
     }
 
 
@@ -265,7 +358,10 @@ def client_gap_metrics(events, fault_start, fault_end):
     which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock.
 
     The client's first and last events close the two ends. Without them a client that never hears
-    again after the fault has no gap at all, and the worst run of a cell drops out of its mean."""
+    again after the fault has no gap at all, and the worst run of a cell drops out of its mean.
+
+    This is per program, and a program holds many users, so one user's answer ends the gap for all of
+    them. It understates what the unluckiest user saw: worst_request_ms says that (D229)."""
     longest = []
     for source, es in events.items():
         if not source.startswith("client-") or not es:
@@ -301,6 +397,9 @@ def fault_metrics(events, measured_requests):
     }
     for reason in ("lost_first_commit", "responder_taken"):
         metrics[f"conflicts_{reason}"] = sum(1 for r in values("provisional_conflict", "reason") if r == reason)
+    # Named to sort beside provisional_count and provisional_replied in summary.csv: each is an answer that
+    # did not stand on record, and the client is not told (D122, D229).
+    metrics["provisional_conflicts"] = len(values("provisional_conflict", "reason"))
 
     # Split by reason and kept away from the failover figures: a `backstop` takeover fires when a
     # busy winner runs out of time, with no fault anywhere, and under overload that is nearly all
@@ -318,6 +417,8 @@ def fault_metrics(events, measured_requests):
         return metrics
     fault_start, fault_end = min(silenced), max(restored)
     metrics.update(client_gap_metrics(events, fault_start, fault_end))
+    # Provisional answers as well as committed ones, unlike the main latency figures. In a degraded cell
+    # during_* is mostly uncommitted answers, so it reads far better than before_*: see provisional_notes.
     sent_at = [e["ts_us"] - e["latency_us"] for e in measured_requests]
     if not sent_at:
         return metrics
@@ -513,7 +614,11 @@ def udp_metrics(events, start_us, completed):
 
     What it lost is over each process's whole log, warm-up included. Each process samples on its own
     second, so over the measured time one side's count starts up to a second later than the other's, and
-    that read as 1 to 4 percent lost in a run where the kernel dropped nothing."""
+    that read as 1 to 4 percent lost in a run where the kernel dropped nothing.
+
+    udp_request_loss_share and udp_cancel_loss_share still read false, about 1 percent with nothing lost,
+    and would hide a real loss below that. A node writes no counters as it stops, so its last line can be a
+    second older than the client's last send. udp_copy_metrics has the real figure (D229)."""
     totals = {"client": defaultdict(int), "node": defaultdict(int)}
     whole_log = {"client": defaultdict(int), "node": defaultdict(int)}
     drops = {"client": [], "node": []}
@@ -564,6 +669,25 @@ def udp_metrics(events, start_us, completed):
     metrics["udp_drops_nodes"] = sum(drops["node"])
     metrics["udp_drops_client_pc_max"] = max(drops["client"], default=0)
     return metrics
+
+
+def udp_copy_metrics(events):
+    """The share of report copies that never reached a node's code, from events that cannot miss (D229).
+    Each `client_sent` is one copy to every node. Each copy a node handled is a `request_received`, or was
+    turned away by the fault gate, which counts requests only. Over the whole log, as a copy can be on its
+    way at any edge. A node that is off reads nothing, so in a run with `kill -9` not all of this is the
+    network. A gate's count can be a second old when the run ends, which only matters if a silence
+    outlasts the clients."""
+    logs = node_events(events)
+    sent = sum(1 for es in client_sources(events).values() for e in es if e["ev"] == "client_sent")
+    if not sent or not logs:
+        return {}
+    handled = 0
+    for es in logs.values():
+        handled += sum(1 for e in es if e["ev"] == "request_received")
+        counters = (e for e in es if e["ev"] == "udp_counters")
+        handled += whole_log_counts(counters, ("rx_gate_dropped",))["rx_gate_dropped"]
+    return {"udp_copies_lost_share": max(1 - handled / (sent * len(logs)), 0.0)}
 
 
 def commit_metrics(events, start_us):
@@ -707,6 +831,7 @@ def analyse_run(run_dir):
     metrics = request_metrics(events, warmup_s, measured_s)
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
+    metrics.update(failover_metrics(events, start))
     metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
@@ -715,6 +840,7 @@ def analyse_run(run_dir):
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(udp_metrics(events, start, len(done)))
+    metrics.update(udp_copy_metrics(events))
     metrics.update(commit_metrics(events, start))
     metrics.update(client_program_metrics(events, meta))
     metrics.update(client_script_metrics(run_dir))
@@ -826,6 +952,23 @@ def udp_warnings(summary):
                     "each lost copy can cost a client a 2 s retry"
                 )
     return warnings
+
+
+def provisional_notes(summary):
+    """What to say beside a degraded cell's latency (D122, D229). A provisional answer needs no commit, so
+    before_*, during_* and after_* read far better during an outage, and most clients told a responder was
+    coming may not have that on record later. They are not told."""
+    notes = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        replied = metrics.get("provisional_replied", (float("nan"),))[0]
+        if replied > 0:
+            conflicts = metrics.get("provisional_conflicts", (float("nan"),))[0]
+            notes.append(
+                f"note: {experiment}/{cell}: {replied:g} provisional answers and {conflicts:g} "
+                "provisional_conflicts per run, which clients are not told of; before_*, during_* and "
+                "after_* here mix provisional answers with committed ones"
+            )
+    return notes
 
 
 def write_csv(summary, path):
@@ -966,6 +1109,8 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
+    for note in provisional_notes(summary):
+        print(note)
     for warning in expired_warnings(summary) + udp_warnings(summary):
         print(warning, file=sys.stderr)
 
