@@ -64,9 +64,9 @@ pub const CHANNEL_IDLE: Duration = Duration::from_secs(60);
 /// wait, or every other program's datagrams would pile up in the kernel behind it.
 pub const CHANNEL_QUEUE: usize = 16 * 1024;
 
-/// How long a message waits for others to the same address (D236). It adds at most this much to each
-/// direction of a call. With nothing waiting, no timer runs.
-pub const COMBINE_WAIT: Duration = Duration::from_millis(2);
+/// How long a message waits for others to the same address (D236, D246). It adds at most this much to
+/// each direction of a call. With nothing waiting, no timer runs.
+pub const COMBINE_WAIT: Duration = Duration::from_millis(10);
 
 /// First byte of a datagram holding several messages. bincode's variable-length integers never start
 /// with it, and a `ClientMessage` or a `Response` starts with one, so a lone message cannot be taken

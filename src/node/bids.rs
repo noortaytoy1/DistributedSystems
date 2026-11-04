@@ -58,7 +58,11 @@ impl BidState {
     /// `None` if this node is already working on this request: the first attempt's call is still open,
     /// and its answer serves the client.
     pub(super) fn begin_executing(&self, request: RequestId) -> Option<Executing<'_>> {
-        lock(&self.executing).insert(request).then_some(Executing {
+        // The lock ends first. Dropping an `Executing` takes it again, so one must never be made and
+        // dropped while it is held.
+        let first = lock(&self.executing).insert(request);
+        // `then`, not `then_some`: a refused guard must never exist, as dropping it would end the work's mark.
+        first.then(|| Executing {
             state: self,
             request,
         })
@@ -214,4 +218,26 @@ fn spawn_cleanup(ctx: Arc<NodeContext>) -> JoinHandle<()> {
             lock(&ctx.bids.rounds).forget_older_than(Instant::now(), grace);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_during_execution_is_refused_and_a_later_one_is_not() {
+        let state = BidState::new(
+            1,
+            &crate::config::Config::from_toml(crate::node::testing::THREE_NODES).unwrap(),
+        );
+        let request = RequestId { client: 1, seq: 1 };
+        let first = state.begin_executing(request);
+        assert!(first.is_some());
+        // This must return. Making and dropping a refused guard under the lock would hang here.
+        assert!(state.begin_executing(request).is_none());
+        // And being refused must not end the first attempt's mark.
+        assert!(state.begin_executing(request).is_none());
+        drop(first);
+        assert!(state.begin_executing(request).is_some());
+    }
 }

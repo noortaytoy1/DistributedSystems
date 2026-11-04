@@ -13,7 +13,7 @@ Each node has two port numbers from the config:
 | Port               | Who uses it        | Pattern                                               |
 |--------------------|--------------------|-------------------------------------------------------|
 | `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 2 ms (D167, D170, D236) |
+| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 10 ms (D167, D170, D236, D246) |
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
@@ -311,7 +311,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `datagram.rs::CHANNEL_IDLE` | 60 s | a user program with no traffic for this long loses its channel on the node (D170) |
 | `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
 | `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message, and the largest combined datagram, on UDP, so it is never split on an Ethernet path (D170, D236) |
-| `datagram.rs::COMBINE_WAIT` | 2 ms | how long a message on UDP waits for others to the same address. Full datagrams go at once (D236) |
+| `datagram.rs::COMBINE_WAIT` | 10 ms | how long a message on UDP waits for others to the same address. Full datagrams go at the end of a running wait, or sooner (D236, D246) |
 | `datagram.rs::COMBINED` | first byte `0xFF` | a datagram of several messages, each after a 2-byte big-endian length. A datagram with one message is that message alone (D236) |
 | `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
 | `proposals.rs::GROUP_LIMIT` | 2000 | most commands in one write, so in one log line and one save. One full group must be sent, saved and answered within `raft_heartbeat_ms` (D133, D228, D234) |

@@ -295,7 +295,7 @@ table below in sync.
 | D233 | FT-2 reads figures on one clock, and each run says how far apart its clocks were | all | Implemented, amends D229 |
 | D234 | One write carries up to 2000 commands, not 200 | A | Implemented, amends D133 |
 | D235 | The takeover backstop waits at least 1000 ms, not 200 ms | B, C | Implemented, amends D42, D110 |
-| D236 | UDP messages to one address share a datagram within 2 ms | C | Implemented, amends D170 |
+| D236 | UDP messages to one address share a datagram within 2 ms | C | Implemented, amends D170, amended by D246 |
 | D237 | TCP between nodes leaves Nagle on | C | Implemented, amends D20 |
 | D238 | With many responders, each plan looks at its own part of the free list | E, A | Implemented |
 | D239 | A standing-by node looks once per heartbeat, not five times | C | Implemented, amends D110 |
@@ -305,6 +305,7 @@ table below in sync.
 | D243 | A retry joins the work a node is already doing on that request | E | Implemented |
 | D244 | A backup release waits longer, and release scanning never waits for the log | D | Implemented |
 | D245 | The count of open rounds a node leads is kept, not scanned | B | Implemented |
+| D246 | UDP messages wait up to 10 ms to share a datagram, not 2 ms | C | Implemented, amends D236 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7986,6 +7987,15 @@ them on the six PCs.
 - **Decision.** A `leading` set is kept in `open`, `add_bid`, `close` and `request_decided`. A `debug_assert` holds it to the scan in every test run.
 - **Where.** `src/bidding.rs`.
 - **How we check it.** `cargo test` runs the debug assertion on every read.
+
+### D246 · UDP messages wait up to 10 ms to share a datagram, not 2 ms
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D236 · **Decided by:** the person running the lab session, on the agent's recommendation from a review.
+- **Context.** A review's model of air use, fitted from two plain UDP measurements, makes client datagrams the largest line at 10,000 requests a second: 13,500 a second at 2 ms, and 2,700 at 10 ms. That is a model, and has to be measured.
+- **Decision.** `COMBINE_WAIT` = 10 ms.
+- **Consequences.** Up to 8 ms more each way. Copies of one report to three nodes can leave up to 10 ms apart, which uses part of the bid window.
+- **Where.** `src/node/datagram.rs`.
+- **How we check it.** Packets a second from `/proc/net/dev`, and committed answers a second on the six PCs.
 
 ### Notes on older entries
 

@@ -298,8 +298,9 @@ async fn a_node_that_comes_back_on_the_same_address_just_answers() {
         let client = client.clone();
         tokio::spawn(async move { client.submit(incident()).await })
     };
+    // A datagram that has left, not one still waiting to be combined (D236).
     wait_until(Duration::from_secs(10), "a send into nothing", || {
-        client.udp_counts().tx_requests >= 1
+        client.udp_counts().tx_datagrams >= 1
     })
     .await;
 
