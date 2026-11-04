@@ -63,8 +63,16 @@ const START_GRACE: Duration = Duration::from_secs(20);
 const DETECT_EVERY: Duration = Duration::from_millis(25);
 /// How long a returning node waits between catch-up calls with nothing new.
 const CATCH_UP_PAUSE: Duration = Duration::from_millis(10);
-/// How many log entries one catch-up reply holds at most.
-const CATCH_UP_ENTRIES: usize = 400;
+/// How many commands one catch-up reply holds at most, so it crosses a busy network inside its call.
+const CATCH_UP_COMMANDS: usize = 4000;
+/// How long a catch-up call may take.
+const CATCH_UP_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a call carrying part of a stream may take. It carries many commands, and a reply comes
+/// after a disk save, so it needs longer than a small peer call. A late reply only costs a resend.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(2);
+/// A returning node this close to the end of the log asks to be added. The log keeps growing until
+/// then, so asking only at the very end could wait for ever.
+const JOIN_WHEN_WITHIN: u64 = 200;
 const IO_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a node just added has to send its first message before it counts as silent.
 const JOIN_GRACE: Duration = Duration::from_secs(3);
@@ -553,12 +561,17 @@ impl Inner {
             return RoundsReply::NotYet;
         }
         let start = (next as usize).min(core.ordered.len());
-        let end = (start + CATCH_UP_ENTRIES).min(core.ordered.len());
+        let mut commands = 0;
+        let mut batches = Vec::new();
+        for batch in &core.ordered[start..] {
+            if !batches.is_empty() && commands + batch.commands.len() > CATCH_UP_COMMANDS {
+                break;
+            }
+            commands += batch.commands.len();
+            batches.push(batch.as_ref().clone());
+        }
         RoundsReply::Entries {
-            batches: core.ordered[start..end]
-                .iter()
-                .map(|b| b.as_ref().clone())
-                .collect(),
+            batches,
             total: core.ordered.len() as u64,
             applied_round: core.applied_round,
             view: core.view,
@@ -757,7 +770,7 @@ async fn run_sender(inner: Arc<Inner>, peer: NodeId) {
             term,
             body: PeerBody::Rounds(message),
         };
-        let reply = client.call(envelope, inner.rpc_timeout).await;
+        let reply = client.call(envelope, STREAM_TIMEOUT).await;
         let pause = {
             let mut core = lock(&inner.core);
             match reply {
@@ -936,7 +949,7 @@ async fn run_catch_up(inner: Arc<Inner>) {
                 term,
                 body: PeerBody::Rounds(RoundsMsg::CatchUp { next }),
             };
-            let reply = client.call(envelope, inner.rpc_timeout).await;
+            let reply = client.call(envelope, CATCH_UP_TIMEOUT).await;
             let Ok(PeerReply::Rounds(RoundsReply::Entries {
                 batches,
                 total,
@@ -948,7 +961,9 @@ async fn run_catch_up(inner: Arc<Inner>) {
                 continue;
             };
             progressed = !batches.is_empty();
-            let done = next + batches.len() as u64 >= total;
+            let reached = next + batches.len() as u64;
+            let done = reached >= total;
+            let close = reached + JOIN_WHEN_WITHIN >= total;
             let ask_to_join = {
                 let mut core = lock(&inner.core);
                 for batch in batches {
@@ -986,7 +1001,7 @@ async fn run_catch_up(inner: Arc<Inner>) {
                         }
                         false
                     }
-                    None if done && asked.elapsed() >= Duration::from_secs(1) => {
+                    None if close && asked.elapsed() >= Duration::from_secs(1) => {
                         asked = Instant::now();
                         true
                     }
