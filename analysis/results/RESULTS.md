@@ -8,7 +8,7 @@ Every number here was read from the files in this folder or from `runs/`. Nothin
 - **Safety held everywhere it was checked.** In all 21 plan cells and all 31 runs with an `extras.txt` here: 0 digest mismatches, 0 `unaccounted`, 0 panics. `fault_split_decisions` and `reports_expired` were 0 in both summaries.
 - **Failover works.** A new leader in about 800 ms at 300 users, and about 840 ms at 1500. Nobody gave up in those cells.
 - **At the end of the session, with no leader, the system handles 10,000 requests a second, and its measured ceiling on Wi-Fi is about 33,000 to 35,000 a second with `plan_work` 0.** 10,000 was clean in three runs and with a node killed twice. 30,000 was clean in three short runs and a 5-minute hold. On the final code 35,000 was clean and 36,000 fell, one run each. On the build before it, 33,000 was clean, 34,000 began to break and 35,000 fell. See "The ceiling" below. **With `plan_work` 1000, 10,000 was clean and 15,000 fell.** All of the rest of this list and the plan's tables are about the older code at `0397d37`, with Raft.
-- **A limit that remains: two failures close together stop commits until the nodes are restarted together.** Answers stayed correct, with 0 digest mismatches, but 1,303 reports gave up in that test. One failure at a time recovers. See "The ceiling".
+- **A limit that remains: two failures close together stop commits, and they did not resume for the rest of that run.** Answers stayed correct, with 0 digest mismatches, but 1,303 reports gave up in that test. One failure at a time recovers. See "The ceiling".
 - **A real bug was found and fixed on the way:** digest mismatches came back twice on rotating rounds, and T4's last part found the second (D252, D257). Each fix has a test that fails without it.
 - **T1 to T4 on rotating rounds ran with 3-minute loads and `kill -9`.** T3's plan steps, the plan's 21 cells and T5 were not repeated on rotating rounds, so their tables below are for Raft.
 - **The system does not handle 10,000 requests a second on the code at `0397d37`.** With its plan settings, 600 a second was the highest fixed rate with no fall, in one 75 s run. 800 fell in 1 of 3 short tries and in its 5-minute hold. 1000 fell in all 4 tries.
@@ -366,7 +366,7 @@ So with this load the limit is CPU, with all 20 planning threads busy. **This ma
 |---|---:|---:|---:|---:|---:|---:|---|
 | T4's last part | 9,892 | 8,589 | **1,303** | 0 | **0 of 50** | 3,891 ms | 8,589 results on all three, one digest, **but node 3 not back and no commits after the kill** |
 
-**This is a limit that remains, and it is not small.** Safety held, but the system stopped committing from when node 3 was killed, 21:36:53, to the end of the run. Nearly all the 1,303 that gave up came after that. Node 2 had just been dropped by a draw and was on its way back. With node 3 killed as well, node 1 was left in a view of two, and it cannot drop anyone alone. Node 3 then restarted, still listed, and cannot come back either. **So two failures close together, the second before the first has returned, stop commits until the nodes are restarted together.** A single failure does not do this, as T1, T2 and the kill above show. Raft would carry on here, since two of three nodes were up.
+**This is a limit that remains, and it is not small.** Safety held, but the system stopped committing from when node 3 was killed, 21:36:53, to the end of the run. Nearly all the 1,303 that gave up came after that. Node 2 had just been dropped by a draw and was on its way back. With node 3 killed as well, node 1 was left in a view of two, and it cannot drop anyone alone. Node 3 then restarted, still listed, and cannot come back either. **So two failures close together, the second before the first has returned, stop commits. They did not resume for the rest of that run. What brings them back was not tested, and restarting all three would lose the state (D249).** A single failure does not do this, as T1, T2 and the kill above show. Raft would carry on here, since two of three nodes were up.
 
 **On the final code, `c05c7b9`, folder `runs/hand-rg`, 60,000 responders, 1 s detection, `plan_work` 0:**
 
@@ -385,7 +385,7 @@ So with this load the limit is CPU, with all 20 planning threads busy. **This ma
 **Limits, said openly:**
 - Apart from the hold, these were 75 s runs, on Wi-Fi, with one run for most rates.
 - Memory grows with the log, about 5.2 GB per node after 5 minutes at 30,000. Nothing trims it yet, so a much longer run would run out.
-- **Two failures close together stop commits,** as above. No wrong answers, but nothing commits until the nodes are restarted together.
+- **Two failures close together stop commits,** as above. No wrong answers, but nothing commits, and what brings it back was not tested.
 - A restarted node recovers from a peer's log, not its own file, so losing all three at once loses the state (D249).
 - If a node promises a drop and the asker then dies, it waits for that node (D252).
 - Detection was 3 s in some rows and 1 s in others. The user first picked about 300 ms. 1 s held up to 33,000, and 300 ms was not tried at these rates.
