@@ -347,8 +347,9 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   mode.
 - **First commit wins:** the state machine keeps the first committed result per request ID.
   Later proposals for that ID get `Outcome::Duplicate` with the winner.
-- **Stale plan:** a plan whose responder was taken in the meantime. It is not recorded
-  (`Outcome::Stale`); the executor plans again.
+- **Stale plan:** a plan whose responder is unknown. It is not recorded (`Outcome::Stale`); the executor
+  plans again. A plan whose responder was taken in the meantime is chosen again at apply, the same way on every
+  node (D241).
 - **Serving:** a node that is current and may bid, plan and reply.
 - **Silenced:** a node whose fault gate is closed. It drops all peer and client traffic.
 - **Degraded:** a serving node whose peers have all been suspected for `degraded_after_ms`. It answers

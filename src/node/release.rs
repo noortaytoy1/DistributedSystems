@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 
 use crate::metrics::Event;
@@ -25,6 +25,9 @@ use crate::proto::{Command, CommittedResult, NodeId, RequestId, ResponderId};
 
 /// How often a node looks at the holds. Small against the shortest service time (200 ms).
 const SCAN_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A backup release waits at least this long past the service time (D244).
+const BACKUP_MARGIN_MS: u64 = 1000;
 
 /// One release this node should propose now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +61,9 @@ impl Tracker {
             let mut first = self.seen.get(&key).copied().unwrap_or(now);
             let backup = result.executor != me;
             let service = u64::from(result.incident.severity) * ms_per_severity;
-            let wait = Duration::from_millis(if backup { 2 * service } else { service });
+            // A backup is for an executor that went silent, not for a slow log (D244).
+            let backup_wait = (2 * service).max(service + BACKUP_MARGIN_MS);
+            let wait = Duration::from_millis(if backup { backup_wait } else { service });
             if now.duration_since(first) >= wait {
                 due.push(Due {
                     responder: *responder,
@@ -81,8 +86,11 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tracker = Tracker::default();
         let mut tick = tokio::time::interval(SCAN_INTERVAL);
+        // Owned here, so aborting this task ends them. Scanning never waits for a slow log (D244).
+        let mut in_flight = JoinSet::new();
         loop {
             tick.tick().await;
+            while in_flight.try_join_next().is_some() {}
             // A lone node cannot commit a release; its local table does the job meanwhile (D124).
             if !ctx.serving.load(Ordering::SeqCst) || ctx.degraded.is_active() {
                 continue;
@@ -91,8 +99,10 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
             let due = ctx
                 .state
                 .with(|s| tracker.scan(ctx.id, &s.holds(), ms, Instant::now()));
-            let proposals = due.into_iter().map(|d| propose(&ctx, d));
-            futures::future::join_all(proposals).await;
+            for d in due {
+                let ctx = ctx.clone();
+                in_flight.spawn(async move { propose(&ctx, d).await });
+            }
         }
     })
 }
@@ -163,14 +173,15 @@ mod tests {
     }
 
     #[test]
-    fn another_node_waits_twice_as_long() {
+    fn another_node_waits_longer() {
+        // Severity 2 at 200 ms a point: the margin decides, 400 + 1000 ms.
         let r = result(1, 1, 2);
         let t0 = Instant::now();
         let mut tracker = Tracker::default();
         tracker.scan(2, &[(9, &r)], 200, t0);
-        let early = t0 + Duration::from_millis(799);
+        let early = t0 + Duration::from_millis(1399);
         assert!(tracker.scan(2, &[(9, &r)], 200, early).is_empty());
-        let due = tracker.scan(2, &[(9, &r)], 200, t0 + Duration::from_millis(800));
+        let due = tracker.scan(2, &[(9, &r)], 200, t0 + Duration::from_millis(1400));
         assert!(due[0].backup);
     }
 

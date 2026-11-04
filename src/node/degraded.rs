@@ -308,7 +308,19 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
             }
         };
         match outcome {
-            Outcome::Committed(_) => break,
+            Outcome::Committed(done) => {
+                // Chosen again at apply (D241): the client was told someone else, so it did not stand.
+                if !done.plan.same_assignment(&plan) {
+                    ctx.log.log(Event::ProvisionalConflict {
+                        request,
+                        reason: "responder_taken".to_string(),
+                        responder: plan.responder,
+                        winner_responder: done.plan.responder,
+                        winner_executor: None,
+                    });
+                }
+                break;
+            }
             Outcome::Duplicate(winner) => {
                 // The client was told who goes. A priority worked out a moment apart is no conflict.
                 if !winner.plan.same_assignment(&plan) {

@@ -226,6 +226,8 @@ pub struct BidRounds {
     /// The rounds with a running window, so counting leading rounds stays cheap however many
     /// closed rounds are being kept.
     open: BTreeSet<RoundKey>,
+    /// The open rounds this node leads, kept up to date so reading the count takes no scan (D245).
+    leading: BTreeSet<RoundKey>,
     /// Rounds this node won whose jobs have not reached the worker pool. A set, not a counter, so
     /// settling the same round twice cannot undercount.
     won: BTreeSet<RoundKey>,
@@ -238,6 +240,7 @@ impl BidRounds {
             bid_window,
             rounds: BTreeMap::new(),
             open: BTreeSet::new(),
+            leading: BTreeSet::new(),
             won: BTreeSet::new(),
         }
     }
@@ -254,6 +257,9 @@ impl BidRounds {
                 let deadline = now + self.bid_window;
                 round.phase = Phase::Open { deadline };
                 self.open.insert(key);
+                if round.led_by(self.me) {
+                    self.leading.insert(key);
+                }
                 Some(deadline)
             }
             Phase::Open { deadline } => Some(deadline),
@@ -281,6 +287,13 @@ impl BidRounds {
             return BidStatus::Duplicate;
         }
         round.bids.insert(node, score);
+        if matches!(round.phase, Phase::Open { .. }) {
+            if round.led_by(self.me) {
+                self.leading.insert(key);
+            } else {
+                self.leading.remove(&key);
+            }
+        }
         BidStatus::Accepted
     }
 
@@ -293,6 +306,7 @@ impl BidRounds {
         }
         round.phase = Phase::Closed { at: now };
         self.open.remove(&key);
+        self.leading.remove(&key);
         let bids: Vec<(NodeId, u64)> = round.bids.iter().map(|(&n, &s)| (n, s)).collect();
         let order = ranking(&bids);
         let i_won = order.first() == Some(&self.me);
@@ -333,6 +347,7 @@ impl BidRounds {
         let keys: Vec<RoundKey> = self.rounds.range(attempts).map(|(&key, _)| key).collect();
         for key in keys {
             self.won.remove(&key);
+            self.leading.remove(&key);
             if self.open.remove(&key) {
                 if let Some(round) = self.rounds.get_mut(&key) {
                     round.phase = Phase::Closed { at: now };
@@ -352,11 +367,15 @@ impl BidRounds {
     }
 
     fn leading(&self) -> usize {
-        self.open
-            .iter()
-            .filter_map(|key| self.rounds.get(key))
-            .filter(|round| round.led_by(self.me))
-            .count()
+        debug_assert_eq!(
+            self.leading.len(),
+            self.open
+                .iter()
+                .filter_map(|key| self.rounds.get(key))
+                .filter(|round| round.led_by(self.me))
+                .count(),
+        );
+        self.leading.len()
     }
 
     /// Drops rounds closed at least `grace` ago, and rounds whose request has not arrived that

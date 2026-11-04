@@ -92,6 +92,9 @@ pub(super) async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, re
     if decide_executor(&ctx, &req).await != Decision::Execute {
         return;
     }
+    let Some(_executing) = ctx.bids.begin_executing(req.id) else {
+        return;
+    };
     match execute(&ctx, &req).await {
         Ok(done) => send_done(&ctx, &reply, done, started),
         // No reply: the client retries with the same ID.

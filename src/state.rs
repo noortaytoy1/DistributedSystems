@@ -6,6 +6,8 @@
 //! - **First commit wins.** The first `CommitResult` applied for a request ID becomes its result.
 //!   Later ones (a retry, or a second executor after a takeover) get `Outcome::Duplicate` with
 //!   the winner and change nothing.
+//! - **Plans that lost their responder.** A plan whose responder was taken while it travelled through
+//!   the log is chosen again here, the same way on every node, at no extra log command (D241).
 //! - **Stale plans.** A result whose responder is already held by another request, or unknown, is
 //!   not recorded (`Outcome::Stale`); the executor plans again.
 //! - **Digest.** A hash chain over every applied command and its outcome. Two nodes with the
@@ -20,6 +22,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::planner;
 use crate::proto::{
     Command, CommandGroup, CommittedResult, IncidentQuery, IncidentStatus, IncidentView,
     MAX_INCIDENT_ROWS, Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
@@ -38,6 +41,8 @@ pub struct Counters {
     pub committed: u64,
     pub duplicates: u64,
     pub stale: u64,
+    /// Plans whose responder was taken, chosen again at apply (D241).
+    pub repicked: u64,
     pub released: u64,
 }
 
@@ -98,24 +103,35 @@ impl CloudState {
             self.counters.duplicates += 1;
             return Outcome::Duplicate(winner.clone());
         }
+        let mut plan = p.plan.clone();
         if let Some(responder) = p.plan.responder {
-            let reason = match self.responders.get_mut(&responder) {
-                None => Some(StaleReason::UnknownResponder),
-                Some(slot) => match slot.held_by {
-                    Some(holder) => Some(StaleReason::HeldBy(holder)),
-                    None => {
-                        slot.held_by = Some(p.request);
-                        None
-                    }
-                },
+            let held = match self.responders.get(&responder) {
+                None => {
+                    self.counters.stale += 1;
+                    return Outcome::Stale {
+                        request: p.request,
+                        responder,
+                        reason: StaleReason::UnknownResponder,
+                    };
+                }
+                Some(slot) => slot.held_by.is_some(),
             };
-            if let Some(reason) = reason {
-                self.counters.stale += 1;
-                return Outcome::Stale {
-                    request: p.request,
-                    responder,
-                    reason,
-                };
+            if held {
+                // Taken while this plan travelled through the log. Choosing again here is the same
+                // choice on every node, and costs no new plan and no new log command (D241).
+                self.counters.repicked += 1;
+                let free = self
+                    .responders
+                    .values()
+                    .filter(|s| s.held_by.is_none())
+                    .map(|s| &s.responder);
+                let age_ms = p.assigned_at_ms.saturating_sub(p.incident.reported_at_ms);
+                plan = planner::pick(&p.incident, free, age_ms);
+            }
+            if let Some(chosen) = plan.responder {
+                if let Some(slot) = self.responders.get_mut(&chosen) {
+                    slot.held_by = Some(p.request);
+                }
             }
         }
         let result = CommittedResult {
@@ -123,7 +139,7 @@ impl CloudState {
             incident: p.incident.clone(),
             executor: p.executor,
             term: p.term,
-            plan: p.plan.clone(),
+            plan,
             age_ms: p.age_ms,
             assigned_at_ms: p.assigned_at_ms,
             log_index: index,
@@ -390,23 +406,31 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_a_taken_responder_is_stale() {
-        let mut s = with_responders(&[1, 2]);
+    fn a_plan_that_lost_its_responder_is_chosen_again_the_same_on_every_copy() {
+        let mut a = with_responders(&[1, 2]);
+        a.apply(2, &proposal(10, 1, Some(1)));
+        let mut b = a.clone();
+        let Outcome::Committed(done) = a.apply(3, &proposal(11, 2, Some(1))) else {
+            panic!("a plan that lost its responder must commit with another");
+        };
+        assert_eq!(done.plan.responder, Some(2));
+        assert_eq!(a.responder(2).unwrap().held_by, Some(rid(11)));
+        assert_eq!(a.responder(1).unwrap().held_by, Some(rid(10)));
+        assert_eq!(a.counters().repicked, 1);
+        assert_eq!(a.counters().stale, 0);
+        b.apply(3, &proposal(11, 2, Some(1)));
+        assert_eq!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn a_plan_that_lost_its_responder_commits_nobody_when_none_is_free() {
+        let mut s = with_responders(&[1]);
         s.apply(2, &proposal(10, 1, Some(1)));
-        assert_eq!(
-            s.apply(3, &proposal(11, 2, Some(1))),
-            Outcome::Stale {
-                request: rid(11),
-                responder: 1,
-                reason: StaleReason::HeldBy(rid(10)),
-            }
-        );
-        assert!(s.result(&rid(11)).is_none());
-        // Re-planned with a free responder, the same request commits.
-        assert!(matches!(
-            s.apply(4, &proposal(11, 2, Some(2))),
-            Outcome::Committed(_)
-        ));
+        let Outcome::Committed(done) = s.apply(3, &proposal(11, 2, Some(1))) else {
+            panic!("it must still commit");
+        };
+        assert_eq!(done.plan.responder, None);
+        assert_eq!(s.responder(1).unwrap().held_by, Some(rid(10)));
     }
 
     /// What lets a node answer after three stale plans (D220): with every responder held, a plan that
@@ -669,7 +693,8 @@ mod tests {
         assert_eq!(a.last_index(), 2);
         assert_eq!(from_a.len(), 5, "one outcome per command, in order");
         assert!(matches!(from_a[0], Outcome::Committed(_)));
-        assert!(matches!(from_a[1], Outcome::Stale { .. }));
+        // Its responder went to the first command, so it is chosen again at apply (D241).
+        assert!(matches!(from_a[1], Outcome::Committed(_)));
         assert_eq!(from_a[2], Outcome::Applied);
         assert!(matches!(from_a[3], Outcome::Committed(_)));
     }

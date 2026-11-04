@@ -167,7 +167,7 @@ yields none. Results of one group share a `log_index` (D133).
 | `CommitResult(ResultProposal)`            | the first result per report ID wins and holds its responder               | `Committed`, `Duplicate(winner)` or `Stale` |
 | `ReleaseResponder { responder, request }` | frees the responder if `request` holds it. Proposed by the node that planned after the service time, by other nodes after twice that (D39) | `Applied` |
 
-`Stale` means the plan's responder is held by another report or unknown. Nothing is recorded,
+A plan whose responder is held by another report is chosen again at apply, the same way on every node (D241). `Stale` means the plan's responder is unknown. Nothing is recorded,
 and the winner plans again with fresh state. After 3 stale plans it makes a plan with nobody on it final, which cannot be stale, and
 answers from what becomes final (D220).
 

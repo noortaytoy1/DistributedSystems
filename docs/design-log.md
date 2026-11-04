@@ -300,6 +300,11 @@ table below in sync.
 | D238 | With many responders, each plan looks at its own part of the free list | E, A | Implemented |
 | D239 | A standing-by node looks once per heartbeat, not five times | C | Implemented, amends D110 |
 | D240 | Every zone has every capability | E | Implemented, fixes a bug in `campus::responders` |
+| D241 | A plan that lost its responder is chosen again at apply | A, E | Implemented, amends D220 |
+| D242 | Raft has its own connection to each peer | A, C | Implemented, amends D119 |
+| D243 | A retry joins the work a node is already doing on that request | E | Implemented |
+| D244 | A backup release waits longer, and release scanning never waits for the log | D | Implemented |
+| D245 | The count of open rounds a node leads is kept, not scanned | B | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7929,6 +7934,58 @@ them on the six PCs.
 - **Where.** `src/campus.rs`.
 - **How we check it.** Unit test, then stale per commit on the six PCs.
 - **Report notes.** State this beside any comparison of results across it.
+
+### D241 · A plan that lost its responder is chosen again at apply
+
+- **Date:** 2026-11-04 · **Part:** A, E · **Status:** Implemented, amends D220 · **Decided by:** the person running the lab session ("fix them", starting with Raft), on the agent's recommendation from a code review.
+- **Context.** A plan names a responder from the node's copy of the state, and it reaches the log about a commit later. With many plans in flight many name a taken responder. Each came back `Stale`, cost a full new plan, and took another log command. At 2000 requests a second on six PCs there were about 1.06 stale per commit, so about half of plans and a third or more of log commands were waste.
+- **Options considered.**
+  1. *Choose again at apply (chosen).* The same pure rule over the same state gives the same choice on every node, with no new plan and no new log command. A scan under the write lock, about 30 to 100 us at 6000 responders by estimate.
+  2. *Reject at the leader before the log.* Rejected: the leader decides nothing (D163).
+  3. *Keep replanning.* The cost above.
+- **Decision.** In `commit_result`, if the named responder is held, `planner::pick` chooses from the free responders in ID order, with the age from `assigned_at_ms - reported_at_ms`. `Outcome::Stale` stays only for an unknown responder. `counters.repicked` counts these.
+- **Why.** State stays deterministic: no clock, no randomness, no float, and BTreeMap order.
+- **Consequences.** `extras.py`'s stale figure falls by definition, so compare commands per commit and `repicked`, not stale alone. A plan's cost is worked out at apply. An executor's plan work for that request is wasted once, not repeated. Degraded replay logs `responder_taken` when the plan differs (D122). If nobody suitable is free, the result commits with nobody sent.
+- **Where.** `src/state.rs::commit_result`, `src/planner.rs::pick`, `src/node/degraded.rs`, tests in `src/state.rs` and `tests/replication.rs`, the glossary in `AGENTS.md`.
+- **How we check it.** Unit tests, including that two copies reach one digest; commands per commit on the six PCs.
+- **Report notes.** Results before this entry returned `Stale` for a taken responder.
+
+### D242 · Raft has its own connection to each peer
+
+- **Date:** 2026-11-04 · **Part:** A, C · **Status:** Implemented, amends D119 · **Decided by:** the person running the lab session, on the agent's recommendation from a code review.
+- **Context.** AppendEntries, votes, bids, forwards and heartbeats shared one TCP stream per peer, so a burst of bids could hold up a Raft write, whose limit is one `raft_heartbeat_ms`. D237 also left Nagle on for that stream.
+- **Options considered.**
+  1. *A second `PeerClient` per peer for Raft only, sending at once (chosen).* A few lines. The server side already takes many connections.
+  2. *Priorities inside one stream.* TCP cannot do this.
+- **Decision.** `PeerSet::for_raft` makes clients with their own connection and `TCP_NODELAY` on. `raft::Network` uses them. Peer heartbeats, bids and forwards stay on the shared connection, with Nagle.
+- **Consequences.** Two connections per peer in each direction. A peer outage logs its events once per connection. Replies on the server side still use Nagle.
+- **Where.** `src/node/transport.rs`, `src/raft/mod.rs`.
+- **How we check it.** `cargo test`, then write time against commands per write on the six PCs.
+
+### D243 · A retry joins the work a node is already doing on that request
+
+- **Date:** 2026-11-04 · **Part:** E · **Status:** Implemented · **Decided by:** the person running the lab session, on the agent's recommendation from a code review.
+- **Context.** The client retries after about 2 s and a proposal may wait 3 s, so at saturation attempts overlap and one node plans one request twice.
+- **Decision.** `BidState::begin_executing` holds a set of requests in progress. A second attempt on the same node returns silently: the first attempt's call is still open, and its answer serves the client.
+- **Where.** `src/node/bids.rs`, `src/node/service.rs`.
+- **How we check it.** `cargo test`.
+
+### D244 · A backup release waits longer, and release scanning never waits for the log
+
+- **Date:** 2026-11-04 · **Part:** D · **Status:** Implemented · **Decided by:** the person running the lab session, on the agent's recommendation from a code review.
+- **Context.** A log review counted 39% of log commands as releases at 3000 requests a second, with about 1,265 backup releases a second, as backups fired at twice the service time once commits slowed. `join_all` also stopped scanning until a batch committed, for up to 3 s, so holds ran long.
+- **Decision.** A backup waits max(2 x service, service + 1000 ms). Due releases run in a `JoinSet` owned by the scan task.
+- **Consequences.** If an executor dies, its responders stay held up to 1 s longer.
+- **Where.** `src/node/release.rs`.
+- **How we check it.** `cargo test`; `release_proposed` with `backup` true on the six PCs.
+
+### D245 · The count of open rounds a node leads is kept, not scanned
+
+- **Date:** 2026-11-04 · **Part:** B · **Status:** Implemented · **Decided by:** the person running the lab session, on the agent's recommendation from a code review.
+- **Context.** `just_won` scanned every open round under one lock for each report, a cost that grows with the square of the rate.
+- **Decision.** A `leading` set is kept in `open`, `add_bid`, `close` and `request_decided`. A `debug_assert` holds it to the scan in every test run.
+- **Where.** `src/bidding.rs`.
+- **How we check it.** `cargo test` runs the debug assertion on every read.
 
 ### Notes on older entries
 

@@ -226,7 +226,7 @@ impl RaftNode {
         // openraft's default 500 ms backoff would delay catching up a node that just returned.
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());
-        let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
+        let network = Network::new(id, Arc::new(peers.for_raft()), backoff, heartbeats.clone());
         let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
         // A restarted node has its membership in its log file, and openraft would refuse to

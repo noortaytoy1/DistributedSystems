@@ -4,7 +4,7 @@
 //!
 //! Owner: B (bidding election).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,7 +16,7 @@ use super::{NodeContext, cpu, lock};
 use crate::bidding::{BidRounds, BidStatus, LoadInputs, ServiceTime, load_score};
 use crate::config::{AssignmentPolicy, Config};
 use crate::metrics::Event;
-use crate::proto::{Bid, ClientRequest, NodeId, PeerBody};
+use crate::proto::{Bid, ClientRequest, NodeId, PeerBody, RequestId};
 
 /// How often closed rounds past their grace period are dropped.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
@@ -28,6 +28,20 @@ pub struct BidState {
     cpu_permille: AtomicU32,
     /// Each node's bids since the last reading, this node's included: their sum and count (D218).
     seen: Mutex<BTreeMap<NodeId, (u64, u64)>>,
+    /// Requests this node is planning and committing now. A retry joins them, not repeats them (D243).
+    executing: Mutex<BTreeSet<RequestId>>,
+}
+
+/// Held while this node works on one request. Dropping it ends that.
+pub(super) struct Executing<'a> {
+    state: &'a BidState,
+    request: RequestId,
+}
+
+impl Drop for Executing<'_> {
+    fn drop(&mut self) {
+        lock(&self.state.executing).remove(&self.request);
+    }
 }
 
 impl BidState {
@@ -37,7 +51,17 @@ impl BidState {
             service: Mutex::new(ServiceTime::new(config.policy.initial_service_us)),
             cpu_permille: AtomicU32::new(0),
             seen: Mutex::new(BTreeMap::new()),
+            executing: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    /// `None` if this node is already working on this request: the first attempt's call is still open,
+    /// and its answer serves the client.
+    pub(super) fn begin_executing(&self, request: RequestId) -> Option<Executing<'_>> {
+        lock(&self.executing).insert(request).then_some(Executing {
+            state: self,
+            request,
+        })
     }
 
     /// Adds one job's planning time to the recent average.

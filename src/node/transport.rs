@@ -128,7 +128,11 @@ pub enum TransportError {
 pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
     // Bids and forwards are small and many, so each one in its own packet is what a shared Wi-Fi cell
     // cannot carry. Left to Nagle, they share a packet while earlier ones wait for their ACK (D237).
-    let _ = stream.set_nodelay(false);
+    framed_with(stream, false)
+}
+
+fn framed_with(stream: TcpStream, nodelay: bool) -> Framed<TcpStream, LengthDelimitedCodec> {
+    let _ = stream.set_nodelay(nodelay);
     LengthDelimitedCodec::builder()
         .max_frame_length(proto::MAX_FRAME_BYTES)
         .new_framed(stream)
@@ -178,6 +182,8 @@ pub struct PeerClient {
     outage: Mutex<Option<Outage>>,
     /// When a call on the current connection last got an answer, or the connection opened.
     last_answer: Mutex<Instant>,
+    /// Raft's own connection sends at once. The shared one leaves small messages to Nagle (D242).
+    nodelay: bool,
 }
 
 impl std::fmt::Debug for PeerClient {
@@ -206,6 +212,23 @@ impl PeerClient {
             conn: tokio::sync::Mutex::new(None),
             outage: Mutex::new(None),
             last_answer: Mutex::new(Instant::now()),
+            nodelay: false,
+        }
+    }
+
+    /// A client for the same peer on its own connection, for Raft, so that bids and forwards cannot
+    /// hold up a write or the leader's heartbeats (D242).
+    fn for_raft(&self) -> Self {
+        Self {
+            peer: self.peer,
+            addr: self.addr.clone(),
+            gate: self.gate.clone(),
+            log: self.log.clone(),
+            reconnect_backoff: self.reconnect_backoff,
+            conn: tokio::sync::Mutex::new(None),
+            outage: Mutex::new(None),
+            last_answer: Mutex::new(Instant::now()),
+            nodelay: true,
         }
     }
 
@@ -291,7 +314,7 @@ impl PeerClient {
         };
         self.connected();
         *lock(&self.last_answer) = Instant::now();
-        let conn = Arc::new(open_conn(stream));
+        let conn = Arc::new(open_conn(stream, self.nodelay));
         *slot = Some(conn.clone());
         Ok(conn)
     }
@@ -344,8 +367,8 @@ impl PeerClient {
     }
 }
 
-fn open_conn(stream: TcpStream) -> Conn {
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+fn open_conn(stream: TcpStream, nodelay: bool) -> Conn {
+    let transport = tarpc::serde_transport::new(framed_with(stream, nodelay), Bincode::default());
     Conn {
         client: PeerRpcClient::new(stub_settings(), transport).spawn(),
         closed: AtomicBool::new(false),
@@ -408,6 +431,16 @@ impl PeerSet {
             })
             .collect();
         Self { me, peers }
+    }
+
+    /// The same peers on connections of their own, for Raft (D242).
+    pub fn for_raft(&self) -> Self {
+        let peers = self
+            .peers
+            .iter()
+            .map(|(&id, client)| (id, Arc::new(client.for_raft())))
+            .collect();
+        Self { me: self.me, peers }
     }
 
     pub fn me(&self) -> NodeId {
