@@ -10,8 +10,8 @@
 //!   and retries across leader changes until `timers.propose_timeout_ms`, which is a real cap on
 //!   the wait. Retrying is safe because every `Command` is idempotent.
 //! - On the leader every proposal, its own or forwarded, goes through one queue (proposals.rs): one
-//!   `client_write` at a time, carrying everything that waited as one log entry, so that disk saves
-//!   cannot stop the heartbeats (D133).
+//!   `client_write` at a time, carrying up to `GROUP_LIMIT` of what waited as one log entry, so that
+//!   disk saves cannot stop the heartbeats (D133).
 //! - A busy leader can go quiet: no heartbeats, and the queue held. Nothing then resets the
 //!   followers' election timers, so they start an ordinary vote (node/step_aside.rs, D218).
 //! - Each finished proposal logs a `commit` event with its latency, and every term, leader or role
@@ -132,8 +132,9 @@ pub struct LogWork {
 
 /// What node code needs from consensus.
 pub trait Consensus: Send + Sync + 'static {
-    /// Commit `cmd` and return its outcome once applied. Forwards to the leader and retries
-    /// across leader changes until the propose timeout.
+    /// Commit `cmd` and return its outcome once the leader has applied it, which on a follower can
+    /// be before its own copy has. Forwards to the leader and retries across leader changes until
+    /// the propose timeout.
     fn propose(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>>;
 
     /// Commit `cmd` only if this node is the leader; used for proposals forwarded to us.

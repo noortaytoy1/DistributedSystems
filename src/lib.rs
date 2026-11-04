@@ -14,7 +14,8 @@
 //! middleware   client.rs: MeshClient, with      node/group.rs: CloudGroup, the who's-alive list
 //!              the group send behind submit     bidding.rs, node/bids.rs, node/cpu.rs: election
 //!                                               node/heartbeat.rs, takeover.rs, rejoin.rs,
-//!                                               degraded.rs, faults.rs: faults and recovery
+//!                                               degraded.rs, faults.rs, step_aside.rs: faults
+//!                                               and recovery
 //!                                               node/workers.rs: where planning runs
 //!                                               node/transport.rs, datagram.rs: remote calls
 //!                                               raft/: the order, on openraft

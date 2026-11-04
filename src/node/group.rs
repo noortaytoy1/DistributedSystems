@@ -123,9 +123,10 @@ impl CloudGroup {
     /// One command to every replica, in one agreed order. Each call is exactly a Raft proposal, so
     /// the order and the delivery are openraft's and none of them are ours (D126, D156).
     ///
-    /// `Ok` means committed and applied on this node: every replica gets it at the same place in
-    /// the log. `Err` means unknown, because a command that timed out may still commit, which is
-    /// why every `Command` is idempotent. It ends within `timers.propose_timeout_ms` (D133).
+    /// `Ok` means committed, and applied on the leader: every replica gets it at the same place in
+    /// the log, and a follower can hold this `Ok` before it has applied that entry itself. `Err`
+    /// means unknown, because a command that timed out may still commit, which is why every
+    /// `Command` is idempotent. It ends within `timers.propose_timeout_ms` (D133).
     pub fn send_ordered(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
         self.consensus.propose(cmd)
     }
