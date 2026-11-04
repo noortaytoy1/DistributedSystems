@@ -42,8 +42,8 @@ peer nodes decides which responder goes where and makes sure every report gets o
 Phase 1 is built and passes its tests on one machine. **It has not yet run on the six lab machines**, and the
 experiments have not been run there.
 
-- **Built:** Raft replication with the log on disk, load-based bidding (the default), takeover from a silent
-  winner, a proposal queue with grouped disk saves so the leader stays up under load (D133), a busy leader that steps aside so a normal vote can move the leadership (D218), the planner with incident priority,
+- **Built:** Raft, with the log copied to every node and saved on disk, load-based bidding (the default), takeover from a silent
+  winner, a proposal queue with grouped disk saves, so that saving cannot stop a leader's heartbeats (D133), a busy leader that steps aside so that a normal vote moves the role (D218), the planner with incident priority,
   TTL and status, fault injection with an election among the nodes for who fails, rejoin, degraded mode for one server left,
   group communication with a who's-alive list, the client middleware, reports over UDP through tarpc with `ctl` on tarpc over TCP (D167, D168),
   any serving node loading the responder list (D164), the load generator with 10 real programs per client
@@ -132,8 +132,8 @@ others, and the highest goes silent for 1 to 20 s. A node missing any of the num
 no leader is involved (D158). The `[faults]` section sets the ranges and an optional `seed`, which repeats each node's numbers per round but not the
 timing. `config/lab.example.toml` ships with both interval keys set so that no timer fires, for the demo, and its comments give the values to turn elections on (D165). The code's default stays 30 to 60 s.
 
-With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled,
-uncommitted `Provisional` answers, then commits them through Raft when a peer returns. First commit wins, so a
+With both peers gone, the last node keeps answering: after 2 s it enters degraded mode and gives labelled
+`Provisional` answers that are not final yet, then replays them through Raft when a peer returns. The first result to become final wins, so a
 provisional answer can turn out to differ, and clients are not told (D120).
 
 ## Run on several machines

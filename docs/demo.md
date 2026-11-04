@@ -132,7 +132,7 @@ heard, before `serving` goes true. Say this out loud: members means reachable, n
 grep '"ev":"rejoined"' runs/lab/node-<leader>.jsonl | tail -1
 ```
 
-Say what happened: the log entries it missed were copied, then replayed through the state machine; its load
+Say what happened: the log lines it missed were copied, then replayed through the state rules; its load
 figures and bid rounds were rebuilt locally; and it knew it was current by asking the leader for a target confirmed by a
 majority (D76, D135). Nothing it was working on reaches a client until then, and those clients retry (D136).
 
@@ -250,8 +250,8 @@ If one node's line has `victim: null`, explain it as the rule at work: that node
 
 Every answer here comes from the spec, the class notes or the recordings, and nothing is left open (D213).
 
-- **"Is the leader a coordinator?"** No node decides for another. One elected, replaceable node orders the log: it numbers entries, sends the copies and answers one read. `docs/architecture.md` section 2 has a table, row by row, of who decides what.
-  Bidding picks who plans (D114), all three draw who fails (D158), any serving node loads the responders (D164), and you saw the leader go silent and come back as an ordinary node. What remains, and we say it: every commit passes through one elected node, and arrival
+- **"Is the leader a coordinator?"** No node decides for another. One elected, replaceable node orders the log: it numbers log lines, sends the copies and answers one read. `docs/architecture.md` section 2 has a table, row by row, of who decides what.
+  Bidding picks who plans (D114), all three draw who fails (D158), any serving node loads the responders (D164), and you saw the leader go silent and come back as an ordinary node. What remains, and we say it: every result passes through one elected node on its way to becoming final, and arrival
   order at it settles a race. Only replacing Raft would remove that, and we rejected that as a rewrite a day before the deadline (D163). `leader_plan_share` is the number beside the baseline (D166). The reading is ours, and the report states it as a reading.
 - **"Does the leader change when it is busy?"** Yes, if it stays overloaded (D218, amending D217). Noor decided this on a teammate's report that Dr Amr asked for it in class. The written notes and Lectures 8 and 9 do not say it, and we say so. There are two elections. The bid picks who plans each report, by load, so a busy node loses bids and work moves away from it. The Raft vote picks who orders the log, and every result passes through that node. So a leader whose load stays at least 3 times its lowest peer's bid for 5 s stops its heartbeats and holds its writes, the followers' timers run out, and a normal vote picks a new leader. Raft's safety is not touched, because all it can cause is an election. The cooldown stops a storm: at most once a minute. Scene 2b shows it.
 - **"Is this client-server?"** No. The cloud nodes are peers that update each other's state, detect failures, share out work and tell each

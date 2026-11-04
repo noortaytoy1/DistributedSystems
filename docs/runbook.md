@@ -145,7 +145,7 @@ interval_max_ms = 60000
 
 ## 4. Check the settings before measuring
 
-First check the disk on each node machine, because every figure depends on a stable leader (D133, D163):
+First check the disk on each node machine, because every figure depends on having no new leader during a run unless the cell asks for one (D133, D163):
 
 ```bash
 mkdir -p data/raft && dd if=/dev/zero of=data/raft/.t bs=512 count=1000 oflag=dsync && rm data/raft/.t
@@ -173,8 +173,8 @@ if the lab machines differ much, change it in every cell and say so in the repor
 Also confirm timers on the real network: `bid_window_ms`, `peer_heartbeat_ms` and the election timeouts are LAN
 defaults (D40) that have only ever run on one machine.
 
-**Is the leader stable?** One `e1-300-bidding` must show no new terms: look at `elections` in that first cell. The proposal queue
-(D133) is what keeps it so, and it has passed its tests but has not been measured on these machines.
+**Does the leader keep its role?** One `e1-300-bidding` must show no new terms: look at `elections` in that first cell, which has the step-aside off. The proposal queue
+(D133) is what stops disk saves from costing a leader its role. It has passed its tests and a one-PC rehearsal, and has not been measured on these machines.
 
 One leader-dispatch run at the demo's load gives the number beside `leader_plan_share`. The baseline's share is 1 by construction, so it is the latency that matters there (D166).
 
@@ -284,7 +284,7 @@ so it is a lower limit on the outage and not a time to recover (D224). For how l
 | The runner stops the series with a status of 2 or more | a client machine refused to start, lost over a tenth of its programs, or cannot be reached (255): read `users-*.out` in the run folder |
 | `analyze.py` prints `left out ...` | the line says why: programs missing, failed or stopped early, users that do not add up, a node log not copied, a damaged log, or a fault that never fired. Rerun that run |
 | `analyze.py` prints `dropped a half-written last line` | a program or node was killed in mid-write. Harmless by itself; the run is left out only if another check catches it |
-| Elections keep happening with no fault | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
+| New leaders keep appearing with no fault, and no `leader_stepped_aside` | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
 | One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, how long one log write took and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
 | `leader_step_aside_ended` says `timed_out` | nobody took over within 3 s, so that leader carried on and waits a full cooldown. Check that the followers are serving and can reach each other (D218) |
 | `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped` | `CARGO_TARGET_DIR` is set, so the build is somewhere else. Nothing is wrong with the leader. `unset CARGO_TARGET_DIR` and build, or set `BIN=$CARGO_TARGET_DIR/release` for the runner (D230) |
