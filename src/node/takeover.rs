@@ -15,8 +15,9 @@ use crate::bidding::{ScoreVariant, executor};
 use crate::metrics::Event;
 use crate::proto::{ClientRequest, NodeId};
 
-/// The backstop never fires sooner than this, so a slow plan is not duplicated (Phase 1 §6.3).
-const BACKSTOP_MIN: Duration = Duration::from_millis(200);
+/// The backstop never fires sooner than this, so a slow plan or a slow commit is not duplicated. It
+/// stays under the client's first retry, 2 s less 20% of jitter (D235).
+const BACKSTOP_MIN: Duration = Duration::from_millis(1000);
 
 /// The backstop waits this many times the winner's bid when the bid is an expected wait.
 const BACKSTOP_FACTOR: u64 = 3;
@@ -128,12 +129,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backstop_is_three_bids_but_at_least_200_ms() {
+    fn backstop_is_three_bids_but_at_least_the_minimum() {
         let wait = ScoreVariant::ExpectedWait;
         assert_eq!(backstop(wait, 1_000), BACKSTOP_MIN);
-        assert_eq!(backstop(wait, 100_000), Duration::from_millis(300));
+        assert_eq!(backstop(wait, 500_000), Duration::from_millis(1500));
         let cpu = ScoreVariant::ExpectedWaitCpu { cpu_weight: 10 };
-        assert_eq!(backstop(cpu, 100_000), Duration::from_millis(300));
+        assert_eq!(backstop(cpu, 500_000), Duration::from_millis(1500));
         assert_eq!(backstop(wait, u64::MAX), Duration::from_micros(u64::MAX));
     }
 

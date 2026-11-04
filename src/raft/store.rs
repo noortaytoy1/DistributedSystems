@@ -43,8 +43,9 @@ type StorageResult<T> = Result<T, StorageError<NodeId>>;
 /// openraft gives each AppendEntries one `raft_heartbeat_ms` (50 ms) to be sent, saved and answered,
 /// and on a timeout sends the same entries again. So a message too big for that is never
 /// acknowledged, however often the follower saves it, and a returning node never catches up.
-/// `max_payload_entries` (300) full groups would be 7.4 MB at the longest, 59 ms on a 1 Gbit/s wire
-/// alone. This many is at most about 504 KB: 4 ms on that wire, and still 20 full groups per round.
+/// `max_payload_entries` (300) full groups would be far too big for that. This many is at most about
+/// 504 KB, 4 ms on a 1 Gbit/s wire, and still 2 full groups per round. One group always goes, so a
+/// full group of `proposals::GROUP_LIMIT` must itself fit in that time (D234).
 pub const MAX_COMMANDS_PER_MESSAGE: usize = 4096;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

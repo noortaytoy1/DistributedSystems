@@ -293,6 +293,8 @@ table below in sync.
 | D231 | Each node's lease is its own, so the first candidate usually stands after about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
 | D232 | Three corrections from the study sheets: `write_group`, the true reply rule, the parts table | all | Implemented in the docs, amends D8 and D163 |
 | D233 | FT-2 reads figures on one clock, and each run says how far apart its clocks were | all | Implemented, amends D229 |
+| D234 | One write carries up to 2000 commands, not 200 | A | Implemented, amends D133 |
+| D235 | The takeover backstop waits at least 1000 ms, not 200 ms | B, C | Implemented, amends D42, D110 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7821,6 +7823,36 @@ them on the six PCs.
 - **Where.** `analysis/analyze.py` (`failover_gap_metrics`, `client_pc_gap_metrics`, `clock_skew_metrics`, `clock_warnings`, `summarise`), `analysis/test_analyze.py`, `analysis/README.md`, `experiments/README.md`, `docs/runbook.md`, `docs/architecture.md`, `AGENTS.md`, the comment on `PeerSuspected` in `src/metrics.rs`.
 - **How we check it.** `analysis/test_analyze.py`: `FailoverOnOneClock`, `TheHighestAcrossRuns`, `TheFirstNewAnswerOnOneClock`, `HowFarApartTheClocksWere`. On real logs from a build of `eb6082e`, one PC, so the clocks agree and `failover_to_*` is the truth: over `e3e4-300-leader`, `e3e4-1500-leader` and `e8-step-aside`, two runs each, `failover_gap_ms_max` read 0.6 to 6.2 ms above `failover_to_leader_ms_mean` (17.4 ms at 30 users), `client_gap_pc_max_ms` 6.0 to 26.2 ms above `failover_to_commit_ms_mean` (57 ms at 30 users), and `node_clock_skew_ms` found a difference written into a log to within 0.04 ms. Written into node 2's log at -300, +250 and +1000 ms, `failover_to_leader_ms_mean` moved by exactly that. At -900 ms it read NaN. The readings of the one-clock figures did not move. Every old column in `summary.csv` read the same with this change. These are short one-PC runs: they check the arithmetic, and are never results.
 - **Report notes.** Check FT-2 against `failover_gap_ms_max_worst_run` and `client_gap_pc_max_ms_worst_run`, say each reads a little long, and give `node_clock_skew_ms` as the sync error D56 asks for. Quote `worst_request_ms_worst_run` and `client_gap_max_ms_worst_run` for the longest wait, and give no interval for a highest value or a small count (`analysis/README.md`, Conventions). A fair "found by review" point: a figure can be right on one PC and still not be a measurement on six.
+
+### D234 · One write carries up to 2000 commands, not 200
+
+- **Date:** 2026-11-04 · **Part:** A · **Status:** Implemented, amends D133 · **Decided by:** the person running the lab session, on the agent's recommendation.
+- **Context.** On the six PCs, at commit `0397d37`, the highest fixed rate that held was about 600 to 1000 reports a second, and 10,000 a second is the team's target. The queue in front of Raft sends one write at a time, of at most `GROUP_LIMIT` = 200 commands. At 1000 a second with 20 planner threads, the `raft_io` lines show 21.9 writes a second, the queue busy 99.8% of the time, so about 46 ms a write, with about 3.3 ms of that in each disk sync, and 2666 commands a second, about 2.67 a report. So 200 / 46 ms caps the log near 4,350 commands a second, about 1,630 reports.
+- **Options considered.**
+  1. *2000 (chosen).* About 1.6 times the 1,230 that 10,000 a second needs at 46 ms a write. At most about 246 KB a write.
+  2. *4000.* About 492 KB a write, which may not cross Wi-Fi and be saved within 100 ms, and then would be sent again without end, as a 30000-responder registration did in a trial. Also next to `MAX_COMMANDS_PER_MESSAGE` (4096).
+  3. *1500.* Safer on the wire, with only about 20% of margin.
+- **Decision.** `proposals::GROUP_LIMIT` = 2000. One write in flight, the one way into `client_write`, and the deadlines stay as D133 has them.
+- **Why.** It removes a limit that arithmetic and the logs both place near the measured fall. A group grows only when work has waited, so light load still sends groups of one.
+- **Consequences.** A full group takes longer to send and save. openraft gives one AppendEntries one `raft_heartbeat_ms`, so a run near the limit needs that timer above 50 ms: the lab trials use 100 ms. A full message is now at most 2 full groups, not 20. A busy leader's write time (D228) can grow with a large group, and D228's bars were measured with 200, so its check needs a new look if `leader_overload_ratio` is on near this load.
+- **Where.** `src/raft/proposals.rs`, comments in `src/raft/store.rs`; `tests/proposals.rs` now uses a fixed count of proposals and checks for more entries than one message carries, because 320 full groups would be 640,000 proposals and 300 entries is no longer what a message is limited by. `a_full_catch_up_message_fits_in_a_frame` keeps its bar and now builds the largest message `limited_get_log_entries` can send.
+- **How we check it.** `cargo test`, then `--rate` steps on the six PCs, with their commit recorded apart from the series at `0397d37`.
+- **Report notes.** Results at `0397d37` were measured with 200. Never mix them with results on this build.
+
+### D235 · The takeover backstop waits at least 1000 ms, not 200 ms
+
+- **Date:** 2026-11-04 · **Part:** B, C · **Status:** Implemented, amends D42, D110 · **Decided by:** the person running the lab session, on the agent's recommendation.
+- **Context.** A commit takes about 85 ms when healthy on the six PCs, against about 14 ms for a round on one PC. In a fallen step at 800 a second, commit time went from 85 ms to 221, 509, 1155 and 2946 ms within 6 s, takeovers from about 78 to 1,666 a second, and commits to 0. Each takeover is more planning and more commands, which slows commits further: a feedback loop. It started just as one peer was silent for 157 ms, a small delay.
+- **Options considered.**
+  1. *1000 ms (chosen).* Five times the margin, below the client's first retry.
+  2. *1500 ms.* Just under the earliest first retry, 1.6 s, so a takeover and a retry can nearly collide.
+  3. *500 ms.* The smallest change, and commits reached 3 s in the fall, so it may not stop the loop.
+- **Decision.** `takeover::BACKSTOP_MIN` = 1000 ms. The rule stays max(minimum, 3 × the winner's bid). Suspicion, the main trigger, is unchanged.
+- **Why.** The backstop exists for a winner that is alive but stuck. D42 set 200 ms for one PC's timing. D42 also says it is the first thing to drop.
+- **Consequences.** A winner that is alive but stuck is taken over after at least 1 s, not 200 ms. A crashed or silent winner is still caught by suspicion, so failover is unchanged by this entry.
+- **Where.** `src/node/takeover.rs`, `tests/takeover.rs`, `docs/protocol.md`, `docs/architecture.md`.
+- **How we check it.** `cargo test --test takeover`; `takeovers_backstop` in `--rate` steps on the six PCs, against the same steps at `0397d37`.
+- **Report notes.** State the wrong-takeover rate before and after. Do not claim a target is met unless committed answers, not provisional ones, reach it.
 
 ### Notes on older entries
 

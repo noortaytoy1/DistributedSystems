@@ -221,7 +221,7 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
    `age_ms` has reached its `ttl_ms`, it does not plan: the plan is nobody, cost 0, priority 0, with no worker job (D143). A full
    worker pool refuses the job, logs `overloaded`, and nothing is sent to the client (D48, D138).
 5. The winner proposes `CommitResult`. A follower that knows the leader forwards it straight away with `Propose`. On the leader it
-   goes into the queue in front of Raft: one write in flight, and one write carries a group of up to 200 commands of what waited, in one log line and one save (D133).
+   goes into the queue in front of Raft: one write in flight, and one write carries a group of up to 2000 commands of what waited, in one log line and one save (D133).
 6. After the log line is final and the leader has applied it, the winner answers with the first result to become final: `Expired` if that record was too
    old on arrival, otherwise `Done`. A node that is not serving at that moment stays quiet and the client's retry gets the
    result from a serving node (D136).
@@ -296,7 +296,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(200 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110) |
+| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(1000 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110, D235) |
 | `rejoin.rs::NO_LEADER_ELECT_AFTER` | 3 s | a returning node that hears no leader this long may stand itself (D125) |
 | `rejoin.rs::ASK_AGAIN_AFTER` | 1 s | how long a returning node waits on one target before it asks the leader again (D135) |
 | `rejoin.rs::WAIT_WARNING` | 5 s | how often a node still catching up warns |
@@ -312,7 +312,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
 | `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message on UDP, so it is never split on an Ethernet path (D170) |
 | `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
-| `proposals.rs::GROUP_LIMIT` | 200 | most commands in one write, so in one log line and one save. On a slow disk this is the log's limit (D133, D228) |
+| `proposals.rs::GROUP_LIMIT` | 2000 | most commands in one write, so in one log line and one save. One full group must be sent, saved and answered within `raft_heartbeat_ms` (D133, D228, D234) |
 | `store.rs::MAX_COMMANDS_PER_MESSAGE` | 4096 | most commands in one AppendEntries, so a catch-up message can finish inside its time limit (D133) |
 
 ## The frontend's local page API
