@@ -150,3 +150,13 @@ rate 34000: answered/s 34002.0, done 2040121, gave up 0, retried 51104, no respo
   worst program: p50 272.32 p95 1079.95 p99 2175.04 ms
   checkpoints 236, digest mismatches 0
   drop lines 0, panics 0
+
+## c05c7b9 (final code), 60,000 responders, 1 s detection
+rate 35000: answered/s 35001.0, done 2100060, gave up 0, retried 185463, no responder 0, provisional 0
+  worst program: p50 305.26 p95 2114.17 p99 2453.72 ms
+  checkpoints 239, digest mismatches 0
+  drop lines 0, panics 0
+rate 36000: answered/s 35866.9, done 2152012, gave up 7988, retried 1125047, no responder 0, provisional 0
+  worst program: p50 22659.12 p95 33028.19 p99 39524.49 ms
+  checkpoints 226, digest mismatches 0
+  drop lines 0, panics 0

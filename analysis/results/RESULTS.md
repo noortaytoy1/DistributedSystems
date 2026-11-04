@@ -7,7 +7,7 @@ Every number here was read from the files in this folder or from `runs/`. Nothin
 - **The plan ran in full:** 21 cells, 3 runs each, 15 s warm-up and 60 s measured, on six PCs. 1,372,598 operations. No run was left out.
 - **Safety held everywhere it was checked.** In all 21 plan cells and all 31 runs with an `extras.txt` here: 0 digest mismatches, 0 `unaccounted`, 0 panics. `fault_split_decisions` and `reports_expired` were 0 in both summaries.
 - **Failover works.** A new leader in about 800 ms at 300 users, and about 840 ms at 1500. Nobody gave up in those cells.
-- **At the end of the session, with no leader, the system handles 10,000 requests a second, and its measured ceiling on Wi-Fi is about 33,000 a second with `plan_work` 0.** 10,000 was clean in two runs and with a node killed. 33,000 was the highest clean step, in one run. See "The ceiling" below. **With `plan_work` 1000, 10,000 was clean and 15,000 fell.** All of the rest of this list and the plan's tables are about the older code at `0397d37`, with Raft.
+- **At the end of the session, with no leader, the system handles 10,000 requests a second, and its measured ceiling on Wi-Fi is about 33,000 to 35,000 a second with `plan_work` 0.** 10,000 was clean in three runs and with a node killed twice. 30,000 was clean in three short runs and a 5-minute hold. On the final code 35,000 was clean and 36,000 fell, one run each. On the build before it, 33,000 was clean, 34,000 began to break and 35,000 fell. See "The ceiling" below. **With `plan_work` 1000, 10,000 was clean and 15,000 fell.** All of the rest of this list and the plan's tables are about the older code at `0397d37`, with Raft.
 - **A limit that remains: two failures close together stop commits until the nodes are restarted together.** Answers stayed correct, with 0 digest mismatches, but 1,303 reports gave up in that test. One failure at a time recovers. See "The ceiling".
 - **A real bug was found and fixed on the way:** digest mismatches came back twice on rotating rounds, and T4's last part found the second (D252, D257). Each fix has a test that fails without it.
 - **T1 to T4 on rotating rounds ran with 3-minute loads and `kill -9`.** T3's plan steps, the plan's 21 cells and T5 were not repeated on rotating rounds, so their tables below are for Raft.
@@ -284,7 +284,7 @@ At 10000 each node used about 1.3 CPU cores, received about 14 Mbit/s and sent a
 
 **That result was one run, and its repeat fell, with digest mismatches. See "The ceiling" below.** **Known limit:** a restarted node recovers from a peer's log and not its own file (D249).
 
-## The ceiling: 33,000 a second with no leader
+## The ceiling: about 33,000 to 35,000 a second with no leader
 
 **Code:** rotating rounds, commits `cdec322` and `eba4d14`, branch `shared-raise-throughput-limits`. **Network:** the same Wi-Fi as everything else here, with node 2 and client 1 sending by cable. Nine load programs, 75 s each, 15 s of it warm-up. Log lines were cut to key lines at these rates, so `unaccounted` was not read, and "digest mismatches" compare fixed-index checkpoints on all three nodes. **`plan_work` 0 unless a row says otherwise, which means no simulated planning load.** Full figures are in `ceiling-summary.txt`.
 
@@ -299,7 +299,7 @@ At 10000 each node used about 1.3 CPU cores, received about 14 Mbit/s and sent a
 | Datagrams and TCP frames are squeezed | D255 | As above |
 | Messages wait longer to share packets | D256 | 30,000 went from falling to clean |
 
-**The steps, in order of rate. 60,000 responders and 1 s detection unless a row says otherwise.**
+**The steps at the builds before the final one, in order of rate. 60,000 responders and 1 s detection unless a row says otherwise. The final code's steps come further down.**
 
 | Offered/s | Answered/s | Gave up | Retried | No responder | Worst p50 ms | Worst p99 ms | Mismatches | Drops | Verdict |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -313,7 +313,7 @@ At 10000 each node used about 1.3 CPU cores, received about 14 Mbit/s and sent a
 | 30000, 3 s detection | 29997.0 | 0 | 49,257 | 0 | 264.9 | 2,323.0 | 0 | 0 | **clean** |
 | 31000 | 30996.1 | 0 | 16,098 | 0 | 222.0 | 1,824.7 | 0 | 0 | **clean** |
 | 32000 | 32004.0 | 0 | 26,428 | 0 | 228.9 | 1,922.2 | 0 | 0 | **clean** |
-| **33000** | **33003.0** | **0** | **42,808** | **0** | **330.6** | **2,309.5** | **0** | **0** | **the highest clean step** |
+| **33000** | **33003.0** | **0** | **42,808** | **0** | **330.6** | **2,309.5** | **0** | **0** | **the highest clean step at `eba4d14`** |
 | 34000 | 34001.2 | 52 | 477,293 | 0 | 527.0 | 12,312.0 | 0 | 0 | **starts to break** |
 | 35000, 3 s detection | 34873.3 | 7,662 | 1,353,826 | 0 | 31,605.7 | 47,474.1 | 0 | 0 | **fallen** |
 | 40000, 3 s detection | 39882.7 | 6,799 | 1,240,748 | 73 | 26,509.1 | 42,841.4 | 0 | 0 | **fallen** |
@@ -336,7 +336,7 @@ At 10000 each node used about 1.3 CPU cores, received about 14 Mbit/s and sent a
 | 15000 | 14863.7 | 8,356 | 409,012 | 8,462.3 | 27,611.0 | 0 | about 20 | **fallen** |
 | 20000 | 19351.9 | 38,765 | 897,877 | 36,877.0 | 53,005.6 | 0 | about 20 | **fallen** |
 
-So with this load the limit is CPU, with all 20 planning threads busy. **This matters for the report:** D129 says the spec wants real planning load, so 33,000 should be quoted with `plan_work` 0 beside it.
+So with this load the limit is CPU, with all 20 planning threads busy. **This matters for the report:** D129 says the spec wants real planning load, so the ceiling should be quoted with `plan_work` 0 beside it. With `plan_work` 1000 the highest rate shown clean is 10,000.
 
 **A node killed at 10,000 a second,** folder `runs/hand-rf/stress/fail-10000`, 120 s. `kill -9` on node 3 at 22:54:06.6, started again at 22:54:39.2:
 
@@ -376,6 +376,8 @@ So with this load the limit is CPU, with all 20 planning threads busy. **This ma
 | 30000 | 29997.0 | 0 | 6,052 | 216.2 | 543.4 | 0 of 248 | |
 | 33000 | 33003.0 | 0 | 246,136 | 306.8 | 2,430.7 | 0 of 248 | About 12% retried |
 | 34000 | 34002.0 | 0 | 51,104 | 272.3 | 2,175.0 | 0 of 236 | Clean here, but 52 gave up and p99 was 12,312 ms at `eba4d14`, so it is at the edge |
+| 35000 | 35001.0 | 0 | 185,463 | 305.3 | 2,453.7 | 0 of 239 | **The highest clean step on the final code, one run.** About 9% retried |
+| 36000 | 35866.9 | 7,988 | 1,125,047 | 22,659.1 | 39,524.5 | 0 of 226 | **Fallen** |
 | 10000, node 3 killed at 23:40:51.3 | 9999.0 | 0 | 5,150 | 143.4 | 530.5 | 0 of 376 | Dropped 1.0 s later. Started again at 23:41:24.1, back at 23:41:40.1, which is 16.1 s. 1,199,881 results on all three, one digest |
 
 **One request followed through every log** is in `request-trace-example.txt`. In the 25 s run it came from, all three nodes held 249,975 results with one digest. Node 1 executed 89,044, node 2 77,096 and node 3 83,835.
