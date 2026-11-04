@@ -17,8 +17,8 @@ Each node has two port numbers from the config:
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
-(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is off on every
-connection, so small messages share packets (D237).
+(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is on for every
+connection, and small messages are combined in the code (D247, D248, D251).
 
 One UDP packet is one tarpc message, encoded with `proto::encode`: bincode with varint integers and no trailing bytes, at
 most 1,400 bytes (`MAX_DATAGRAM_BYTES`). A bad UDP packet, an ICMP error or a failed send counts as a lost message: no error ever
@@ -98,7 +98,7 @@ Nodes call each other through the tarpc service `proto::PeerRpc` (D119). A conne
 calls at once, and answers may come back in any order. Each method takes `from` and `term`, the
 sender's current Raft term, and has a deadline, which holds even for a call tarpc could not write because the socket is full
 (D150). A leader stepping aside sends nothing new: it reads the bids it already receives, and only stops sending (D218). A connection whose calls have gone unanswered for
-1 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
+5 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
 maps to one method.
 
 | Body                         | Sent by                    | Reply                              |

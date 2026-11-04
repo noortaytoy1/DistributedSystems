@@ -722,6 +722,8 @@ pub enum RoundsReply {
         applied_round: u64,
         view: u64,
         members: Vec<NodeId>,
+        /// Members added and not heard from yet, and the round each comes back at (D252).
+        starts: Vec<(NodeId, u64)>,
     },
     Applied {
         index: u64,

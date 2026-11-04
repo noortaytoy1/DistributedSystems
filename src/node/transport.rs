@@ -5,7 +5,7 @@
 //! - Peer port: remote invocation of [`PeerRpc`] through tarpc (D119), which matches replies to
 //!   requests, so many calls can be in flight at once. [`PeerClient`] keeps one connection per
 //!   peer. After a failed connect it fails calls to that peer fast for a short cooldown instead of
-//!   reconnecting on every call (D89–D92). A connection whose calls have gone unanswered for
+//!   reconnecting on every call (D89–D92, D252). A connection whose calls have gone unanswered for
 //!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close. Every
 //!   call ends by its own deadline, even one tarpc has not managed to write yet (D150).
 //! - Client port: remote invocation of [`ClientRpc`], also through tarpc (D167), on one port number
@@ -38,6 +38,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use tokio::time::error::Elapsed;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use super::datagram::{self, ClientEnd, ServerEnd};
@@ -126,13 +127,9 @@ pub enum TransportError {
 }
 
 pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
-    // Bids and forwards are small and many, so each one in its own packet is what a shared Wi-Fi cell
-    // cannot carry. Left to Nagle, they share a packet while earlier ones wait for their ACK (D237).
-    framed_with(stream, false)
-}
-
-fn framed_with(stream: TcpStream, nodelay: bool) -> Framed<TcpStream, LengthDelimitedCodec> {
-    let _ = stream.set_nodelay(nodelay);
+    // Bids and forwards are combined in the code now (D247, D248), so Nagle only adds a wait of at
+    // least a round trip to each message, against a bid window of tens of milliseconds (D251).
+    let _ = stream.set_nodelay(true);
     LengthDelimitedCodec::builder()
         .max_frame_length(proto::MAX_FRAME_BYTES)
         .new_framed(stream)
@@ -143,8 +140,13 @@ fn framed_with(stream: TcpStream, nodelay: bool) -> Framed<TcpStream, LengthDeli
 // ---------------------------------------------------------------------------------------------
 
 /// Calls unanswered this long mean the connection is replaced. A silenced peer loses nothing by
-/// it: its listener stays up, so the connect succeeds (D119).
-const STALE_CONNECTION: Duration = Duration::from_secs(1);
+/// it: its listener stays up, so the connect succeeds (D119). Replacing one throws away everything
+/// queued on it, so a slow moment on a shared network must not count (D252).
+const STALE_CONNECTION: Duration = Duration::from_secs(5);
+
+/// How long one connect may take. Longer than a small call's deadline, or on a slow network no
+/// connect could ever finish, and a lost first packet is resent after a second (D252).
+const CONNECT_TIME: Duration = Duration::from_secs(3);
 
 /// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users, and
 /// for a client program whose users all wait on one node at once (D173).
@@ -162,6 +164,8 @@ struct Conn {
     client: PeerRpcClient,
     closed: AtomicBool,
 }
+
+type ConnectAttempt = tokio::task::JoinHandle<Result<std::io::Result<TcpStream>, Elapsed>>;
 
 /// A peer whose last connect failed. Cleared by the next successful connect.
 #[derive(Debug, Clone, Copy)]
@@ -182,8 +186,8 @@ pub struct PeerClient {
     outage: Mutex<Option<Outage>>,
     /// When a call on the current connection last got an answer, or the connection opened.
     last_answer: Mutex<Instant>,
-    /// Raft's own connection sends at once. The shared one leaves small messages to Nagle (D242).
-    nodelay: bool,
+    /// A connect still going after the call that started it gave up, for the next call to take over.
+    connecting: Mutex<Option<ConnectAttempt>>,
 }
 
 impl std::fmt::Debug for PeerClient {
@@ -212,7 +216,7 @@ impl PeerClient {
             conn: tokio::sync::Mutex::new(None),
             outage: Mutex::new(None),
             last_answer: Mutex::new(Instant::now()),
-            nodelay: false,
+            connecting: Mutex::new(None),
         }
     }
 
@@ -228,7 +232,7 @@ impl PeerClient {
             conn: tokio::sync::Mutex::new(None),
             outage: Mutex::new(None),
             last_answer: Mutex::new(Instant::now()),
-            nodelay: true,
+            connecting: Mutex::new(None),
         }
     }
 
@@ -296,25 +300,34 @@ impl PeerClient {
         }
         // Calls that queued behind a connect that just failed fail fast too.
         self.check_backoff()?;
-        let stream = match tokio::time::timeout_at(deadline, TcpStream::connect(&self.addr)).await {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(source)) => {
+        let pending = lock(&self.connecting).take();
+        let mut attempt = pending.unwrap_or_else(|| {
+            let addr = self.addr.clone();
+            tokio::spawn(tokio::time::timeout(CONNECT_TIME, TcpStream::connect(addr)))
+        });
+        // A call still ends at its deadline. The connect goes on without it (D252).
+        let Ok(finished) = tokio::time::timeout_at(deadline, &mut attempt).await else {
+            *lock(&self.connecting) = Some(attempt);
+            return Err(TransportError::Timeout(timeout));
+        };
+        let stream = match finished {
+            Ok(Ok(Ok(stream))) => stream,
+            Ok(Ok(Err(source))) => {
                 self.connect_failed(&source.to_string());
                 return Err(TransportError::Connect {
                     addr: self.addr.clone(),
                     source,
                 });
             }
-            // A connect that outlives the call (cable pulled on a real network) counts as a
-            // failed connect too (D89).
-            Err(_) => {
+            // Out of time (cable pulled on a real network) counts as a failed connect too (D89).
+            Ok(Err(_)) | Err(_) => {
                 self.connect_failed("connect timed out");
                 return Err(TransportError::Timeout(timeout));
             }
         };
         self.connected();
         *lock(&self.last_answer) = Instant::now();
-        let conn = Arc::new(open_conn(stream, self.nodelay));
+        let conn = Arc::new(open_conn(stream));
         *slot = Some(conn.clone());
         Ok(conn)
     }
@@ -367,8 +380,8 @@ impl PeerClient {
     }
 }
 
-fn open_conn(stream: TcpStream, nodelay: bool) -> Conn {
-    let transport = tarpc::serde_transport::new(framed_with(stream, nodelay), Bincode::default());
+fn open_conn(stream: TcpStream) -> Conn {
+    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
     Conn {
         client: PeerRpcClient::new(stub_settings(), transport).spawn(),
         closed: AtomicBool::new(false),

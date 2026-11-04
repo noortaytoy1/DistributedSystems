@@ -296,7 +296,7 @@ table below in sync.
 | D234 | One write carries up to 2000 commands, not 200 | A | Implemented, amends D133 |
 | D235 | The takeover backstop waits at least 1000 ms, not 200 ms | B, C | Implemented, amends D42, D110 |
 | D236 | UDP messages to one address share a datagram within 2 ms | C | Implemented, amends D170, amended by D246 |
-| D237 | TCP between nodes leaves Nagle on | C | Implemented, amends D20 |
+| D237 | TCP between nodes leaves Nagle on | C | Superseded by D251 |
 | D238 | With many responders, each plan looks at its own part of the free list | E, A | Implemented |
 | D239 | A standing-by node looks once per heartbeat, not five times | C | Implemented, amends D110 |
 | D240 | Every zone has every capability | E | Implemented, fixes a bug in `campus::responders` |
@@ -310,6 +310,8 @@ table below in sync.
 | D248 | Followers send commands to the leader together, every 5 ms | A | Implemented, amends D26 |
 | D249 | Rotating rounds replace the elected leader, with Raft kept behind a config key | A, all | Implemented, amends D163, D1, D14 |
 | D250 | Overload is refused at the door, decided reports stay out of the log, and the backstop waits 1.5 s | A, C | Implemented, amends D235 |
+| D251 | TCP sends at once again, and rounds has its own connections | A, C | Implemented, supersedes D237 |
+| D252 | A drop and a return are decided once, and a slow moment no longer breaks connections | A, C | Implemented, fixes D249, amends D89 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8047,6 +8049,25 @@ them on the six PCs.
 - **Consequences.** A report refused at the door waits about 2 s for its retry. A stuck but alive winner is taken over after 1.5 s, not 1 s.
 - **Where.** `src/node/bids.rs`, `src/node/service.rs`, `src/rounds.rs`, `src/node/takeover.rs`, `docs/protocol.md`.
 - **How we check it.** `--rate` steps on the six PCs: answers a second should level off at the limit and not fall to near zero.
+
+### D251 · TCP sends at once again, and rounds has its own connections
+
+- **Date:** 2026-11-04 · **Part:** A, C · **Status:** Implemented, supersedes D237 · **Decided by:** the person running the lab session, who asked to find what was holding bidding back, on the agent's recommendation.
+- **Context.** D237 left Nagle on so small messages would share packets. Since then bids and forwards are combined in the code (D247, D248). Rounds streams, bids and heartbeats also shared one connection with Nagle on, so a small message could wait a round trip or more, against a 60 ms bid window. Whether this was a main cause is not measured. Separately, a returning node kept batches it made while silent or left out. Their round numbers could be above its first round back, and it would send them.
+- **Decision.** `TCP_NODELAY` on for every connection. `RoundsNode` uses its own connection to each peer. A returning node discards its own batches from its first round back onward.
+- **Where.** `src/node/transport.rs`, `src/rounds.rs`.
+- **How we check it.** `tests/rounds.rs`. The test added here passes without the discard too, so it does not prove the discard is needed. See D252 for what caused the mismatches.
+- **Report notes.** The result at `72149ec` of 10,000 a second, clean, was one run. The next run at the same commit fell. Do not quote it alone.
+
+### D252 · A drop and a return are decided once, and a slow moment no longer breaks connections
+
+- **Date:** 2026-11-04 · **Part:** A, C · **Status:** Implemented, fixes D249, amends D89 · **Decided by:** the person running the lab session, who asked for a deep investigation of what keeps the system from its limit, on the agent's recommendation.
+- **Context.** At `72149ec` a rerun at 10,000 requests a second fell to 3,347.9 answered a second with 53 digest mismatches, after 11 drops. Its logs (`runs/hand-r5pw0`) show four faults. (1) Node 2 made view 5 by dropping node 1 while nodes 1 and 3 made view 5 by dropping node 2: a node freed a promise it had given to a peer when its own call to that peer failed. (2) Node 1 came back at round 7333, from an `Add` older than the drop that followed it, and its digest split 0.65 s later: a drop is not in the log, so it could not tell that entry was out of date, and it was then sent batches it had already applied. (3) A node asking to be added a second time before seeing its entry was marked silent, and was dropped about 2.5 s after being added. (4) Before the first drop, connections were reported lost with `connect timed out`: a connection with calls unanswered for 1 s was replaced, which threw away all it had queued, and the new connect was cut off at the deadline of whichever small call started it.
+- **Decision.** A promise given to a peer stays until that view is made, and is the one drop the detector tries. Members keep the round each added node comes back at and send it with the log, and the node returns only at that round, when members have stopped just before it. A node on its way back that asks again is left alone, and an old stream from it gets told it was left out. The round in an `Add` is counted from the batch that carries it. A connection is replaced after 5 s and not 1 s, and a connect gets 3 s of its own and goes on after the call that started it ends. A connect outlasting its call no longer counts as failed, which amends D89. A stream call may take 5 s and not 2 s, so a slow moment does not send the same data twice.
+- **Alternatives rejected.** Keeping the drop in the log: the drop is what lets the log go on, so it cannot wait for the log. Freeing a given promise after a timeout: the peer may already have gone on, which is the split this fixes.
+- **Limit.** If a node gives a promise and the asker then dies, it waits for that node to return before committing again. No wrong answer can come of it, and degraded mode still answers provisionally. It takes a false suspicion and a real failure at once.
+- **Where.** `src/rounds.rs`, `src/proto.rs` (`RoundsReply::Entries.starts`), `src/node/transport.rs`.
+- **How we check it.** `tests/rounds.rs`: `a_promise_given_holds_when_the_asker_goes_quiet`, `asking_again_does_not_drop_a_node_on_its_way_back`, `a_node_added_twice_comes_back_at_the_later_round` all fail on the code before this entry. Then repeated `--rate` runs on the six PCs with digest mismatches at 0.
 
 ### Notes on older entries
 

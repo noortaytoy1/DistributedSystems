@@ -20,7 +20,9 @@
 //! - **One node left.** It cannot drop anyone, so it stops committing, and the node's degraded mode
 //!   answers provisionally (D120). When a peer returns, its rounds carry on.
 //! - **A node that returns.** It is sent the applied log in order, asks to be added, and a member adds
-//!   it through an entry in its stream, at a round far enough ahead that all members agree.
+//!   it through an entry in its stream, at a round far enough ahead that all members agree. The
+//!   members, and not the log, tell it that round: a drop is not in the log, so an old entry looks
+//!   the same as the current one (D252).
 //! - **Limit.** A restarted node recovers from a peer's log and not from its own file, so losing all
 //!   three at once loses the state. See D249.
 //!
@@ -67,9 +69,9 @@ const CATCH_UP_PAUSE: Duration = Duration::from_millis(10);
 const CATCH_UP_COMMANDS: usize = 4000;
 /// How long a catch-up call may take.
 const CATCH_UP_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a call carrying part of a stream may take. It carries many commands, and a reply comes
-/// after a disk save, so it needs longer than a small peer call. A late reply only costs a resend.
-const STREAM_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a call carrying part of a stream may take. TCP delivers it unless the connection dies,
+/// which fails the call at once, so giving up early only sends the same data twice in a slow moment.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// A returning node this close to the end of the log asks to be added. The log keeps growing until
 /// then, so asking only at the very end could wait for ever.
 const JOIN_WHEN_WITHIN: u64 = 200;
@@ -127,13 +129,16 @@ struct Core {
     last_heard: BTreeMap<NodeId, Instant>,
     /// The one next view this node has agreed to: which view, and who it leaves out.
     promise: Option<(u64, NodeId)>,
+    /// The promise was given to a peer, which may have gone on with it, so it stays until that view
+    /// is made. A promise only this node knows of can be given up (D252).
+    granted: bool,
     /// Views already made: what a slower member needs to catch up on the same drop.
     drops: BTreeMap<u64, (NodeId, u64)>,
-    /// An entry to put in this node's next batch.
-    control: Option<RoundControl>,
+    /// A returning node to add through this node's next batch.
+    adding: Option<NodeId>,
+    /// Members added and not heard from yet, and the round each comes back at.
+    awaiting: BTreeMap<NodeId, u64>,
     started: Instant,
-    /// Where in `ordered` this node's latest return began: an older `Add` for it does not count.
-    join_from: usize,
 }
 
 /// The rotating rounds [`Consensus`].
@@ -186,6 +191,8 @@ impl RoundsNode {
             Some(path) => tokio::fs::metadata(path).await.is_ok_and(|m| m.len() > 0),
             None => false,
         };
+        // Its own connections, sending at once: a stream call must not wait behind bids (D251).
+        let peers = Arc::new(peers.for_raft());
         let members: BTreeSet<NodeId> = config.cluster.nodes.iter().map(|n| n.id).collect();
         let now = Instant::now();
         let core = Core {
@@ -206,10 +213,11 @@ impl RoundsNode {
             applied_round: 0,
             index: 0,
             promise: None,
+            granted: false,
             drops: BTreeMap::new(),
-            control: None,
+            adding: None,
+            awaiting: BTreeMap::new(),
             started: now,
-            join_from: 0,
         };
         let (saver, jobs) = mpsc::unbounded_channel();
         let timers = &config.timers;
@@ -345,6 +353,8 @@ impl Inner {
                 core.members.insert(node);
                 core.view += 1;
                 core.promise = None;
+                core.granted = false;
+                core.awaiting.insert(node, start_round);
                 core.covered.insert(node, start_round - 1);
                 core.acked.insert(node, start_round - 1);
                 core.sent.insert(node, start_round - 1);
@@ -382,6 +392,8 @@ impl Inner {
         core.view = view;
         core.members.remove(&target);
         core.promise = None;
+        core.granted = false;
+        core.awaiting.remove(&target);
         core.drops.insert(view, (target, cut));
         core.pending
             .retain(|(round, node), _| *node != target || *round <= cut);
@@ -487,6 +499,15 @@ impl Inner {
             if core.fenced(from) {
                 return RoundsReply::NotYet;
             }
+            // A node on its way back starts where it was told. Anything else is from before, sent
+            // by a node that does not know yet that it was left out, so tell it.
+            if core
+                .awaiting
+                .get(&from)
+                .is_some_and(|start| after + 1 != *start)
+            {
+                return RoundsReply::NotMember { view: core.view };
+            }
             core.last_heard.insert(from, Instant::now());
             core.max_seen = core.max_seen.max(through);
             let have = core.covered.get(&from).copied().unwrap_or(0);
@@ -511,6 +532,7 @@ impl Inner {
             return RoundsReply::NotYet;
         }
         Self::hold(&mut core, &batches);
+        core.awaiting.remove(&from);
         let entry = core.covered.entry(from).or_insert(0);
         *entry = (*entry).max(through);
         let have = *entry;
@@ -553,6 +575,7 @@ impl Inner {
             }
             _ => core.promise = Some((view, target)),
         }
+        core.granted = true;
         let mine = core.covered.get(&target).copied().unwrap_or(0);
         RoundsReply::Granted {
             view,
@@ -585,6 +608,7 @@ impl Inner {
             applied_round: core.applied_round,
             view: core.view,
             members: core.members.iter().copied().collect(),
+            starts: core.awaiting.iter().map(|(n, s)| (*n, *s)).collect(),
         }
     }
 
@@ -593,18 +617,18 @@ impl Inner {
         if core.joining {
             return RoundsReply::NotYet;
         }
+        // Already added: it asked again before seeing the answer, and is on its way.
+        if core.awaiting.contains_key(&from) {
+            return RoundsReply::Done;
+        }
         if core.members.contains(&from) {
             // It restarted while still listed, so its stream is gone: the detector drops it.
             let long_ago = Instant::now() - self.suspect_after * 2;
             core.last_heard.insert(from, long_ago);
             return RoundsReply::NotYet;
         }
-        if core.control.is_none() && core.members.len() >= 2 {
-            let start_round = core.my_round.max(core.max_seen) + ADD_MARGIN_ROUNDS;
-            core.control = Some(RoundControl::Add {
-                node: from,
-                start_round,
-            });
+        if core.adding.is_none() && core.members.len() >= 2 {
+            core.adding = Some(from);
         }
         RoundsReply::Done
     }
@@ -694,9 +718,13 @@ async fn run_emitter(inner: Arc<Inner>) {
                 answers.push((commands.len(), waiting.answer, now));
                 commands.push(waiting.command);
             }
-            let control = core.control.take();
             core.my_round = (core.my_round + 1).max(core.max_seen);
             let round = core.my_round;
+            // Counted from this batch's own round, so a late tick cannot place it past that round.
+            let control = core.adding.take().map(|node| RoundControl::Add {
+                node,
+                start_round: round + ADD_MARGIN_ROUNDS,
+            });
             if commands.is_empty() && control.is_none() {
                 (None, round)
             } else {
@@ -792,7 +820,7 @@ async fn run_sender(inner: Arc<Inner>, peer: NodeId) {
             let mut core = lock(&inner.core);
             match reply {
                 Ok(PeerReply::Rounds(RoundsReply::Have { have })) => {
-                    core.last_heard.insert(peer, Instant::now());
+                    core.heard_from(peer);
                     if core.members.contains(&peer) {
                         let acked = core.acked.entry(peer).or_insert(0);
                         *acked = (*acked).max(have);
@@ -806,7 +834,7 @@ async fn run_sender(inner: Arc<Inner>, peer: NodeId) {
                     false
                 }
                 Ok(PeerReply::Rounds(RoundsReply::NotYet)) => {
-                    core.last_heard.insert(peer, Instant::now());
+                    core.heard_from(peer);
                     let acked = core.acked.get(&peer).copied().unwrap_or(0);
                     core.sent.insert(peer, acked);
                     true
@@ -835,7 +863,6 @@ async fn run_sender(inner: Arc<Inner>, peer: NodeId) {
 /// This node was left out. Whatever it was asked and has not applied can no longer be answered here.
 fn start_joining(inner: &Inner, core: &mut Core) {
     core.joining = true;
-    core.join_from = core.ordered.len();
     core.pending.clear();
     for (_, answers) in std::mem::take(&mut core.answers) {
         for (_, answer, _) in answers {
@@ -860,14 +887,21 @@ async fn run_detector(inner: Arc<Inner>) {
             if core.joining || core.members.len() != 3 || !core.members.contains(&inner.id) {
                 None
             } else {
-                let silent = core.members.iter().copied().find(|m| {
-                    *m != inner.id
-                        && match core.last_heard.get(m) {
-                            Some(heard) => {
-                                now.saturating_duration_since(*heard) >= inner.suspect_after
+                // A promise already given comes first: that is the only drop this view can make.
+                let promised = core
+                    .promise
+                    .filter(|(view, whom)| *view == core.view + 1 && core.members.contains(whom))
+                    .map(|(_, whom)| whom);
+                let silent = promised.or_else(|| {
+                    core.members.iter().copied().find(|m| {
+                        *m != inner.id
+                            && match core.last_heard.get(m) {
+                                Some(heard) => {
+                                    now.saturating_duration_since(*heard) >= inner.suspect_after
+                                }
+                                None => now.saturating_duration_since(core.started) >= START_GRACE,
                             }
-                            None => now.saturating_duration_since(core.started) >= START_GRACE,
-                        }
+                    })
                 });
                 silent.and_then(|target| {
                     let other = core
@@ -893,7 +927,11 @@ async fn try_drop(inner: &Inner, target: NodeId, other: NodeId, view: u64) {
         let mut core = lock(&inner.core);
         match core.promise {
             Some((promised, whom)) if promised == view && whom != target => return,
-            _ => core.promise = Some((view, target)),
+            Some((promised, _)) if promised == view => {}
+            _ => {
+                core.promise = Some((view, target));
+                core.granted = false;
+            }
         }
         core.covered.get(&target).copied().unwrap_or(0)
     };
@@ -913,9 +951,11 @@ async fn try_drop(inner: &Inner, target: NodeId, other: NodeId, view: u64) {
         ..
     })) = reply
     else {
-        // No partner: with one node left, nothing can be dropped. Free this view's promise.
+        // No partner: with one node left, nothing can be dropped. Free this view's promise, unless
+        // the partner holds it: it may already have gone on, so a different next view would split
+        // the nodes (D252).
         let mut core = lock(&inner.core);
-        if core.promise == Some((view, target)) {
+        if core.promise == Some((view, target)) && !core.granted {
             core.promise = None;
         }
         return;
@@ -980,6 +1020,7 @@ async fn run_catch_up(inner: Arc<Inner>) {
                 applied_round,
                 view,
                 members,
+                starts,
             })) = reply
             else {
                 continue;
@@ -998,14 +1039,18 @@ async fn run_catch_up(inner: Arc<Inner>) {
                     .applied
                     .send_replace((core.index > 0).then_some(core.index));
                 core.max_seen = core.max_seen.max(applied_round);
-                // Added and then dropped again before getting back: that entry no longer counts.
-                if done && !members.contains(&inner.id) {
-                    core.join_from = core.ordered.len();
-                }
-                match core.start_round_of(inner.id) {
+                let me = inner.id;
+                match starts.iter().find(|(node, _)| *node == me).map(|(_, s)| *s) {
                     Some(start_round) => {
-                        if done && applied_round >= start_round - 1 {
+                        // The members stop at the round before it until this node's stream comes.
+                        if done && applied_round == start_round - 1 {
                             // Back in: every member now waits for this node's stream from this round.
+                            // Batches this node made while silent or left out were never in the
+                            // order. Their rounds can be above this one, and sending them now would
+                            // put commands in the others' logs that this node never applied (D251).
+                            if let Some(own) = core.streams.get_mut(&me) {
+                                own.split_off(&start_round);
+                            }
                             core.joining = false;
                             core.view = view;
                             core.my_round = start_round - 1;
@@ -1024,6 +1069,10 @@ async fn run_catch_up(inner: Arc<Inner>) {
                                 core.last_heard.insert(member, Instant::now() + JOIN_GRACE);
                             }
                             core.promise = None;
+                            core.granted = false;
+                            core.adding = None;
+                            core.awaiting =
+                                starts.iter().copied().filter(|(n, _)| *n != me).collect();
                             tracing::info!(node = inner.id, start_round, "back as a member");
                             inner.contact.send_replace(Some(core.index));
                         }
@@ -1065,20 +1114,17 @@ impl Inner {
 }
 
 impl Core {
+    /// A reply from `peer`. A node on its way back has its grace time to send its first batch, and a
+    /// reply does not extend it, or the members could wait for it for ever.
+    fn heard_from(&mut self, peer: NodeId) {
+        if !self.awaiting.contains_key(&peer) {
+            self.last_heard.insert(peer, Instant::now());
+        }
+    }
+
     /// Whether this node has agreed to go on without `node`.
     fn fenced(&self, node: NodeId) -> bool {
         matches!(self.promise, Some((view, whom)) if whom == node && view == self.view + 1)
-    }
-
-    /// The round this node comes back at, once the log has told it. The first such entry is the
-    /// one that counts: members ignore a second, so this must too.
-    fn start_round_of(&self, me: NodeId) -> Option<u64> {
-        self.ordered[self.join_from..]
-            .iter()
-            .find_map(|b| match b.control {
-                Some(RoundControl::Add { node, start_round }) if node == me => Some(start_round),
-                _ => None,
-            })
     }
 }
 

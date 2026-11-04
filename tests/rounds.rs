@@ -8,8 +8,8 @@ use std::time::Duration;
 use common::{TestCluster, wait_until};
 use rescuemesh::config::{Config, ConsensusMode};
 use rescuemesh::proto::{
-    Capability, Category, Command, Incident, NodeId, Outcome, Plan, Point, RequestId, Responder,
-    ResponderId, ResultProposal, UserId,
+    Capability, Category, Command, Incident, NodeId, Outcome, PeerReply, Plan, Point, RequestId,
+    Responder, ResponderId, ResultProposal, RoundsMsg, RoundsReply, UserId,
 };
 use rescuemesh::raft::{Consensus, Role};
 
@@ -164,7 +164,11 @@ async fn the_others_go_on_without_a_silent_node_and_it_catches_up_after() {
     let c3 = consensus(&cluster, 3);
     let until = tokio::time::Instant::now() + WAIT;
     loop {
-        if let Ok(Outcome::Committed(_)) = c3.propose(proposal(50, 3, Some(50))).await {
+        // An attempt that ran out of time can still commit, so the next says it is already decided.
+        if matches!(
+            c3.propose(proposal(50, 3, Some(50))).await,
+            Ok(Outcome::Committed(_) | Outcome::Duplicate(_))
+        ) {
             break;
         }
         assert!(
@@ -245,5 +249,167 @@ async fn digests_stay_equal_through_repeated_drops_under_load() {
         let _ = task.await;
     }
     same_state(&cluster, &[1, 2, 3], 1).await;
+    cluster.shutdown().await;
+}
+
+/// A node asked to commit while silenced makes batches nobody else will ever hold. Once back, none of
+/// them may reach the others, or their logs would hold commands it never applied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_silent_node_was_asked_never_reaches_the_others() {
+    let cluster = TestCluster::start_with(3, |c| {
+        rounds(c);
+        c.timers.propose_timeout_ms = 300;
+    })
+    .await;
+    let c1 = consensus(&cluster, 1);
+    c1.propose(register(1..=50)).await.unwrap();
+    c1.propose(proposal(1, 1, Some(1))).await.unwrap();
+    same_state(&cluster, &[1, 2, 3], 1).await;
+
+    cluster.node(3).ctx.gate.silence();
+    let c3 = consensus(&cluster, 3);
+    for seq in 100..110u64 {
+        let _ = c3.propose(proposal(seq, 3, Some(seq as u32 - 90))).await;
+    }
+    cluster.node(3).ctx.gate.restore();
+    wait_until(WAIT, "node 3 to serve again", || {
+        cluster
+            .node(3)
+            .ctx
+            .serving
+            .load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await;
+    let until = tokio::time::Instant::now() + WAIT;
+    while !matches!(
+        c3.propose(proposal(200, 3, Some(30))).await,
+        Ok(Outcome::Committed(_) | Outcome::Duplicate(_))
+    ) {
+        assert!(
+            tokio::time::Instant::now() < until,
+            "node 3 never came back"
+        );
+    }
+    same_state(&cluster, &[1, 2, 3], 2).await;
+    for seq in 100..110u64 {
+        let id = RequestId { client: 1, seq };
+        assert!(
+            cluster.node(1).ctx.state.with(|s| s.result(&id).is_none()),
+            "a command from the silence reached node 1"
+        );
+    }
+    cluster.shutdown().await;
+}
+
+async fn view_reached(cluster: &TestCluster, ids: &[NodeId], view: u64) {
+    wait_until(WAIT, "the nodes to reach the view", || {
+        ids.iter()
+            .all(|id| cluster.node(*id).ctx.consensus.status().term >= view)
+    })
+    .await;
+}
+
+async fn commit_through(cluster: &TestCluster, node: NodeId, seq: u64) {
+    let c = consensus(cluster, node);
+    let until = tokio::time::Instant::now() + WAIT;
+    while !matches!(
+        c.propose(proposal(seq, node, Some(seq as u32))).await,
+        Ok(Outcome::Committed(_) | Outcome::Duplicate(_))
+    ) {
+        assert!(
+            tokio::time::Instant::now() < until,
+            "node {node} never committed"
+        );
+    }
+}
+
+/// A promise given to a peer holds even when this node's own call to that peer fails. On the lab PCs
+/// it was freed, so one node went on without node 1 and the other two without node 2 (D252).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_promise_given_holds_when_the_asker_goes_quiet() {
+    let cluster = TestCluster::start_with(3, rounds).await;
+    consensus(&cluster, 1)
+        .propose(register(1..=50))
+        .await
+        .unwrap();
+    commit_through(&cluster, 1, 1).await;
+    same_state(&cluster, &[1, 2, 3], 1).await;
+
+    cluster.node(2).ctx.gate.silence();
+    let c3 = consensus(&cluster, 3);
+    let drop = |target| RoundsMsg::Drop {
+        view: 1,
+        target,
+        have: 0,
+    };
+    let first = c3.handle_rounds(2, drop(1)).await;
+    assert!(matches!(
+        first,
+        PeerReply::Rounds(RoundsReply::Granted { .. })
+    ));
+    // Node 3 now ignores node 1, finds it silent, and its own call to node 2 fails.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let second = c3.handle_rounds(1, drop(2)).await;
+    assert!(
+        matches!(second, PeerReply::Rounds(RoundsReply::Refused { .. })),
+        "the same view was promised for a second drop: {second:?}"
+    );
+
+    // The asker returns, the agreed drop goes through, and all three end up the same.
+    cluster.node(2).ctx.gate.restore();
+    commit_through(&cluster, 2, 2).await;
+    commit_through(&cluster, 3, 3).await;
+    commit_through(&cluster, 1, 4).await;
+    same_state(&cluster, &[1, 2, 3], 4).await;
+    cluster.shutdown().await;
+}
+
+/// A node on its way back asks again while it has not seen its entry in the log. That must not count
+/// against it: on the lab PCs it got the node dropped within seconds of being added (D252).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn asking_again_does_not_drop_a_node_on_its_way_back() {
+    let cluster = TestCluster::start_with(3, rounds).await;
+    let c1 = consensus(&cluster, 1);
+    c1.propose(register(1..=50)).await.unwrap();
+    cluster.node(3).ctx.gate.silence();
+    view_reached(&cluster, &[1, 2], 1).await;
+    let _ = c1.handle_rounds(3, RoundsMsg::Join).await;
+    view_reached(&cluster, &[1, 2], 2).await;
+    let _ = c1.handle_rounds(3, RoundsMsg::Join).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(c1.status().term, 2, "the node was dropped for asking again");
+    cluster.node(3).ctx.gate.restore();
+    commit_through(&cluster, 3, 1).await;
+    same_state(&cluster, &[1, 2, 3], 1).await;
+    cluster.shutdown().await;
+}
+
+/// Added, dropped before getting back, added again: it must come back at the later round. On the lab
+/// PCs it used the first, was then sent batches it had already applied, and its digest split (D252).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_added_twice_comes_back_at_the_later_round() {
+    let cluster = TestCluster::start_with(3, rounds).await;
+    let c1 = consensus(&cluster, 1);
+    c1.propose(register(1..=50)).await.unwrap();
+    commit_through(&cluster, 1, 1).await;
+    same_state(&cluster, &[1, 2, 3], 1).await;
+
+    cluster.node(3).ctx.gate.silence();
+    view_reached(&cluster, &[1, 2], 1).await;
+    commit_through(&cluster, 1, 2).await;
+    let _ = c1.handle_rounds(3, RoundsMsg::Join).await;
+    view_reached(&cluster, &[1, 2], 2).await;
+    // It does not get back in time, so it is dropped again, and more is applied without it.
+    view_reached(&cluster, &[1, 2], 3).await;
+    commit_through(&cluster, 2, 3).await;
+    commit_through(&cluster, 1, 4).await;
+    let _ = c1.handle_rounds(3, RoundsMsg::Join).await;
+    view_reached(&cluster, &[1, 2], 4).await;
+    cluster.node(3).ctx.gate.restore();
+
+    commit_through(&cluster, 3, 5).await;
+    commit_through(&cluster, 1, 6).await;
+    commit_through(&cluster, 2, 7).await;
+    same_state(&cluster, &[1, 2, 3], 7).await;
     cluster.shutdown().await;
 }
