@@ -13,12 +13,12 @@ Each node has two port numbers from the config:
 | Port               | Who uses it        | Pattern                                               |
 |--------------------|--------------------|-------------------------------------------------------|
 | `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 10 ms (D167, D170, D236, D246) |
+| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 10 ms and squeezed, with no trace context (D167, D170, D236, D254, D255, D246) |
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
 (`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is on for every
-connection, and small messages are combined in the code (D247, D248, D251).
+connection, and small messages are combined in the code (D247, D248, D251), and frames are squeezed (D255).
 
 One UDP packet is one tarpc message, encoded with `proto::encode`: bincode with varint integers and no trailing bytes, at
 most 1,400 bytes (`MAX_DATAGRAM_BYTES`). A bad UDP packet, an ICMP error or a failed send counts as a lost message: no error ever

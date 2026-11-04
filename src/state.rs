@@ -25,8 +25,24 @@ use serde::{Deserialize, Serialize};
 use crate::planner;
 use crate::proto::{
     Command, CommandGroup, CommittedResult, IncidentQuery, IncidentStatus, IncidentView,
-    MAX_INCIDENT_ROWS, Outcome, RequestId, Responder, ResponderId, ResultProposal, StaleReason,
+    MAX_INCIDENT_ROWS, NodeId, Outcome, Plan, RequestId, Responder, ResponderId, ResultProposal,
+    StaleReason,
 };
+
+/// A hold as it was made, for a node to follow the holds without scanning for them (D253).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldMade {
+    pub responder: ResponderId,
+    pub request: RequestId,
+    pub executor: NodeId,
+    pub severity: u8,
+}
+
+/// How many responders a choice made again at apply looks at (D253). It runs on every node under the
+/// lock on the state, so it must not cost the whole table. The wider look is for a part with nobody
+/// suitable in it, and a table this small is looked at whole.
+const REPICK_LOOKS_AT: usize = 256;
+const REPICK_LOOKS_WIDE: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponderSlot {
@@ -50,6 +66,8 @@ pub struct Counters {
 pub struct CloudState {
     responders: BTreeMap<ResponderId, ResponderSlot>,
     results: BTreeMap<RequestId, CommittedResult>,
+    /// Every hold made, oldest first. Not in the digest: the commands already decide it.
+    hold_log: Vec<HoldMade>,
     counters: Counters,
     /// Log index of the last command applied (internal Raft entries are not counted).
     last_index: u64,
@@ -120,17 +138,17 @@ impl CloudState {
                 // Taken while this plan travelled through the log. Choosing again here is the same
                 // choice on every node, and costs no new plan and no new log command (D241).
                 self.counters.repicked += 1;
-                let free = self
-                    .responders
-                    .values()
-                    .filter(|s| s.held_by.is_none())
-                    .map(|s| &s.responder);
-                let age_ms = p.assigned_at_ms.saturating_sub(p.incident.reported_at_ms);
-                plan = planner::pick(&p.incident, free, age_ms);
+                plan = self.pick_again(p);
             }
             if let Some(chosen) = plan.responder {
                 if let Some(slot) = self.responders.get_mut(&chosen) {
                     slot.held_by = Some(p.request);
+                    self.hold_log.push(HoldMade {
+                        responder: chosen,
+                        request: p.request,
+                        executor: p.executor,
+                        severity: p.incident.severity,
+                    });
                 }
             }
         }
@@ -147,6 +165,44 @@ impl CloudState {
         self.results.insert(p.request, result.clone());
         self.counters.committed += 1;
         Outcome::Committed(result)
+    }
+
+    /// The choice made again for a plan whose responder was taken (D241), from a part of the table
+    /// (D253). Where the part starts depends only on the request, so every node chooses the same.
+    fn pick_again(&self, p: &ResultProposal) -> Plan {
+        let age_ms = p.assigned_at_ms.saturating_sub(p.incident.reported_at_ms);
+        let top = self.responders.last_key_value().map_or(0, |(id, _)| *id);
+        let salt = sample_mix(p.request.client) ^ sample_mix(p.request.seq.rotate_left(17));
+        let start = if self.responders.len() <= REPICK_LOOKS_AT {
+            0
+        } else {
+            ResponderId::try_from(salt % (u64::from(top) + 1)).unwrap_or(0)
+        };
+        let looking_at = |count: usize| {
+            self.responders
+                .range(start..)
+                .chain(self.responders.range(..start))
+                .take(count)
+                .filter(|(_, slot)| slot.held_by.is_none())
+                .map(|(_, slot)| &slot.responder)
+        };
+        let plan = planner::pick(&p.incident, looking_at(REPICK_LOOKS_AT), age_ms);
+        if plan.responder.is_some() {
+            return plan;
+        }
+        planner::pick(&p.incident, looking_at(REPICK_LOOKS_WIDE), age_ms)
+    }
+
+    /// The holds made after the first `seen`, oldest first.
+    pub fn holds_made_after(&self, seen: usize) -> &[HoldMade] {
+        self.hold_log.get(seen..).unwrap_or(&[])
+    }
+
+    /// Whether this responder is still held for this request.
+    pub fn is_holding(&self, responder: ResponderId, request: RequestId) -> bool {
+        self.responders
+            .get(&responder)
+            .is_some_and(|slot| slot.held_by == Some(request))
     }
 
     pub fn result(&self, id: &RequestId) -> Option<&CommittedResult> {
@@ -239,14 +295,21 @@ impl CloudState {
             .collect()
     }
 
-    /// About one in `one_in` of the free responders, chosen by `salt`, in ID order (D238). Reads only.
-    /// Different salts give different parts, so plans running at once rarely pick the same responder.
-    pub fn free_responders_sample(&self, salt: u64, one_in: u64) -> Vec<Responder> {
+    /// The free ones among `looks_at` responders in a row, starting where `salt` lands (D238, D253).
+    /// Reads only. Different salts give different parts, so plans running at once rarely pick the same
+    /// responder, and the cost is the part and not the table. Zones and skills go round with the ID,
+    /// so a run of IDs covers them evenly.
+    pub fn free_responders_part(&self, salt: u64, looks_at: usize) -> Vec<Responder> {
+        let Some((top, _)) = self.responders.last_key_value() else {
+            return Vec::new();
+        };
+        let start = ResponderId::try_from(salt % (u64::from(*top) + 1)).unwrap_or(0);
         self.responders
-            .values()
-            .filter(|s| s.held_by.is_none())
-            .filter(|s| sample_mix(salt ^ u64::from(s.responder.id)) % one_in == 0)
-            .map(|s| s.responder.clone())
+            .range(start..)
+            .chain(self.responders.range(..start))
+            .take(looks_at)
+            .filter(|(_, slot)| slot.held_by.is_none())
+            .map(|(_, slot)| slot.responder.clone())
             .collect()
     }
 
@@ -301,7 +364,7 @@ fn chain(prev: u64, index: u64, cmd: &Command, outcome: &Outcome) -> u64 {
     h.finish()
 }
 
-/// Spreads an integer over all 64 bits, for [`CloudState::free_responders_sample`].
+/// Spreads an integer over all 64 bits, for [`CloudState::free_responders_part`].
 pub fn sample_mix(mut x: u64) -> u64 {
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
@@ -377,12 +440,12 @@ mod tests {
             .collect();
         state.apply(1, &Command::RegisterResponders { responders });
         let (a, b) = (
-            state.free_responders_sample(sample_mix(1), 16),
-            state.free_responders_sample(sample_mix(2), 16),
+            state.free_responders_part(sample_mix(1), 100),
+            state.free_responders_part(sample_mix(2), 100),
         );
-        assert!((50..=150).contains(&a.len()), "{}", a.len());
+        assert_eq!(a.len(), 100);
         assert_ne!(a, b);
-        assert_eq!(a, state.free_responders_sample(sample_mix(1), 16));
+        assert_eq!(a, state.free_responders_part(sample_mix(1), 100));
     }
 
     #[test]

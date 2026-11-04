@@ -19,6 +19,7 @@ pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
 pub mod service;
+pub mod squeeze;
 pub mod step_aside;
 pub mod takeover;
 #[cfg(test)]

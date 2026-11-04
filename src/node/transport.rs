@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::{Buf, Bytes, BytesMut};
 use futures::future::BoxFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use tarpc::client::{NewClient, RpcError};
@@ -39,11 +40,12 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio::time::error::Elapsed;
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tokio_util::codec::{Decoder, Encoder, Framed, LengthDelimitedCodec};
 
 use super::datagram::{self, ClientEnd, ServerEnd};
 use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog, MessageCounters, MsgKind, UdpCounters};
+use crate::node::squeeze::{expand, squeeze};
 use crate::proto::{
     self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
     ClientRpcResponse, Command, ControlReply, ControlRequest, FaultBid, IncidentQuery, NodeId,
@@ -126,13 +128,80 @@ pub enum TransportError {
     Wire(#[from] proto::WireError),
 }
 
-pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
+/// Length-prefixed frames, each squeezed when that makes it smaller (D255). The first byte of a frame
+/// says which: tarpc's own frames could start with anything.
+#[derive(Debug)]
+pub struct SqueezedFrames {
+    frames: LengthDelimitedCodec,
+}
+
+const FRAME_AS_IT_IS: u8 = 0;
+const FRAME_SQUEEZED: u8 = 1;
+/// Smaller frames have too little in them to repeat.
+const SQUEEZE_FROM_BYTES: usize = 48;
+
+impl Decoder for SqueezedFrames {
+    type Item = BytesMut;
+    type Error = std::io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> std::io::Result<Option<BytesMut>> {
+        let Some(mut frame) = self.frames.decode(src)? else {
+            return Ok(None);
+        };
+        let bad = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+        match frame.first() {
+            Some(&FRAME_AS_IT_IS) => {
+                frame.advance(1);
+                Ok(Some(frame))
+            }
+            Some(&FRAME_SQUEEZED) => {
+                let expanded = expand(&frame[1..], proto::MAX_FRAME_BYTES).ok_or_else(bad)?;
+                Ok(Some(BytesMut::from(&expanded[..])))
+            }
+            _ => Err(bad()),
+        }
+    }
+}
+
+impl Encoder<Bytes> for SqueezedFrames {
+    type Error = std::io::Error;
+
+    fn encode(&mut self, frame: Bytes, dst: &mut BytesMut) -> std::io::Result<()> {
+        let squeezed = (frame.len() >= SQUEEZE_FROM_BYTES)
+            .then(|| squeeze(&frame))
+            .filter(|squeezed| squeezed.len() < frame.len());
+        let (mark, body): (u8, &[u8]) = match &squeezed {
+            Some(squeezed) => (FRAME_SQUEEZED, squeezed),
+            None => (FRAME_AS_IT_IS, &frame),
+        };
+        let mut marked = BytesMut::with_capacity(body.len() + 1);
+        marked.extend_from_slice(&[mark]);
+        marked.extend_from_slice(body);
+        self.frames.encode(marked.freeze(), dst)
+    }
+}
+
+/// The frames of one TCP connection.
+pub fn framed(stream: TcpStream) -> Framed<TcpStream, SqueezedFrames> {
     // Bids and forwards are combined in the code now (D247, D248), so Nagle only adds a wait of at
     // least a round trip to each message, against a bid window of tens of milliseconds (D251).
     let _ = stream.set_nodelay(true);
-    LengthDelimitedCodec::builder()
-        .max_frame_length(proto::MAX_FRAME_BYTES)
-        .new_framed(stream)
+    let frames = LengthDelimitedCodec::builder()
+        .max_frame_length(proto::MAX_FRAME_BYTES + 1)
+        .new_codec();
+    Framed::new(stream, SqueezedFrames { frames })
+}
+
+/// The transport tarpc runs over on one TCP connection.
+pub fn tcp_transport<Item, SinkItem>(
+    stream: TcpStream,
+) -> tarpc::tokio_serde::Framed<
+    Framed<TcpStream, SqueezedFrames>,
+    Item,
+    SinkItem,
+    Bincode<Item, SinkItem>,
+> {
+    tarpc::tokio_serde::Framed::new(framed(stream), Bincode::default())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -381,7 +450,7 @@ impl PeerClient {
 }
 
 fn open_conn(stream: TcpStream) -> Conn {
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     Conn {
         client: PeerRpcClient::new(stub_settings(), transport).spawn(),
         closed: AtomicBool::new(false),
@@ -544,7 +613,7 @@ pub async fn serve_peers(
 }
 
 async fn peer_connection(stream: TcpStream, server: PeerServer) {
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     BaseChannel::with_defaults(transport)
         .execute(server.serve())
         .for_each(|call| async {
@@ -857,7 +926,7 @@ async fn serve_control(listener: TcpListener, server: ClientServer) {
         match listener.accept().await {
             Ok((stream, _)) => {
                 while connections.try_join_next().is_some() {}
-                let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+                let transport = tcp_transport(stream);
                 let calls = BaseChannel::with_defaults(transport).execute(server.clone().serve());
                 connections.spawn(run_calls(calls));
             }
@@ -925,7 +994,7 @@ pub async fn connect_client(
     addr: &str,
 ) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
     let stream = TcpStream::connect(addr).await?;
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), transport);
     Ok(NewClient {
         client,

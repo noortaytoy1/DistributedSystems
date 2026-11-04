@@ -41,7 +41,7 @@ pub struct BidState {
 
 /// Reports one node works on at once (D250). At 10,000 a second with about 200 ms each, a node holds
 /// about 2,000 when healthy.
-pub(super) const MAX_IN_PROGRESS: u32 = 8000;
+pub(super) const MAX_IN_PROGRESS: u32 = 16_000;
 
 /// Held while a report is being worked on here.
 pub(super) struct InProgress<'a> {

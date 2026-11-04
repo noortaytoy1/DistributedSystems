@@ -312,6 +312,9 @@ table below in sync.
 | D250 | Overload is refused at the door, decided reports stay out of the log, and the backstop waits 1.5 s | A, C | Implemented, amends D235 |
 | D251 | TCP sends at once again, and rounds has its own connections | A, C | Implemented, supersedes D237 |
 | D252 | A drop and a return are decided once, and a slow moment no longer breaks connections | A, C | Implemented, fixes D249, amends D89 |
+| D253 | No scan of the whole responder table on the way of a request | C, E | Implemented, amends D238, D241, D250 |
+| D254 | Client datagrams leave out tarpc's trace context | C | Implemented, amends D170 |
+| D255 | Datagrams and TCP frames are squeezed | C | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8068,6 +8071,32 @@ them on the six PCs.
 - **Limit.** If a node gives a promise and the asker then dies, it waits for that node to return before committing again. No wrong answer can come of it, and degraded mode still answers provisionally. It takes a false suspicion and a real failure at once.
 - **Where.** `src/rounds.rs`, `src/proto.rs` (`RoundsReply::Entries.starts`), `src/node/transport.rs`.
 - **How we check it.** `tests/rounds.rs`: `a_promise_given_holds_when_the_asker_goes_quiet`, `asking_again_does_not_drop_a_node_on_its_way_back`, `a_node_added_twice_comes_back_at_the_later_round` all fail on the code before this entry. Then repeated `--rate` runs on the six PCs with digest mismatches at 0.
+
+### D253 · No scan of the whole responder table on the way of a request
+
+- **Date:** 2026-11-04 · **Part:** C, E · **Status:** Implemented, amends D238, D241, D250 · **Decided by:** the person running the lab session, who asked for the node's work to be as small as possible, on the agent's recommendation.
+- **Context.** With 24,000 responders, a read of the code found three scans of the table: each plan (D238), each choice made again at apply (D241), and the release scan every 50 ms, under the lock on the state. A commit waits for that lock holding the lock on the rounds core, which everything needs. At 12,000 requests a second a 60 ms bid window closed up to 531 ms late with 1.7 cores busy, so something inside the node stalled. How much each scan costs is estimated and not measured.
+- **Decision.** A plan looks at 512 responders in a row from where its salt lands, not one in 16 of the table. A choice made again looks at 256 in a row from a place set by the request, so every node chooses the same, then 4,096 if none of those suit. The state keeps a list of the holds made, and the release task reads what is new and keeps its own timers, so a look costs what changed. A node standing by for a report checks at most every 200 ms. `MAX_IN_PROGRESS` goes from 8,000 to 16,000, as 8,000 is under 300 ms of reports at 30,000 a second.
+- **Limit.** A choice made again can find nobody when 4,096 in a row are held or lack the skill, though someone is free further on. Takeover can start up to 200 ms later.
+- **Where.** `src/state.rs`, `src/node/service.rs`, `src/node/release.rs`, `src/node/takeover.rs`, `src/node/bids.rs`.
+- **How we check it.** Unit tests in `src/state.rs` and `src/node/release.rs`, then runs on the six PCs.
+
+### D254 · Client datagrams leave out tarpc's trace context
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D170 · **Decided by:** the person running the lab session, who asked what limits the system below 30,000 a second, on the agent's recommendation.
+- **Context.** A count from the code, which matches the UDP counters of `runs/hand-r4` within 0.4%, gives about 630 bytes on the air per request. At 30,000 a second the measured 96 Mbit/s of the cell leaves 400. Each report and each cancel carried tarpc's trace context, which nothing reads: three reports and two cancels per request.
+- **Decision.** The client sends `WireMessage`: the call ID, the deadline in milliseconds from now, and the call. A cancel is its ID. The node turns it back into tarpc's message before tarpc sees it.
+- **Where.** `src/node/datagram.rs`.
+- **How we check it.** `a_client_message_survives_the_short_form_and_costs_little`, `tests/datagram.rs`.
+
+### D255 · Datagrams and TCP frames are squeezed
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented · **Decided by:** the agent, under the request above to find what limits the system below 30,000 a second.
+- **Context.** Messages in one datagram or frame are much alike: the same client, close sequence numbers, the same clock. The cell is what is short.
+- **Decision.** Each combined datagram and each TCP frame of 48 bytes or more is squeezed with LZ4's block format, written here in about 100 lines, and sent that way only if it comes out smaller. A datagram starts with `SQUEEZED`. A frame's first byte says which it is. tarpc now runs over `tokio_serde::Framed` directly, since its helper only takes a plain length codec.
+- **Alternatives rejected.** A library: the PCs would need a new dependency fetched mid-session.
+- **Where.** `src/node/squeeze.rs`, `src/node/datagram.rs`, `src/node/transport.rs`.
+- **How we check it.** `src/node/squeeze.rs`'s tests, including input nobody could have squeezed, then bytes per request measured on the six PCs.
 
 ### Notes on older entries
 

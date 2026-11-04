@@ -43,10 +43,10 @@ use std::time::{Duration, Instant};
 
 use bytes::{Buf, BytesMut};
 use futures::{Sink, Stream, StreamExt};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
-use tarpc::{ClientMessage, Response};
+use tarpc::{ClientMessage, Request, Response};
 use tokio::net::UdpSocket;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
@@ -54,6 +54,7 @@ use tokio_util::codec::Decoder;
 use tokio_util::udp::UdpFramed;
 
 use crate::metrics::{Event, EventLog, UdpCounters};
+use crate::node::squeeze::{expand, squeeze};
 use crate::proto;
 
 /// A client program with no traffic for this long loses its channel on the node. Longer than any
@@ -72,6 +73,10 @@ pub const COMBINE_WAIT: Duration = Duration::from_millis(10);
 /// with it, and a `ClientMessage` or a `Response` starts with one, so a lone message cannot be taken
 /// for this. Held to that by `a_lone_message_never_starts_like_a_combined_datagram`.
 pub const COMBINED: u8 = 0xFF;
+
+/// First byte of a datagram whose rest is squeezed (D255). bincode's integers never start with this
+/// either: it would mean a number too long for any integer here.
+pub const SQUEEZED: u8 = 0xFE;
 
 /// The length before each message in a combined datagram.
 const LENGTH_BYTES: usize = 2;
@@ -140,6 +145,63 @@ impl<T> BincodeDatagram<T> {
     }
 }
 
+/// What a client program sends for one of tarpc's messages (D254). tarpc's own form carries a trace
+/// context of 26 bytes on each message, which nothing here reads, and five of them cross the air for
+/// each report. The deadline, in milliseconds from now, cannot be too large for tarpc to hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireMessage<Req> {
+    Request {
+        id: u64,
+        deadline_ms: u32,
+        message: Req,
+    },
+    Cancel {
+        id: u64,
+    },
+}
+
+impl<Req> WireMessage<Req> {
+    pub fn from_message(message: ClientMessage<Req>) -> Option<Self> {
+        match message {
+            ClientMessage::Request(request) => {
+                let wait = request
+                    .context
+                    .deadline
+                    .saturating_duration_since(Instant::now());
+                Some(Self::Request {
+                    id: request.id,
+                    deadline_ms: u32::try_from(wait.as_millis()).unwrap_or(u32::MAX),
+                    message: request.message,
+                })
+            }
+            ClientMessage::Cancel { request_id, .. } => Some(Self::Cancel { id: request_id }),
+            _ => None,
+        }
+    }
+
+    pub fn into_message(self) -> ClientMessage<Req> {
+        match self {
+            Self::Request {
+                id,
+                deadline_ms,
+                message,
+            } => {
+                let mut context = tarpc::context::current();
+                context.deadline = Instant::now() + Duration::from_millis(u64::from(deadline_ms));
+                ClientMessage::Request(Request {
+                    context,
+                    id,
+                    message,
+                })
+            }
+            Self::Cancel { id } => ClientMessage::Cancel {
+                trace_context: tarpc::trace::Context::default(),
+                request_id: id,
+            },
+        }
+    }
+}
+
 /// tarpc adds a request's deadline to the clock while decoding, which panics on a huge one. A panic
 /// here would end the reader, and with it the node's whole client port, so one stray packet counts as
 /// a bad datagram like any other.
@@ -161,6 +223,16 @@ impl<T: DeserializeOwned> Decoder for BincodeDatagram<T> {
         }
         if !self.combined {
             self.counters.received(src.len());
+            if src[0] == SQUEEZED {
+                let datagram = src.split();
+                let Some(expanded) = expand(&datagram[1..], proto::MAX_DATAGRAM_BYTES * 2) else {
+                    return Err(io::Error::from(io::ErrorKind::InvalidData));
+                };
+                src.extend_from_slice(&expanded);
+                if src.is_empty() {
+                    return Err(io::Error::from(io::ErrorKind::InvalidData));
+                }
+            }
             if src[0] != COMBINED {
                 // Takes the whole datagram, so an error leaves nothing behind for the next call.
                 let datagram = src.split();
@@ -280,6 +352,12 @@ impl Outbox {
                         .expect("a message is at most MAX_DATAGRAM_BYTES, which fits two bytes");
                     datagram.extend_from_slice(&length.to_be_bytes());
                     datagram.extend_from_slice(message);
+                }
+                let squeezed = squeeze(&datagram);
+                if squeezed.len() + 1 < datagram.len() {
+                    datagram.clear();
+                    datagram.push(SQUEEZED);
+                    datagram.extend_from_slice(&squeezed);
                 }
                 self.socket.try_send_to(&datagram, self.to)
             }
@@ -423,7 +501,9 @@ impl<Req: Serialize, Resp> Sink<ClientMessage<Req>> for ClientEnd<Req, Resp> {
             ClientMessage::Cancel { .. } => self.counters.tx_cancels.fetch_add(1, Relaxed),
             _ => 0,
         };
-        self.sender.push(&item);
+        if let Some(wire) = WireMessage::from_message(item) {
+            self.sender.push(&wire);
+        }
         Ok(())
     }
 
@@ -505,7 +585,7 @@ pub async fn serve<Req, Resp, Channel>(
 {
     let mut frames = UdpFramed::new(
         socket.clone(),
-        BincodeDatagram::<ClientMessage<Req>>::new(counters.clone()),
+        BincodeDatagram::<WireMessage<Req>>::new(counters.clone()),
     );
     let mut programs: HashMap<SocketAddr, Program<Req>> = HashMap::new();
     let mut channels = JoinSet::new();
@@ -513,7 +593,8 @@ pub async fn serve<Req, Resp, Channel>(
     loop {
         tokio::select! {
             item = frames.next() => match item {
-                Some(Ok((message, from))) => {
+                Some(Ok((wire, from))) => {
+                    let message = wire.into_message();
                     if !admit(&message, &keep, &counters) {
                         continue;
                     }
@@ -607,6 +688,42 @@ mod tests {
             datagram.extend_from_slice(m);
         }
         datagram
+    }
+
+    #[test]
+    fn a_client_message_survives_the_short_form_and_costs_little() {
+        let mut context = context::current();
+        context.deadline = Instant::now() + Duration::from_secs(36);
+        let request: ClientMessage<u32> = ClientMessage::Request(tarpc::Request {
+            context,
+            id: 7,
+            message: 900,
+        });
+        let long = proto::encode(&request).unwrap().len();
+        let wire = WireMessage::from_message(request).unwrap();
+        assert_ne!(proto::encode(&wire).unwrap()[0], COMBINED);
+        let short = proto::encode(&wire).unwrap().len();
+        assert!(short + 16 <= long, "short {short}, long {long}");
+        let ClientMessage::Request(back) = wire.into_message() else {
+            panic!("it must stay a request");
+        };
+        assert_eq!((back.id, back.message), (7, 900));
+        let left = back
+            .context
+            .deadline
+            .saturating_duration_since(Instant::now());
+        assert!(left > Duration::from_secs(35) && left <= Duration::from_secs(36));
+
+        let cancel: ClientMessage<u32> = ClientMessage::Cancel {
+            trace_context: context::current().trace_context,
+            request_id: 7,
+        };
+        let wire = WireMessage::from_message(cancel).unwrap();
+        assert!(proto::encode(&wire).unwrap().len() <= 3);
+        assert!(matches!(
+            wire.into_message(),
+            ClientMessage::Cancel { request_id: 7, .. }
+        ));
     }
 
     #[test]
@@ -719,7 +836,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(n <= proto::MAX_DATAGRAM_BYTES, "{n}");
-        assert_eq!(buf[0], COMBINED);
+        assert_eq!(buf[0], SQUEEZED);
     }
 
     #[tokio::test]

@@ -38,8 +38,8 @@ pub(super) const MAX_PLAN_ATTEMPTS: u32 = 3;
 /// the part could leave a report with a much worse responder, or none.
 const SAMPLE_FROM_RESPONDERS: usize = 256;
 
-/// A plan looks at about one in this many free responders (D238).
-const SAMPLE_ONE_IN: u64 = 16;
+/// How many responders in a row a plan looks at (D238, D253).
+const PLAN_LOOKS_AT: usize = 512;
 
 /// The free responders one plan chooses from. Every plan picks the nearest of its list, so plans
 /// running at once from one list pick the same responder, and all but the first go stale. So each
@@ -53,7 +53,7 @@ fn free_for_plan(ctx: &NodeContext, req: &ClientRequest, plan: u32) -> Vec<Respo
         let salt = sample_mix(req.id.client)
             ^ sample_mix(req.id.seq.rotate_left(17))
             ^ sample_mix((u64::from(req.attempt) << 32) | u64::from(plan));
-        let part = s.free_responders_sample(salt, SAMPLE_ONE_IN);
+        let part = s.free_responders_part(salt, PLAN_LOOKS_AT);
         if part.iter().any(|r| r.capability == req.incident.needs) {
             part
         } else {

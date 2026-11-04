@@ -16,7 +16,7 @@ use rescuemesh::client::{ClientError, MeshClient, control, udp_answers};
 use rescuemesh::config::{AssignmentPolicy, ClusterConfig, Config, NodeAddr};
 use rescuemesh::metrics::EventLog;
 use rescuemesh::node::datagram::{self, ServerEnd};
-use rescuemesh::node::transport::{datagram_client, framed, run_calls};
+use rescuemesh::node::transport::{datagram_client, run_calls, tcp_transport};
 use rescuemesh::proto::{
     Capability, Category, ClientReply, ClientRequest, ClientRpc, ClientRpcRequest,
     ClientRpcResponse, CommittedResult, ControlReply, ControlRequest, Incident, IncidentQuery,
@@ -762,10 +762,7 @@ async fn tcp_only_stub() -> String {
         let mut connections = JoinSet::new();
         loop {
             let (stream, _) = listener.accept().await.unwrap();
-            let transport = tarpc::serde_transport::new(
-                framed(stream),
-                tarpc::tokio_serde::formats::Bincode::default(),
-            );
+            let transport = tcp_transport(stream);
             let calls = BaseChannel::with_defaults(transport).execute(Stub::quiet().serve());
             connections.spawn(run_calls(calls));
         }

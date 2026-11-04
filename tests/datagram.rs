@@ -17,7 +17,7 @@ use bytes::{Bytes, BytesMut};
 use common::wait_until;
 use futures::{Sink, SinkExt, Stream};
 use rescuemesh::metrics::UdpCounters;
-use rescuemesh::node::datagram::{self, BincodeDatagram, ClientEnd, ServerEnd};
+use rescuemesh::node::datagram::{self, BincodeDatagram, ClientEnd, ServerEnd, WireMessage};
 use rescuemesh::node::transport::run_calls;
 use rescuemesh::proto;
 use tarpc::server::{BaseChannel, Channel};
@@ -167,6 +167,11 @@ impl Stream for Naive {
     }
 }
 
+fn wire_message(bytes: &[u8]) -> ClientMessage<EchoRequest> {
+    let wire: WireMessage<EchoRequest> = proto::decode(bytes).unwrap();
+    wire.into_message()
+}
+
 impl Sink<ClientMessage<EchoRequest>> for Naive {
     type Error = io::Error;
 
@@ -175,7 +180,7 @@ impl Sink<ClientMessage<EchoRequest>> for Naive {
     }
 
     fn start_send(self: Pin<&mut Self>, item: ClientMessage<EchoRequest>) -> io::Result<()> {
-        let bytes = proto::encode(&item).unwrap();
+        let bytes = proto::encode(&WireMessage::from_message(item).unwrap()).unwrap();
         // A send error is passed on too, as a thin adapter would.
         self.socket.try_send_to(&bytes, self.peer).map(|_| ())
     }
@@ -307,7 +312,10 @@ impl Raw {
             message,
         });
         self.socket
-            .send_to(&proto::encode(&msg).unwrap(), self.to)
+            .send_to(
+                &proto::encode(&WireMessage::from_message(msg).unwrap()).unwrap(),
+                self.to,
+            )
             .await
             .unwrap();
     }
@@ -318,7 +326,10 @@ impl Raw {
             request_id: id,
         };
         self.socket
-            .send_to(&proto::encode(&msg).unwrap(), self.to)
+            .send_to(
+                &proto::encode(&WireMessage::from_message(msg).unwrap()).unwrap(),
+                self.to,
+            )
             .await
             .unwrap();
     }
@@ -397,8 +408,7 @@ async fn late_and_unknown_responses_are_ignored() {
     assert!(matches!(err, tarpc::client::RpcError::DeadlineExceeded));
     let mut buf = [0u8; 1500];
     let (n, from) = stub.recv_from(&mut buf).await.unwrap();
-    let ClientMessage::Request(req): ClientMessage<EchoRequest> = proto::decode(&buf[..n]).unwrap()
-    else {
+    let ClientMessage::Request(req) = wire_message(&buf[..n]) else {
         panic!("expected a request")
     };
     for id in [req.id, 999_999] {
@@ -414,9 +424,7 @@ async fn late_and_unknown_responses_are_ignored() {
     let second = client.stub.echo(deadline_ctx(PATIENCE), 2);
     let answer = async {
         let (n, from) = stub.recv_from(&mut buf).await.unwrap();
-        let ClientMessage::Request(req): ClientMessage<EchoRequest> =
-            proto::decode(&buf[..n]).unwrap()
-        else {
+        let ClientMessage::Request(req) = wire_message(&buf[..n]) else {
             panic!("expected a request")
         };
         let answer = Response {
