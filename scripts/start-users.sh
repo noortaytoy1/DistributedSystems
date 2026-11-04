@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start one client PC's simulated users: real loadgen programs in the background, sharing the users
-# (D181, D183). The experiment runner, the demo and the web page all start users through this script.
+# (D181, D183). The experiment runner and the demo start users through this script. The web page starts loadgen itself (D202).
 #
 #   scripts/start-users.sh --config config/lab.toml --machine 1 --users 1000
 #       10 programs with 100 users each, pattern steady, think time 1 s, for 60 s

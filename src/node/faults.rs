@@ -347,6 +347,9 @@ impl FaultRounds {
 pub struct FaultElection {
     rounds: Mutex<FaultRounds>,
     wake: Notify,
+    /// When the silence the last draw named is over, on this node's clock. The victim's own number
+    /// says how long it lasts, so every node that closed the round knows (D218).
+    drawn_silence_ends: Mutex<Option<Instant>>,
 }
 
 impl FaultElection {
@@ -358,7 +361,18 @@ impl FaultElection {
         Self {
             rounds: Mutex::new(FaultRounds::new(id, nodes, timeout, Instant::now())),
             wake: Notify::new(),
+            drawn_silence_ends: Mutex::new(None),
         }
+    }
+
+    /// Whether a node this node knows was drawn is still meant to be silent. A busy leader does not
+    /// step aside then: the cluster would be a node short for the vote (D218).
+    pub fn drawn_silence_going_on(&self, now: Instant) -> bool {
+        lock(&self.drawn_silence_ends).is_some_and(|ends| now < ends)
+    }
+
+    fn note_drawn_silence(&self, ends: Instant) {
+        *lock(&self.drawn_silence_ends) = Some(ends);
     }
 
     /// Reads the rounds under the lock, for tests.
@@ -428,6 +442,9 @@ async fn run_schedule(ctx: Arc<NodeContext>, seed: u64) {
                 });
                 let wait = between(&mut waits, faults.interval());
                 lock(&election.rounds).set_next_call(Instant::now() + silence + wait);
+                if end.elected.is_some() {
+                    election.note_drawn_silence(Instant::now() + silence);
+                }
                 if matches!(end.elected, Some(e) if e.victim == ctx.id) {
                     if let Err(reason) = on_elected(&ctx, silence) {
                         tracing::warn!(node = ctx.id, %reason, "elected, but staying up");
@@ -826,6 +843,22 @@ mod tests {
         my_bid_sent(&mut joiner, t0 + ms(3), 1, 1);
         let end = ended(joiner.step(t0 + ms(4), true, no_draw));
         assert_eq!(end.election, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_drawn_silence_is_known_until_it_is_over() {
+        let toml = "[[cluster.nodes]]
+id = 1
+peer_addr = \"a:1\"
+client_addr = \"a:2\"
+";
+        let config = Config::from_toml(toml).unwrap();
+        let election = FaultElection::new(1, &config);
+        let t0 = Instant::now();
+        assert!(!election.drawn_silence_going_on(t0));
+        election.note_drawn_silence(t0 + ms(500));
+        assert!(election.drawn_silence_going_on(t0 + ms(499)));
+        assert!(!election.drawn_silence_going_on(t0 + ms(500)));
     }
 
     #[test]

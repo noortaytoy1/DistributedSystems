@@ -4,7 +4,7 @@ Working agreement for everyone who changes this repo, people and AI coding tools
 Read it before your first change. If something here is wrong or missing, fix it in a PR.
 
 RescueMesh is a three-node cloud of peers that plans incident responses for campus clients. Raft
-(openraft) orders every decision. A load-based bidding election picks the node that plans each
+(openraft) orders every committed change. A load-based bidding election picks the node that plans each
 request. Nodes survive faults of up to 20 s and catch up when they return. The system is
 measured with JSON Lines event logs. [README.md](README.md) covers what it does and how to run it.
 
@@ -71,16 +71,17 @@ six machines. Write every change so it works there:
   program its client ID from the machine number and the batch, so each machine needs its own `--machine`. By
   hand: `loadgen --client-id` from 1 to 9 (D184).
 - **Same build everywhere.** Each machine builds from the same commit with the toolchain pinned in
-  `rust-toolchain.toml`. Mixed versions can change the wire format or the state digest.
+  `rust-toolchain.toml`. Mixed versions can change the wire format or the state digest. Rebuild after every `git pull`, and wipe `data/raft`
+  when the version changes (see docs/runbook.md).
 - **Nothing shared but the network.** No shared filesystem and no shared clock. Each machine
   writes its own event logs; collect them afterwards. Wall-clock timestamps from different
   machines are only roughly aligned (run NTP); measure durations on one machine.
 - **Real networks are slower and less tidy than loopback.** Timers in `config.rs` are LAN
   defaults; anything that relies on timing must be tried on the lab machines, not only in tests
   on one host.
-- **Open the ports.** Peer ports (default 7001) must be reachable between the three node machines,
-  and client ports (default 8001) from the client machines, e.g. `sudo ufw allow 7001/tcp` and
-  `sudo ufw allow 8001/tcp`.
+- **Open the ports.** Peer ports (default 7001) must be reachable over TCP between the three node machines, and client ports (default
+  8001) from the client machines over UDP and TCP, e.g. `sudo ufw allow 7001/tcp`, `sudo ufw allow 8001/udp` and `sudo ufw allow
+  8001/tcp`. `ctl status` says `udp no answer` if a rule is missing. Raise `net.core.rmem_max` on all six (see docs/runbook.md).
 - **Ubuntu only.** Scripts are bash, paths are POSIX, and nothing may depend on Windows or macOS
   behaviour.
 
@@ -91,18 +92,17 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 
 | Part | Mechanism                | Files                                                                | Measures              | Owner |
 |------|--------------------------|----------------------------------------------------------------------|-----------------------|-------|
-| A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `config.rs`                      | E5, commit latency    |       |
+| A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `node/service.rs`, `node/step_aside.rs`, `config.rs` | E5, E8, commit latency |       |
 | B    | Bidding election         | `bidding.rs`, `node/bids.rs`, `node/cpu.rs`                          | E1 policies, E6       |       |
-| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/transport.rs`, `node/degraded.rs`, `node/group.rs`, `bin/ctl.rs` | E3 |       |
+| C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/takeover.rs`, `node/transport.rs`, `node/datagram.rs`, `node/degraded.rs`, `node/group.rs`, `bin/ctl.rs` | E3 |       |
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
-| E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`                         | E2, CPU and queues    |       |
+| E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`, `node/release.rs`      | E2, CPU and queues    |       |
 | F    | Client and scale         | `client.rs`, `bin/loadgen.rs`, `bin/frontend.rs`, `scripts/start-users.sh` | E1 scaling sweep, E7  |       |
-| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `bin/node.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
+| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `middleware.rs`, `bin/node.rs`, `node/usage.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
 
 Review pairs: A↔D, B↔E, C↔F.
 
-`raft/` includes `raft/proposals.rs`, the proposal queue (D133). When D156 lands, row A gains `node/service.rs`, and
-`src/middleware.rs` goes in the shared row.
+`raft/` includes `raft/proposals.rs`, the proposal queue (D133).
 
 Files outside a finished part are templates: signatures, doc comments and placeholder bodies that
 compile and never panic. One exception: `node/transport.rs` holds minimal working plumbing
@@ -128,7 +128,7 @@ Open work is marked in the code as `TODO(<part>)`. To list one part's work:
 5. **Everything goes through a pull request.** Nobody pushes to `main` directly, not even a
    one-line fix. See [Git workflow](#git-workflow).
 6. **Library code is kept apart from ours.** The report must separate them. openraft (Raft) and tarpc (remote calls)
-   are the only libraries doing distributed-systems work (D215); anything new of that kind needs team agreement first.
+   are the only libraries doing distributed-systems work (D179, D215); anything new of that kind needs team agreement first.
 7. **The docs decide.** The spec, the class notes and the recordings settle a question about what the course wants. Never
    leave a question for the instructor in a doc, and never tell anyone to ask him (D213). State a reading with its source.
 
@@ -207,8 +207,9 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Deterministic core.** `state.rs`, `bidding.rs` and `planner.rs` never touch the network,
   the clock or randomness. Pass time and inputs in as arguments. In `state.rs`, never iterate a
   `HashMap`: use `BTreeMap`/`BTreeSet`. Every node must reach exactly the same state.
-- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets, with two named exceptions:
-  `client.rs` (D112), and `bin/frontend.rs`, which only listens for the browser on its own PC (D200).
+- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets, with one named exception:
+  `bin/frontend.rs`, which only listens for the browser on its own PC (D200). `client.rs` goes through
+  `transport::connect_client` and `transport::datagram_client` (D175).
 - **Middleware and application stay apart, on both sides.** On the client side the application makes one `submit` call and
   `MeshClient` does the rest. On the cloud side the incident service uses the group and Raft through their interfaces. It is
   asked about repeatedly, so keep it visible (D211, `docs/architecture.md` section 4.3).
@@ -224,8 +225,10 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Every peer message carries the sender's Raft term.** Receivers drop non-Raft messages
   from an older term and answer `StaleTerm`. Never drop Raft RPCs this way, because openraft
   must see them to reject a stale leader.
-- **Commit, then reply.** A node replies to a client only after the result is committed and
-  applied. The first committed result per request ID wins; later ones get the winner back. The one
+- **Commit, then reply.** A node replies to a client only after the result is committed. The winner's
+  answer comes after the leader applied it, so a winner that forwarded its proposal can answer before
+  its own copy has applied that entry. A retry's answer comes after this node applied it (D232). The
+  first committed result per request ID wins; later ones get the winner back. The one
   exception is degraded mode (D120): a node left alone answers `Provisional`, clearly labelled, and
   replays the result through Raft when a peer returns. A refusal of a report too old to plan is committed
   like any result, so it is no exception (D143).
@@ -236,7 +239,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   each reply, so a handler that was waiting on a commit stays quiet too (D136). It does not vote for
   itself either, unless it has heard from no leader for 3 s (D125).
 - **The fault gate drops everything but control.** A silenced node neither sends nor receives
-  peer or client traffic. Control frames, from `ctl` and from status polls, still get through.
+  peer or client traffic. Control calls, from `ctl` and from status polls, still get through, and any method added to `ClientRpc` must
+  decide which it is. On the client port the gate sits in the UDP reader, in front of tarpc (D174).
 - **Integers in replicated data.** No floats in `Command` or `CloudState`. Use integer units
   and name them: `cost`, `latency_us`, `timeout_ms`.
 
@@ -270,6 +274,9 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   deterministic core (`state.rs`, `bidding.rs`, `planner.rs`) needs thorough unit tests.
 - **Multi-node tests** go in `tests/`. They start real nodes in one process on `127.0.0.1:0`
   ports. Use the helpers in `tests/common/mod.rs`.
+- **The runner has tests with nothing shared.** `tests/runner_script.rs` and `tests/runner_over_ssh.rs` run the runner through a stand-in `ssh`, with
+  each machine in its own directory. `experiments/hosts.local` cannot show a line that goes wrong only on a far machine, so a change to how the runner reaches a
+  machine must keep them green (D188, D222). They are not a real `sshd`, so anything new over ssh also needs a try on the lab.
 - **No fixed sleeps in tests.** Poll for the condition with a deadline (`wait_until`). Sleeps
   make tests slow on fast machines and flaky on slow ones.
 - **Stable means 10 green runs in a row.** For a test that touches timing, run
@@ -283,7 +290,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   adds and plots their own events. Keep field names stable once a script reads them. To compare nodes, use
   `state_checkpoint`, logged at fixed log indexes, not `state_digest` (D138).
 - Client latency is measured on the client clock. Durations are measured with
-  `std::time::Instant`, never by subtracting wall-clock timestamps from different machines.
+  `std::time::Instant`, never by subtracting wall-clock timestamps from different machines. The figures that still compare two machines' clocks are
+  listed in `analysis/README.md`, and FT-2 is not judged from them (D233).
 - Two profiles (D63): `full` is 5 runs per cell with a 30 s warm-up and 2 min measured; `quick` is 3
   runs with 15 s and 60 s, and the report states its limits. Keep each run's raw logs. Raw data never
   goes into git: `runs/` and `*.jsonl` are ignored.
@@ -296,7 +304,7 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **A:** the Raft paper (terms, log matching, commit rules) and openraft's storage and network
   traits.
 - **B:** election algorithms (Bully and variants), load metrics, fairness measures.
-- **C:** failure detectors, timeouts, TCP behaviour under partition.
+- **C:** failure detectors, timeouts, TCP behaviour under partition, UDP sockets and receive buffers.
 - **D:** log catch-up, the term rules, convergence checks.
 - **E:** CPU-bound work in async systems, bounded queues and backpressure.
 - **F:** load generation (open versus closed loop), percentiles, statistical design of
@@ -333,6 +341,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 ## Glossary
 
 - **Term:** Raft's logical epoch. At most one leader per term (`single-term-leader`).
+- **Leader:** the node a majority elected to order the log. It numbers entries, sends the copies and answers one read, and it decides nothing else (D163). The bid moves work by load (D217). A leader that stays overloaded steps aside, and a normal vote picks another (D218).
+- **Going quiet:** a leader stopping its heartbeats and holding its writes, so that followers' timers run out and an ordinary vote moves the leadership (D218). No timer or vote rule changes.
 - **Executor:** the node that plans a request: the bidding winner, or the leader in baseline
   mode.
 - **First commit wins:** the state machine keeps the first committed result per request ID.
@@ -349,6 +359,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   any number does nothing, so a node that is out stops the next election. No leader, nothing in the log (D158).
 - **Group send:** the client middleware's send to all of the cloud nodes. The application makes one call and does not know it
   happens (D210).
+- **Stub:** tarpc's generated client for one node. `MeshClient` holds one per node, each on its own UDP socket.
+- **Parked call:** a call open on a node with nothing to say. It ends at the client's cancel, or at its deadline if the cancel is lost (D169, D173).
 - **Group:** the cloud nodes as one named group (`node/group.rs`). `send` goes to the view and `probe` to every configured peer. Order
   and delivery of results come from Raft, not the group.
 - **View:** one node's list of who is in the group, the membership. A peer leaves after `degraded_after_ms` of unbroken suspicion and

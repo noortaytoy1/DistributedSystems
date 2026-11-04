@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,7 +28,7 @@ use crate::proto::{
     Command, CommittedResult, NodeId, Outcome, PeerReply, Plan, ProposeError, RaftRpc, StaleReason,
 };
 use crate::raft::store::StateReader;
-use crate::raft::{Consensus, ConsensusStatus, Role};
+use crate::raft::{Consensus, ConsensusStatus, LogWork, Role};
 
 const THREE_NODES: &str = r#"
 [[cluster.nodes]]
@@ -48,7 +48,10 @@ client_addr = "c:2"
 /// A [`Consensus`] whose every answer the test decides.
 pub(crate) struct ScriptedConsensus {
     id: NodeId,
+    term: AtomicU64,
     leader: Mutex<Option<NodeId>>,
+    quiet: AtomicBool,
+    log_work: Mutex<LogWork>,
     answers: Mutex<VecDeque<Result<Option<u64>, ProposeError>>>,
     questions: AtomicUsize,
     /// As a Raft that has stopped: every wait fails at once.
@@ -69,7 +72,10 @@ impl ScriptedConsensus {
     pub(crate) fn new(id: NodeId) -> Arc<Self> {
         Arc::new(Self {
             id,
+            term: AtomicU64::new(1),
             leader: Mutex::new(None),
+            quiet: AtomicBool::new(false),
+            log_work: Mutex::new(LogWork::default()),
             answers: Mutex::new(VecDeque::new()),
             questions: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
@@ -84,6 +90,37 @@ impl ScriptedConsensus {
 
     pub(crate) fn set_leader(&self, leader: Option<NodeId>) {
         *lock(&self.leader) = leader;
+    }
+
+    pub(crate) fn set_term(&self, term: u64) {
+        self.term.store(term, Ordering::SeqCst);
+    }
+
+    /// Adds finished writes, as if the log had carried them.
+    pub(crate) fn add_writes(&self, writes: u64, each_us: u64) {
+        let mut work = lock(&self.log_work);
+        work.writes += writes;
+        work.writes_done += writes;
+        work.write_us += writes * each_us;
+    }
+
+    /// Adds answered proposals, with the time they spent in the queue in `each_us`.
+    pub(crate) fn add_answers(&self, answered: u64, each_us: u64) {
+        let mut work = lock(&self.log_work);
+        work.answered += answered;
+        work.answered_us += answered * each_us;
+    }
+
+    /// Adds disk saves, as if the log file had been written.
+    pub(crate) fn add_saves(&self, saves: u64, each_us: u64) {
+        let mut work = lock(&self.log_work);
+        work.saves += saves;
+        work.save_us += saves * each_us;
+    }
+
+    /// What the last `set_quiet` said.
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.quiet.load(Ordering::SeqCst)
     }
 
     /// What `read_index` answers, one per question. The last answer repeats; with none it fails.
@@ -184,7 +221,7 @@ impl Consensus for ScriptedConsensus {
         let applied = *self.applied.borrow();
         ConsensusStatus {
             id: self.id,
-            term: 1,
+            term: self.term.load(Ordering::SeqCst),
             leader,
             role: if leader == Some(self.id) {
                 Role::Leader
@@ -233,6 +270,14 @@ impl Consensus for ScriptedConsensus {
     }
 
     fn set_elect(&self, _enabled: bool) {}
+
+    fn set_quiet(&self, quiet: bool) {
+        self.quiet.store(quiet, Ordering::SeqCst);
+    }
+
+    fn log_work(&self) -> LogWork {
+        *lock(&self.log_work)
+    }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})

@@ -10,8 +10,10 @@
 //!   and retries across leader changes until `timers.propose_timeout_ms`, which is a real cap on
 //!   the wait. Retrying is safe because every `Command` is idempotent.
 //! - On the leader every proposal, its own or forwarded, goes through one queue (proposals.rs): one
-//!   `client_write` at a time, carrying everything that waited as one log entry, so that disk saves
-//!   cannot stop the heartbeats (D133).
+//!   `client_write` at a time, carrying up to `GROUP_LIMIT` of what waited as one log entry, so that
+//!   disk saves cannot stop the heartbeats (D133).
+//! - A busy leader can go quiet: no heartbeats, and the queue held. Nothing then resets the
+//!   followers' election timers, so they start an ordinary vote (node/step_aside.rs, D218).
 //! - Each finished proposal logs a `commit` event with its latency, and every term, leader or role
 //!   change logs a `raft_state` event (E5).
 //! - Once a second each node logs a one-line summary of the Raft heartbeats it sent and received
@@ -112,10 +114,27 @@ pub struct ConsensusStatus {
     pub last_applied: Option<u64>,
 }
 
+/// What this node's proposal queue has done so far, for the busy-leader check (D218).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogWork {
+    /// Proposals answered, and the time they took from entering the queue. Both cumulative.
+    pub answered: u64,
+    pub answered_us: u64,
+    /// `client_write` calls started and finished, and the time the finished ones took, queueing
+    /// not included. All cumulative. Started and finished differ while one is in flight.
+    pub writes: u64,
+    pub writes_done: u64,
+    pub write_us: u64,
+    /// Writes to the log file that waited for the disk, and the time they took. Both cumulative.
+    pub saves: u64,
+    pub save_us: u64,
+}
+
 /// What node code needs from consensus.
 pub trait Consensus: Send + Sync + 'static {
-    /// Commit `cmd` and return its outcome once applied. Forwards to the leader and retries
-    /// across leader changes until the propose timeout.
+    /// Commit `cmd` and return its outcome once the leader has applied it, which on a follower can
+    /// be before its own copy has. Forwards to the leader and retries across leader changes until
+    /// the propose timeout.
     fn propose(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>>;
 
     /// Commit `cmd` only if this node is the leader; used for proposals forwarded to us.
@@ -148,6 +167,14 @@ pub trait Consensus: Send + Sync + 'static {
     /// Allow or forbid this node to start elections. Off while a node is not serving, so a
     /// returning node does not raise its term and depose a healthy leader (D5, D75).
     fn set_elect(&self, enabled: bool);
+
+    /// Go quiet, or stop being quiet: no Raft heartbeats, and no new log writes, which wait in the
+    /// proposal queue instead. This changes no election timer and no vote rule: the followers'
+    /// timers just run out, as they would for a leader that failed (D218).
+    fn set_quiet(&self, quiet: bool);
+
+    /// How long the log has been taking on this node.
+    fn log_work(&self) -> LogWork;
 
     fn shutdown(&self) -> BoxFuture<'_, ()>;
 }
@@ -277,6 +304,10 @@ impl RaftNode {
             commands: queue.commands.load(Ordering::Relaxed),
             expired: queue.expired.load(Ordering::Relaxed),
             write_timeouts: queue.write_timeouts.load(Ordering::Relaxed),
+            answered: queue.answered.load(Ordering::Relaxed),
+            answered_us: queue.answered_us.load(Ordering::Relaxed),
+            writes_done: queue.writes_done.load(Ordering::Relaxed),
+            write_us: queue.write_us.load(Ordering::Relaxed),
             syncs: saved.syncs.load(Ordering::Relaxed),
             sync_us: saved.sync_us.load(Ordering::Relaxed),
             max_sync_us: saved.max_sync_us.swap(0, Ordering::Relaxed),
@@ -525,6 +556,27 @@ impl Consensus for RaftNode {
 
     fn set_elect(&self, enabled: bool) {
         self.raft.runtime_config().elect(enabled);
+    }
+
+    // Both switches live in this process only, so a restarted node starts with heartbeats on.
+    fn set_quiet(&self, quiet: bool) {
+        self.raft.runtime_config().heartbeat(!quiet);
+        self.queue.hold(quiet);
+    }
+
+    fn log_work(&self) -> LogWork {
+        let stats = self.queue.stats();
+        LogWork {
+            answered: stats.answered.load(Ordering::Relaxed),
+            answered_us: stats.answered_us.load(Ordering::Relaxed),
+            // Read finished before started, so a write that ends between the two reads as in flight
+            // for one reading at most, and never the other way round.
+            writes_done: stats.writes_done.load(Ordering::Relaxed),
+            writes: stats.writes.load(Ordering::Relaxed),
+            write_us: stats.write_us.load(Ordering::Relaxed),
+            saves: self.log_stats.syncs.load(Ordering::Relaxed),
+            save_us: self.log_stats.sync_us.load(Ordering::Relaxed),
+        }
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {

@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Turn collected runs into the report's numbers and plots.
 
-    python analysis/analyze.py runs [--out analysis/out]
+    python3 analysis/analyze.py runs [--out analysis/out]
 
 Reads runs/<experiment>/<cell>/<run>/ as scripts/run-experiments.sh writes them. Each metric is
 computed per run, then averaged across the cell's runs with a 95% Student's t confidence interval.
 Writes summary.csv (long format, one row per cell and metric) and PNG plots to the output directory.
 
-Durations come from `latency_us`-style fields, measured on one machine. The one exception is the
-before/during/after split, which compares client timestamps with the victim's: those machines are only
-as aligned as NTP makes them, so the phase edges are approximate (AGENTS.md, Measuring).
+Durations come from `latency_us`-style fields, measured on one machine. FT-2 reads failover_gap_ms_* and
+client_gap_pc_*, which are on one clock (D233). failover_to_*, before_rps, during_rps, after_rps and
+arrival_peak_100ms_share_first_s subtract timestamps from different machines, so they are only as good as those
+clocks (AGENTS.md, Measuring). The phases' edges, the other arrival_peak_*, elections_after_rejoin and every filter
+on the measured time compare them, to choose lines. node_clock_skew_ms and client_clock_skew_ms say how far apart
+the clocks were in that run.
 """
 
 import argparse
+import bisect
 import csv
 import json
 import math
@@ -27,7 +31,13 @@ from scipy import stats
 USER_HZ = 100  # /proc CPU ticks per second on Ubuntu
 UDP_RCVBUF_ASKED_BYTES = 8 * 1024 * 1024  # node/datagram.rs: what every UDP socket asks for (D171)
 ELECTION_AFTER_REJOIN_US = 10_000_000  # FT-6: elections this soon after a rejoin count against it
+LOSS_GRACE_US = 1_000_000  # a term that moves later than this after a quiet spell was not lost to it
+LOG_END_GRACE_US = 2_000_000  # a leader lost this close to the end of the logs had no time to be replaced
 PERCENTILES = (50, 95, 99)
+NODE_CLOCK_SKEW_WARN_MS = 10  # failover_to_* moves by exactly this
+CLIENT_CLOCK_SKEW_WARN_MS = 50  # half the width of arrival_peak_*, and one priority point (D148)
+# FT-2 holds for every failover, and a mean across runs can hide one. A maximum is its own question (D233).
+WORST_RUN_METRICS = ("failover_gap_ms_max", "client_gap_pc_max_ms", "client_gap_max_ms", "worst_request_ms")
 
 
 def read_events(run_dir):
@@ -123,6 +133,25 @@ def measured_start(events, warmup_s):
     return min(starts) + warmup_s * 1_000_000 if starts else 0
 
 
+def worst_request_ms(events, done, gave_up):
+    """The longest any one measured request waited: an answered one's latency, or how long one that gave up
+    kept trying. client_gap_* cannot say this, because it is per program and a program holds many users, so
+    its other users' answers cut the gap short (D229)."""
+    waits = [e["latency_us"] for e in done]
+    if gave_up:
+        first_sent = {
+            (e["request"]["client"], e["request"]["seq"]): e["ts_us"]
+            for es in client_sources(events).values()
+            for e in es
+            if e["ev"] == "client_sent" and e["attempt"] == 0
+        }
+        for e in gave_up:
+            started = first_sent.get((e["request"]["client"], e["request"]["seq"]))
+            if started is not None:
+                waits.append(e["ts_us"] - started)
+    return max(waits) / 1000 if waits else float("nan")
+
+
 def request_metrics(events, warmup_s, measured_s):
     done, gave_up = client_requests(events, warmup_s)
     committed = [e for e in done if not e.get("provisional")]
@@ -134,6 +163,19 @@ def request_metrics(events, warmup_s, measured_s):
     answered = len(done)
     retried = sum(1 for e in done if e["attempts"] > 1)
     no_responder = sum(1 for e in done if e.get("no_responder"))
+    # An answer that sent nobody counts in throughput_rps and is about as fast as a real one, so a cell
+    # that ran out of responders still reads as busy (D229). A provisional answer names a responder, but if
+    # that one was taken the record reads nobody, and the client is not told (D122).
+    taken = sum(
+        1
+        for es in node_events(events).values()
+        for e in es
+        if e["ev"] == "provisional_conflict" and e["reason"] == "responder_taken"
+    )
+    metrics["answered_with_responder_rps"] = (
+        max(answered - no_responder - taken, 0) / measured_s if measured_s else float("nan")
+    )
+    metrics["worst_request_ms"] = worst_request_ms(events, done, gave_up)
     metrics["retried_share"] = retried / answered if answered else float("nan")
     metrics["no_responder_share"] = no_responder / answered if answered else float("nan")
     # An expired report also counts in no_responder_share. See expired_warnings.
@@ -182,8 +224,12 @@ def silent_spans(events):
 
 
 def election_metrics(events, start_us):
-    """Raft elections: new terms seen, and how long each node had no leader, leaving out the times
-    it was silenced or catching up itself.
+    """Raft elections: new terms seen, and how long each one's vote took, leaving out the times the node
+    was silenced or catching up itself.
+
+    election_duration_mean_ms is only the vote, not how long the cloud had no leader, whatever its name
+    says. A node logs no missing leader until it stands for election, so the wait before that is not in it:
+    about 10 ms of a failover near 700 ms. failover_metrics has the wait (D229).
 
     An election is a term above the one already running when the window opened. That term is the
     highest logged before the window; it logs nothing inside the window unless something changes,
@@ -216,6 +262,178 @@ def election_metrics(events, start_us):
         "election_duration_mean_ms": float(np.mean(durations_us)) / 1000
         if durations_us
         else float("nan"),
+    }
+
+
+def quiet_spells(es):
+    """When this node went quiet while it led: {term: [[from_us, to_us], ...]}, in time order, with spells
+    that overlap joined. A silence lasts its `ms`. A step-aside lasts until its end line, or for ever if
+    the log has none. One that timed out with the term unchanged drops out: that leader held its writes
+    for up to 3 s and carried on, so no leader was lost."""
+    watched = ("raft_state", "silenced", "leader_stepped_aside", "leader_step_aside_ended")
+    spells = defaultdict(list)
+    asides = {}
+    led = None
+    for e in sorted((e for e in es if e["ev"] in watched), key=lambda e: e["ts_us"]):
+        if e["ev"] == "raft_state":
+            led = e["term"] if e["role"] == "leader" else None
+        elif e["ev"] == "silenced":
+            if led is not None:
+                spells[led].append([e["ts_us"], e["ts_us"] + e["ms"] * 1000])
+        elif e["ev"] == "leader_stepped_aside":
+            asides[e["term"]] = [e["ts_us"], math.inf]
+            spells[e["term"]].append(asides[e["term"]])
+        elif e["term"] in asides:
+            aside = asides.pop(e["term"])
+            aside[1] = e["ts_us"]
+            if e["outcome"] == "timed_out" and e["new_term"] == e["term"]:
+                spells[e["term"]].remove(aside)
+    joined = {}
+    for term, found in spells.items():
+        joined[term] = []
+        for begin, end in sorted(found):
+            if joined[term] and begin <= joined[term][-1][1]:
+                joined[term][-1][1] = max(joined[term][-1][1], end)
+            else:
+                joined[term].append([begin, end])
+    return joined
+
+
+def failover_metrics(events, start_us, measured_s=None):
+    """How long the cloud had no leader after losing one (FT-2, D229).
+
+    A leader can go quiet many times in one term, and most short silences cost it nothing. So a term counts
+    as lost only if some node logs a higher term before that quiet ended, or up to LOSS_GRACE_US after, and
+    the loss starts at the last quiet spell that began before the next leader's first line. A later election
+    is another story. The leader's own `silenced` or `leader_stepped_aside` line must fall in the measured
+    time. failover_to_leader_ms_mean runs to the first `raft_state` line of a leader in the next term that
+    has one, and failover_to_commit_ms_mean to the first result committed after that line, when clients can
+    have answers again.
+
+    A loss with no later leader in the log adds to failovers_without_leader and to neither mean, and
+    failover_warnings names the cell, so that the worst case cannot read as a good average without anyone
+    being told. One within LOG_END_GRACE_US of the logs' end is not judged, as nobody had time to take over.
+    A loss with a leader and no commit after it adds to failovers_without_commit and leaves only the second
+    mean, so then the two means cover different failovers.
+
+    These subtract `ts_us` written by different machines, so each is off by exactly the difference between
+    those two clocks, the same way in every run with the same two PCs, where no confidence interval shows
+    it. A new leader's clock behind by more than the failover reads as failovers_without_leader. Never
+    judge FT-2 from these: failover_gap_metrics and client_pc_gap_metrics are on one clock (D233)."""
+    logs = node_events(events)
+    states = [e for es in logs.values() for e in es if e["ev"] == "raft_state"]
+    # By term, so that a clock behind the others cannot pair a loss with an election long after it.
+    next_leaders = sorted((e["term"], e["ts_us"]) for e in states if e["role"] == "leader")
+    commits = sorted(
+        e["ts_us"]
+        for es in logs.values()
+        for e in es
+        if e["ev"] == "commit" and e["kind"] == "commit_result" and e["outcome"] == "committed"
+    )
+    measured_to = start_us + measured_s * 1_000_000 if measured_s and start_us else math.inf
+    logs_end = max((e["ts_us"] for es in logs.values() for e in es), default=0)
+    to_leader, to_commit = [], []
+    failovers = without_leader = without_commit = 0
+    for es in logs.values():
+        restored = [e["ts_us"] for e in es if e["ev"] == "restored"]
+        for term, spells in quiet_spells(es).items():
+            if not spells:
+                continue
+            new_leader = next((ts for t, ts in next_leaders if t > term), None)
+            began = [spell for spell in spells if new_leader is None or spell[0] <= new_leader]
+            at, until = began[-1] if began else spells[0]
+            if at < start_us or at > measured_to:
+                continue
+            moved = min((e["ts_us"] for e in states if e["term"] > term), default=None)
+            cost_the_term = moved is not None and moved <= until + LOSS_GRACE_US
+            if began and new_leader is not None:
+                if cost_the_term:
+                    failovers += 1
+                    to_leader.append(new_leader - at)
+                    first_commit = bisect.bisect_left(commits, new_leader)
+                    if first_commit < len(commits):
+                        to_commit.append(commits[first_commit] - at)
+                    else:
+                        without_commit += 1
+            elif at + LOG_END_GRACE_US < logs_end and (cost_the_term or not any(at < r for r in restored)):
+                failovers += 1
+                without_leader += 1
+    return {
+        "failovers": failovers,
+        "failovers_without_leader": without_leader,
+        "failovers_without_commit": without_commit,
+        "failover_to_leader_ms_mean": float(np.mean(to_leader)) / 1000 if to_leader else float("nan"),
+        "failover_to_commit_ms_mean": float(np.mean(to_commit)) / 1000 if to_commit else float("nan"),
+    }
+
+
+def failover_gap_metrics(events, start_us, measured_s=None):
+    """FT-2 on one clock: how long a node that kept following heard from no leader, around each change of
+    leader (D233). `max_leader_gap_us` is read with `Instant` on that machine, from the old leader's last
+    AppendEntries to the new leader's first, so no clock offset can move the reading.
+
+    The Raft term says which change a line belongs to, and time is only compared within one log, apart from
+    the measured time's edges. The node that wins stops counting when it leads, and one coming back from a
+    silence waited for its own reasons, so both are left out. It reads long by up to one heartbeat tick, 75 ms,
+    plus the first message's way, and short by at most one network hop, so a reading of 1000 or less shows a
+    new leader within 1 s. It needs no `silenced` line, so a power cut has it too. A returning old leader's
+    message ends the gap, so in `degraded-*`, or after a silence shorter than a failover, it reads only the
+    last stretch."""
+    measured_to = start_us + measured_s * 1_000_000 if measured_s and start_us else math.inf
+    gaps = []
+    for es in node_events(events).values():
+        spans = silent_spans(es)
+        reports = [e for e in es if e["ev"] == "raft_io"]
+        report_times = [e["ts_us"] for e in reports]
+        followed = None
+        for e in es:
+            if e["ev"] != "raft_state" or e["leader"] is None:
+                continue
+            if e["role"] != "follower":
+                followed = None
+                continue
+            at = e["ts_us"]
+            changed = followed is not None and e["term"] > followed
+            if changed and start_us <= at <= measured_to and not any(a <= at <= b for a, b in spans):
+                # The gap is in the first line after the new leader's first message, which came just
+                # before this one, so it is in one of the two lines around here.
+                i = bisect.bisect_left(report_times, at)
+                near = [e.get("max_leader_gap_us", 0) for e in reports[max(i - 1, 0):i + 1]]
+                if near:
+                    gaps.append(max(near))
+            followed = e["term"]
+    return {
+        "failover_gap_ms_mean": float(np.mean(gaps)) / 1000 if gaps else float("nan"),
+        "failover_gap_ms_max": max(gaps) / 1000 if gaps else float("nan"),
+    }
+
+
+def clock_skew_metrics(events):
+    """How far apart the PCs' clocks were in this run, from the traffic and with no NTP (D56, D233). A
+    client PC sends each report to all three nodes at once. Over thousands of copies a node's quickest arrival
+    is its clock minus the client PC's, plus one network hop. So two nodes' quickest arrivals differ by the
+    difference between their clocks, to about the difference between two hops: failover_to_* can be off by
+    node_clock_skew_ms. client_clock_skew_ms is the largest of the quickest arrivals, either way, which is what
+    the phases' edges and the windows compare, and it reads high by up to one hop."""
+    sent = {}
+    for source, es in client_sources(events).items():
+        machine = source[len("client-")]
+        for e in es:
+            if e["ev"] == "client_sent":
+                sent[(e["request"]["client"], e["request"]["seq"], e["attempt"])] = (machine, e["ts_us"])
+    quickest = defaultdict(dict)
+    for source, es in node_events(events).items():
+        for e in es:
+            if e["ev"] == "request_received":
+                found = sent.get((e["request"]["client"], e["request"]["seq"], e["attempt"]))
+                if found is not None:
+                    by_node = quickest[found[0]]
+                    by_node[source] = min(by_node.get(source, math.inf), e["ts_us"] - found[1])
+    if not quickest:
+        return {}
+    return {
+        "node_clock_skew_ms": max(max(n.values()) - min(n.values()) for n in quickest.values()) / 1000,
+        "client_clock_skew_ms": max(abs(v) for n in quickest.values() for v in n.values()) / 1000,
     }
 
 
@@ -265,7 +483,10 @@ def client_gap_metrics(events, fault_start, fault_end):
     which gaps overlap compares clocks, so the size of a gap is as exact as its client's clock.
 
     The client's first and last events close the two ends. Without them a client that never hears
-    again after the fault has no gap at all, and the worst run of a cell drops out of its mean."""
+    again after the fault has no gap at all, and the worst run of a cell drops out of its mean.
+
+    This is per program, and a program holds many users, so one user's answer ends the gap for all of
+    them. It understates what the unluckiest user saw: worst_request_ms says that (D229)."""
     longest = []
     for source, es in events.items():
         if not source.startswith("client-") or not es:
@@ -278,6 +499,32 @@ def client_gap_metrics(events, fault_start, fault_end):
     return {
         "client_gap_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
         "client_gap_max_ms": max(longest) / 1000 if longest else float("nan"),
+    }
+
+
+def client_pc_gap_metrics(events, warmup_s, measured_s):
+    """FT-2's first new answer on one clock: the longest a client PC went with no answer to any program it
+    runs, in the measured time (D233). Its programs share its clock, and the first digit of a client ID is
+    the machine (D184), so nothing here compares two machines, not even to choose a gap. It reads long by
+    about one normal wait between answers, which is 10 ms at 100 reports a second, and a PC that never
+    hears again counts its whole silence. A power cut and a step-aside have it too."""
+    answers, starts = defaultdict(list), defaultdict(list)
+    for source, es in client_sources(events).items():
+        started = program_start(es)
+        if started is not None:
+            machine = source[len("client-")]
+            starts[machine].append(started)
+            answers[machine] += [e["ts_us"] for e in es if e["ev"] == "client_done"]
+    longest = []
+    for machine, times in answers.items():
+        measure_from = min(starts[machine]) + warmup_s * 1_000_000
+        measure_to = measure_from + measured_s * 1_000_000
+        inside = sorted(t for t in times if measure_from <= t <= measure_to)
+        edges = [measure_from] + inside + [measure_to]
+        longest.append(max(b - a for a, b in zip(edges, edges[1:])))
+    return {
+        "client_gap_pc_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
+        "client_gap_pc_max_ms": max(longest) / 1000 if longest else float("nan"),
     }
 
 
@@ -301,6 +548,9 @@ def fault_metrics(events, measured_requests):
     }
     for reason in ("lost_first_commit", "responder_taken"):
         metrics[f"conflicts_{reason}"] = sum(1 for r in values("provisional_conflict", "reason") if r == reason)
+    # Named to sort beside provisional_count and provisional_replied in summary.csv: each is an answer that
+    # did not stand on record, and the client is not told (D122, D229).
+    metrics["provisional_conflicts"] = len(values("provisional_conflict", "reason"))
 
     # Split by reason and kept away from the failover figures: a `backstop` takeover fires when a
     # busy winner runs out of time, with no fault anywhere, and under overload that is nearly all
@@ -318,6 +568,8 @@ def fault_metrics(events, measured_requests):
         return metrics
     fault_start, fault_end = min(silenced), max(restored)
     metrics.update(client_gap_metrics(events, fault_start, fault_end))
+    # Provisional answers as well as committed ones, unlike the main latency figures. In a degraded cell
+    # during_* is mostly uncommitted answers, so it reads far better than before_*: see provisional_notes.
     sent_at = [e["ts_us"] - e["latency_us"] for e in measured_requests]
     if not sent_at:
         return metrics
@@ -488,19 +740,49 @@ def resource_metrics(events, start_us):
     }
 
 
-def udp_metrics(events, start_us, completed):
-    """What the UDP client path carried and lost in the measured time (D172). The counters are
-    cumulative per process, so each is its last value minus its first.
+def whole_log_counts(samples, fields):
+    """What a process's cumulative counters add up to over its whole log. A node killed and restarted
+    counts from 0 again in the same file, so a counter that falls ends one life and starts the next."""
+    totals = defaultdict(int)
+    previous = {}
+    for sample in samples:
+        for field in fields:
+            value = sample.get(field, 0)
+            if value < previous.get(field, 0):
+                totals[field] += previous[field]
+            previous[field] = value
+    for field, value in previous.items():
+        totals[field] += value
+    return totals
 
-    Cancels are outside the msgs_ figures, which count what nodes send, so this is where they show.
-    Each process's samples start at its own clock's reading of `start_us`, so the two sides of a loss
-    share cover slightly different windows. Treat it as approximate."""
+
+def udp_metrics(events, start_us, completed):
+    """What the UDP client path carried and lost (D172). The counters are cumulative per process.
+
+    What it carried is per answered request, so it is over the measured time: each counter's last value
+    minus its first. Cancels are outside the msgs_ figures, which count what nodes send, so this is where
+    they show.
+
+    What it lost is over each process's whole log, warm-up included. Each process samples on its own
+    second, so over the measured time one side's count starts up to a second later than the other's, and
+    that read as 1 to 4 percent lost in a run where the kernel dropped nothing.
+
+    udp_request_loss_share and udp_cancel_loss_share still read false, about 1 percent with nothing lost,
+    and would hide a real loss below that. A node writes no counters as it stops, so its last line can be a
+    second older than the client's last send. udp_copy_metrics has the real figure (D229)."""
     totals = {"client": defaultdict(int), "node": defaultdict(int)}
+    whole_log = {"client": defaultdict(int), "node": defaultdict(int)}
     drops = {"client": [], "node": []}
     rcvbufs = []
     for source, es in events.items():
         side = "client" if source.startswith("client-") else "node"
         rcvbufs += [e["rcvbuf_got_bytes"] for e in es if e["ev"] == "udp_socket"]
+        counts = whole_log_counts(
+            (e for e in es if e["ev"] == "udp_counters"),
+            ("tx_requests", "tx_cancels", "rx_requests", "rx_cancels"),
+        )
+        for field, value in counts.items():
+            whole_log[side][field] += value
         samples = [e for e in es if e["ev"] == "udp_counters" and e["ts_us"] >= start_us]
         if len(samples) < 2:
             continue
@@ -521,12 +803,11 @@ def udp_metrics(events, start_us, completed):
         metrics["udp_requests_per_req"] = client["tx_requests"] / completed
         metrics["udp_cancels_per_req"] = client["tx_cancels"] / completed
         metrics["udp_datagrams_per_req"] = (client["tx_datagrams"] + node["tx_datagrams"]) / completed
-    if client["tx_requests"]:
-        arrived = (node["rx_requests"] / client["tx_requests"])
-        metrics["udp_request_loss_share"] = max(1 - arrived, 0.0)
-    if client["tx_cancels"]:
-        arrived = node["rx_cancels"] / client["tx_cancels"]
-        metrics["udp_cancel_loss_share"] = max(1 - arrived, 0.0)
+    sent, read = whole_log["client"], whole_log["node"]
+    if sent["tx_requests"]:
+        metrics["udp_request_loss_share"] = max(1 - read["rx_requests"] / sent["tx_requests"], 0.0)
+    if sent["tx_cancels"]:
+        metrics["udp_cancel_loss_share"] = max(1 - read["rx_cancels"] / sent["tx_cancels"], 0.0)
     metrics["udp_gate_dropped"] = node["rx_gate_dropped"]
     metrics["udp_queue_full"] = node["rx_queue_full"]
     metrics["udp_bad"] = client["rx_bad"] + node["rx_bad"]
@@ -539,6 +820,25 @@ def udp_metrics(events, start_us, completed):
     metrics["udp_drops_nodes"] = sum(drops["node"])
     metrics["udp_drops_client_pc_max"] = max(drops["client"], default=0)
     return metrics
+
+
+def udp_copy_metrics(events):
+    """The share of report copies that never reached a node's code, from events that cannot miss (D229).
+    Each `client_sent` is one copy to every node. Each copy a node handled is a `request_received`, or was
+    turned away by the fault gate, which counts requests only. Over the whole log, as a copy can be on its
+    way at any edge. A node that is off reads nothing, so in a run with `kill -9` not all of this is the
+    network. A gate's count can be a second old when the run ends, which only matters if a silence
+    outlasts the clients."""
+    logs = node_events(events)
+    sent = sum(1 for es in client_sources(events).values() for e in es if e["ev"] == "client_sent")
+    if not sent or not logs:
+        return {}
+    handled = 0
+    for es in logs.values():
+        handled += sum(1 for e in es if e["ev"] == "request_received")
+        counters = (e for e in es if e["ev"] == "udp_counters")
+        handled += whole_log_counts(counters, ("rx_gate_dropped",))["rx_gate_dropped"]
+    return {"udp_copies_lost_share": max(1 - handled / (sent * len(logs)), 0.0)}
 
 
 def commit_metrics(events, start_us):
@@ -682,6 +982,10 @@ def analyse_run(run_dir):
     metrics = request_metrics(events, warmup_s, measured_s)
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
+    metrics.update(failover_metrics(events, start, measured_s))
+    metrics.update(failover_gap_metrics(events, start, measured_s))
+    metrics.update(client_pc_gap_metrics(events, warmup_s, measured_s))
+    metrics.update(clock_skew_metrics(events))
     metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
@@ -690,6 +994,7 @@ def analyse_run(run_dir):
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
     metrics.update(udp_metrics(events, start, len(done)))
+    metrics.update(udp_copy_metrics(events))
     metrics.update(commit_metrics(events, start))
     metrics.update(client_program_metrics(events, meta))
     metrics.update(client_script_metrics(run_dir))
@@ -758,6 +1063,10 @@ def summarise(root):
             name: confidence_interval([run.get(name, missing_value(name)) for run in runs])
             for name in names
         }
+        for name in WORST_RUN_METRICS:
+            seen = [run[name] for run in runs if name in run and not math.isnan(run[name])]
+            if seen:
+                summary[key][f"{name}_worst_run"] = (max(seen), float("nan"), len(seen))
     return summary
 
 
@@ -801,6 +1110,57 @@ def udp_warnings(summary):
                     "each lost copy can cost a client a 2 s retry"
                 )
     return warnings
+
+
+def failover_warnings(summary):
+    """Cells where a leader was lost and the logs show no next one (D229). Those losses are in neither
+    failover_to_* mean, so the mean alone reads better than the cell was."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        lost = metrics.get("failovers_without_leader", (float("nan"),))[0]
+        if lost > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: failovers_without_leader is {lost:g} per run, and those losses are "
+                "in no failover_to_* mean; read the raft_state lines in that cell's logs and node_clock_skew_ms, "
+                "as a new leader's clock behind by more than the failover reads this way too"
+            )
+    return warnings
+
+
+def clock_warnings(summary):
+    """Cells whose clocks were far enough apart to move the figures that compare them (D56, D233)."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        nodes = metrics.get("node_clock_skew_ms", (float("nan"),))[0]
+        clients = metrics.get("client_clock_skew_ms", (float("nan"),))[0]
+        if nodes > NODE_CLOCK_SKEW_WARN_MS and metrics.get("failovers", (0,))[0] > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: the node PCs' clocks were about {nodes:.0f} ms apart, so "
+                "failover_to_* can be off by that much; FT-2 reads failover_gap_ms_* and client_gap_pc_*"
+            )
+        if clients > CLIENT_CLOCK_SKEW_WARN_MS:
+            warnings.append(
+                f"warning: {experiment}/{cell}: a client PC's clock was about {clients:.0f} ms from a node's, "
+                "so before_*, during_*, after_*, arrival_peak_* and priority_mean are off; say so"
+            )
+    return warnings
+
+
+def provisional_notes(summary):
+    """What to say beside a degraded cell's latency (D122, D229). A provisional answer needs no commit, so
+    before_*, during_* and after_* read far better during an outage, and most clients told a responder was
+    coming may not have that on record later. They are not told."""
+    notes = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        replied = metrics.get("provisional_replied", (float("nan"),))[0]
+        if replied > 0:
+            conflicts = metrics.get("provisional_conflicts", (float("nan"),))[0]
+            notes.append(
+                f"note: {experiment}/{cell}: {replied:g} provisional answers and {conflicts:g} "
+                "provisional_conflicts per run, which clients are not told of; before_*, during_* and "
+                "after_* here mix provisional answers with committed ones"
+            )
+    return notes
 
 
 def write_csv(summary, path):
@@ -941,7 +1301,10 @@ def main():
     write_csv(summary, args.out / "summary.csv")
     write_plots(summary, args.out)
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
-    for warning in expired_warnings(summary) + udp_warnings(summary):
+    for note in provisional_notes(summary):
+        print(note)
+    warnings = expired_warnings(summary) + udp_warnings(summary) + failover_warnings(summary)
+    for warning in warnings + clock_warnings(summary):
         print(warning, file=sys.stderr)
 
 
