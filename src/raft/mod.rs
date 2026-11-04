@@ -44,7 +44,7 @@ use crate::metrics::{Event, EventLog};
 use crate::node::transport::PeerSet;
 use crate::proto::{
     Command, CommandGroup, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError,
-    RaftRpc, Term,
+    RaftRpc, RoundsMsg, Term,
 };
 use network::{HeartbeatStats, Network, PeerBeats};
 use proposals::{GROUP_LIMIT, ProposalQueue};
@@ -77,6 +77,8 @@ pub enum Role {
     Candidate,
     Learner,
     Shutdown,
+    /// Under rotating rounds: nobody is elected (D249).
+    Peer,
 }
 
 impl Role {
@@ -87,6 +89,7 @@ impl Role {
             Role::Candidate => "candidate",
             Role::Learner => "learner",
             Role::Shutdown => "shutdown",
+            Role::Peer => "peer",
         }
     }
 }
@@ -142,6 +145,11 @@ pub trait Consensus: Send + Sync + 'static {
 
     /// Hand an incoming Raft RPC from peer `from` to the Raft implementation.
     fn handle_rpc(&self, from: NodeId, rpc: RaftRpc) -> BoxFuture<'_, PeerReply>;
+
+    /// Hand a rotating-rounds message to the rounds implementation (D249). Raft has none.
+    fn handle_rounds(&self, _from: NodeId, _message: RoundsMsg) -> BoxFuture<'_, PeerReply> {
+        Box::pin(async { PeerReply::Ack })
+    }
 
     fn status(&self) -> ConsensusStatus;
 

@@ -81,6 +81,26 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
 | Publish-subscribe                                          | Phase 2, by Lecture 9. In the design only, section 13                    | planned | D131, D209 |
 
+### Rotating rounds: no elected node (built, D249)
+
+With `consensus = "rounds"` nobody is elected. Each node numbers its own batches by round and sends them to its peers, and every node applies the same order: by round, then by node ID, once all members have passed that round. `src/rounds.rs` sits behind the `Consensus` trait, so nothing above it changes.
+
+```mermaid
+sequenceDiagram
+    participant N1 as "Node 1"
+    participant N2 as "Node 2"
+    participant N3 as "Node 3"
+    N1->>N2: "round 7: my batch"
+    N1->>N3: "round 7: my batch"
+    N2->>N1: "round 7: my batch"
+    N2->>N3: "round 7: my batch"
+    N3->>N1: "round 7: nothing to add"
+    N3->>N2: "round 7: nothing to add"
+    Note over N1,N3: "All passed round 7. Each applies node 1 then node 2, the same order."
+```
+
+The sections below describe Raft, which stays available with `consensus = "raft"`.
+
 ### Who decides what (built, D163)
 
 The class notes ask for peers with no coordinator. Our reading, stated as a reading: no node decides for another, and one elected, replaceable node orders the

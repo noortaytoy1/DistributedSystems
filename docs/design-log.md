@@ -308,6 +308,7 @@ table below in sync.
 | D246 | UDP messages wait up to 10 ms to share a datagram, not 2 ms | C | Implemented, amends D236 |
 | D247 | Bids go out together, one message per peer every 5 ms | B | Implemented, amends D126 |
 | D248 | Followers send commands to the leader together, every 5 ms | A | Implemented, amends D26 |
+| D249 | Rotating rounds replace the elected leader, with Raft kept behind a config key | A, all | Implemented, amends D163, D1, D14 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8020,6 +8021,21 @@ them on the six PCs.
 - **Consequences.** Up to 5 ms more per forward. The reply goes when every command in the message is answered, so one slow command holds its neighbours' answers. A stale term or lost message fails the whole list, and each caller retries, which is safe as every command is idempotent. `proto.rs` changed, so this needs its owners' review.
 - **Where.** `src/raft/mod.rs`, `src/proto.rs`, `src/node/transport.rs`, `src/node/mod.rs`, `src/raft/network.rs`, `src/metrics.rs`.
 - **How we check it.** `cargo test`, then commit latency and answered requests on the six PCs.
+
+### D249 · Rotating rounds replace the elected leader, with Raft kept behind a config key
+
+- **Date:** 2026-11-04 · **Part:** A, all · **Status:** Implemented, amends D163, D1, D14 · **Decided by:** the person running the lab session, who reports that the class notes and the professor rule out a leader or coordinator, on the agent's recommendation. The agent has not seen those notes.
+- **Context.** D163 read "no coordinator" as allowing one elected node that only orders the log, and said a strict reader could still call it a coordinator. On the six PCs the one-at-a-time path through the leader was also the throughput limit: 7000 requests a second held, and 10,000 fell, at `0c9e8fb`.
+- **Options considered.**
+  1. *Rotating rounds (chosen).* Each node numbers its own stream of batches by round and sends it to its peers. All nodes apply one merged order, by round then node ID, once every member has passed that round. No election, and no node orders for another. `CloudState`, first commit wins, replies, digests and checkpoints stay unchanged.
+  2. *Each node owns a share of the responders, with no global order.* Possibly faster, but state, digests, conflict rules, recovery and analysis all change, and a lost node takes a third of the responders with it.
+  3. *Delete Raft outright.* Rewrites about 15 test files that wait for a leader, with no fallback.
+- **Decision.** Option 1, in `src/rounds.rs` behind the `Consensus` trait, chosen by the top-level config key `consensus = "rounds"`. `raft` stays the default until rounds is proven on the six PCs. `timers.round_ms` = 5. A silent node is dropped after `takeover_missed_heartbeats` x `peer_heartbeat_ms`. A node answers a client only after a batch is saved on two nodes. Two of three must agree a drop, and one promise per view means one next view. One node alone stops committing, and degraded mode answers provisionally (D120). A returning node is sent the applied log, and a member adds it through an entry in the order, at a later round.
+- **Why.** It removes the elected node with the smallest change to everything else, and removes the one-at-a-time step.
+- **Consequences.** A silent node holds up every round until it is dropped, so a failure costs at least the detection time. Latency includes a round. Every member sends every round, even when idle. **Limits, said openly:** a restarted node recovers from a peer's log and not from its own file, so losing all three nodes at once loses the state. A log is kept in memory for catch-up with no trimming. Losing a second node from a view of two blocks a dropped node from returning until one comes back. `leader-dispatch` and the busy-leader move have no meaning here. Failure handling has only unit-level tests so far, and the agreement on a drop is simpler than Paxos and has had no formal check.
+- **Where.** `src/rounds.rs`, `tests/rounds.rs`, `src/proto.rs`, `src/config.rs`, `src/node/mod.rs`, `src/raft/mod.rs` (the trait), `docs/protocol.md`, `docs/architecture.md`.
+- **How we check it.** `tests/rounds.rs`, then `--rate` steps, digests and T1, T2 on the six PCs.
+- **Report notes.** Every result before this entry had a leader. Say which results are which. Also state the plan_work value beside each.
 
 ### Notes on older entries
 

@@ -52,6 +52,7 @@ impl TestCluster {
         let mut config = Config {
             cluster: ClusterConfig { nodes: addrs },
             timers: Default::default(),
+            consensus: Default::default(),
             policy: Default::default(),
             workers: Default::default(),
             campus: Default::default(),

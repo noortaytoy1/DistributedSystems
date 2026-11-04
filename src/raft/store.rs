@@ -72,6 +72,19 @@ impl StateReader {
         self.inner.write().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Applies one log entry under rotating rounds, and passes `after` the digest it left (D249).
+    pub(crate) fn apply_entry(
+        &self,
+        index: u64,
+        group: &crate::proto::CommandGroup,
+        after: impl FnOnce(u64),
+    ) -> Vec<crate::proto::Outcome> {
+        let mut state = self.write();
+        let outcomes = state.apply_group(index, group);
+        after(state.digest());
+        outcomes
+    }
+
     /// Apply one command with no log behind it, for a test that needs a state to read.
     #[cfg(test)]
     pub(crate) fn apply_for_tests(&self, cmd: crate::proto::Command) {

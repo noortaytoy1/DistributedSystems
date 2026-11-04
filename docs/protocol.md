@@ -311,6 +311,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `datagram.rs::CHANNEL_IDLE` | 60 s | a user program with no traffic for this long loses its channel on the node (D170) |
 | `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
 | `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message, and the largest combined datagram, on UDP, so it is never split on an Ethernet path (D170, D236) |
+| `timers.round_ms` | 5 ms | rotating rounds: how often a node starts its next round (D249) |
 | `datagram.rs::COMBINE_WAIT` | 10 ms | how long a message on UDP waits for others to the same address. Full datagrams go at the end of a running wait, or sooner (D236, D246) |
 | `datagram.rs::COMBINED` | first byte `0xFF` | a datagram of several messages, each after a 2-byte big-endian length. A datagram with one message is that message alone (D236) |
 | `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
@@ -344,3 +345,18 @@ Constants in `bin/frontend.rs`, not config keys, because no experiment varies th
 
 A program's client ID is the frontend's ID x 10000 + n, from 1. Six digits,
 because five-digit IDs belong to `scripts/start-users.sh` (D184).
+
+## Rotating rounds (D249)
+
+With `consensus = "rounds"`, no node is elected. Peers exchange `PeerBody::Rounds(RoundsMsg)`:
+
+| Message | From | Answer | Meaning |
+|---------|------|--------|---------|
+| `Stream { after, through, batches }` | every member, one call at a time per peer | `Have { have }`, after saving | the sender's batches after round `after`, and that its stream covers `through` |
+| `Drop { view, target, have }` | a member that finds `target` silent | `Granted`, or `Refused` | go on without `target`. A node promises at most one next view |
+| `DropCommit { view, target, cut, batches }` | the same member | `Done` | the stream of `target` ends at `cut`, and these are the batches the receiver lacks |
+| `CatchUp { next }` | a returning node | `Entries` | the applied log from entry `next` |
+| `Join` | a returning node that has caught up | `Done` | add me. A member puts `RoundControl::Add` in its stream, so all members do it at one place in the order |
+| `Applied` | a returning node | `Applied { index }` | how far this node has applied |
+
+All nodes apply batches in the order (round, node ID), up to the lowest round all members have passed. A node's own stream counts only as far as a peer has saved it.

@@ -173,6 +173,7 @@ fn stub_config(addrs: &[String]) -> Config {
         metrics: Default::default(),
         faults: Default::default(),
         storage: Default::default(),
+        consensus: Default::default(),
     };
     fast_retries(&mut config);
     config

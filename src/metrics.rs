@@ -656,6 +656,7 @@ impl MsgKind {
             PeerBody::ReadIndex => MsgKind::ReadIndex,
             PeerBody::FaultBid(_) => MsgKind::FaultBid,
             PeerBody::Bid(_) | PeerBody::Bids(_) => MsgKind::Bid,
+            PeerBody::Rounds(_) => MsgKind::RaftAppend,
             PeerBody::Heartbeat => MsgKind::PeerHeartbeat,
         }
     }
