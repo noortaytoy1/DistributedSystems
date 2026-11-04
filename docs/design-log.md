@@ -307,6 +307,7 @@ table below in sync.
 | D245 | The count of open rounds a node leads is kept, not scanned | B | Implemented |
 | D246 | UDP messages wait up to 10 ms to share a datagram, not 2 ms | C | Implemented, amends D236 |
 | D247 | Bids go out together, one message per peer every 5 ms | B | Implemented, amends D126 |
+| D248 | Followers send commands to the leader together, every 5 ms | A | Implemented, amends D26 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8010,6 +8011,15 @@ them on the six PCs.
 - **Consequences.** A bid leaves up to 5 ms later, from a window of 60 ms in the trials, or 20 ms by default. A stale term drops a whole list, which costs what a lost bid does: at worst a split round that first commit settles (D27). `proto.rs` changed, so this needs its owners' review.
 - **Where.** `src/proto.rs`, `src/node/bids.rs`, `src/node/transport.rs`, `src/node/mod.rs`, `src/metrics.rs`, `docs/protocol.md`.
 - **How we check it.** `cargo test`, then `msgs_bid_per_req` and CPU per node on the six PCs.
+
+### D248 · Followers send commands to the leader together, every 5 ms
+
+- **Date:** 2026-11-04 · **Part:** A · **Status:** Implemented, amends D26 · **Decided by:** the person running the lab session, on the agent's recommendation from reviews.
+- **Context.** A follower sent one call per command to the leader. Two thirds of commands come from followers, so by arithmetic about 13,000 calls a second at 10,000 requests a second, each with its own tasks and packets, on the path where 7000 a second collapsed.
+- **Decision.** `PeerBody::ProposeMany(Vec<Command>)`, answered by `PeerReply::ProposedMany` with one result per command, in order. The first command to wait starts a task that sends all that gathered after `FORWARD_COMBINE_WAIT` = 5 ms. The leader submits each to its proposal queue. `Propose` stays.
+- **Consequences.** Up to 5 ms more per forward. The reply goes when every command in the message is answered, so one slow command holds its neighbours' answers. A stale term or lost message fails the whole list, and each caller retries, which is safe as every command is idempotent. `proto.rs` changed, so this needs its owners' review.
+- **Where.** `src/raft/mod.rs`, `src/proto.rs`, `src/node/transport.rs`, `src/node/mod.rs`, `src/raft/network.rs`, `src/metrics.rs`.
+- **How we check it.** `cargo test`, then commit latency and answered requests on the six PCs.
 
 ### Notes on older entries
 

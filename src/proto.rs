@@ -607,6 +607,7 @@ pub trait PeerRpc {
         rpc: InstallSnapshotRequest<TypeConfig>,
     ) -> PeerReply;
     async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
+    async fn propose_many(from: NodeId, term: Term, commands: Vec<Command>) -> PeerReply;
     async fn read_index(from: NodeId, term: Term) -> PeerReply;
     async fn fault_bid(from: NodeId, term: Term, bid: FaultBid) -> PeerReply;
     async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
@@ -631,6 +632,8 @@ pub enum PeerBody {
     Raft(RaftRpc),
     /// A follower asks the leader to commit a command on its behalf.
     Propose(Command),
+    /// The commands a follower gathered in the last few milliseconds, as one message (D248).
+    ProposeMany(Vec<Command>),
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
     /// ReadIndex, D76). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
@@ -663,6 +666,8 @@ pub enum PeerReply {
         Result<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>>,
     ),
     Proposed(Result<Outcome, ProposeError>),
+    /// One answer per command of a [`PeerBody::ProposeMany`], in order.
+    ProposedMany(Vec<Result<Outcome, ProposeError>>),
     /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
     ReadIndex(Result<Option<u64>, ProposeError>),
 }

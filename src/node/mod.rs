@@ -302,6 +302,12 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     }
     match body {
         PeerBody::Propose(cmd) => PeerReply::Proposed(ctx.consensus.propose_local(cmd).await),
+        PeerBody::ProposeMany(commands) => {
+            let answers = commands
+                .into_iter()
+                .map(|cmd| ctx.consensus.propose_local(cmd));
+            PeerReply::ProposedMany(futures::future::join_all(answers).await)
+        }
         PeerBody::ReadIndex => PeerReply::ReadIndex(ctx.consensus.read_index_local().await),
         PeerBody::FaultBid(bid) => {
             faults::on_bid(&ctx, from, bid);

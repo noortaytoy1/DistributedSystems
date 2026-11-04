@@ -393,6 +393,7 @@ async fn invoke(
             client.install_snapshot(ctx, from, term, rpc).await
         }
         PeerBody::Propose(command) => client.propose(ctx, from, term, command).await,
+        PeerBody::ProposeMany(commands) => client.propose_many(ctx, from, term, commands).await,
         PeerBody::ReadIndex => client.read_index(ctx, from, term).await,
         PeerBody::FaultBid(bid) => client.fault_bid(ctx, from, term, bid).await,
         PeerBody::Bid(bid) => client.bid(ctx, from, term, bid).await,
@@ -612,6 +613,17 @@ impl PeerRpc for PeerServer {
         command: Command,
     ) -> PeerReply {
         self.deliver(from, term, PeerBody::Propose(command)).await
+    }
+
+    async fn propose_many(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        commands: Vec<Command>,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::ProposeMany(commands))
+            .await
     }
 
     async fn read_index(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {

@@ -652,7 +652,7 @@ impl MsgKind {
             PeerBody::Raft(RaftRpc::AppendEntries(_)) => MsgKind::RaftAppend,
             PeerBody::Raft(RaftRpc::Vote(_)) => MsgKind::RaftVote,
             PeerBody::Raft(RaftRpc::InstallSnapshot(_)) => MsgKind::RaftSnapshot,
-            PeerBody::Propose(_) => MsgKind::Propose,
+            PeerBody::Propose(_) | PeerBody::ProposeMany(_) => MsgKind::Propose,
             PeerBody::ReadIndex => MsgKind::ReadIndex,
             PeerBody::FaultBid(_) => MsgKind::FaultBid,
             PeerBody::Bid(_) | PeerBody::Bids(_) => MsgKind::Bid,
