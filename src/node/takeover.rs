@@ -17,7 +17,7 @@ use crate::proto::{ClientRequest, NodeId};
 
 /// The backstop never fires sooner than this, so a slow plan or a slow commit is not duplicated. It
 /// stays under the client's first retry, 2 s less 20% of jitter (D235).
-const BACKSTOP_MIN: Duration = Duration::from_millis(1000);
+const BACKSTOP_MIN: Duration = Duration::from_millis(1500);
 
 /// The backstop waits this many times the winner's bid when the bid is an expected wait.
 const BACKSTOP_FACTOR: u64 = 3;

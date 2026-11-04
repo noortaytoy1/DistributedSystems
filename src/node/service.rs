@@ -89,6 +89,9 @@ pub(super) async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, re
         }
         return;
     }
+    let Some(_in_progress) = ctx.bids.admit() else {
+        return;
+    };
     if decide_executor(&ctx, &req).await != Decision::Execute {
         return;
     }

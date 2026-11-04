@@ -309,6 +309,7 @@ table below in sync.
 | D247 | Bids go out together, one message per peer every 5 ms | B | Implemented, amends D126 |
 | D248 | Followers send commands to the leader together, every 5 ms | A | Implemented, amends D26 |
 | D249 | Rotating rounds replace the elected leader, with Raft kept behind a config key | A, all | Implemented, amends D163, D1, D14 |
+| D250 | Overload is refused at the door, decided reports stay out of the log, and the backstop waits 1.5 s | A, C | Implemented, amends D235 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8036,6 +8037,16 @@ them on the six PCs.
 - **Where.** `src/rounds.rs`, `tests/rounds.rs`, `src/proto.rs`, `src/config.rs`, `src/node/mod.rs`, `src/raft/mod.rs` (the trait), `docs/protocol.md`, `docs/architecture.md`.
 - **How we check it.** `tests/rounds.rs`, then `--rate` steps, digests and T1, T2 on the six PCs.
 - **Report notes.** Every result before this entry had a leader. Say which results are which. Also state the plan_work value beside each.
+
+### D250 · Overload is refused at the door, decided reports stay out of the log, and the backstop waits 1.5 s
+
+- **Date:** 2026-11-04 · **Part:** A, C · **Status:** Implemented, amends D235 · **Decided by:** the person running the lab session, who asked to fix whatever limits throughput, on the agent's recommendation.
+- **Context.** At `3da3733`, 10,000 requests a second on the six PCs committed about 10,000 a second for 40 s, with commit p50 113 to 134 ms. Then rounds seeing all 3 bids fell from about 80% to 19%, commit p50 passed 1 s, duplicates rose from about 1,800 to 6,350 a second, and commits fell to about 200 a second.
+- **Decision.** (1) `MAX_IN_PROGRESS` = 8000 reports per node, beyond which a report gets no bid, plan or answer, and the client's retry covers it. (2) Under rotating rounds, a proposal for a report already decided here is answered from the state and never logged. (3) `BACKSTOP_MIN` = 1500 ms, below the client's earliest first retry at 1.6 s.
+- **Why.** Each stops work being added when the node is already behind, which is what fed the collapse.
+- **Consequences.** A report refused at the door waits about 2 s for its retry. A stuck but alive winner is taken over after 1.5 s, not 1 s.
+- **Where.** `src/node/bids.rs`, `src/node/service.rs`, `src/rounds.rs`, `src/node/takeover.rs`, `docs/protocol.md`.
+- **How we check it.** `--rate` steps on the six PCs: answers a second should level off at the limit and not fall to near zero.
 
 ### Notes on older entries
 

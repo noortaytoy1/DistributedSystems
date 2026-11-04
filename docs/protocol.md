@@ -296,7 +296,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(1000 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110, D235) |
+| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(1500 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110, D235, D250) |
 | `rejoin.rs::NO_LEADER_ELECT_AFTER` | 3 s | a returning node that hears no leader this long may stand itself (D125) |
 | `rejoin.rs::ASK_AGAIN_AFTER` | 1 s | how long a returning node waits on one target before it asks the leader again (D135) |
 | `rejoin.rs::WAIT_WARNING` | 5 s | how often a node still catching up warns |

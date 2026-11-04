@@ -683,6 +683,14 @@ async fn run_emitter(inner: Arc<Inner>) {
                     let _ = waiting.answer.send(Err(ProposeError::Timeout));
                     continue;
                 }
+                // Already decided here: the same answer as from the log, at no cost to it (D250).
+                if let Command::CommitResult(proposal) = &waiting.command {
+                    let decided = inner.state.with(|s| s.result(&proposal.request).cloned());
+                    if let Some(winner) = decided {
+                        let _ = waiting.answer.send(Ok(Outcome::Duplicate(winner)));
+                        continue;
+                    }
+                }
                 answers.push((commands.len(), waiting.answer, now));
                 commands.push(waiting.command);
             }

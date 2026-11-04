@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
@@ -35,6 +35,23 @@ pub struct BidState {
     executing: Mutex<BTreeSet<RequestId>>,
     /// Bids waiting to go to the group together (D247).
     outgoing: Arc<Mutex<Vec<Bid>>>,
+    in_progress: AtomicU32,
+    refused: AtomicU64,
+}
+
+/// Reports one node works on at once (D250). At 10,000 a second with about 200 ms each, a node holds
+/// about 2,000 when healthy.
+pub(super) const MAX_IN_PROGRESS: u32 = 8000;
+
+/// Held while a report is being worked on here.
+pub(super) struct InProgress<'a> {
+    state: &'a BidState,
+}
+
+impl Drop for InProgress<'_> {
+    fn drop(&mut self) {
+        self.state.in_progress.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Held while this node works on one request. Dropping it ends that.
@@ -58,7 +75,28 @@ impl BidState {
             seen: Mutex::new(BTreeMap::new()),
             executing: Mutex::new(BTreeSet::new()),
             outgoing: Arc::default(),
+            in_progress: AtomicU32::new(0),
+            refused: AtomicU64::new(0),
         }
+    }
+
+    /// Counts a report being worked on here, or `None` if there are already [`MAX_IN_PROGRESS`], so
+    /// an overloaded node stops adding bids, plans and log commands to what it cannot finish. A
+    /// report refused here gets no answer, and the client's retry covers it, as for a full worker
+    /// pool (D48, D250).
+    pub(super) fn admit(&self) -> Option<InProgress<'_>> {
+        let before = self.in_progress.fetch_add(1, Ordering::Relaxed);
+        if before >= MAX_IN_PROGRESS {
+            self.in_progress.fetch_sub(1, Ordering::Relaxed);
+            self.refused.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(InProgress { state: self })
+    }
+
+    /// Reports refused at the door so far.
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
     }
 
     /// `None` if this node is already working on this request: the first attempt's call is still open,
