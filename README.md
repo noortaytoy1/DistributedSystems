@@ -71,6 +71,8 @@ Windows drive:
 export CARGO_TARGET_DIR="$HOME/.cache/rescuemesh-target"
 ```
 
+Leave it unset on the lab PCs. The experiment runner looks in `target/release`, or in `BIN` if you set it ([experiments/README.md](experiments/README.md) section 3).
+
 ## Run a cluster on one machine
 
 `config/local.toml` describes three nodes on `127.0.0.1`. The quickest way to start them on Linux,

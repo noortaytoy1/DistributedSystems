@@ -10,11 +10,14 @@ firewalls, keys or sshd limits. The demo itself is in [demo.md](demo.md).
 All six run Ubuntu. On each one:
 
 ```bash
-sudo apt install build-essential rsync chrony      # C linker, log collection, NTP
+sudo apt install build-essential rsync chrony python3-venv      # C linker, log collection, NTP, the analysis
 curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
 source "$HOME/.cargo/env"
 git clone https://github.com/noortaytoy1/DistributedSystems.git
 ```
+
+A fresh clone gets `main`. Build only once the PR you mean to run has merged, or `git switch` to its branch first, and check that
+`experiments/e8-step-aside.toml` exists: six PCs on one old commit would still pass the check that all six agree.
 
 On each client machine, check for a browser: `which firefox`. If there is none, use `ssh -L
 9001:127.0.0.1:9001 ubuntu@<client machine>` from a laptop on that network. If that is not possible, the demo runs
@@ -22,6 +25,7 @@ from the terminals.
 
 - **Toolchain.** `rust-toolchain.toml` picks the compiler on the first build. Do not install another one
   over it: an apt Rust earlier on `PATH` cannot build this repo.
+- **Build folder.** Leave `CARGO_TARGET_DIR` unset here. The runner looks in `target/release`, or in `BIN` if you set it.
 - **Clock.** `chronyc tracking` **must** show the clock in sync on all six before any test. Each machine's timestamps are
   only roughly aligned with the others', so durations are always measured on one machine. A bad clock on a node changes
   the times and labels of incidents it planned, on every node and for good, though never a plan or a hold (D142). A bad
@@ -124,7 +128,7 @@ this script. A second group of users on one machine needs its own `--batch`.
 Node output: `RUST_LOG=info,tarpc=info` brings tarpc's per-call lines back for debugging. Never run an experiment that way: they
 slow a node enough to cost it its leader (D134).
 
-To see what a machine is doing in plain words, with no rebuild: `python3 scripts/watch_events.py runs/lab`, and add `--reports` for every step of every report (D221). It only reads that machine's logs, so use one terminal per machine.
+To see what a machine is doing in plain words, with no rebuild: `python3 scripts/watch_events.py runs/lab`, and add `--reports` for every step of every report (D221). It only reads that machine's logs, so use one terminal per machine. To read a finished run and stop, use `--from-start --once`: `--once` alone prints nothing.
 
 **A busy leader can step aside.** `config/lab.example.toml` has it on, with a ratio of 3, 5 s in a row and a 60 s cooldown (D218). If a leader moves with no fault, `watch_events.py` on that machine prints `TOO BUSY TO LEAD` and why. Every experiment cell but `e8-step-aside` has it off, whatever `lab.toml` says, because the cells do not read `lab.toml`.
 
@@ -163,7 +167,8 @@ In a cell past the knee, `no_responder_share` above 0 at low latency is a report
 nonzero count most likely means an age stamped wrongly, which looks like a very fast run where nobody gets sent (D147).
 
 `service_mean_us` should be near 4000. `plan_work = 1000` was calibrated on a development machine (D129), so
-if the lab machines differ much, change it in every cell and say so in the report.
+if the lab machines differ much, change it in every cell and say so in the report. It comes from bids, so it reads NaN in a leader-dispatch cell: read it from a bidding cell. Above about
+2700, expect the 3000-user cells past the knee, in one-PC rehearsal. That is the knee, not a bug: `experiments/README.md` section 3 has the numbers and the choice to make before the series (D230).
 
 Also confirm timers on the real network: `bid_window_ms`, `peer_heartbeat_ms` and the election timeouts are LAN
 defaults (D40) that have only ever run on one machine.
@@ -232,8 +237,9 @@ rm -rf data/raft runs/lab
 2. `pgrep -c -x loadgen` on a client machine prints 10 during the run.
 3. Nothing is left afterwards: `pgrep -a -x loadgen` and `pgrep -a -x node` print nothing, and `runs-config/` holds only `run.toml`.
 4. Every node's log in the run folder has a `stopped` event, and the folder has 30 `client-*.jsonl` files.
-5. Kill a client machine's `start-users.sh` with `kill -9` during a second short run. The runner should say it stopped the series, and
-   its next start should refuse while the programs still run.
+5. Kill a client machine's `start-users.sh` with `kill -9` during a second short run. The runner should say it stopped the series
+   (`a client machine ended with status 137`). Its programs run on to the end of their duration, and the runner outlasts them, so afterwards
+   nothing is left to refuse: on one PC `pgrep` printed nothing and the next start went ahead. A start refuses only while such programs still run, as when the runner itself died (D189, D230).
 
 ## 6. Collect and analyse
 
@@ -242,13 +248,13 @@ the commit and the final `ctl status`. Keep them until the report is done. They 
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r analysis/requirements.txt
+pip install -r analysis/requirements.txt      # Python 3.10, as on Ubuntu 22.04, or newer (D230)
 python analysis/analyze.py runs      # analysis/out/summary.csv and plots
 ```
 
 `digest_mismatches` must be 0: any other value is a real bug, so keep the logs. `plans_refused` above 0 means a worker pool shed
-work in that cell, and `elections` well above 0 means the cell is above what the machines can hold. A large `client_gap_max_ms` with `gave_up` above 0 means clients stopped waiting,
-so it is a lower limit on the outage and not a time to recover (D224).
+work in that cell, and `elections` well above 0 means the cell is above what the machines can hold, except where the cell causes them: `ft8-election-rate` read about 5 on one PC, and `degraded-300` about 55 with `election_duration_mean_ms` at about 22 s, as a lone node keeps calling votes it cannot win. A large `client_gap_max_ms` with `gave_up` above 0 means clients stopped waiting,
+so it is a lower limit on the outage and not a time to recover (D224). For how long the cloud had no leader, read `failover_to_leader_ms_mean`, never `election_duration_mean_ms`, which is the vote alone. For lost copies read `udp_copies_lost_share`, never `udp_request_loss_share` (D229).
 
 ## 7. If something goes wrong
 
@@ -281,6 +287,8 @@ so it is a lower limit on the outage and not a time to recover (D224).
 | Elections keep happening with no fault | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
 | One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, how long one log write took and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
 | `leader_step_aside_ended` says `timed_out` | nobody took over within 3 s, so that leader carried on and waits a full cooldown. Check that the followers are serving and can reach each other (D218) |
+| `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped` | `CARGO_TARGET_DIR` is set, so the build is somewhere else. Nothing is wrong with the leader. `unset CARGO_TARGET_DIR` and build, or set `BIN=$CARGO_TARGET_DIR/release` for the runner (D230) |
+| `ctl` panics with `failed printing to stdout` | it was piped into something that stopped reading, such as `head`. Harmless, and nothing to do with the cluster. Use `sed -n 1,5p` (D230) |
 | `ctl` errors, or reports vanish while every row looks healthy | a stale binary on one machine: an old client and a new node fail quietly (D155, D175). Rebuild all six from one commit |
 | `members` shows `-` | that node is silenced; its list is frozen and not worth reading |
 | `members` differs between nodes | normal for a moment: each list is one node's opinion. Lasting differences with everyone serving point at a network problem between two nodes |

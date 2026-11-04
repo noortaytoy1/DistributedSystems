@@ -13,10 +13,14 @@ fix this page when you hit one.
 | Plan A | The runner on `hosts.local`: `e1-30-bidding`, `e3e4-300-leader` and `degraded-300` with short settings, `e8-step-aside` at the plan's own timing. Then over a stand-in for ssh, with client 1 as `local`: `lab-build.sh`, the trial and a fault cell |
 | Plan B | Six cells with 300 users and the real 75 s, :00 and :35: `e3e4-300-leader`, `degraded-300`, `e8-step-aside`, `e2e6-skew-expected-wait`, `e7-p1-300`, `e1-300-bidding`. Then `tar`, merge, `analyze.py`: all six in `summary.csv` |
 | Section 6 | T5 as written. T1, T2 and T4 with 100 to 120 s of load and `kill -9` standing in for the power cut. T3's lines at 100 and 180 reports a second, flat out and the spike, all short |
-| Never tried | Real SSH, a real network, a real power cut, `sudo`, `ufw`, `sysctl`, a USB stick, `--rate` at the table's rates, `full`, and 1000, 1500 or 3000 users in this check |
+| The whole series | Later that day, on one 32-thread PC: 18 cells (`quick`, `degraded-300`, `e1-1000-bidding`, `e8-step-aside`), 3 runs each, through the real runner on `hosts.local`. 54 of 54 runs finished, and `analyze.py` read them all. `quick` took 68.9 minutes, so the runner added 1 to 3 s a run. Also `--rate` up to 6000 a second with 3 programs, and 1000, 1500 and 3000 users |
+| Never tried | Real SSH, a real network, a real power cut, `sudo`, `ufw`, `sysctl`, a USB stick, `--rate` with 9 programs or above 6000 a second, and `full` |
 
-**One-PC rehearsal** marks numbers from one PC with one disk (commit `8bb244e`). Use them only as a guide to what is
+**One-PC rehearsal** marks numbers from one PC with one disk (commits `8bb244e` and `e4ab477`). Use them only as a guide to what is
 normal. They are never results.
+
+**Since `e4ab477` only the analysis, comments and docs have changed.** Nothing changes the wire format or what a node does (D229, D230, D231), so
+logs from that commit on read the same and need no rerun.
 
 ## 1. How long
 
@@ -38,7 +42,7 @@ with two profiles:
 The 20 s is a guess. On one PC the runner added 1 to 2 s a run, but real ssh and log copying have not been timed.
 
 What each cell type reaches, by arithmetic: users x 1 report a second x measured seconds x runs.
-This is a ceiling, because each user also waits for its answer: one-PC rehearsal answered 290 of 300, 965 of 999 and
+This is a ceiling, because each user also waits for its answer: one-PC rehearsal, with plans of about 2450 us, answered 290 of 300, 965 of 999 and
 2849 of 3000 a second. The real count comes from the logs (section 7).
 
 | Cell type | Users | One run of `quick` | `quick`, 3 runs | `full`, 5 runs | Tens of thousands? |
@@ -77,6 +81,9 @@ to 30 minutes = about 4 hours, before the demo rehearsal. In Plan B the 63 runs 
 - The two responder pools: 3000 in `e1-1000-*` and `e1-3000-*`, 300 elsewhere. A line across that gap is not load
   alone, and the 1500-user cells run past their pool (D219).
 - Anything that differs from this guide: a PC with no sudo, a changed `threads` or `plan_work`, Plan B's start by hand.
+- Closed-loop figures as closed-loop. Every user does the same number of requests, so `done` can read the same on every PC and the
+  interval on `throughput_rps` can read 0. That is arithmetic, not stability. About 21 ms of a bidding cell's roughly 30 ms is the fixed
+  bid window. Near-identical runs say little: the skew cells show the load-awareness, and T3 shows what a closed loop hides.
 
 ## 2. Every requirement, and what answers it
 
@@ -87,11 +94,11 @@ scenarios", D is "Decisions with justification and assessment".
 | # | Requirement | Source | Answered by | Metric in `analysis/out/summary.csv`, or output to keep | Report |
 |---|-------------|--------|-------------|-------------------------------------------------------|--------|
 | 1 | Request latency: mean, median, p95, p99 | Spec 282 | `e1-*`, and every cell | `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`; plot `e1_latency_throughput.png` | M: Latency |
-| 2 | Throughput as clients increase | Spec 283, 231 | `e1-30-*`, `e1-300-*`, `e1-1000-*`, `e1-3000-*`; T3 | `throughput_rps`, `no_responder_share`, `gave_up`, `client_pc_cpu_busy_p95`; same plot | M: Throughput against load; Stress testing: What breaks next |
-| 3 | Election frequency, duration, message overhead | Spec 284 | Bidding: any bidding cell. Raft: `e5-faults-off`, `e3e4-*-leader`. Draw: `ft8-*` | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms`, `msgs_raft_vote_per_req`. Draw: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All: `msgs_all_per_req` | M: Election overhead |
+| 2 | Throughput as clients increase | Spec 283, 231 | `e1-30-*`, `e1-300-*`, `e1-1000-*`, `e1-3000-*`; T3 | `throughput_rps` beside `answered_with_responder_rps`, which leaves out answers that sent nobody, `no_responder_share`, `gave_up`, `client_pc_cpu_busy_p95`; same plot | M: Throughput against load; Stress testing: What breaks next |
+| 3 | Election frequency, duration, message overhead | Spec 284 | Bidding: any bidding cell. Raft: `e5-faults-off`, `e3e4-*-leader`. Draw: `ft8-*` | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms` (the vote alone), `msgs_raft_vote_per_req`. Draw: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All: `msgs_all_per_req` | M: Election overhead |
 | 4 | Load distribution, fairness, evidence for the policy | Spec 285, 358 | `e1-*-bidding` against `e1-*-leader`; `e2e6-skew-*` | `share_node_1`, `share_node_2`, `share_node_3`, `fairness_jain`; plot `fairness.png` | M: Load distribution |
-| 5 | Before, during and after a failure | Spec 286 | `e3e4-*`, `e4-300-silence-20s`, `degraded-300` | `before_p99_ms`, `during_p99_ms`, `after_p99_ms`, and their `_mean_ms`, `_p50_ms`, `_p95_ms`, `_rps`, `_count`; plot `fault_phases.png` | M: Failure and recovery |
-| 6 | Failover time at different loads | Spec 167 | `e3e4-300-*` against `e3e4-1500-*` | `client_gap_mean_ms`, `client_gap_max_ms`, `detection_mean_ms`, `election_duration_mean_ms`, read with `gave_up` | M: Failure and recovery |
+| 5 | Before, during and after a failure | Spec 286 | `e3e4-*`, `e4-300-silence-20s`, `degraded-300` | `before_p99_ms`, `during_p99_ms`, `after_p99_ms`, and their `_mean_ms`, `_p50_ms`, `_p95_ms`, `_rps`, `_count`; plot `fault_phases.png`. In `degraded-*` these mix provisional answers with committed ones, so say that `during_*` is mostly uncommitted | M: Failure and recovery |
+| 6 | Failover time at different loads | Spec 167 | `e3e4-300-*` against `e3e4-1500-*` | `failover_to_leader_ms_mean`, `failover_to_commit_ms_mean`, `failovers_without_leader`; `client_gap_mean_ms`, `client_gap_max_ms`, `worst_request_ms`, `detection_mean_ms`, read with `gave_up`. Not `election_duration_mean_ms`: that is the vote alone, about 10 ms of a wait near 700 ms (D229) | M: Failure and recovery |
 | 7 | Recovery and convergence time at different loads | Spec 287, 167, 152; notes Sept 13, Oct 28 | `e3e4-*`, `e4-300-silence-20s` | `recovery_mean_ms`, `rejoins`, `rejoins_digest_confirmed`, `digest_mismatches` (must be 0), `elections_after_rejoin` (target 0) | M: Failure and recovery; How a node recovers |
 | 8 | Requests in flight at a failure: retried or completed | Spec 158 | `e3e4-*` | `retried_share`, `gave_up`, `takeovers_suspected`, `takeover_wait_suspected_mean_ms`, `takeovers_backstop` | M: Failure and recovery |
 | 9 | Duplicate execution prevented or harmless | Spec 161 | Every cell | `digest_mismatches` (must be 0), `bid_split_decisions`, `takeovers` | D: First commit wins |
@@ -104,30 +111,36 @@ scenarios", D is "Decisions with justification and assessment".
 | 16 | Measurements tied to design decisions | Spec 280 | All of the above | The report's table, with its numbers filled in | M: Each measurement against the decision it tests |
 | 17 | **Scenario 1**, normal: different peers elected as load changes | Spec 244; notes Oct 28; Lecture 9 s1.2 | `e1-30-bidding`, `e1-300-bidding`; `docs/demo.md` section 1 | `share_node_1`, `share_node_2`, `share_node_3`; win counts from `grep -c '"i_won":true'`; a screenshot of the page | S: Scenario 1 |
 | 18 | **Scenario 2**, load imbalance | Spec 247 | `e2e6-skew-expected-wait`, `e2e6-skew-expected-wait-cpu`; `docs/demo.md` section 2 | `share_node_1`, `fairness_jain`, `p99_ms`; win counts before and after the skew | S: Scenario 2 |
-| 19 | **Scenario 3**, server failure under load | Spec 250 | `e3e4-*-leader`; `docs/demo.md` section 3 | `client_gap_max_ms`, `during_p99_ms`, `gave_up` | S: Scenario 3 |
+| 19 | **Scenario 3**, server failure under load | Spec 250 | `e3e4-*-leader`; `docs/demo.md` section 3 | `failover_to_leader_ms_mean`, `client_gap_max_ms`, `worst_request_ms`, `during_p99_ms`, `gave_up` | S: Scenario 3 |
 | 20 | **Scenario 4**, recovery before taking part again | Spec 254, 152 | `e3e4-*`, `e4-300-silence-20s`; `docs/demo.md` section 4 | `recovery_mean_ms`, `rejoins_digest_confirmed`; the `rejoined` line | S: Scenario 4 |
 | 21 | **Scenario 5**, scale and stress: clients bombarding the cloud | Spec 272; Lecture 9 s1.2 | `e1-*`; T3 | Rows 1 to 10; the three plots | S: Scenario 5; Stress testing |
-| 22 | Six physical PCs on a real network: 3 cloud, 3 load | Spec 30, 202; Lecture 8 s1.2; notes Sept 13 | Every run in this guide | `config.toml`, `node_logs`, `udp_drops_nodes`, `udp_request_loss_share`, `retried_share` | M: Method; D: UDP |
+| 22 | Six physical PCs on a real network: 3 cloud, 3 load | Spec 30, 202; Lecture 8 s1.2; notes Sept 13 | Every run in this guide | `config.toml`, `node_logs`, `udp_drops_nodes`, `udp_copies_lost_share` (never `udp_request_loss_share`: it reads about 1% with nothing lost, D229), `retried_share` | M: Method; D: UDP |
 | 23 | Hundreds of clients on each client PC | Lecture 8 s1.2; spec 31, 203 | Per PC: `e1-300-*` 100, `e1-1000-*` 333, `e3e4-1500-*` 500, `e1-3000-*` 1000 | `client_users`, `client_programs`, `users_per_program`. `e7-p1-300` shows if the number of programs matters. Limit: users share 10 programs per PC (D181) | D: Many user programs |
 | 24 | A frontend controlling many background programs | Spec 203 | `docs/demo.md`, the page's load box. Stop it before the runner | A screenshot; the rows' summaries | D: The web page |
 | 25 | Failure by election: the servers elect one to go silent for up to 20 s, then it rejoins | Spec 149; notes Sept 13, Oct 28 | `ft8-random-faults` (silence 1 to 20 s), `ft8-election-rate` (fast); T4 | `fault_elections`, `fault_split_decisions` (must be 0), `fault_elected_not_silenced`, `fault_refused`; the round lines from `extras.py` | D: The failure draw |
-| 26 | Injected failures up to 20 s, service continues | Spec 227 | `e4-300-silence-20s`, `degraded-300` | `gave_up`, `client_gap_max_ms`, `during_p99_ms` | M: Failure and recovery |
+| 26 | Injected failures up to 20 s, service continues | Spec 227 | `e4-300-silence-20s`, `degraded-300` | `gave_up`, `client_gap_max_ms`, `worst_request_ms`, `during_p99_ms` | M: Failure and recovery |
 | 27 | **Physically turning off a machine** | Notes Oct 28, Sept 13 | T1. **No cell covers it.** The runner cannot, as a lost PC stops it | `restarted`, `rejoined`, `peer_suspected` lines; `extras.py` output; your written times | S: Scenario 3, scene 3b; D: Saving to disk; How a node recovers |
-| 28 | **One node off and one failed: one server handles the three client PCs** | Notes Sept 13 | `degraded-300` (two silenced); T2 (one really off) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `provisional_count`, `provisional_p50_ms`, `conflicts_lost_first_commit`, `conflicts_responder_taken`; the `provisional` count on each client PC's last line | S: Scenario 3, scene 3c; D: Degraded mode; M: Failure and recovery |
+| 28 | **One node off and one failed: one server handles the three client PCs** | Notes Sept 13 | `degraded-300` (two silenced); T2 (one really off) | `degraded_entered`, `degraded_mean_ms`, `provisional_replied`, `provisional_count`, `provisional_p50_ms`, `provisional_conflicts`, `conflicts_lost_first_commit`, `conflicts_responder_taken`; the `provisional` count on each client PC's last line | S: Scenario 3, scene 3c; D: Degraded mode; M: Failure and recovery |
 | 29 | **5 retries, then an error** | Notes Sept 13; spec 306 | T5. **No cell covers it**, as in a cell some node always answers | The `client_gave_up` line with `"attempts":6`; `gave_up`, `retried_share` per cell | D: Five retries, then an error |
 | 30 | Transparency: the user never names a server, and is sent to a working one | Notes Sept 6; spec 41; Lecture 9 s4.1 | `e3e4-*-leader`; `docs/demo.md` section 3 | `gave_up`, `client_gap_max_ms`, `retried_share`; a page card | S: Scenario 3 |
 | 31 | The nodes are peers, with no coordinator | Notes Sept 13, Oct 28; Lecture 9 s3.4 | `e1-300-bidding` against `e1-300-leader`; T4 | `leader_plan_share`, `share_node_1`, `share_node_2`, `share_node_3`; rounds called by a follower | M: Load distribution; D: The failure draw |
 | 32 | Group membership changes as nodes fail | Lecture 8 s9.1; Lecture 9 s2.2 | `e3e4-*`; `docs/demo.md` section 3 | `members` in `status-after.txt`; `group_view` events; `msgs_bid_per_req` | D: The group with a who's-alive list |
-| 33 | The Raft leader changes when it is overloaded | No written source: a teammate's report of what was said in class. Noor decided yes (D217, D218) | `e8-step-aside`, against `e2e6-skew-expected-wait`; `docs/demo.md` section 2b | `elections`, `commit_p99_ms`, `p99_ms`; the lines from `grep -h '"ev":"leader_step' runs/e8/step-aside/run-*/node-*.jsonl`. Only runs where node 1 led count | "The whole system in plain words": its note still says this is not in. Rewrite it, and add it to "Changed decisions". State that it has no written source |
+| 33 | The Raft leader changes when it is overloaded | No written source: a teammate's report of what was said in class. Noor decided yes (D217, D218) | `e8-step-aside`, against `e2e6-skew-expected-wait`; `docs/demo.md` section 2b | `elections`, `failover_to_leader_ms_mean`, `commit_p99_ms`, `p99_ms`; the lines from `grep -h '"ev":"leader_step' runs/e8/step-aside/run-*/node-*.jsonl`. Only runs where node 1 led count | "The whole system in plain words": its note still says this is not in. Rewrite it, and add it to "Changed decisions". State that it has no written source |
 
 **What nothing covers, or only a hand test covers:**
 
-- A real power cut: only T1. It logs no `silenced`, so `client_gap_*`, `before_*`, `during_*` and `after_*` stay empty.
+- A real power cut: only T1. It logs no `silenced`, so `failover_to_*`, `client_gap_*`, `before_*`, `during_*` and `after_*` stay empty.
   `extras.py` gives the gap instead. Only this test can lose unsynced disk writes: one-PC rehearsal never could.
-- Where the system falls: only T3. The cells stop at 3000 users, which one-PC rehearsal held.
+- Where the system falls: only T3. The cells stop at 3000 users, which one-PC rehearsal held only with plans of about 2450 us (section 3).
 - Stale plans per commit and commands per save: not in `summary.csv`. `extras.py` prints them.
 - The client PCs' network: nothing measures it.
 - Sharing of the draw between nodes: too few rounds on real timers to say anything.
+- A network cut that heals. `ctl silence` is a fair stand-in for a cut, with one exception it cannot show: for about half a second after
+  the cable returns, the cut-off node is still degraded, answers in about 4 ms, beats the committed path, and clients take that answer
+  as final. On one PC over a virtual cable, twice: 225 to 276 such answers, 125 to 136 of them lost first commit. Say so if the report
+  discusses a network cut. A power cut restarts the node, so it should not show this.
+- Arrivals after a leader fault. Steady users have no jitter, so they stay bunched for the rest of the run: on one PC
+  `arrival_peak_100ms_share_after_fault` read 0.35 against 0.13 before it. Read `after_*` as measured under clumped arrivals.
 
 **Phase 2, left out on purpose.** Four scenarios: peer discovery, direct P2P exchange, offline peer, conflicting claim
 (spec table, lines 242 to 274). Three measurements: discovery query latency and presence-table convergence; P2P delivery latency,
@@ -142,7 +155,10 @@ About 30 minutes. Do these in order. No PC may sleep during a batch.
 
 ```bash
 cd ~/DistributedSystems
+git switch main && git pull --ff-only     # once the PR with this guide is merged. Until then: git switch shared-phase1-gaps && git pull --ff-only
+ls experiments/e8-step-aside.toml   # must exist. If not, this PC is on a commit from before this guide: all six could still agree on it
 git rev-parse HEAD                  # must print the same on all six. Mixed builds look like dead nodes
+unset CARGO_TARGET_DIR              # the runner and hand.sh look in target/release. See below
 cargo build --release --bins        # after every pull. Several minutes per PC
 timedatectl                         # "System clock synchronized: yes". With chrony: chronyc tracking
 date +%s                            # run together on all six: within about 1 s of each other
@@ -152,6 +168,13 @@ ping -c 5 <a node PC's address>     # write the time down for the report
 lscpu; free -h; lsblk -d -o NAME,ROTA,SIZE                       # write down for the report
 pgrep -af '[t]arget/release/(node|loadgen|frontend|zonefeed)( |$)'    # must print nothing. If not: kill <PID>
 ```
+
+- **`CARGO_TARGET_DIR`.** `AGENTS.md` sets it for WSL. Set on a PC here, the build lands elsewhere, and the runner prints
+  `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped`. Nothing is wrong
+  with the leader. `start-users.sh` reads the variable, but the runner always passes its own `BIN`. Unset it on all six and build
+  again. To keep it for Plan A, set `BIN=$CARGO_TARGET_DIR/release` for the runner as well. `hand.sh` names `target/release` itself.
+- **Never pipe `ctl` into `head`,** or into anything that stops reading early. `ctl` then panics with `failed printing to stdout`,
+  which looks like a crash and says nothing about the cluster. Let it finish: `ctl status | sed -n 1,5p`, or send it to a file.
 
 | PC | Free disk | Why |
 |----|-----------|-----|
@@ -215,12 +238,33 @@ grep -h '"ev":"udp_socket"' runs/e1/300-bidding/run-1/node-*.jsonl     # each no
 
 | Metric | You want | If not |
 |--------|----------|--------|
-| `service_mean_us` | About 4000: one plan's time, in microseconds (D129). One-PC rehearsal: about 2450 | Our rule of thumb, as no document gives a limit: 2000 to 8000 is fine, so keep `plan_work = 1000` and state the number. Outside that, N = 1000 x 4000 / `service_mean_us`, on each PC that reads the cells: `sed -i 's/^plan_work = 1000$/plan_work = N/' experiments/*.toml`, `sed -i '1s/skew_work=5000/skew_work=5N/' experiments/e2e6-*.toml` and `sed -i '1s/skew_work=20000/skew_work=20N/' experiments/e8-step-aside.toml`, with 5N and 20N worked out. Say so in the report |
+| `service_mean_us` | About 4000: one plan's time, in microseconds (D129). One-PC rehearsal: about 2450. Read it from a bidding cell, as it is NaN in leader cells, which have no bids. Above about 2700, read the note under this table | Our rule of thumb, as no document gives a limit: 2000 to 8000 is fine up to 1000 users, so keep `plan_work = 1000` and state the number. It is not fine at 3000 users: on one PC that cell fell at about 3050 us, so choose as the note under this table says. Outside that range, N = 1000 x 4000 / `service_mean_us`, on each PC that reads the cells: `sed -i 's/^plan_work = 1000$/plan_work = N/' experiments/*.toml`, `sed -i '1s/skew_work=5000/skew_work=5N/' experiments/e2e6-*.toml` and `sed -i '1s/skew_work=20000/skew_work=20N/' experiments/e8-step-aside.toml`, with 5N and 20N worked out. Say so in the report |
 | `elections` | 0 | The leader is not holding. Check `nproc` and the disk before going on (D133, D48) |
 | `reports_expired` | 0 | Most likely a stamping or clock problem (D147). Do not go on |
 | `udp_rcvbuf_got_min_bytes` | 16777216. Nobody has seen this on a raised PC yet | About 425984 means a PC missed the sysctl. Fine only if that PC has no sudo and is a client PC |
 | `udp_drops_nodes` | 0 | Buffer too small: check the sysctl on the node PCs |
 | `net_bytes_per_s_mean` | Above 0. Nobody has seen it on a real network yet: loopback is left out, so it reads 0 on one PC | 0 means this figure is broken on these PCs. Say so in the report |
+
+**Read `service_mean_us` before the series: it says where the top cells will land.** One-PC rehearsal, `e1-3000-bidding` by the cost of a
+plan, one short run each except the first (no new leader in any of them):
+
+| `service_mean_us` | Answered a second | p50, ms | p99, ms | Retried |
+|-------------------|-------------------|---------|---------|---------|
+| 2498 | 2868 | 41 | 100 | 0 |
+| 2728 | 2858 | 43 | 109 | 0 |
+| 3054 | 2292 | 96 | 2481 | 6.7% |
+| 3365 | 2082 | 155 | 2689 | 11% |
+| 3778 | 1873 | 181 | 6191 | 15% |
+| 4080 | 1762 | 257 | 6502 | 17% |
+
+The cell held at 2728 us and **fell at about 3050 us. Above about 2700, expect the 3000-user cells past the knee. That is the knee, not a bug:** the
+planners run out, and plans wait and retry. The number moves with the PC's speed, and at D129's own target of 4000 that cell has fallen. 1000 users at
+4004 us were still fine, p99 56 ms, so the lower cells still compare the policies. **The team must choose `plan_work` before the series,** and say in the
+report which it chose:
+
+- Keep `plan_work = 1000` and report the knee. Our recommendation: it needs no edit, and the sweep then shows where latency turns up. E1's two
+  policies are both past the knee at 3000, so compare them at 1000 and below.
+- Lower it so that the top cell holds: N = 1000 x 2450 / `service_mean_us`, with the `sed` lines in the table above.
 
 ## 4. Plan A: with SSH
 
@@ -285,7 +329,7 @@ tail -f quick.log                               # Ctrl-C stops the tail, not the
 | `e1-1000-bidding`, `e1-1000-leader` | The middle load step (spec 231). `quick` jumps from 300 to 3000, and the point where latency turns up can hide in that gap |
 | `e4-300-silence-20s` | The full 20 s (spec 151, 227). The ordered faults in `quick` last 15 s |
 | `e7-p1-300` | Does the number of programs change anything (D181)? The report has a slot for it |
-| `e8-step-aside` | A busy leader moves by a normal vote (row 33, D218). The only cell with this on. It cannot move in the first 65 s after the leader starts, so with the runner the move comes near the end of the 75 s, and little of the run follows it. One PC, one run: 68 s after the leader started, a new leader in 805 ms, gave up 0 |
+| `e8-step-aside` | A busy leader moves by a normal vote (row 33, D218). The only cell with this on. It cannot move in the first 65 s after the leader starts, so with the runner the move comes near the end of the 75 s, and only about 8 s of the run follows it: state that beside any "after" figure. One PC, one run: 68 s after the leader started, a new leader in 805 ms, gave up 0 |
 
 ```bash
 nohup scripts/run-experiments.sh experiments/hosts quick degraded-300 e1-1000-bidding e1-1000-leader e4-300-silence-20s e7-p1-300 e8-step-aside >extra.log 2>&1 &
@@ -310,6 +354,10 @@ for c in $(cat experiments/quick.list) degraded-300 e1-1000-bidding e1-1000-lead
   n=$(ls runs/${c%%-*}/${c#*-}/run-*/run.json 2>/dev/null | wc -l); [ "$n" = 3 ] || echo "$c has $n of 3"
 done
 ```
+
+**E5 needs no extra cell.** The spec asks for election frequency, duration and overhead (spec 284, row 3), and not for faults on against
+off, so `e5-faults-on` stays in the spare list below. It differs from `ft8-random-faults`, which is in `quick`, only in its draw timers (30 to 60 s against
+20 to 30 s) and a fixed seed, so `e5-faults-off` against `ft8-random-faults` makes the same comparison. Say so in the report's E5 row (D230).
 
 **If lab time is left: the other 13 cells, by name, 58.5 minutes.** The report's "(full)" rows wait for these. Best first:
 
@@ -405,7 +453,7 @@ sleep $((60 - $(date +%s) % 60)); bash scripts/start-users.sh --config runs-conf
 # Typed before :00, it can fire before the load. It waits, and fires when the clock reads :35 (see the table)
 cd ~/DistributedSystems; source ~/hand.sh
 sleep $(( (95 - $(date +%s) % 60) % 60 ))
-ctl silence --node $(ctl status | awk 'NR>1 && $2=="leader" {print $1}' | head -1) --ms 15000
+ctl silence --node $(ctl status | awk 'NR>1 && $2=="leader" && !id {id=$1} END {print id}') --ms 15000
 
 # WHEN ALL THREE CLIENT PCs HAVE PRINTED "reported 10 of 10 programs" (1 of 1 for e7-p1-300): CLIENT PC 1
 ctl status | tee runs/current/status-after.txt       # equal digests in all three rows, once no row says silenced true
@@ -453,7 +501,7 @@ ended. `already silenced` means the first one worked (D74). For a follower, writ
 
 ```bash
 sleep $(( (95 - $(date +%s) % 60) % 60 ))
-F=$(ctl status | awk 'NR>1 && $2=="follower" {print $1}' | head -1)
+F=$(ctl status | awk 'NR>1 && $2=="follower" && !id {id=$1} END {print id}')
 [ -n "$F" ] && for v in 1 2 3; do [ "$v" = "$F" ] || ctl silence --node $v --ms 20000; done
 ```
 
@@ -481,18 +529,19 @@ What `analyze.py` needs in `run.json`:
 
 **Analyse.** Any PC with Python and the logs will do, also a laptop. One 3000-user run needs about 6 GB of free memory: about
 15 log lines a report and 1.7 KB a line in memory (one 300-user run peaked at 650 MB on one PC). All the plan's logs come to about
-50 million lines. At the 90,000 lines a second measured on one fast PC that is about 10 minutes, so allow 30 on a lab PC.
+50 million lines. At the 90,000 lines a second measured on one fast PC that is about 10 minutes, so allow 30 on a lab PC. One-PC
+rehearsal: 54 runs and 6.1 GB of logs took 6.1 minutes, with a peak of 5.6 GB of memory.
 
 ```bash
 python3 --version
+sudo apt install python3-venv                    # Ubuntu packages it apart from Python. Not needed if the next line works
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r analysis/requirements.txt         # needs Python 3.11 or newer
+pip install -r analysis/requirements.txt         # Python 3.10, as on Ubuntu 22.04, or newer
 ```
 
-- **Ubuntu 22.04 has Python 3.10, where those pinned numpy and scipy do not exist.** `pip` says `No matching distribution found
-  for numpy==2.3.4`. Use `pip install numpy scipy matplotlib` instead, in the same venv. `analyze.py` and `test_analyze.py` have run
-  that way on Python 3.10, with numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.9. The pinned line itself has not been tried.
-- No `python3-venv` and no sudo: skip the venv line, and use `pip3 install --user numpy scipy matplotlib`. Not tried.
+- **Ubuntu 22.04 has Python 3.10**, where numpy 2.3 and scipy 1.16 do not exist, so `requirements.txt` picks numpy 2.2.6 and scipy
+  1.15.3 there. `test_analyze.py` has run on those. The versions for Python 3.11 and newer have not been tried on a lab PC.
+- No `python3-venv` and no sudo: skip the venv line, and use `pip3 install --user -r analysis/requirements.txt`. Not tried.
 
 ```bash
 python3 analysis/test_analyze.py                 # checks the arithmetic. Look for OK. Its "left out" lines are its own test data
@@ -694,6 +743,10 @@ handjson stress-rate-1000 1 15 60 0 9
 Go up until it has fallen, then one step more. By arithmetic, not measured, planning tops out at 3000 to 5000 plans a
 second (4 threads x 3 nodes, at 4 to 2.4 ms a plan) and 3000 responders at about 5000 assignments a second.
 
+One-PC rehearsal, one run per step, 3 programs, as a guide to the shape: at 3000 a second p50 39 ms, at 4500 p50 12.3 s and 16% gave up, so the knee was
+between them. A closed loop hides this: 4500 users read p50 185 ms and 0 gave up, because a slow cloud slows its users, and throughput fell as users
+rose, 2868, 2559 and 2443 a second at 3000, 4500 and 6000.
+
 **If the client PCs give out first** (`client_pc_cpu_busy_p95` at 0.9 or more), make the cloud slower instead. On client
 PC 1, after `ctl status`, each plan then costs about 5 times as much, and a restart undoes it:
 
@@ -890,7 +943,7 @@ a first line saying how to run it, then the config sections that differ. The run
 | E1 | users × policy | latency percentiles, throughput, fairness, the leader's share of plans (`leader_plan_share`, D166) | B, F | `e1-<users>-<policy>` |
 | E2, E6 | load-score variant, with one node skewed | share of work per node, latency and fairness under skew | E, B | `e2e6-skew-<score>` |
 | E3, E4, FT-6 | victim × load | client-side gap (`client_gap_*`), election time, in-flight outcomes, time to pass the rejoin check (`recovery_mean_ms`), equal state (`digest_mismatches`, `rejoins_digest_confirmed`), elections after a rejoin (`elections_after_rejoin`) | C, D | `e3e4-<users>-<victim>`, and `e4-<users>-silence-<n>s` for silence length |
-| E5 | faults on or off | elections, messages by type, commit latency, by path | A | `e5-faults-off`, `e5-faults-on` |
+| E5 | faults on or off | elections, messages by type, commit latency, by path. The plan has `e5-faults-off` only: compare it with `ft8-random-faults`, or run `e5-faults-on` if time is left (D230) | A | `e5-faults-off`, `e5-faults-on` |
 | FT-8 | elected faults throughout | lost requests, duplicate commits, split decisions (must be 0) | C | `ft8-random-faults` |
 | FT-8 | fast elected faults | election frequency, duration and message overhead, for the spec's three numbers; its silences are shorter than the spec's | C | `ft8-election-rate` |
 | P-2 | bid window | split decisions | B | `p2-window-<n>ms` |
@@ -941,9 +994,9 @@ all the processes share one CPU and the network is loopback.
 
 Before a real run, check `service_mean_us` in `analysis/out/summary.csv` for one short cell: `plan_work =
 1000` was calibrated on a development machine to about 4 ms per plan (D129). If the lab machines differ
-much, change it in every cell, and say so in the report.
+much, change it in every cell, and say so in the report. The choice before the series is in section 3.
 
-**The leader must hold.** Final data must come from a build with the proposal queue (D133) and the group view in: load figures
+**No new leader without a cause.** Final data must come from a build with the proposal queue (D133) and the who's-alive list in: load figures
 from before the queue cannot be compared with figures from after it, and `msgs_bid_per_req` falls in fault cells compared with any
 older run (D154).
 

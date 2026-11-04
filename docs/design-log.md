@@ -289,6 +289,7 @@ table below in sync.
 | D227 | The UDP loss shares count over each process's whole log | F, all | Implemented, amends D172, amended by D229 |
 | D228 | A busy leader's log is read as one write, not as a queue | A | Implemented, amends D218 |
 | D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227 |
+| D230 | The lab guide after the full rehearsal | all | Implemented in the docs |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7706,6 +7707,47 @@ them on the six PCs.
 - **How we check it.** `analysis/test_analyze.py`: classes `Failover`, `TheCopiesThatWereLost` and `WhatABusyLookingRunMeans`, on synthetic logs. On real logs, from the guide check's runs at `e4ab477` on one PC, with a second script that counts the raw logs on its own: a silenced leader read `failover_to_leader_ms_mean` 769.1 and `failover_to_commit_ms_mean` 794.9, with the vote alone at 22.0, and the count agreed to the decimal. `udp_copies_lost_share` read 0 in all five runs with nothing lost, where `udp_request_loss_share` read up to 9.8%. It read 9.5% with a node killed for part of a run, as it should. `worst_request_ms`, `provisional_conflicts` (185 of 368) and `answered_with_responder_rps` matched the count. One `e8-step-aside` run through the real runner at this commit read `failover_to_leader_ms_mean` 760.7 and `failover_to_commit_ms_mean` 766.9, and the count agreed, with `udp_copies_lost_share` 0 where `udp_request_loss_share` read 0.59%. These are short one-PC runs: they check the arithmetic, and are never results.
 - **Report notes.** Check FT-2 against `failover_to_leader_ms_mean` and `failover_to_commit_ms_mean`, and call `election_duration_mean_ms` vote time. Print `answered_with_responder_rps` beside `throughput_rps`, `worst_request_ms` beside the gap, `provisional_conflicts` beside the provisional count, and say that `during_*` in degraded cells is mostly uncommitted answers. It is a fair "found by testing" point: the code was right, and a figure's name promised more than it measured.
 
+### D230 · The lab guide after the full rehearsal
+
+- **Date:** 2026-11-04 · **Part:** all (the guides) · **Status:** Implemented in the docs · **Decided by:** Noor Hany Emam, on the agent's recommendation. The choice about `plan_work` is left to the team in the lab, because it depends on what their PCs measure
+- **Context.** **One-PC rehearsal, never six-PC results.** The whole series ran through the real runner on one PC at `e4ab477`, by someone reading `experiments/README.md` and `docs/runbook.md` as a team member would. Nothing in the code was wrong. These things in the guides were wrong, missing or easy to misread:
+  1. `pip install -r analysis/requirements.txt` fails on Ubuntu 22.04: `No matching distribution found for numpy==2.3.4` on Python 3.10. Only the new guide had a way around it, and the runbook's `apt` line has no `python3-venv`, which Ubuntu packages apart.
+  2. With `CARGO_TARGET_DIR` set, as AGENTS.md says to on WSL, the runner cannot find the build and says so badly: 30 s of `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped`.
+  3. The guide calls 2000 to 8000 us a fine plan and says one-PC rehearsal held 3000 users. At about 3050 us that cell had already fallen: 2498 us gives p99 100 ms, 2728 us 109 ms, 3054 us 2481 ms with 6.7% retried, 4080 us 6502 ms with 17% retried, and no new leader in any. 1000 users at 4004 us still read p99 56 ms.
+  4. Runbook check 5 says that after `kill -9` of `start-users.sh` the next start should refuse. It cannot, as the programs end before the runner does.
+  5. The runbook says `elections` well above 0 means overload, but `degraded-300` reads about 55 with `election_duration_mean_ms` at about 22 s, a lone node's terms, and `ft8-election-rate` about 5, both by design.
+  6. `service_mean_us` is NaN in leader cells, unexplained beside the runbook's `grep`.
+  7. `watch_events.py --once` prints nothing without `--from-start`.
+  8. `e8-step-aside`'s "commit latency either side" has only about 8 s of "after" in `quick`.
+  9. `quick` has `e5-faults-off` and not `e5-faults-on`, so E5's comparison seems to need spare lab time.
+  10. `ctl` panics on a broken pipe, and the guide's own lines pipe through `head -1`.
+  11. A fresh clone gets `main`. At the time of the rehearsal `main` had none of the final code or this guide, and six PCs on that old commit would still pass the check that all six agree.
+- **Options considered.**
+  - *The Python pins:*
+    1. *One `requirements.txt` with a marker per Python version (chosen).* One install line in every document, still pinned as D64 asks.
+    2. *A second file for Python 3.10.* Every document then needs two lines and a way to choose.
+    3. *An unpinned line in the guide.* What the guide had. A later release could change the numbers, against D64.
+  - *`CARGO_TARGET_DIR`:*
+    1. *Say so in the guides, with the message it gives (chosen).*
+    2. *Make the runner read the variable, as `start-users.sh` does.* Rejected: the runner sends its `BIN` to the far PCs over ssh, where a shell may not have the variable, so its value on the runner's PC says nothing about them. It also changes a script on the morning of the lab.
+  - *A plan above about 2700 us:*
+    1. *Keep `plan_work = 1000` and report the knee (recommended).* It needs no edit, and the sweep then shows where latency turns up. Both policies are past the knee at 3000 users, so they compare at 1000 and below.
+    2. *Lower it so that the top cell holds, N = 1000 x 2450 / `service_mean_us`.* The policies compare at every load, and the closed-loop sweep shows no knee. T3 still finds where it falls.
+
+    Which applies depends on the lab PCs, so the guide gives the numbers and both choices, and the team picks before the series and says so in the report.
+  - *`e5-faults-on`:*
+    1. *Leave it in the spare list, and read `e5-faults-off` against `ft8-random-faults` (chosen).* Spec line 284 asks for election frequency, duration and overhead, and no line asks for faults on against off. E5 is our own row. The two cells differ only in their draw timers, 30 to 60 s against 20 to 30 s, and a fixed seed, and `ft8-random-faults` is in `quick`.
+    2. *Move it into the plan by name.* 4.5 minutes more for nothing the spec asks.
+  - *`ctl` on a broken pipe:*
+    1. *Say so in the guides, and take `head` out of the guide's lines (chosen).* It is harmless, and only looks like a crash.
+    2. *Fix `ctl`.* Rejected today: a change to a program on all six PCs on the morning of the lab, for a message.
+- **Decision.** As chosen above. The guides also gain the numbers behind point 3, what `--rate` showed on one PC, the closed-loop limits that make a run look too perfect, a network cut's half second that `ctl silence` cannot show, and clumped arrivals after a leader fault.
+- **Why.** The team has one day on six PCs that have never run this, so each thing that cost the rehearsal time would cost them more. A guide that says "2000 to 8000 is fine" and then shows a fallen top cell would read as a bug at the worst moment.
+- **Consequences.** **Nothing here changes the wire format or what a node does.** The plan's cell list and time totals stay as they were: 21 cells, 94.5 minutes by arithmetic. The report's E5 row must say which comparison it shows. `requirements.txt` has not been tried on Python 3.11 or newer here, only on 3.10.
+- **Where.** `analysis/requirements.txt`, `analysis/README.md`, `experiments/README.md`, `docs/runbook.md`, `README.md`.
+- **How we check it.** A fresh venv on Python 3.10.12, in WSL Ubuntu-22.04, installed numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.7 from the one line, and `test_analyze.py` passed its 96 tests. `docs_lint.py` over the docs: 48 Mermaid blocks, 0 problems. The team's first lab session is the real check, and the guide says to fix it when it is wrong.
+- **Report notes.** State the choice about `plan_work`, the measured `service_mean_us`, and whether the top cell is past the knee. A closed-loop interval of 0 is arithmetic, not stability.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -7745,6 +7787,7 @@ These add to older entries without changing their text. An entry can have more t
 | D54 | An open-loop `--rate` above what the cluster can answer makes new calls wait once 20,000 are open on one stub (D173) |
 | D58 | The default filter changed (D134) |
 | D63 | Quick is 15 cells (D162). Full is 33: the 31 here, `e7-p1-300` (D187) and `ft8-election-rate` (D162). The count of 36 in D162 assumed cells that were not built |
+| D64 | `requirements.txt` now pins per Python version, so one line works on Ubuntu 22.04 (D230) |
 | D68 | openraft and tarpc (D179, D215) |
 | D69 | If claims ever become leases, the token is the commit's log position. The leader issues nothing, because that would be a new duty against the table in D163 |
 | D73 | The `overloaded` event it asked for now exists (D138) |
@@ -7779,6 +7822,7 @@ These add to older entries without changing their text. An entry can have more t
 | D128 | `resource_usage` gains `udp_drops` (D171) |
 | D129 | Same settings; arrivals now spread in every cell, so a user's first request can come up to one think time later (D182, D187) |
 | D129 | "The demo keeps the defaults" no longer holds, and the cells do not change for that (D165). `e1-1000-*` and `e1-3000-*` use 3000 responders, and the other cells keep 300 (D219) |
+| D129 | At its own target of about 4000 us, `e1-3000-bidding` is past the knee on one PC. The guide gives the numbers and the choice (D230) |
 | D130 | The runner gains its guards; its "to confirm" still stands, as it has not run over SSH (D139) |
 | D130 | The runner starts users through the script, and has new checks (D183, D186) |
 | D130 | The runner could not start a node over ssh, and now writes `run.json` last (D222, D223). It works through a stand-in `ssh` (D188). It has still not run on the lab machines, so "to confirm" stays |
