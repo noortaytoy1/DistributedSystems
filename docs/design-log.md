@@ -297,6 +297,8 @@ table below in sync.
 | D235 | The takeover backstop waits at least 1000 ms, not 200 ms | B, C | Implemented, amends D42, D110 |
 | D236 | UDP messages to one address share a datagram within 2 ms | C | Implemented, amends D170 |
 | D237 | TCP between nodes leaves Nagle on | C | Implemented, amends D20 |
+| D238 | With many responders, each plan looks at its own part of the free list | E, A | Implemented |
+| D239 | A standing-by node looks once per heartbeat, not five times | C | Implemented, amends D110 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7885,6 +7887,33 @@ them on the six PCs.
 - **Where.** `src/node/transport.rs::framed`.
 - **How we check it.** `bids_seen` in `bid_round_closed`, commit latency, failover and `peer_suspected` on the six PCs.
 - **Report notes.** The measurements behind this are in `analysis/results/RESULTS.md`.
+
+### D238 · With many responders, each plan looks at its own part of the free list
+
+- **Date:** 2026-11-04 · **Part:** E, A · **Status:** Implemented · **Decided by:** the person running the lab session, on the agent's recommendation. The sample size and the threshold were chosen by the agent, and they can overrule both.
+- **Context.** Every plan picks the nearest free responder, from one list, so plans running at once tend to pick the same one, and only the first commits. On the six PCs with leader dispatch, so with one planner and no bids, at 5000 requests a second and `plan_work` 100: 3.71 stale plans per commit. The log's writes were full at 2000 commands and took about 190 to 320 ms, so it carried about 10,000 commands a second, most of them plans that were thrown away.
+- **Options considered.**
+  1. *A pseudo-random part of the free list per plan (chosen).* No shared state, no lock, no wire change, and it costs one filter. The planner stays pure.
+  2. *Reservations: a node remembers what it has in flight.* It helps only within one node, and the list is read before the plan waits for a worker, so plans in the queue still collide.
+  3. *Prefer responders by node.* It helps only between nodes, and leader dispatch has one planner.
+- **Decision.** At 256 responders or more, a plan chooses from about 1 in 16 free responders, chosen by a hash of the request, its attempt and the plan's try. If that part holds nobody with the capability needed, the plan gets the whole list. Under 256 responders nothing changes.
+- **Why.** It removes the cause of the collision and leaves the rules in place: first commit wins, and a stale plan still plans again.
+- **Consequences.** A plan may pick a farther responder, so `Plan.cost` rises. Its effect on stale plans has to be measured, and has not yet been. Cells with 300 or more responders behave differently from results at earlier commits. Degraded mode's plans are unchanged.
+- **Where.** `src/node/service.rs::free_for_plan`, `src/state.rs::free_responders_sample`.
+- **How we check it.** The stale-per-commit line in `extras.py`, and committed answers per second, against the same steps before this entry.
+- **Report notes.** State the change in `Plan.cost` beside any gain.
+
+### D239 · A standing-by node looks once per heartbeat, not five times
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D110 · **Decided by:** the person running the lab session, on the agent's recommendation.
+- **Context.** Every request in flight on a node that lost a round polls on its own timer, taking the state lock. A code audit worked out about 67,000 polls a second at 10,000 requests a second with 100 ms commits, and 1.3 million at the 2 s limit. That is arithmetic, not measured. So CPU rises as commits slow, which slows them further.
+- **Options considered.**
+  1. *One check per heartbeat, and no catching up on late ticks (chosen).* Suspicion changes only once per heartbeat, so little is lost.
+  2. *Wake on commit through a notifier.* Better, and more code, so not today.
+- **Decision.** `CHECKS_PER_HEARTBEAT` = 1, with `MissedTickBehavior::Skip`.
+- **Consequences.** A takeover can start up to about 40 ms later at the default heartbeat.
+- **Where.** `src/node/takeover.rs`.
+- **How we check it.** `cargo test --test takeover`.
 
 ### Notes on older entries
 

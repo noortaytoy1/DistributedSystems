@@ -22,8 +22,9 @@ const BACKSTOP_MIN: Duration = Duration::from_millis(1000);
 /// The backstop waits this many times the winner's bid when the bid is an expected wait.
 const BACKSTOP_FACTOR: u64 = 3;
 
-/// How often a standing-by node looks again. Suspicion itself changes once per heartbeat.
-const CHECKS_PER_HEARTBEAT: u32 = 5;
+/// How often a standing-by node looks again. Suspicion itself changes once per heartbeat, and every
+/// request in flight runs this loop, so more checks only cost CPU when commits are slow (D239).
+const CHECKS_PER_HEARTBEAT: u32 = 1;
 
 /// Why a node took over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,8 @@ pub async fn stand_by(ctx: &NodeContext, req: &ClientRequest) -> bool {
     let stagger = timers.peer_heartbeat() * (rank as u32 - 1);
 
     let mut tick = tokio::time::interval(timers.peer_heartbeat() / CHECKS_PER_HEARTBEAT);
+    // A late tick must not be made up in a burst: that would add load when the node is behind.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut due: Option<Instant> = None;
     loop {
         tick.tick().await;

@@ -223,6 +223,17 @@ impl CloudState {
             .collect()
     }
 
+    /// About one in `one_in` of the free responders, chosen by `salt`, in ID order (D238). Reads only.
+    /// Different salts give different parts, so plans running at once rarely pick the same responder.
+    pub fn free_responders_sample(&self, salt: u64, one_in: u64) -> Vec<Responder> {
+        self.responders
+            .values()
+            .filter(|s| s.held_by.is_none())
+            .filter(|s| sample_mix(salt ^ u64::from(s.responder.id)) % one_in == 0)
+            .map(|s| s.responder.clone())
+            .collect()
+    }
+
     /// Every held responder with its holder's committed result, in responder ID order.
     pub fn holds(&self) -> Vec<(ResponderId, &CommittedResult)> {
         self.responders
@@ -272,6 +283,15 @@ fn chain(prev: u64, index: u64, cmd: &Command, outcome: &Outcome) -> u64 {
     cmd.hash(&mut h);
     outcome.hash(&mut h);
     h.finish()
+}
+
+/// Spreads an integer over all 64 bits, for [`CloudState::free_responders_sample`].
+pub fn sample_mix(mut x: u64) -> u64 {
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^ (x >> 33)
 }
 
 #[cfg(test)]
@@ -326,6 +346,27 @@ mod tests {
             },
         );
         s
+    }
+
+    #[test]
+    fn a_sample_is_part_of_the_free_list_and_differs_by_salt() {
+        let mut state = CloudState::default();
+        let responders: Vec<Responder> = (0..1600)
+            .map(|id| Responder {
+                id,
+                zone: 0,
+                location: Point { x: 0, y: 0 },
+                capability: Capability::Medical,
+            })
+            .collect();
+        state.apply(1, &Command::RegisterResponders { responders });
+        let (a, b) = (
+            state.free_responders_sample(sample_mix(1), 16),
+            state.free_responders_sample(sample_mix(2), 16),
+        );
+        assert!((50..=150).contains(&a.len()), "{}", a.len());
+        assert_ne!(a, b);
+        assert_eq!(a, state.free_responders_sample(sample_mix(1), 16));
     }
 
     #[test]

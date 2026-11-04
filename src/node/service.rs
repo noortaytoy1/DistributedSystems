@@ -29,9 +29,38 @@ use crate::proto::{
     ClientReply, ClientRequest, Command, CommittedResult, Outcome, Plan, ProposeError, ReplyBody,
     RequestId, Responder, ResultProposal,
 };
+use crate::state::sample_mix;
 
 /// Plans per request before the node answers that nobody could be sent (D220).
 pub(super) const MAX_PLAN_ATTEMPTS: u32 = 3;
+
+/// With at least this many responders, a plan looks at only part of the free list (D238). Fewer, and
+/// the part could leave a report with a much worse responder, or none.
+const SAMPLE_FROM_RESPONDERS: usize = 256;
+
+/// A plan looks at about one in this many free responders (D238).
+const SAMPLE_ONE_IN: u64 = 16;
+
+/// The free responders one plan chooses from. Every plan picks the nearest of its list, so plans
+/// running at once from one list pick the same responder, and all but the first go stale. So each
+/// plan of each attempt looks at its own part. If that part has nobody with the skill the report
+/// needs, the plan gets the whole list, so sampling never changes who can be sent (D238).
+fn free_for_plan(ctx: &NodeContext, req: &ClientRequest, plan: u32) -> Vec<Responder> {
+    ctx.state.with(|s| {
+        if s.responder_count() < SAMPLE_FROM_RESPONDERS {
+            return s.free_responders();
+        }
+        let salt = sample_mix(req.id.client)
+            ^ sample_mix(req.id.seq.rotate_left(17))
+            ^ sample_mix((u64::from(req.attempt) << 32) | u64::from(plan));
+        let part = s.free_responders_sample(salt, SAMPLE_ONE_IN);
+        if part.iter().any(|r| r.capability == req.incident.needs) {
+            part
+        } else {
+            s.free_responders()
+        }
+    })
+}
 
 pub(super) async fn handle_request(ctx: Arc<NodeContext>, req: ClientRequest, reply: ReplyTx) {
     let started = Instant::now();
@@ -83,8 +112,8 @@ enum ExecuteError {
 /// Plan on the worker pool and commit through Raft; plan again if the plan went stale, and after
 /// [`MAX_PLAN_ATTEMPTS`] stale plans commit that nobody could be sent (D220).
 async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResult, ExecuteError> {
-    for _ in 0..MAX_PLAN_ATTEMPTS {
-        let free = ctx.state.with(|s| s.free_responders());
+    for attempt in 0..MAX_PLAN_ATTEMPTS {
+        let free = free_for_plan(ctx, req, attempt);
         let plan = plan_on_workers(ctx, req, free).await?;
         let proposal = ResultProposal {
             request: req.id,
