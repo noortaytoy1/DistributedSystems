@@ -29,6 +29,8 @@ from scipy import stats
 USER_HZ = 100  # /proc CPU ticks per second on Ubuntu
 UDP_RCVBUF_ASKED_BYTES = 8 * 1024 * 1024  # node/datagram.rs: what every UDP socket asks for (D171)
 ELECTION_AFTER_REJOIN_US = 10_000_000  # FT-6: elections this soon after a rejoin count against it
+LOSS_GRACE_US = 1_000_000  # a term that moves later than this after a quiet spell was not lost to it
+LOG_END_GRACE_US = 2_000_000  # a leader lost this close to the end of the logs had no time to be replaced
 PERCENTILES = (50, 95, 99)
 
 
@@ -250,63 +252,100 @@ def election_metrics(events, start_us):
     }
 
 
-def failover_metrics(events, start_us):
+def quiet_spells(es):
+    """When this node went quiet while it led: {term: [[from_us, to_us], ...]}, in time order, with spells
+    that overlap joined. A silence lasts its `ms`. A step-aside lasts until its end line, or for ever if
+    the log has none. One that timed out with the term unchanged drops out: that leader held its writes
+    for up to 3 s and carried on, so no leader was lost."""
+    watched = ("raft_state", "silenced", "leader_stepped_aside", "leader_step_aside_ended")
+    spells = defaultdict(list)
+    asides = {}
+    led = None
+    for e in sorted((e for e in es if e["ev"] in watched), key=lambda e: e["ts_us"]):
+        if e["ev"] == "raft_state":
+            led = e["term"] if e["role"] == "leader" else None
+        elif e["ev"] == "silenced":
+            if led is not None:
+                spells[led].append([e["ts_us"], e["ts_us"] + e["ms"] * 1000])
+        elif e["ev"] == "leader_stepped_aside":
+            asides[e["term"]] = [e["ts_us"], math.inf]
+            spells[e["term"]].append(asides[e["term"]])
+        elif e["term"] in asides:
+            aside = asides.pop(e["term"])
+            aside[1] = e["ts_us"]
+            if e["outcome"] == "timed_out" and e["new_term"] == e["term"]:
+                spells[e["term"]].remove(aside)
+    joined = {}
+    for term, found in spells.items():
+        joined[term] = []
+        for begin, end in sorted(found):
+            if joined[term] and begin <= joined[term][-1][1]:
+                joined[term][-1][1] = max(joined[term][-1][1], end)
+            else:
+                joined[term].append([begin, end])
+    return joined
+
+
+def failover_metrics(events, start_us, measured_s=None):
     """How long the cloud had no leader after losing one (FT-2, D229).
 
-    Each loss starts at the leader's own `silenced` or `leader_stepped_aside` line, if that falls in the
-    measured time. failover_to_leader_ms_mean runs to the first `raft_state` line, on any node, of a leader in
-    a higher term, and failover_to_commit_ms_mean to the first result committed after that line, when clients
-    can have answers again. A step-aside nobody took up (`timed_out`) lost nothing, so it does not count, and
-    a leader that goes both ways in one term counts once. A loss with no later leader in the log adds to
-    failovers_without_leader and to neither mean, so that the worst case cannot read as a good average.
+    A leader can go quiet many times in one term, and most short silences cost it nothing. So a term counts
+    as lost only if some node logs a higher term before that quiet ended, or up to LOSS_GRACE_US after, and
+    the loss starts at the last quiet spell that began before the next leader's first line. A later election
+    is another story. The leader's own `silenced` or `leader_stepped_aside` line must fall in the measured
+    time. failover_to_leader_ms_mean runs to the first `raft_state` line of a leader in the next term that
+    has one, and failover_to_commit_ms_mean to the first result committed after that line, when clients can
+    have answers again.
+
+    A loss with no later leader in the log adds to failovers_without_leader and to neither mean, and
+    failover_warnings names the cell, so that the worst case cannot read as a good average without anyone
+    being told. One within LOG_END_GRACE_US of the logs' end is not judged, as nobody had time to take over.
+    A loss with a leader and no commit after it adds to failovers_without_commit and leaves only the second
+    mean, so then the two means cover different failovers.
 
     These subtract `ts_us` written by different machines. client_gap_* is the same story on one clock."""
     logs = node_events(events)
-    leader_lines = sorted(
-        (e["ts_us"], e["term"])
-        for es in logs.values()
-        for e in es
-        if e["ev"] == "raft_state" and e["role"] == "leader"
-    )
+    states = [e for es in logs.values() for e in es if e["ev"] == "raft_state"]
+    # By term, so that a clock behind the others cannot pair a loss with an election long after it.
+    next_leaders = sorted((e["term"], e["ts_us"]) for e in states if e["role"] == "leader")
     commits = sorted(
         e["ts_us"]
         for es in logs.values()
         for e in es
         if e["ev"] == "commit" and e["kind"] == "commit_result" and e["outcome"] == "committed"
     )
+    measured_to = start_us + measured_s * 1_000_000 if measured_s and start_us else math.inf
+    logs_end = max((e["ts_us"] for es in logs.values() for e in es), default=0)
     to_leader, to_commit = [], []
-    failovers = without_leader = 0
-    watched = ("raft_state", "silenced", "leader_stepped_aside", "leader_step_aside_ended")
+    failovers = without_leader = without_commit = 0
     for es in logs.values():
-        losses = []
-        led = None
-        for e in sorted((e for e in es if e["ev"] in watched), key=lambda e: e["ts_us"]):
-            if e["ev"] == "raft_state":
-                led = e["term"] if e["role"] == "leader" else None
-            elif e["ev"] == "silenced":
-                if led is not None:
-                    losses.append((e["ts_us"], led))
-            elif e["ev"] == "leader_stepped_aside":
-                losses.append((e["ts_us"], e["term"]))
-            elif e["outcome"] == "timed_out" and losses and losses[-1][1] == e["term"]:
-                losses.pop()
-        terms_counted = set()
-        for at, term in losses:
-            if at < start_us or term in terms_counted:
+        restored = [e["ts_us"] for e in es if e["ev"] == "restored"]
+        for term, spells in quiet_spells(es).items():
+            if not spells:
                 continue
-            terms_counted.add(term)
-            failovers += 1
-            new_leader = next((ts for ts, t in leader_lines if t > term and ts >= at), None)
-            if new_leader is None:
+            new_leader = next((ts for t, ts in next_leaders if t > term), None)
+            began = [spell for spell in spells if new_leader is None or spell[0] <= new_leader]
+            at, until = began[-1] if began else spells[0]
+            if at < start_us or at > measured_to:
+                continue
+            moved = min((e["ts_us"] for e in states if e["term"] > term), default=None)
+            cost_the_term = moved is not None and moved <= until + LOSS_GRACE_US
+            if began and new_leader is not None:
+                if cost_the_term:
+                    failovers += 1
+                    to_leader.append(new_leader - at)
+                    first_commit = bisect.bisect_left(commits, new_leader)
+                    if first_commit < len(commits):
+                        to_commit.append(commits[first_commit] - at)
+                    else:
+                        without_commit += 1
+            elif at + LOG_END_GRACE_US < logs_end and (cost_the_term or not any(at < r for r in restored)):
+                failovers += 1
                 without_leader += 1
-                continue
-            to_leader.append(new_leader - at)
-            first_commit = bisect.bisect_left(commits, new_leader)
-            if first_commit < len(commits):
-                to_commit.append(commits[first_commit] - at)
     return {
         "failovers": failovers,
         "failovers_without_leader": without_leader,
+        "failovers_without_commit": without_commit,
         "failover_to_leader_ms_mean": float(np.mean(to_leader)) / 1000 if to_leader else float("nan"),
         "failover_to_commit_ms_mean": float(np.mean(to_commit)) / 1000 if to_commit else float("nan"),
     }
@@ -831,7 +870,7 @@ def analyse_run(run_dir):
     metrics = request_metrics(events, warmup_s, measured_s)
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
-    metrics.update(failover_metrics(events, start))
+    metrics.update(failover_metrics(events, start, measured_s))
     metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
@@ -951,6 +990,20 @@ def udp_warnings(summary):
                     f"warning: {experiment}/{cell}: {name} is {drops:g} per run; "
                     "each lost copy can cost a client a 2 s retry"
                 )
+    return warnings
+
+
+def failover_warnings(summary):
+    """Cells where a leader was lost and the logs show no next one (D229). Those losses are in neither
+    failover_to_* mean, so the mean alone reads better than the cell was."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        lost = metrics.get("failovers_without_leader", (float("nan"),))[0]
+        if lost > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: failovers_without_leader is {lost:g} per run, and those losses are "
+                "in no failover_to_* mean; read the raft_state lines in that cell's logs"
+            )
     return warnings
 
 
@@ -1111,7 +1164,7 @@ def main():
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
     for note in provisional_notes(summary):
         print(note)
-    for warning in expired_warnings(summary) + udp_warnings(summary):
+    for warning in expired_warnings(summary) + udp_warnings(summary) + failover_warnings(summary):
         print(warning, file=sys.stderr)
 
 

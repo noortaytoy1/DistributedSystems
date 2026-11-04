@@ -729,24 +729,29 @@ def committed(at_ms, outcome="committed", kind="commit_result"):
             "forwarded": False, "log_index": 1, "request": request(1)}
 
 
-def silence(at_ms):
-    return {"ts_us": T0 + at_ms * 1000, "ev": "silenced", "ms": 5000}
+def silence(at_ms, ms=5000):
+    return {"ts_us": T0 + at_ms * 1000, "ev": "silenced", "ms": ms}
+
+
+def restored(at_ms):
+    return {"ts_us": T0 + at_ms * 1000, "ev": "restored"}
 
 
 def aside(at_ms, term):
     return {"ts_us": T0 + at_ms * 1000, "ev": "leader_stepped_aside", "term": term}
 
 
-def aside_ended(at_ms, term, outcome):
+def aside_ended(at_ms, term, outcome, new_term=None):
     return {"ts_us": T0 + at_ms * 1000, "ev": "leader_step_aside_ended", "term": term, "outcome": outcome,
-            "new_term": term, "new_leader": 1, "waited_ms": 3000}
+            "new_term": term if new_term is None else new_term, "new_leader": 1, "waited_ms": 3000}
 
 
 class Failover(unittest.TestCase):
     """Measuring starts at T0 in these cases, and times are in ms after it."""
 
-    def failover(self, node1, node2=()):
-        return analyze.failover_metrics({"node-1": list(node1), "node-2": list(node2), "client-1": []}, T0)
+    def failover(self, node1, node2=(), measured_s=None):
+        logs = {"node-1": list(node1), "node-2": list(node2), "client-1": []}
+        return analyze.failover_metrics(logs, T0, measured_s)
 
     def test_it_runs_from_the_silence_to_the_new_leader_and_its_first_commit(self):
         m = self.failover(
@@ -791,8 +796,10 @@ class Failover(unittest.TestCase):
         self.assertEqual(m["failovers_without_leader"], 0)
 
     def test_an_end_line_with_no_start_line_does_not_stop_the_analysis(self):
-        # A clock stepped back can sort the end first. One odd line must not cost the whole summary.
-        m = self.failover([state(0, 4, "leader", 1), aside_ended(5000, 4, "timed_out"), aside(5001, 4)])
+        # A clock stepped back can sort the end first. One odd line must not cost the whole summary. The
+        # commit keeps the loss away from the end of the logs, where it would not be judged.
+        m = self.failover([state(0, 4, "leader", 1), aside_ended(5000, 4, "timed_out"), aside(5001, 4)],
+                          [committed(9000)])
         self.assertEqual(m["failovers"], 1)
         self.assertEqual(m["failovers_without_leader"], 1)
 
@@ -821,15 +828,119 @@ class Failover(unittest.TestCase):
         self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 710.0)
 
     def test_a_leader_lost_with_nobody_to_follow_it_is_counted_apart(self):
-        m = self.failover([state(0, 2, "leader", 1), silence(1000)], [state(0, 2, "follower", 1)])
+        # It never came back, and the logs run on well past the silence.
+        m = self.failover([state(0, 2, "leader", 1), silence(1000)], [state(0, 2, "follower", 1), committed(9000)])
         self.assertEqual(m["failovers"], 1)
         self.assertEqual(m["failovers_without_leader"], 1)
         self.assertTrue(math.isnan(m["failover_to_leader_ms_mean"]))
 
+    def test_a_silence_the_leader_outlives_is_no_loss(self):
+        # A real run's shape: 134 ms silent, the same term before and after, and nobody took over.
+        m = self.failover([state(0, 2, "leader", 1), silence(6426, ms=134), restored(6561)],
+                          [state(0, 2, "follower", 1), committed(20000)])
+        self.assertEqual(m["failovers"], 0)
+        self.assertEqual(m["failovers_without_leader"], 0)
+        self.assertTrue(math.isnan(m["failover_to_leader_ms_mean"]))
+
+    def test_two_silences_in_one_term_count_from_the_last(self):
+        m = self.failover(
+            [state(0, 2, "leader", 1), silence(1000, ms=134), restored(1134), silence(10000, ms=900),
+             restored(10900), state(10950, 3, "follower", 2)],
+            [state(0, 2, "follower", 1), state(10740, 3, "candidate"), state(10750, 3, "leader", 2), committed(10760)],
+        )
+        self.assertEqual(m["failovers"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 750.0)
+        self.assertAlmostEqual(m["failover_to_commit_ms_mean"], 760.0)
+
+    def test_a_short_silence_does_not_take_the_blame_for_a_later_election(self):
+        # A real run's shape: 279 ms silent, and the term moved 28 s later for another reason.
+        m = self.failover([state(0, 5, "leader", 1), silence(1000, ms=279), restored(1279)],
+                          [state(29400, 6, "candidate"), state(29410, 6, "leader", 2), committed(29420)])
+        self.assertEqual(m["failovers"], 0)
+        self.assertTrue(math.isnan(m["failover_to_leader_ms_mean"]))
+
+    def test_a_silence_that_cost_the_term_counts_even_if_the_new_leader_is_slow(self):
+        # 600 ms silent, a vote refused while it lasted, and a new leader 1.4 s after it began.
+        m = self.failover([state(0, 2, "leader", 1), silence(1000, ms=600), restored(1600)],
+                          [state(1500, 3, "candidate"), state(2400, 4, "leader", 2)])
+        self.assertEqual(m["failovers"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 1400.0)
+
+    def test_with_no_majority_left_it_reads_the_outage(self):
+        # A lone node's terms climb during the silence, and the new leader comes well after it ends.
+        m = self.failover(
+            [state(0, 2, "leader", 1), silence(1000, ms=20000), restored(21000), state(24100, 10, "follower", 2)],
+            [state(1800, 3, "candidate"), state(9000, 7, "candidate"), state(24041, 10, "leader", 2), committed(24050)],
+        )
+        self.assertEqual(m["failovers"], 1)
+        self.assertEqual(m["failovers_without_leader"], 0)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 23041.0)
+
+    def test_a_step_aside_that_timed_out_after_the_term_moved_still_counts(self):
+        # A vote was still running at the 3 s limit, so the line says timed_out with a higher new_term.
+        m = self.failover(
+            [state(0, 4, "leader", 1), aside(2000, 4), state(2750, 5, "follower"),
+             aside_ended(5000, 4, "timed_out", new_term=5), state(5205, 5, "follower", 2)],
+            [state(5200, 5, "leader", 2), committed(5210)],
+        )
+        self.assertEqual(m["failovers"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 3200.0)
+        self.assertAlmostEqual(m["failover_to_commit_ms_mean"], 3210.0)
+
+    def test_a_step_aside_called_off_does_not_take_the_blame_for_a_later_election(self):
+        m = self.failover([state(0, 4, "leader", 1), aside(2000, 4), aside_ended(2100, 4, "stopped")],
+                          [state(90000, 5, "leader", 2)])
+        self.assertEqual(m["failovers"], 0)
+
+    def test_a_loss_after_the_measured_time_does_not_count(self):
+        m = self.failover([state(0, 2, "leader", 1), silence(61000)], [state(61700, 3, "leader", 2)], measured_s=60)
+        self.assertEqual(m["failovers"], 0)
+
+    def test_a_loss_at_the_end_of_the_measured_time_counts(self):
+        m = self.failover([state(0, 2, "leader", 1), silence(59500)], [state(60200, 3, "leader", 2)], measured_s=60)
+        self.assertEqual(m["failovers"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 700.0)
+
+    def test_a_loss_too_near_the_end_of_the_logs_is_not_judged(self):
+        # Silenced just before the nodes stopped: nobody had time to take over.
+        m = self.failover([state(0, 2, "leader", 1), silence(59000), {"ts_us": T0 + 59_300_000, "ev": "stopped"}],
+                          [state(0, 2, "follower", 1)], measured_s=60)
+        self.assertEqual(m["failovers"], 0)
+        self.assertEqual(m["failovers_without_leader"], 0)
+
+    def test_a_new_leader_with_no_commit_after_it_is_counted_apart(self):
+        m = self.failover(
+            [state(0, 2, "leader", 1), silence(1000), state(9000, 3, "follower", 2), state(55000, 4, "leader", 1)],
+            [state(1700, 3, "leader", 2), committed(1720), silence(50000)],
+        )
+        self.assertEqual(m["failovers"], 2)
+        self.assertEqual(m["failovers_without_commit"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 2850.0)
+        self.assertAlmostEqual(m["failover_to_commit_ms_mean"], 720.0)
+
+    def test_a_clock_far_behind_does_not_pair_a_loss_with_a_later_election(self):
+        # Node 2's clock is 900 ms behind, so it seems to lead before the silence. Node 3's election, 60 s
+        # on, belongs to node 2's own loss.
+        logs = {"node-1": [state(0, 2, "leader", 1), silence(1000)],
+                "node-2": [state(800, 3, "leader", 2), committed(810), silence(60000)],
+                "node-3": [state(60700, 4, "leader", 3), committed(60710)]}
+        m = analyze.failover_metrics(logs, T0)
+        self.assertEqual(m["failovers"], 2)
+        self.assertEqual(m["failovers_without_leader"], 1)
+        self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 700.0)
+
+    def test_a_lost_leader_with_no_next_one_gets_a_warning(self):
+        cell = {("e3e4", "x"): {"failovers_without_leader": (0.33, 1.43, 3)}, ("e1", "y"): {}}
+        warnings = analyze.failover_warnings(cell)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("e3e4/x", warnings[0])
+        self.assertIn("failovers_without_leader is 0.33", warnings[0])
+        self.assertEqual(analyze.failover_warnings({("e3e4", "x"): {"failovers_without_leader": (0.0, 0.0, 3)}}), [])
+
     def test_each_loss_in_a_run_counts(self):
         m = self.failover(
             [state(0, 2, "leader", 1), silence(1000), state(1900, 3, "follower", 2)],
-            [state(1700, 3, "leader", 2), silence(5000), committed(1710), committed(6000)],
+            [state(1700, 3, "leader", 2), silence(5000), committed(1710), committed(8000)],
         )
         # Node 2 goes silent at 5 s with no later leader: 700 ms, and one without.
         self.assertEqual(m["failovers"], 2)
@@ -952,6 +1063,7 @@ class WhatABusyLookingRunMeans(unittest.TestCase):
         self.assertEqual(self.m["failovers"], 1)
         self.assertAlmostEqual(self.m["failover_to_leader_ms_mean"], 500.0)
         self.assertTrue(math.isnan(self.m["failover_to_commit_ms_mean"]))
+        self.assertEqual(self.m["failovers_without_commit"], 1)
         self.assertIn("udp_copies_lost_share", self.m)
         # The vote alone: the old figure, kept under its old name.
         self.assertAlmostEqual(self.m["election_duration_mean_ms"], 200.0)
