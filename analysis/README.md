@@ -4,11 +4,11 @@ Python tools that turn event logs into the numbers and plots in the report (D64)
 the system, and need no Rust.
 
 ```bash
-sudo apt install python3-venv          # Ubuntu packages it apart from Python. Not needed if the next line works
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r analysis/requirements.txt    # Python 3.10, as on Ubuntu 22.04, or newer: it pins versions for each
-python analysis/test_analyze.py        # checks the arithmetic on a synthetic log
-python analysis/analyze.py runs        # writes analysis/out/ (ignored by git)
+sudo apt update && sudo apt install -y python3-venv    # Ubuntu packages it apart from Python. Not needed if the next line works
+python3 -m venv .venv && . .venv/bin/activate    # in a new terminal later, only: . .venv/bin/activate
+pip install -r analysis/requirements.txt    # Python 3.10, as on Ubuntu 22.04, to 3.14: it pins versions for each
+python3 analysis/test_analyze.py       # checks the arithmetic on a synthetic log
+python3 analysis/analyze.py runs       # writes analysis/out/ (ignored by git)
 ```
 
 ## Input

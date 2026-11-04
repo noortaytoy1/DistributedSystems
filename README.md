@@ -161,7 +161,7 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
 scripts/run-experiments.sh experiments/hosts quick # 15 cells, about 70 minutes; `full` is 34, about 8 hours
-python analysis/analyze.py runs                    # analysis/out/: summary.csv and plots
+python3 analysis/analyze.py runs                   # analysis/out/: summary.csv and plots. Set up its venv first: analysis/README.md
 ```
 
 See [experiments/README.md](experiments/README.md) and [analysis/README.md](analysis/README.md).

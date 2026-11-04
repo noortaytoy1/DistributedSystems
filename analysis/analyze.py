@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn collected runs into the report's numbers and plots.
 
-    python analysis/analyze.py runs [--out analysis/out]
+    python3 analysis/analyze.py runs [--out analysis/out]
 
 Reads runs/<experiment>/<cell>/<run>/ as scripts/run-experiments.sh writes them. Each metric is
 computed per run, then averaged across the cell's runs with a 95% Student's t confidence interval.

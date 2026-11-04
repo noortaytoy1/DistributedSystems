@@ -10,13 +10,14 @@ firewalls, keys or sshd limits. The demo itself is in [demo.md](demo.md).
 All six run Ubuntu. On each one:
 
 ```bash
-sudo apt install build-essential rsync chrony python3-venv      # C linker, log collection, NTP, the analysis
+sudo apt update
+sudo apt install -y build-essential rsync chrony python3-venv git curl openssh-server    # C linker, log collection, NTP, the analysis, the next lines, ssh
 curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
 source "$HOME/.cargo/env"
 git clone https://github.com/noortaytoy1/DistributedSystems.git
 ```
 
-A fresh clone gets `main`. Build only once the PR you mean to run has merged, or `git switch` to its branch first, and check that
+A fresh clone gets `main`. Build only once the PR you mean to run has merged. Until then, `git switch shared-phase1-gaps` first. Check that
 `experiments/e8-step-aside.toml` exists: six PCs on one old commit would still pass the check that all six agree.
 
 On each client machine, check for a browser: `which firefox`. If there is none, use `ssh -L
@@ -25,7 +26,7 @@ from the terminals.
 
 - **Toolchain.** `rust-toolchain.toml` picks the compiler on the first build. Do not install another one
   over it: an apt Rust earlier on `PATH` cannot build this repo.
-- **Build folder.** Leave `CARGO_TARGET_DIR` unset here. The runner looks in `target/release`, or in `BIN` if you set it.
+- **Build folder.** Leave `CARGO_TARGET_DIR` unset here. The runner looks in `target/release` on every machine. Its `BIN` goes to the far machines as it is, so set it only if all six built at that same path.
 - **Clock.** `chronyc tracking` **must** show the clock in sync on all six before any test. Each machine's timestamps are
   only roughly aligned with the others', so FT-2 and every latency are measured on one machine, and `analyze.py` says how far apart the clocks were (`node_clock_skew_ms`, D233). A bad clock on a node changes
   the times and labels of incidents it planned, on every node and for good, though never a plan or a hold (D142). A bad
@@ -56,6 +57,7 @@ The frontend needs no open port when the browser is on the same machine. Only if
 From the machine that runs the experiments, every machine needs an SSH key with no prompt:
 
 ```bash
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519     # a key, if this machine has none
 ssh-copy-id ubuntu@10.0.0.11     # and the other five
 ssh -o BatchMode=yes ubuntu@10.0.0.11 true
 ```
@@ -155,7 +157,7 @@ mkdir -p data/raft && dd if=/dev/zero of=data/raft/.t bs=512 count=1000 oflag=ds
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick e1-300-bidding
-python analysis/analyze.py runs
+python3 analysis/analyze.py runs     # after the venv lines in section 6
 grep -E 'service_mean_us|no_responder_share|reports_expired|msgs_all_per_req|udp_rcvbuf_got_min_bytes|udp_drops_nodes|udp_cancels_per_req' analysis/out/summary.csv
 ```
 
@@ -238,7 +240,7 @@ rm -rf data/raft runs/lab
 3. Nothing is left afterwards: `pgrep -a -x loadgen` and `pgrep -a -x node` print nothing, and `runs-config/` holds only `run.toml`.
 4. Every node's log in the run folder has a `stopped` event, and the folder has 30 `client-*.jsonl` files.
 5. Kill a client machine's `start-users.sh` with `kill -9` during a second short run. The runner should say it stopped the series
-   (`a client machine ended with status 137`). Its programs run on to the end of their duration, and the runner outlasts them, so afterwards
+   (`a client machine ended with status 137`, or 255 over real ssh, whose client reports a killed far shell that way). Its programs run on to the end of their duration, and the runner outlasts them, so afterwards
    nothing is left to refuse: on one PC `pgrep` printed nothing and the next start went ahead. A start refuses only while such programs still run, as when the runner itself died (D189, D230).
 
 ## 6. Collect and analyse
@@ -247,9 +249,9 @@ The runner copies logs to `runs/<experiment>/<cell>/run-<n>/` on the machine it 
 the commit and the final `ctl status`. Keep them until the report is done. They never go into git.
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r analysis/requirements.txt      # Python 3.10, as on Ubuntu 22.04, or newer (D230)
-python analysis/analyze.py runs      # analysis/out/summary.csv and plots
+python3 -m venv .venv && . .venv/bin/activate    # in a new terminal later, only: . .venv/bin/activate
+pip install -r analysis/requirements.txt      # Python 3.10, as on Ubuntu 22.04, to 3.14 (D230)
+python3 analysis/analyze.py runs      # analysis/out/summary.csv and plots
 ```
 
 `digest_mismatches` must be 0: any other value is a real bug, so keep the logs. `plans_refused` above 0 means a worker pool shed
@@ -281,13 +283,13 @@ so it is a lower limit on the outage and not a time to recover (D224). For how l
 | The runner says `run dropped and batch stopped` | read the reason on that line. Earlier runs are kept. Re-run the cells that are missing |
 | The runner ends with `these never got their fault` | the node missed `ctl` for 6 s or more, usually overload. Logs are under `runs/dropped/`. Run those cells again by name |
 | `start-users: machine M batch B is already running` | it is, or another start got there first: `--stop`, or another `--batch` |
-| The runner stops the series with a status of 2 or more | a client machine refused to start, lost over a tenth of its programs, or cannot be reached (255): read `users-*.out` in the run folder |
+| The runner stops the series with a status of 2 or more | a client machine refused to start, lost over a tenth of its programs, or cannot be reached (255). Its script killed with `kill -9` also reads 255 over ssh. Read `users-*.out` in the run folder |
 | `analyze.py` prints `left out ...` | the line says why: programs missing, failed or stopped early, users that do not add up, a node log not copied, a damaged log, or a fault that never fired. Rerun that run |
 | `analyze.py` prints `dropped a half-written last line` | a program or node was killed in mid-write. Harmless by itself; the run is left out only if another check catches it |
 | New leaders keep appearing with no fault, and no `leader_stepped_aside` | the planner threads are using every core (D48: at most cores minus 1), or a binary without the proposal queue (D133). Check `max_leader_gap_us` in `raft_io` |
 | One new term with no fault, and `leader_stepped_aside` in a node's log | a busy leader stepped aside on purpose (D218). Expected, at most once per cooldown. The line says why: its load, its bid, how long one log write took and its peers' bids. To rule it out, set `leader_overload_ratio = 0` in `[policy]` on all six |
 | `leader_step_aside_ended` says `timed_out` | nobody took over within 3 s, so that leader carried on and waits a full cooldown. Check that the followers are serving and can reach each other (D218) |
-| `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped` | `CARGO_TARGET_DIR` is set, so the build is somewhere else. Nothing is wrong with the leader. `unset CARGO_TARGET_DIR` and build, or set `BIN=$CARGO_TARGET_DIR/release` for the runner (D230) |
+| `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped` | `CARGO_TARGET_DIR` is set, so the build is somewhere else. Nothing is wrong with the leader. `unset CARGO_TARGET_DIR` and build. `BIN` works only if all six built at that same path (D230) |
 | `ctl` panics with `failed printing to stdout` | it was piped into something that stopped reading, such as `head`. Harmless, and nothing to do with the cluster. Use `sed -n 1,5p` (D230) |
 | `ctl` errors, or reports vanish while every row looks healthy | a stale binary on one machine: an old client and a new node fail quietly (D155, D175). Rebuild all six from one commit |
 | `members` shows `-` | that node is silenced; its list is frozen and not worth reading |

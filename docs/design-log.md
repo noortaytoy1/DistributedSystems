@@ -7724,7 +7724,16 @@ them on the six PCs.
   8. `e8-step-aside`'s "commit latency either side" has only about 8 s of "after" in `quick`.
   9. `quick` has `e5-faults-off` and not `e5-faults-on`, so E5's comparison seems to need spare lab time.
   10. `ctl` panics on a broken pipe, and the guide's own lines pipe through `head -1`.
-  11. A fresh clone gets `main`. At the time of the rehearsal `main` had none of the final code or this guide, and six PCs on that old commit would still pass the check that all six agree.
+  11. A fresh clone gets `main`. At the time of the rehearsal `main` had none of the final code or this guide, and six PCs on that old commit would still pass the check that all six agree. The guide's first block now switches branch by itself if the cell file is missing.
+  12. "2000 to 8000 is fine up to 1000 users" holds for bidding only. `e1-1000-leader` has one node's 4 planners, so it falls near 4000 us by arithmetic, 1000 x 4 ms / 4 threads, which is D129's own target. One PC, one 30 s run each: p99 10 ms at 3780 us, 2276 ms at 3995 us, 13.1 s with 5 gave up at 8074 us, where bidding read 41 ms.
+  13. Below 2000 us the guide raised `plan_work` to reach 4000 us, the cost that fells those cells.
+  14. A new PC: the `apt` line had no `git`, `curl` or `openssh-server` and no `apt update`, nothing in the guide pointed to runbook section 1, `ssh-copy-id` needs a key that no doc made, Ubuntu has no `python` command, the venv was activated only once, and the fallback with no sudo needed a `pip3` that stock Ubuntu does not have. A first build can also fail while it fetches the compiler.
+  15. The apostrophe in `<a node PC's address>` stopped a pasted block: the shell stayed inside the quote, and the lines after it never ran.
+  16. `BIN=$CARGO_TARGET_DIR/release` works only if all six built at that same path.
+  17. Plan B's USB list left out `config/lab.toml`, which section 3's check needs.
+  18. `summary.csv` has no `before_*` or `after_*` for `e8-step-aside`, as it logs no `silenced`.
+  19. A `kill -9` of a far `start-users.sh` reads 255 over real ssh, and not 137.
+  20. Three lines were behind the report, and `docs/report/main.tex` is not in the repo, so no lab PC has it.
 - **Options considered.**
   - *The Python pins:*
     1. *One `requirements.txt` with a marker per Python version (chosen).* One install line in every document, still pinned as D64 asks.
@@ -7734,7 +7743,7 @@ them on the six PCs.
     1. *Say so in the guides, with the message it gives (chosen).*
     2. *Make the runner read the variable, as `start-users.sh` does.* Rejected: the runner sends its `BIN` to the far PCs over ssh, where a shell may not have the variable, so its value on the runner's PC says nothing about them. It also changes a script on the morning of the lab.
   - *A plan above about 2700 us:*
-    1. *Keep `plan_work = 1000` and report the knee (recommended).* It needs no edit, and the sweep then shows where latency turns up. Both policies are past the knee at 3000 users, so they compare at 1000 and below.
+    1. *Keep `plan_work = 1000` and report the knee (recommended).* It needs no edit, and the sweep then shows where latency turns up. Both policies are past the knee at 3000 users, so they compare at 1000 and below, or at 300 and below if plans cost near 4000 us or more.
     2. *Lower it so that the top cell holds, N = 1000 x 2450 / `service_mean_us`.* The policies compare at every load, and the closed-loop sweep shows no knee. T3 still finds where it falls.
 
     Which applies depends on the lab PCs, so the guide gives the numbers and both choices, and the team picks before the series and says so in the report.
@@ -7746,9 +7755,9 @@ them on the six PCs.
     2. *Fix `ctl`.* Rejected today: a change to a program on all six PCs on the morning of the lab, for a message.
 - **Decision.** As chosen above. The guides also gain the numbers behind point 3, what `--rate` showed on one PC, the closed-loop limits that make a run look too perfect, a network cut's half second that `ctl silence` cannot show, and clumped arrivals after a leader fault.
 - **Why.** The team has one day on six PCs that have never run this, so each thing that cost the rehearsal time would cost them more. A guide that says "2000 to 8000 is fine" and then shows a fallen top cell would read as a bug at the worst moment.
-- **Consequences.** **Nothing here changes the wire format or what a node does.** The plan's cell list and time totals stay as they were: 21 cells, 94.5 minutes by arithmetic. The report's E5 row must say which comparison it shows. `requirements.txt` has not been tried on Python 3.11 or newer here, only on 3.10.
+- **Consequences.** **Nothing here changes the wire format or what a node does.** The plan's cell list and time totals stay as they were: 21 cells, 94.5 minutes by arithmetic. The report's E5 row must say which comparison it shows. On one PC `test_analyze.py` passes on Python 3.10 to 3.14 with these pins. None of the newer ones has been tried on a lab PC, and Python 3.15 has no wheels for them yet.
 - **Where.** `analysis/requirements.txt`, `analysis/README.md`, `experiments/README.md`, `docs/runbook.md`, `README.md`.
-- **How we check it.** A fresh venv on Python 3.10.12, in WSL Ubuntu-22.04, installed numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.7 from the one line, and `test_analyze.py` passed its 96 tests. `docs_lint.py` over the docs: 48 Mermaid blocks, 0 problems. The team's first lab session is the real check, and the guide says to fix it when it is wrong.
+- **How we check it.** A fresh venv on Python 3.10.12, in WSL Ubuntu-22.04, installed numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.7 from the one line, and `test_analyze.py` passed its 97 tests. A one-off lint script over the docs: 48 Mermaid blocks, 0 problems. `bash -n` on each `bash` block in the guides finds no quote left open. The team's first lab session is the real check, and the guide says to fix it when it is wrong.
 - **Report notes.** State the choice about `plan_work`, the measured `service_mean_us`, and whether the top cell is past the knee. A closed-loop interval of 0 is arithmetic, not stability.
 
 ### D231 · Each node's lease is its own, so a failover takes about 0.38 to 0.83 s

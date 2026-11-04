@@ -2,7 +2,7 @@
 """Checks analyze.py against a small log written by hand. Every number here is synthetic: this file
 tests the arithmetic and says nothing about RescueMesh.
 
-    python analysis/test_analyze.py
+    python3 analysis/test_analyze.py
 """
 
 import json

@@ -210,7 +210,7 @@ start while one runs.
 
 ```bash
 scripts/run-experiments.sh experiments/hosts quick      # beforehand
-python analysis/analyze.py runs
+python3 analysis/analyze.py runs                        # in its venv: analysis/README.md
 ls analysis/out
 ```
 
