@@ -164,9 +164,16 @@ def request_metrics(events, warmup_s, measured_s):
     retried = sum(1 for e in done if e["attempts"] > 1)
     no_responder = sum(1 for e in done if e.get("no_responder"))
     # An answer that sent nobody counts in throughput_rps and is about as fast as a real one, so a cell
-    # that ran out of responders still reads as busy (D229).
+    # that ran out of responders still reads as busy (D229). A provisional answer names a responder, but if
+    # that one was taken the record reads nobody, and the client is not told (D122).
+    taken = sum(
+        1
+        for es in node_events(events).values()
+        for e in es
+        if e["ev"] == "provisional_conflict" and e["reason"] == "responder_taken"
+    )
     metrics["answered_with_responder_rps"] = (
-        (answered - no_responder) / measured_s if measured_s else float("nan")
+        max(answered - no_responder - taken, 0) / measured_s if measured_s else float("nan")
     )
     metrics["worst_request_ms"] = worst_request_ms(events, done, gave_up)
     metrics["retried_share"] = retried / answered if answered else float("nan")

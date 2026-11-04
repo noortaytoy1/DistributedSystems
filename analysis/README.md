@@ -32,7 +32,7 @@ of the 95% confidence interval (Student's t). With one run there is no interval.
 | Spec asks for | Metrics |
 |---------------|---------|
 | Latency: mean, median, p95, p99 | `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`; provisional answers apart, as `provisional_*` |
-| Throughput against clients | `throughput_rps`; plot `e1_latency_throughput.png`. Print `answered_with_responder_rps` beside it: `throughput_rps` also counts answers that sent nobody, and those are about as fast as real ones (D229). All of it is closed loop unless the run used `--rate` |
+| Throughput against clients | `throughput_rps`; plot `e1_latency_throughput.png`. Print `answered_with_responder_rps` beside it: `throughput_rps` also counts answers that sent nobody, and those are about as fast as real ones (D229). In degraded cells it also leaves out provisional answers whose responder did not stand (`conflicts_responder_taken`). All of it is closed loop unless the run used `--rate` |
 | Election frequency, duration, message overhead | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms` (the vote alone, about 10 ms, and not how long the cloud had no leader, D229), `msgs_raft_vote_per_req`. Fault election: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All messages: `msgs_all_per_req` |
 | Fault election, its safety checks (D161) | `fault_split_decisions` (must be 0), `fault_elected_not_silenced`, `fault_refused` |
 | Load distribution and fairness | `share_node_<n>`, `fairness_jain`; plot `fairness.png` |

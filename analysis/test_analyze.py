@@ -1199,12 +1199,20 @@ class WhatABusyLookingRunMeans(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_answers_that_sent_nobody_are_left_out(self):
+        # 11 answers: one refused, and one provisional whose responder did not stand on record.
         self.assertAlmostEqual(self.m["throughput_rps"], 11 / 10)
-        self.assertAlmostEqual(self.m["answered_with_responder_rps"], 10 / 10)
+        self.assertAlmostEqual(self.m["answered_with_responder_rps"], 9 / 10)
         self.assertAlmostEqual(
             self.m["answered_with_responder_rps"],
-            self.m["throughput_rps"] * (1 - self.m["no_responder_share"]),
+            self.m["throughput_rps"] * (1 - self.m["no_responder_share"]) - self.m["conflicts_responder_taken"] / 10,
         )
+
+    def test_a_provisional_answer_that_lost_first_commit_still_sent_somebody(self):
+        client = [sent(0), done(3, 5, 3, provisional=True, status="provisional")]
+        conflict = {"ts_us": T0 + 8 * S, "ev": "provisional_conflict", "request": request(300),
+                    "reason": "lost_first_commit", "responder": 1, "winner_responder": 2, "winner_executor": 2}
+        m = analyze.request_metrics({"client-1": client, "node-3": [conflict]}, 2, 10)
+        self.assertAlmostEqual(m["answered_with_responder_rps"], 1 / 10)
 
     def test_the_worst_request_is_the_longest_answered_one(self):
         # The fixture's slowest measured answer. Its 999 ms one is in the warm-up, and its give-up has no
