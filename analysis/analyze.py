@@ -7,10 +7,12 @@ Reads runs/<experiment>/<cell>/<run>/ as scripts/run-experiments.sh writes them.
 computed per run, then averaged across the cell's runs with a 95% Student's t confidence interval.
 Writes summary.csv (long format, one row per cell and metric) and PNG plots to the output directory.
 
-Durations come from `latency_us`-style fields, measured on one machine. There are two exceptions, which
-compare timestamps from different machines, so they are only as good as NTP (AGENTS.md, Measuring): the
-before/during/after split, whose phase edges are approximate, and failover_to_*, which is hundreds of
-milliseconds against the few that NTP is off by on a LAN (D229).
+Durations come from `latency_us`-style fields, measured on one machine. FT-2 reads failover_gap_ms_* and
+client_gap_pc_*, which are on one clock (D233). failover_to_*, before_rps, during_rps, after_rps and
+arrival_peak_100ms_share_first_s subtract timestamps from different machines, so they are only as good as those
+clocks (AGENTS.md, Measuring). The phases' edges, the other arrival_peak_*, elections_after_rejoin and every filter
+on the measured time compare them, to choose lines. node_clock_skew_ms and client_clock_skew_ms say how far apart
+the clocks were in that run.
 """
 
 import argparse
@@ -32,6 +34,10 @@ ELECTION_AFTER_REJOIN_US = 10_000_000  # FT-6: elections this soon after a rejoi
 LOSS_GRACE_US = 1_000_000  # a term that moves later than this after a quiet spell was not lost to it
 LOG_END_GRACE_US = 2_000_000  # a leader lost this close to the end of the logs had no time to be replaced
 PERCENTILES = (50, 95, 99)
+NODE_CLOCK_SKEW_WARN_MS = 10  # failover_to_* moves by exactly this
+CLIENT_CLOCK_SKEW_WARN_MS = 50  # half the width of arrival_peak_*, and one priority point (D148)
+# FT-2 holds for every failover, and a mean across runs can hide one. A maximum is its own question (D233).
+WORST_RUN_METRICS = ("failover_gap_ms_max", "client_gap_pc_max_ms", "client_gap_max_ms", "worst_request_ms")
 
 
 def read_events(run_dir):
@@ -303,7 +309,10 @@ def failover_metrics(events, start_us, measured_s=None):
     A loss with a leader and no commit after it adds to failovers_without_commit and leaves only the second
     mean, so then the two means cover different failovers.
 
-    These subtract `ts_us` written by different machines. client_gap_* is the same story on one clock."""
+    These subtract `ts_us` written by different machines, so each is off by exactly the difference between
+    those two clocks, the same way in every run with the same two PCs, where no confidence interval shows
+    it. A new leader's clock behind by more than the failover reads as failovers_without_leader. Never
+    judge FT-2 from these: failover_gap_metrics and client_pc_gap_metrics are on one clock (D233)."""
     logs = node_events(events)
     states = [e for es in logs.values() for e in es if e["ev"] == "raft_state"]
     # By term, so that a clock behind the others cannot pair a loss with an election long after it.
@@ -348,6 +357,76 @@ def failover_metrics(events, start_us, measured_s=None):
         "failovers_without_commit": without_commit,
         "failover_to_leader_ms_mean": float(np.mean(to_leader)) / 1000 if to_leader else float("nan"),
         "failover_to_commit_ms_mean": float(np.mean(to_commit)) / 1000 if to_commit else float("nan"),
+    }
+
+
+def failover_gap_metrics(events, start_us, measured_s=None):
+    """FT-2 on one clock: how long a node that kept following heard from no leader, around each change of
+    leader (D233). `max_leader_gap_us` is read with `Instant` on that machine, from the old leader's last
+    AppendEntries to the new leader's first, so no clock offset can move the reading.
+
+    The Raft term says which change a line belongs to, and time is only compared within one log, apart from
+    the measured time's edges. The node that wins stops counting when it leads, and one coming back from a
+    silence waited for its own reasons, so both are left out. It reads long by up to one heartbeat tick, 75 ms,
+    plus the first message's way, and short by at most one network hop, so a reading of 1000 or less shows a
+    new leader within 1 s. It needs no `silenced` line, so a power cut has it too. A returning old leader's
+    message ends the gap, so in `degraded-*`, or after a silence shorter than a failover, it reads only the
+    last stretch."""
+    measured_to = start_us + measured_s * 1_000_000 if measured_s and start_us else math.inf
+    gaps = []
+    for es in node_events(events).values():
+        spans = silent_spans(es)
+        reports = [e for e in es if e["ev"] == "raft_io"]
+        report_times = [e["ts_us"] for e in reports]
+        followed = None
+        for e in es:
+            if e["ev"] != "raft_state" or e["leader"] is None:
+                continue
+            if e["role"] != "follower":
+                followed = None
+                continue
+            at = e["ts_us"]
+            changed = followed is not None and e["term"] > followed
+            if changed and start_us <= at <= measured_to and not any(a <= at <= b for a, b in spans):
+                # The gap is in the first line after the new leader's first message, which came just
+                # before this one, so it is in one of the two lines around here.
+                i = bisect.bisect_left(report_times, at)
+                near = [e.get("max_leader_gap_us", 0) for e in reports[max(i - 1, 0):i + 1]]
+                if near:
+                    gaps.append(max(near))
+            followed = e["term"]
+    return {
+        "failover_gap_ms_mean": float(np.mean(gaps)) / 1000 if gaps else float("nan"),
+        "failover_gap_ms_max": max(gaps) / 1000 if gaps else float("nan"),
+    }
+
+
+def clock_skew_metrics(events):
+    """How far apart the PCs' clocks were in this run, from the traffic and with no NTP (D56, D233). A
+    client PC sends each report to all three nodes at once. Over thousands of copies a node's quickest arrival
+    is its clock minus the client PC's, plus one network hop. So two nodes' quickest arrivals differ by the
+    difference between their clocks, to about the difference between two hops: failover_to_* can be off by
+    node_clock_skew_ms. client_clock_skew_ms is the largest of the quickest arrivals, either way, which is what
+    the phases' edges and the windows compare, and it reads high by up to one hop."""
+    sent = {}
+    for source, es in client_sources(events).items():
+        machine = source[len("client-")]
+        for e in es:
+            if e["ev"] == "client_sent":
+                sent[(e["request"]["client"], e["request"]["seq"], e["attempt"])] = (machine, e["ts_us"])
+    quickest = defaultdict(dict)
+    for source, es in node_events(events).items():
+        for e in es:
+            if e["ev"] == "request_received":
+                found = sent.get((e["request"]["client"], e["request"]["seq"], e["attempt"]))
+                if found is not None:
+                    by_node = quickest[found[0]]
+                    by_node[source] = min(by_node.get(source, math.inf), e["ts_us"] - found[1])
+    if not quickest:
+        return {}
+    return {
+        "node_clock_skew_ms": max(max(n.values()) - min(n.values()) for n in quickest.values()) / 1000,
+        "client_clock_skew_ms": max(abs(v) for n in quickest.values() for v in n.values()) / 1000,
     }
 
 
@@ -413,6 +492,32 @@ def client_gap_metrics(events, fault_start, fault_end):
     return {
         "client_gap_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
         "client_gap_max_ms": max(longest) / 1000 if longest else float("nan"),
+    }
+
+
+def client_pc_gap_metrics(events, warmup_s, measured_s):
+    """FT-2's first new answer on one clock: the longest a client PC went with no answer to any program it
+    runs, in the measured time (D233). Its programs share its clock, and the first digit of a client ID is
+    the machine (D184), so nothing here compares two machines, not even to choose a gap. It reads long by
+    about one normal wait between answers, which is 10 ms at 100 reports a second, and a PC that never
+    hears again counts its whole silence. A power cut and a step-aside have it too."""
+    answers, starts = defaultdict(list), defaultdict(list)
+    for source, es in client_sources(events).items():
+        started = program_start(es)
+        if started is not None:
+            machine = source[len("client-")]
+            starts[machine].append(started)
+            answers[machine] += [e["ts_us"] for e in es if e["ev"] == "client_done"]
+    longest = []
+    for machine, times in answers.items():
+        measure_from = min(starts[machine]) + warmup_s * 1_000_000
+        measure_to = measure_from + measured_s * 1_000_000
+        inside = sorted(t for t in times if measure_from <= t <= measure_to)
+        edges = [measure_from] + inside + [measure_to]
+        longest.append(max(b - a for a, b in zip(edges, edges[1:])))
+    return {
+        "client_gap_pc_mean_ms": float(np.mean(longest)) / 1000 if longest else float("nan"),
+        "client_gap_pc_max_ms": max(longest) / 1000 if longest else float("nan"),
     }
 
 
@@ -871,6 +976,9 @@ def analyse_run(run_dir):
     metrics.update(bid_metrics(events, start))
     metrics.update(election_metrics(events, start))
     metrics.update(failover_metrics(events, start, measured_s))
+    metrics.update(failover_gap_metrics(events, start, measured_s))
+    metrics.update(client_pc_gap_metrics(events, warmup_s, measured_s))
+    metrics.update(clock_skew_metrics(events))
     metrics["leader_plan_share"] = leader_plan_share(events, start, metrics)
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
@@ -948,6 +1056,10 @@ def summarise(root):
             name: confidence_interval([run.get(name, missing_value(name)) for run in runs])
             for name in names
         }
+        for name in WORST_RUN_METRICS:
+            seen = [run[name] for run in runs if name in run and not math.isnan(run[name])]
+            if seen:
+                summary[key][f"{name}_worst_run"] = (max(seen), float("nan"), len(seen))
     return summary
 
 
@@ -1002,7 +1114,27 @@ def failover_warnings(summary):
         if lost > 0:
             warnings.append(
                 f"warning: {experiment}/{cell}: failovers_without_leader is {lost:g} per run, and those losses are "
-                "in no failover_to_* mean; read the raft_state lines in that cell's logs"
+                "in no failover_to_* mean; read the raft_state lines in that cell's logs and node_clock_skew_ms, "
+                "as a new leader's clock behind by more than the failover reads this way too"
+            )
+    return warnings
+
+
+def clock_warnings(summary):
+    """Cells whose clocks were far enough apart to move the figures that compare them (D56, D233)."""
+    warnings = []
+    for (experiment, cell), metrics in sorted(summary.items()):
+        nodes = metrics.get("node_clock_skew_ms", (float("nan"),))[0]
+        clients = metrics.get("client_clock_skew_ms", (float("nan"),))[0]
+        if nodes > NODE_CLOCK_SKEW_WARN_MS and metrics.get("failovers", (0,))[0] > 0:
+            warnings.append(
+                f"warning: {experiment}/{cell}: the node PCs' clocks were about {nodes:.0f} ms apart, so "
+                "failover_to_* can be off by that much; FT-2 reads failover_gap_ms_* and client_gap_pc_*"
+            )
+        if clients > CLIENT_CLOCK_SKEW_WARN_MS:
+            warnings.append(
+                f"warning: {experiment}/{cell}: a client PC's clock was about {clients:.0f} ms from a node's, "
+                "so before_*, during_*, after_*, arrival_peak_* and priority_mean are off; say so"
             )
     return warnings
 
@@ -1164,7 +1296,8 @@ def main():
     print(f"{len(summary)} cells: wrote {args.out}/summary.csv and plots")
     for note in provisional_notes(summary):
         print(note)
-    for warning in expired_warnings(summary) + udp_warnings(summary) + failover_warnings(summary):
+    warnings = expired_warnings(summary) + udp_warnings(summary) + failover_warnings(summary)
+    for warning in warnings + clock_warnings(summary):
         print(warning, file=sys.stderr)
 
 

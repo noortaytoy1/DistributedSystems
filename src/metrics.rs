@@ -239,8 +239,8 @@ pub enum Event {
         victim: NodeId,
         reason: String,
     },
-    /// Nothing heard from `peer` for `silent_ms` (peer heartbeats, D79). E3 detection time is
-    /// the victim's `silenced` to this.
+    /// Nothing heard from `peer` for `silent_ms` (peer heartbeats, D79). `silent_ms` is E3's
+    /// detection time, on this node's clock. The victim's `silenced` is on another machine's (D233).
     PeerSuspected {
         peer: NodeId,
         silent_ms: u64,

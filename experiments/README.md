@@ -98,7 +98,7 @@ scenarios", D is "Decisions with justification and assessment".
 | 3 | Election frequency, duration, message overhead | Spec 284 | Bidding: any bidding cell. Raft: `e5-faults-off`, `e3e4-*-leader`. Draw: `ft8-*` | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms` (the vote alone), `msgs_raft_vote_per_req`. Draw: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All: `msgs_all_per_req` | M: Election overhead |
 | 4 | Load distribution, fairness, evidence for the policy | Spec 285, 358 | `e1-*-bidding` against `e1-*-leader`; `e2e6-skew-*` | `share_node_1`, `share_node_2`, `share_node_3`, `fairness_jain`; plot `fairness.png` | M: Load distribution |
 | 5 | Before, during and after a failure | Spec 286 | `e3e4-*`, `e4-300-silence-20s`, `degraded-300` | `before_p99_ms`, `during_p99_ms`, `after_p99_ms`, and their `_mean_ms`, `_p50_ms`, `_p95_ms`, `_rps`, `_count`; plot `fault_phases.png`. In `degraded-*` these mix provisional answers with committed ones, so say that `during_*` is mostly uncommitted | M: Failure and recovery |
-| 6 | Failover time at different loads | Spec 167 | `e3e4-300-*` against `e3e4-1500-*` | `failover_to_leader_ms_mean`, `failover_to_commit_ms_mean`, `failovers_without_leader`; `client_gap_mean_ms`, `client_gap_max_ms`, `worst_request_ms`, `detection_mean_ms`, read with `gave_up`. Not `election_duration_mean_ms`: that is the vote alone, about 10 ms of a wait near 700 ms (D229) | M: Failure and recovery |
+| 6 | Failover time at different loads | Spec 167 | `e3e4-300-*` against `e3e4-1500-*` | For FT-2, on one clock: `failover_gap_ms_max_worst_run`, `client_gap_pc_max_ms_worst_run`, with `failover_gap_ms_mean`, `client_gap_pc_mean_ms` (D233). Then `failover_to_leader_ms_mean` and `failover_to_commit_ms_mean`, which compare two PCs' clocks, only beside `node_clock_skew_ms`, and `failovers_without_leader`; `client_gap_mean_ms`, `client_gap_max_ms`, `worst_request_ms`, `detection_mean_ms`, read with `gave_up`. Not `election_duration_mean_ms`: that is the vote alone, about 10 ms of a wait near 700 ms (D229) | M: Failure and recovery |
 | 7 | Recovery and convergence time at different loads | Spec 287, 167, 152; notes Sept 13, Oct 28 | `e3e4-*`, `e4-300-silence-20s` | `recovery_mean_ms`, `rejoins`, `rejoins_digest_confirmed`, `digest_mismatches` (must be 0), `elections_after_rejoin` (target 0) | M: Failure and recovery; How a node recovers |
 | 8 | Requests in flight at a failure: retried or completed | Spec 158 | `e3e4-*` | `retried_share`, `gave_up`, `takeovers_suspected`, `takeover_wait_suspected_mean_ms`, `takeovers_backstop` | M: Failure and recovery |
 | 9 | Duplicate execution prevented or harmless | Spec 161 | Every cell | `digest_mismatches` (must be 0), `bid_split_decisions`, `takeovers` | D: First commit wins |
@@ -111,7 +111,7 @@ scenarios", D is "Decisions with justification and assessment".
 | 16 | Measurements tied to design decisions | Spec 280 | All of the above | The report's table, with its numbers filled in | M: Each measurement against the decision it tests |
 | 17 | **Scenario 1**, normal: different peers elected as load changes | Spec 244; notes Oct 28; Lecture 9 s1.2 | `e1-30-bidding`, `e1-300-bidding`; `docs/demo.md` section 1 | `share_node_1`, `share_node_2`, `share_node_3`; win counts from `grep -c '"i_won":true'`; a screenshot of the page | S: Scenario 1 |
 | 18 | **Scenario 2**, load imbalance | Spec 247 | `e2e6-skew-expected-wait`, `e2e6-skew-expected-wait-cpu`; `docs/demo.md` section 2 | `share_node_1`, `fairness_jain`, `p99_ms`; win counts before and after the skew | S: Scenario 2 |
-| 19 | **Scenario 3**, server failure under load | Spec 250 | `e3e4-*-leader`; `docs/demo.md` section 3 | `failover_to_leader_ms_mean`, `client_gap_max_ms`, `worst_request_ms`, `during_p99_ms`, `gave_up` | S: Scenario 3 |
+| 19 | **Scenario 3**, server failure under load | Spec 250 | `e3e4-*-leader`; `docs/demo.md` section 3 | `failover_gap_ms_max_worst_run`, `client_gap_pc_max_ms_worst_run`, `client_gap_max_ms`, `worst_request_ms`, `during_p99_ms`, `gave_up` | S: Scenario 3 |
 | 20 | **Scenario 4**, recovery before taking part again | Spec 254, 152 | `e3e4-*`, `e4-300-silence-20s`; `docs/demo.md` section 4 | `recovery_mean_ms`, `rejoins_digest_confirmed`; the `rejoined` line | S: Scenario 4 |
 | 21 | **Scenario 5**, scale and stress: clients bombarding the cloud | Spec 272; Lecture 9 s1.2 | `e1-*`; T3 | Rows 1 to 10; the three plots | S: Scenario 5; Stress testing |
 | 22 | Six physical PCs on a real network: 3 cloud, 3 load | Spec 30, 202; Lecture 8 s1.2; notes Sept 13 | Every run in this guide | `config.toml`, `node_logs`, `udp_drops_nodes`, `udp_copies_lost_share` (never `udp_request_loss_share`: it reads about 1% with nothing lost, D229), `retried_share` | M: Method; D: UDP |
@@ -125,12 +125,12 @@ scenarios", D is "Decisions with justification and assessment".
 | 30 | Transparency: the user never names a server, and is sent to a working one | Notes Sept 6; spec 41; Lecture 9 s4.1 | `e3e4-*-leader`; `docs/demo.md` section 3 | `gave_up`, `client_gap_max_ms`, `retried_share`; a page card | S: Scenario 3 |
 | 31 | The nodes are peers, with no coordinator | Notes Sept 13, Oct 28; Lecture 9 s3.4 | `e1-300-bidding` against `e1-300-leader`; T4 | `leader_plan_share`, `share_node_1`, `share_node_2`, `share_node_3`; rounds called by a follower | M: Load distribution; D: The failure draw |
 | 32 | Group membership changes as nodes fail | Lecture 8 s9.1; Lecture 9 s2.2 | `e3e4-*`; `docs/demo.md` section 3 | `members` in `status-after.txt`; `group_view` events; `msgs_bid_per_req` | D: The group with a who's-alive list |
-| 33 | The Raft leader changes when it is overloaded | No written source: a teammate's report of what was said in class. Noor decided yes (D217, D218) | `e8-step-aside`, against `e2e6-skew-expected-wait`; `docs/demo.md` section 2b | `elections`, `failover_to_leader_ms_mean`, `commit_p99_ms`, `p99_ms`; the lines from `grep -h '"ev":"leader_step' runs/e8/step-aside/run-*/node-*.jsonl`. Only runs where node 1 led count | "The whole system in plain words": its note still says this is not in. Rewrite it, and add it to "Changed decisions". State that it has no written source |
+| 33 | The Raft leader changes when it is overloaded | No written source: a teammate's report of what was said in class. Noor decided yes (D217, D218) | `e8-step-aside`, against `e2e6-skew-expected-wait`; `docs/demo.md` section 2b | `elections`, `failover_gap_ms_max`, `commit_p99_ms`, `p99_ms`; the lines from `grep -h '"ev":"leader_step' runs/e8/step-aside/run-*/node-*.jsonl`, whose `waited_ms` is on the old leader's own clock. Only runs where node 1 led count | "The whole system in plain words": its note still says this is not in. Rewrite it, and add it to "Changed decisions". State that it has no written source |
 
 **What nothing covers, or only a hand test covers:**
 
-- A real power cut: only T1. It logs no `silenced`, so `failover_to_*`, `client_gap_*`, `before_*`, `during_*` and `after_*` stay empty.
-  `extras.py` gives the gap instead. Only this test can lose unsynced disk writes: one-PC rehearsal never could.
+- A real power cut: only T1. It logs no `silenced`, so `failover_to_*`, `client_gap_mean_ms`, `client_gap_max_ms`, `before_*`, `during_*` and `after_*` stay empty.
+  `failover_gap_ms_*` and `client_gap_pc_*` still read it, and `extras.py` gives the gap too. Only this test can lose unsynced disk writes: one-PC rehearsal never could.
 - Where the system falls: only T3. The cells stop at 3000 users, which one-PC rehearsal held only with plans of about 2450 us (section 3).
 - Stale plans per commit and commands per save: not in `summary.csv`. `extras.py` prints them.
 - The client PCs' network: nothing measures it.
@@ -169,6 +169,10 @@ lscpu; free -h; lsblk -d -o NAME,ROTA,SIZE                       # write down fo
 pgrep -af '[t]arget/release/(node|loadgen|frontend|zonefeed)( |$)'    # must print nothing. If not: kill <PID>
 ```
 
+- **The clocks.** The `date` line only catches a clock that is badly wrong: two PCs a whole second apart still pass it. FT-2 does not care, as it reads
+  figures on one clock. For everything else that compares clocks, `analyze.py` says how far apart they really were, from the traffic: copy
+  `node_clock_skew_ms` and `client_clock_skew_ms` into the report (D56, D233). If a node PC is not in sync, do not quote `failover_to_*` at all: use
+  `failover_gap_ms_*`, or T1's reading on one survivor's log.
 - **`CARGO_TARGET_DIR`.** `AGENTS.md` sets it for WSL. Set on a PC here, the build lands elsewhere, and the runner prints
   `target/release/ctl: No such file or directory`, then `no leader after 30 s` and `run dropped and batch stopped`. Nothing is wrong
   with the leader. `start-users.sh` reads the variable, but the runner always passes its own `BIN`. Unset it on all six and build
@@ -666,7 +670,7 @@ damaged`. The tar on the USB stick is your original, so delete that one line her
 | Write down | Where from | Target, and one-PC rehearsal with `kill -9` as a guide |
 |------------|-----------|---------------------------------------------------------|
 | Clock time of the cut, and of power on | Your watch | |
-| Leader and term before; new leader and term after | `ctl status`. For the time, on one survivor's log, on its own clock: the new term's first `raft_state` line with a `leader`, minus its `peer_suspected` time, plus `silent_ms` | A new leader within 1 s (D214). Rehearsal: 675 ms |
+| Leader and term before; new leader and term after | `ctl status`. For the time: `failover_gap_ms_max` from `analyze.py runs/hand`. Or by hand, on one survivor's log, on its own clock: the new term's first `raft_state` line with a `leader`, minus its `peer_suspected` time, plus `silent_ms`. Both read up to 50 ms long | A new leader within 1 s (D214). Rehearsal: 675 ms |
 | Longest with no answer to anyone | `extras.py`, one line per client PC | Rehearsal: 686 ms |
 | `gave up`, `retried` | Each client PC's last line | Gave up 0 (FT-9) |
 | `peer_suspected` on both survivors | `grep '"ev":"peer_suspected"' runs/hand/power/leader/run-1/node-*.jsonl`. Read the lines at the cut's time: the first and last lines are nodes starting and stopping | Within 1 s of the cut. One PC: `silent_ms` about 190 |
@@ -873,8 +877,8 @@ awk -F, '$3=="count" || $3=="provisional_count" || $3=="gave_up" {t[$1"-"$2]+=$4
 ```
 
 Each result slot is a `\resultpending` note in `docs/report/main.tex`. It names its metrics and cells, and section 2 gives
-the section. Fill those from `analysis/out/summary.csv`, each number with its `ci95_half_width`, and take the plots from
-`analysis/out/`. These slots need something else:
+the section. Fill those from `analysis/out/summary.csv`, each number with its `ci95_half_width`, apart from the columns named under Conventions in
+`analysis/README.md`, and take the plots from `analysis/out/`. These slots need something else:
 
 | Report section | What goes in | From |
 |----------------|--------------|------|

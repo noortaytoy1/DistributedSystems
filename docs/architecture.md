@@ -154,7 +154,7 @@ sequenceDiagram
   provisionally (D120). No Byzantine behaviour.
 - **Timing.** No trusted bound on message delay. Safety never depends on timeouts; only liveness
   does.
-- **Clocks.** Synchronised with NTP. Durations are measured on one PC's clock (D56), and the state machine reads no clock (D30). The too-old
+- **Clocks.** Synchronised with NTP, and no target depends on how well. Durations are measured on one PC's clock (D56, D233), and the state machine reads no clock (D30). The too-old
   rule compares no two clocks: the client states the report's age, and a node judges "too old" from that (D143). The planner's 5 s fallback and the
   priority read the age from two clocks, the client's and the node's, and NTP error is small against 5 s (D95). A clock error there can only change when
   that fallback fires, and a priority. The plan still goes through the log, so the copies stay equal. The label that says past its deadline
@@ -1977,7 +1977,7 @@ flowchart LR
 ```
 
 `resource_usage` also carries `udp_drops`. `client_link_up` and `client_link_down` are no longer logged, and the names stay for old runs (D172).
-`udp_request_loss_share` and `udp_cancel_loss_share` count over each process's whole log and add up every life of a restarted node, because each process samples its counters on its own second (D227). They still read about 1% with nothing lost, so quote `udp_copies_lost_share` instead, and say `failover_to_leader_ms_mean` for how long the cloud had no leader: `election_duration_mean_ms` is the vote alone (D229).
+`udp_request_loss_share` and `udp_cancel_loss_share` count over each process's whole log and add up every life of a restarted node, because each process samples its counters on its own second (D227). They still read about 1% with nothing lost, so quote `udp_copies_lost_share` instead, and say `failover_gap_ms_max` for how long the cloud had no leader: `election_duration_mean_ms` is the vote alone (D229), and `failover_to_leader_ms_mean` compares two PCs' clocks (D233).
 
 ### 11.2 Experiments and tests
 
@@ -1985,7 +1985,7 @@ flowchart LR
 |------|-------------------------|-----------------------------------------------------|-------|-----------------------|
 | E1   | users × policy          | latency p50/p95/p99, throughput, fairness (Jain), the leader's share of plans (`leader_plan_share`, one-leader runs only, D166) | B, F  | LB-1, LB-3, P-1 |
 | E2   | CPU burn on one node    | share of work per node, refused jobs (`plans_refused`) | E     | LB-2 |
-| E3   | victim × load           | how long the cloud had no leader (`failover_to_leader_ms_mean`, `failover_to_commit_ms_mean`, D229), client-visible gap (`client_gap_mean_ms`, `client_gap_max_ms`), the longest single wait (`worst_request_ms`), in-flight outcomes, duplicate executions. A client that never hears again counts its whole silence, so read it with `gave_up` (D224) | C | FT-1, FT-2, FT-3, FT-8 |
+| E3   | victim × load           | how long the cloud had no leader (`failover_gap_ms_max`) and the first new answer (`client_gap_pc_max_ms`), on one clock (D233), with `failover_to_leader_ms_mean` and `failover_to_commit_ms_mean` beside `node_clock_skew_ms` (D229), client-visible gap per program (`client_gap_mean_ms`, `client_gap_max_ms`), the longest single wait (`worst_request_ms`), in-flight outcomes, duplicate executions. A client that never hears again counts its whole silence, so read it with `gave_up` (D224) | C | FT-1, FT-2, FT-3, FT-8 |
 | E4   | silence length × load   | time to pass the rejoin check, log lines replayed, digests compared at the same index (`digest_mismatches`, `rejoins_digest_confirmed`) | D     | FT-4, FT-5, FT-6 |
 | E5   | faults on or off        | elections, messages by type (print `udp_datagrams_per_req` beside `msgs_all_per_req`, D172), time to final, by path (`commit_local_*`, `commit_forwarded_*`, D26, D166) | A | none |
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
@@ -2005,7 +2005,7 @@ sweep, as D83 defines it.
 | Phase 1 test | Scenario                                     | Pass when                                       | Status |
 |--------------|----------------------------------------------|-------------------------------------------------|--------|
 | FT-1 | Silence the node planning a report | 0 lost, never two final results for one report | one report tested in `tests/takeover.rs`; under load in E3, needs lab runs |
-| FT-2 | Silence the leader under load                 | 0 lost; a new leader and the first new answer within 1 s (D214) | Raft part tested in `tests/replication.rs`; under load in E3, needs lab runs. One-PC rehearsal with a hard cut at 90 reports a second: 0 lost in 4 of 4 runs, new leader at 0.82 to 0.94 s, first new answer at 0.84 to 0.94 s |
+| FT-2 | Silence the leader under load                 | 0 lost; a new leader and the first new answer within 1 s (D214), read as `failover_gap_ms_max_worst_run` and `client_gap_pc_max_ms_worst_run` (D233) | Raft part tested in `tests/replication.rs`; under load in E3, needs lab runs. One-PC rehearsal with a hard cut at 90 reports a second: 0 lost in 4 of 4 runs, new leader at 0.82 to 0.94 s, first new answer at 0.84 to 0.94 s |
 | FT-3 | Silence an idle follower                      | no latency change beyond noise                  | `silence_for` built (D74); `e3e4-*-follower` cells, needs lab runs |
 | FT-4 | Rejoin after 1–5 s and 15–20 s                | node serving again; digest equals the leader's at the same index (D138) | tested in `tests/rejoin.rs`; `e4-*-silence-*` cells, needs lab runs |
 | FT-5 | Rejoin under load                             | recovery completes at every load                | built (D75, D135); needs lab runs |

@@ -961,6 +961,187 @@ class Failover(unittest.TestCase):
         self.assertAlmostEqual(m["failover_to_commit_ms_mean"], 730.0)
 
 
+def raft_io(at_ms, gap_ms):
+    return {"ts_us": T0 + at_ms * 1000, "ev": "raft_io", "max_leader_gap_us": gap_ms * 1000}
+
+
+def later(events, ms):
+    """A clock that runs `ms` ahead of the others changes only `ts_us`, which is all it does to a log."""
+    return [dict(e, ts_us=e["ts_us"] + ms * 1000) for e in events]
+
+
+class FailoverOnOneClock(unittest.TestCase):
+    """FT-2 reads these, so no difference between two PCs' clocks may move them (D233). Measuring starts at T0,
+    and times are in ms after it."""
+
+    def logs(self, new_leader_ahead_ms=0, follower_ahead_ms=0):
+        return {
+            "node-1": [state(0, 2, "leader", 1), silence(1000), state(9000, 3, "follower", 2)],
+            "node-2": later(
+                [state(0, 2, "follower", 1), state(1700, 3, "candidate"), state(1710, 3, "leader", 2), committed(1720)],
+                new_leader_ahead_ms,
+            ),
+            "node-3": later(
+                [state(0, 2, "follower", 1), raft_io(900, 10), state(1705, 3, "follower"),
+                 state(1712, 3, "follower", 2), raft_io(1900, 716), raft_io(2900, 12)],
+                follower_ahead_ms,
+            ),
+        }
+
+    def test_it_reads_the_follower_that_stayed_and_only_that(self):
+        m = analyze.failover_gap_metrics(self.logs(), T0)
+        self.assertAlmostEqual(m["failover_gap_ms_mean"], 716.0)
+        self.assertAlmostEqual(m["failover_gap_ms_max"], 716.0)
+
+    def test_no_clock_difference_moves_it_and_each_moves_failover_to_by_exactly_itself(self):
+        for ahead_ms in (-300, -20, 20, 300):
+            logs = self.logs(new_leader_ahead_ms=ahead_ms, follower_ahead_ms=-ahead_ms)
+            self.assertAlmostEqual(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"], 716.0)
+            m = analyze.failover_metrics(logs, T0)
+            self.assertAlmostEqual(m["failover_to_leader_ms_mean"], 710.0 + ahead_ms)
+
+    def test_a_clock_behind_by_more_than_the_failover_reads_as_no_new_leader_and_this_does_not(self):
+        logs = self.logs(new_leader_ahead_ms=-900)
+        m = analyze.failover_metrics(logs, T0)
+        self.assertEqual(m["failovers_without_leader"], 1)
+        self.assertTrue(math.isnan(m["failover_to_leader_ms_mean"]))
+        self.assertAlmostEqual(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"], 716.0)
+
+    def test_the_gap_can_be_in_the_line_just_before_the_new_leader_is_named(self):
+        logs = {"node-3": [state(0, 2, "follower", 1), raft_io(1711, 716), state(1712, 3, "follower", 2),
+                           raft_io(2711, 12)]}
+        self.assertAlmostEqual(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"], 716.0)
+
+    def test_a_power_cut_needs_no_silenced_line(self):
+        logs = self.logs()
+        logs["node-1"] = [state(0, 2, "leader", 1)]
+        self.assertAlmostEqual(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"], 716.0)
+        self.assertEqual(analyze.failover_metrics(logs, T0)["failovers"], 0)
+
+    def test_a_node_coming_back_from_a_silence_is_left_out(self):
+        logs = {"node-1": [state(0, 2, "follower", 2), silence(1000), state(9000, 3, "follower", 3),
+                           raft_io(9500, 8000)]}
+        self.assertTrue(math.isnan(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"]))
+
+    def test_a_term_with_no_change_of_leader_has_no_figure(self):
+        logs = {"node-3": [state(0, 2, "follower", 1), raft_io(900, 10)]}
+        self.assertTrue(math.isnan(analyze.failover_gap_metrics(logs, T0)["failover_gap_ms_max"]))
+
+    def test_a_change_in_the_warm_up_does_not_count(self):
+        self.assertTrue(math.isnan(analyze.failover_gap_metrics(self.logs(), T0 + 2 * S)["failover_gap_ms_max"]))
+
+    def test_a_change_after_the_measured_time_does_not_count(self):
+        self.assertAlmostEqual(analyze.failover_gap_metrics(self.logs(), T0, 2)["failover_gap_ms_max"], 716.0)
+        self.assertTrue(math.isnan(analyze.failover_gap_metrics(self.logs(), T0, 1)["failover_gap_ms_max"]))
+
+
+class TheHighestAcrossRuns(unittest.TestCase):
+    """A mean across runs can hide the one run that matters, and FT-2 holds for every failover (D233)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_worst_run_row_says_what_a_mean_of_highests_cannot(self):
+        for run, worst_ms in enumerate((2300, 2400, 13800), 1):
+            logs = {"client-1": [sent(0), done(3, worst_ms, 1)], "node-1": []}
+            write_run(self.root / "e9" / "synthetic" / f"run-{run}", logs, run)
+        metrics = analyze.summarise(self.root)[("e9", "synthetic")]
+        self.assertAlmostEqual(metrics["worst_request_ms"][0], 18500 / 3)
+        highest, half, runs = metrics["worst_request_ms_worst_run"]
+        self.assertEqual(highest, 13800.0)
+        self.assertTrue(math.isnan(half))
+        self.assertEqual(runs, 3)
+
+    def test_one_run_over_the_limit_shows_though_the_mean_is_under_it(self):
+        for run, gap_ms in enumerate((600, 650, 1300), 1):
+            follower = [state(0, 2, "follower", 1), raft_io(2900, 10), state(3000, 3, "follower", 2),
+                        raft_io(3900, gap_ms)]
+            write_run(self.root / "e9" / "synthetic" / f"run-{run}", {"client-1": [sent(0)], "node-3": follower}, run)
+        metrics = analyze.summarise(self.root)[("e9", "synthetic")]
+        self.assertAlmostEqual(metrics["failover_gap_ms_max"][0], 850.0)
+        self.assertEqual(metrics["failover_gap_ms_max_worst_run"][0], 1300.0)
+        self.assertNotIn("client_gap_max_ms_worst_run", metrics)
+
+
+def answered(at_ms):
+    return {"ts_us": T0 + at_ms * 1000, "ev": "client_done"}
+
+
+def started():
+    return {"ts_us": T0, "ev": "client_started", "users": 1}
+
+
+def first_send():
+    return {"ts_us": T0, "ev": "client_sent", "request": request(0), "attempt": 0}
+
+
+class TheFirstNewAnswerOnOneClock(unittest.TestCase):
+    def pc_gap(self, events, warmup_s=0, measured_s=10):
+        return analyze.client_pc_gap_metrics(events, warmup_s, measured_s)
+
+    def test_one_programs_answer_ends_the_gap_for_its_pc_and_not_for_another(self):
+        fine = [answered(ms) for ms in range(0, 10001, 100)]
+        m = self.pc_gap({
+            "client-10000": [started(), first_send()] + [answered(ms) for ms in range(0, 5001, 100)],
+            "client-10001": [started(), first_send()] + [answered(ms) for ms in range(5800, 10001, 100)],
+            "client-20000": [started(), first_send()] + fine,
+        })
+        self.assertAlmostEqual(m["client_gap_pc_max_ms"], 800.0)
+        self.assertAlmostEqual(m["client_gap_pc_mean_ms"], 450.0)
+
+    def test_a_pc_that_never_hears_again_counts_its_whole_silence(self):
+        m = self.pc_gap({"client-10000": [started(), first_send(), answered(1000)]})
+        self.assertAlmostEqual(m["client_gap_pc_max_ms"], 9000.0)
+
+    def test_the_warm_up_and_what_comes_after_the_measured_time_are_left_out(self):
+        answers = [answered(0), answered(3000)] + [answered(ms) for ms in range(3000, 13001, 100)] + [answered(20000)]
+        m = self.pc_gap({"client-10000": [started(), first_send()] + answers}, warmup_s=3)
+        self.assertAlmostEqual(m["client_gap_pc_max_ms"], 100.0)
+
+    def test_it_is_the_same_whatever_the_other_pcs_clocks_say(self):
+        one = [started(), first_send()] + [answered(ms) for ms in (0, 100, 900, 1000, 10000)]
+        two = [started(), first_send()] + [answered(ms) for ms in (0, 700, 800, 10000)]
+        apart = self.pc_gap({"client-10000": one, "client-20000": later(two, 400)})
+        self.assertEqual(apart, self.pc_gap({"client-10000": one, "client-20000": two}))
+
+
+def copy_to_a_node(at_us, seq):
+    return {"ts_us": at_us, "ev": "request_received", "request": {"client": 10000, "seq": seq}, "attempt": 0}
+
+
+def copy_sent(at_us, seq):
+    return {"ts_us": at_us, "ev": "client_sent", "request": {"client": 10000, "seq": seq}, "attempt": 0}
+
+
+class HowFarApartTheClocksWere(unittest.TestCase):
+    def skew(self, node_2_ahead_us, pc_ahead_us=0):
+        sends = [copy_sent(T0 + i * S + pc_ahead_us, i) for i in range(3)]
+        # Copy 1 is the quickest at both nodes. The others waited behind other work.
+        waits = {0: 900, 1: 200, 2: 5000}
+        return analyze.clock_skew_metrics({
+            "client-10000": sends,
+            "node-1": [copy_to_a_node(T0 + i * S + waits[i], i) for i in range(3)],
+            "node-2": [copy_to_a_node(T0 + i * S + waits[i] + node_2_ahead_us, i) for i in range(3)],
+        })
+
+    def test_a_clock_difference_reads_as_itself(self):
+        self.assertAlmostEqual(self.skew(40_000)["node_clock_skew_ms"], 40.0)
+        self.assertAlmostEqual(self.skew(-40_000)["node_clock_skew_ms"], 40.0)
+
+    def test_equal_clocks_read_nothing(self):
+        self.assertAlmostEqual(self.skew(0)["node_clock_skew_ms"], 0.0)
+
+    def test_a_client_pc_reads_its_difference_plus_a_hop(self):
+        self.assertAlmostEqual(self.skew(0, pc_ahead_us=-70_000)["client_clock_skew_ms"], 70.2)
+
+    def test_a_run_with_no_copies_says_nothing(self):
+        self.assertEqual(analyze.clock_skew_metrics({"client-10000": [], "node-1": []}), {})
+
+
 def received(at_s=1):
     return {"ts_us": T0 + at_s * S, "ev": "request_received", "request": request(0), "attempt": 0}
 
@@ -1064,6 +1245,8 @@ class WhatABusyLookingRunMeans(unittest.TestCase):
         self.assertAlmostEqual(self.m["failover_to_leader_ms_mean"], 500.0)
         self.assertTrue(math.isnan(self.m["failover_to_commit_ms_mean"]))
         self.assertEqual(self.m["failovers_without_commit"], 1)
+        self.assertIn("failover_gap_ms_max", self.m)
+        self.assertIn("client_gap_pc_max_ms", self.m)
         self.assertIn("udp_copies_lost_share", self.m)
         # The vote alone: the old figure, kept under its old name.
         self.assertAlmostEqual(self.m["election_duration_mean_ms"], 200.0)

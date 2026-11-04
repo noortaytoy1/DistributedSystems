@@ -27,7 +27,7 @@ from the terminals.
   over it: an apt Rust earlier on `PATH` cannot build this repo.
 - **Build folder.** Leave `CARGO_TARGET_DIR` unset here. The runner looks in `target/release`, or in `BIN` if you set it.
 - **Clock.** `chronyc tracking` **must** show the clock in sync on all six before any test. Each machine's timestamps are
-  only roughly aligned with the others', so durations are always measured on one machine. A bad clock on a node changes
+  only roughly aligned with the others', so FT-2 and every latency are measured on one machine, and `analyze.py` says how far apart the clocks were (`node_clock_skew_ms`, D233). A bad clock on a node changes
   the times and labels of incidents it planned, on every node and for good, though never a plan or a hold (D142). A bad
   clock on a client PC changes when the planner's fallback fires and how high a report's priority is.
 - **Disk.** Keep the repo on a local disk, and check free space on all six before a long series. Commits sync to
@@ -254,7 +254,7 @@ python analysis/analyze.py runs      # analysis/out/summary.csv and plots
 
 `digest_mismatches` must be 0: any other value is a real bug, so keep the logs. `plans_refused` above 0 means a worker pool shed
 work in that cell, and `elections` well above 0 means the cell is above what the machines can hold, except where the cell causes them: `ft8-election-rate` read about 5 on one PC, and `degraded-300` about 55 with `election_duration_mean_ms` at about 22 s, as a lone node keeps calling votes it cannot win. A large `client_gap_max_ms` with `gave_up` above 0 means clients stopped waiting,
-so it is a lower limit on the outage and not a time to recover (D224). For how long the cloud had no leader, read `failover_to_leader_ms_mean`, never `election_duration_mean_ms`, which is the vote alone. For lost copies read `udp_copies_lost_share`, never `udp_request_loss_share` (D229).
+so it is a lower limit on the outage and not a time to recover (D224). For how long the cloud had no leader, read `failover_gap_ms_max`, on one clock (D233). Never `election_duration_mean_ms`, which is the vote alone, and `failover_to_leader_ms_mean` only beside `node_clock_skew_ms`, as it compares two PCs' clocks. For lost copies read `udp_copies_lost_share`, never `udp_request_loss_share` (D229).
 
 ## 7. If something goes wrong
 

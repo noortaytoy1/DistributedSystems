@@ -291,7 +291,8 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
   adds and plots their own events. Keep field names stable once a script reads them. To compare nodes, use
   `state_checkpoint`, logged at fixed log indexes, not `state_digest` (D138).
 - Client latency is measured on the client clock. Durations are measured with
-  `std::time::Instant`, never by subtracting wall-clock timestamps from different machines.
+  `std::time::Instant`, never by subtracting wall-clock timestamps from different machines. The figures that still compare two machines' clocks are
+  listed in `analysis/README.md`, and no target is judged from them (D233).
 - Two profiles (D63): `full` is 5 runs per cell with a 30 s warm-up and 2 min measured; `quick` is 3
   runs with 15 s and 60 s, and the report states its limits. Keep each run's raw logs. Raw data never
   goes into git: `runs/` and `*.jsonl` are ignored.
