@@ -200,3 +200,50 @@ async fn a_node_left_alone_stops_committing_until_a_peer_returns() {
     same_state(&cluster, &[1, 2, 3], 1).await;
     cluster.shutdown().await;
 }
+
+/// Commands keep flowing from every node while one node after another goes silent and returns. Any
+/// node that applied past the agreed end of its stream would end with a different state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn digests_stay_equal_through_repeated_drops_under_load() {
+    let cluster = TestCluster::start_with(3, rounds).await;
+    consensus(&cluster, 1)
+        .propose(register(1..=50))
+        .await
+        .unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut load = Vec::new();
+    for node in 1..=3u64 {
+        for worker in 0..8u64 {
+            let (c, stop) = (consensus(&cluster, node), stop.clone());
+            load.push(tokio::spawn(async move {
+                let mut seq = node * 1_000_000 + worker * 10_000;
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let responder = (seq % 50) as u32 + 1;
+                    let _ = c.propose(proposal(seq, node, Some(responder))).await;
+                    seq += 1;
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }));
+        }
+    }
+    for victim in [3u64, 1, 2, 3, 1] {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        cluster.node(victim).ctx.gate.silence();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        cluster.node(victim).ctx.gate.restore();
+        wait_until(WAIT, "all three members again", || {
+            cluster
+                .nodes
+                .iter()
+                .all(|n| n.ctx.serving.load(std::sync::atomic::Ordering::SeqCst))
+        })
+        .await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    for task in load {
+        let _ = task.await;
+    }
+    same_state(&cluster, &[1, 2, 3], 1).await;
+    cluster.shutdown().await;
+}

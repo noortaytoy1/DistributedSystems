@@ -465,6 +465,11 @@ impl Inner {
             if !core.members.contains(&from) {
                 return RoundsReply::NotMember { view: core.view };
             }
+            // Once this node has agreed to go on without the sender, nothing more of its stream
+            // counts: the agreed end must not move, or the sender could apply past it (D249).
+            if core.fenced(from) {
+                return RoundsReply::NotYet;
+            }
             core.last_heard.insert(from, Instant::now());
             core.max_seen = core.max_seen.max(through);
             let have = core.covered.get(&from).copied().unwrap_or(0);
@@ -483,6 +488,10 @@ impl Inner {
         let mut core = lock(&self.core);
         if !core.members.contains(&from) {
             return RoundsReply::NotMember { view: core.view };
+        }
+        // A promise made during the save: what was saved does not count, and the end stays put.
+        if core.fenced(from) {
+            return RoundsReply::NotYet;
         }
         Self::hold(&mut core, &batches);
         let entry = core.covered.entry(from).or_insert(0);
@@ -1013,11 +1022,16 @@ impl Inner {
 }
 
 impl Core {
-    /// The round this node comes back at, once the log has told it.
+    /// Whether this node has agreed to go on without `node`.
+    fn fenced(&self, node: NodeId) -> bool {
+        matches!(self.promise, Some((view, whom)) if whom == node && view == self.view + 1)
+    }
+
+    /// The round this node comes back at, once the log has told it. The first such entry is the
+    /// one that counts: members ignore a second, so this must too.
     fn start_round_of(&self, me: NodeId) -> Option<u64> {
         self.ordered[self.join_from..]
             .iter()
-            .rev()
             .find_map(|b| match b.control {
                 Some(RoundControl::Add { node, start_round }) if node == me => Some(start_round),
                 _ => None,
