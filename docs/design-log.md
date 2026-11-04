@@ -317,6 +317,7 @@ table below in sync.
 | D255 | Datagrams and TCP frames are squeezed | C | Implemented |
 | D256 | Messages wait longer so that fewer packets cross the air | C | Implemented, amends D236, D246, D247 |
 | D257 | A returning node starts past its old stream, and every node reads its entry in one view | A | Implemented, fixes D252 |
+| D258 | A load program writes its PC's name and address in its log | F | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -6617,7 +6618,7 @@ on that, but it is a warning for the data runs: check free space on all six PCs 
     2. Skip any bad line. Hides real damage.
     3. Raise, as before. One bad run costs an hour's series its summary.
 - **Decision.**
-  - `metrics::Event::ClientStarted { users }`, logged by `loadgen` when its clock starts; `users` is 0 in an open loop.
+  - `metrics::Event::ClientStarted { users }` (with `host` and `ip` since D258), logged by `loadgen` when its clock starts; `users` is 0 in an open loop.
   - `program_start` in `analysis/analyze.py` uses it for warm-up, per program, and falls back to the first send for logs that do not
     have it.
   - A `client_gave_up` counts if that request's first send came after warm-up, falling back to its own time.
@@ -8116,6 +8117,14 @@ them on the six PCs.
 - **Limit.** A member stopped at such an entry stops committing until it has the drop. Its detector asks for that drop, and the other member gives it.
 - **Where.** `src/rounds.rs`, `src/proto.rs` (`RoundControl::Add.view`).
 - **How we check it.** `a_returning_node_starts_past_its_old_stream_on_every_node` fails on the code before this entry. T4's last part again on the six PCs, with digest mismatches at 0.
+
+### D258 · A load program writes its PC's name and address in its log
+
+- **Date:** 2026-11-05 · **Part:** F · **Status:** Implemented · **Decided by:** the person running the lab session, who asked that the logs say for certain which client PC sent a request and which cloud PC answered.
+- **Context.** A check of all 749,925 answers in one run at 10,000 a second found every answer's `from` and `executor` matched a `replied` line in that node's own log. A node's `started` line holds its address, so the answering PC was named. A client line held only a program number, so its PC came from the arithmetic in the run script.
+- **Decision.** `client_started` gets `host`, read from `/etc/hostname`, and `ip`, the address the system would use to reach the first node. Together with `request.client` on every per-request line, this names the client PC from the log alone.
+- **Where.** `src/metrics.rs`, `src/bin/loadgen.rs`.
+- **How we check it.** Each run's client logs, read by the analysis.
 
 ### Notes on older entries
 

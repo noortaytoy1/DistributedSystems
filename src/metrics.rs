@@ -355,8 +355,12 @@ pub enum Event {
     /// A load program's clock starts, and its warm-up with it. Its first send can come up to two
     /// think times later, as its pattern says, so that send cannot stand in for this (D182). `users`
     /// is 0 in an open loop, which has none.
+    /// A load program's clock started. `host` and `ip` name the client PC it runs on, so a log line's
+    /// `src` and `request.client` lead to a machine, and not only to a program number (D258).
     ClientStarted {
         users: u32,
+        host: String,
+        ip: String,
     },
     ClientSent {
         request: RequestId,
@@ -401,6 +405,23 @@ pub enum Event {
         cpu_total_ticks: Option<u64>,
         mem_available_kb: Option<u64>,
     },
+}
+
+/// This PC's name, and the address it reaches `peer` from. A UDP socket that is only connected sends
+/// nothing: it just says which address the system would use (D258).
+pub fn this_pc(peer: Option<&str>) -> (String, String) {
+    let host = fs::read_to_string("/etc/hostname")
+        .map(|name| name.trim().to_string())
+        .unwrap_or_default();
+    let ip = peer
+        .and_then(|peer| {
+            let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+            socket.connect(peer).ok()?;
+            socket.local_addr().ok()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_default();
+    (host, ip)
 }
 
 /// The whole machine's CPU and memory, as a `machine_usage` event. Blocking file reads: run it off

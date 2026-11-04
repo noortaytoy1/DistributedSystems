@@ -354,8 +354,12 @@ async fn main() -> anyhow::Result<()> {
         .then(|| tokio::spawn(sample_machine(log.clone())));
 
     let start = Instant::now();
+    let first_node = config.cluster.nodes.first().map(|n| n.client_addr.as_str());
+    let (host, ip) = rescuemesh::metrics::this_pc(first_node);
     log.log(Event::ClientStarted {
         users: args.rate.map_or(args.users, |_| 0),
+        host,
+        ip,
     });
     let measure_from = start + Duration::from_secs(args.warmup_s);
     let stop_at = start + Duration::from_secs(args.duration_s);
