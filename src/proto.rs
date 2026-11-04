@@ -661,7 +661,12 @@ pub struct RoundBatch {
 /// A change to who takes part, in the one order, so every member makes it at the same place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoundControl {
-    Add { node: NodeId, start_round: u64 },
+    Add {
+        node: NodeId,
+        start_round: u64,
+        /// The view of the member that made this entry: the node is not in it (D257).
+        view: u64,
+    },
 }
 
 /// Messages between nodes under rotating rounds (D249).

@@ -316,6 +316,7 @@ table below in sync.
 | D254 | Client datagrams leave out tarpc's trace context | C | Implemented, amends D170 |
 | D255 | Datagrams and TCP frames are squeezed | C | Implemented |
 | D256 | Messages wait longer so that fewer packets cross the air | C | Implemented, amends D236, D246, D247 |
+| D257 | A returning node starts past its old stream, and every node reads its entry in one view | A | Implemented, fixes D252 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8037,7 +8038,7 @@ them on the six PCs.
   1. *Rotating rounds (chosen).* Each node numbers its own stream of batches by round and sends it to its peers. All nodes apply one merged order, by round then node ID, once every member has passed that round. No election, and no node orders for another. `CloudState`, first commit wins, replies, digests and checkpoints stay unchanged.
   2. *Each node owns a share of the responders, with no global order.* Possibly faster, but state, digests, conflict rules, recovery and analysis all change, and a lost node takes a third of the responders with it.
   3. *Delete Raft outright.* Rewrites about 15 test files that wait for a leader, with no fallback.
-- **Decision.** Option 1, in `src/rounds.rs` behind the `Consensus` trait, chosen by the top-level config key `consensus = "rounds"`. `raft` stays the default until rounds is proven on the six PCs. `timers.round_ms` = 5. A silent node is dropped after `takeover_missed_heartbeats` x `peer_heartbeat_ms`. A node answers a client only after a batch is saved on two nodes. Two of three must agree a drop, and one promise per view means one next view. One node alone stops committing, and degraded mode answers provisionally (D120). A returning node is sent the applied log, and a member adds it through an entry in the order, at a later round.
+- **Decision.** Option 1, in `src/rounds.rs` behind the `Consensus` trait, chosen by the top-level config key `consensus = "rounds"`. `raft` stays the default in the code, and the lab's configs and `scripts/run-experiments.sh` set `rounds` since it held on the six PCs (D252 to D256). `timers.round_ms` = 5. A silent node is dropped after `takeover_missed_heartbeats` x `peer_heartbeat_ms`. A node answers a client only after a batch is saved on two nodes. Two of three must agree a drop, and one promise per view means one next view. One node alone stops committing, and degraded mode answers provisionally (D120). A returning node is sent the applied log, and a member adds it through an entry in the order, at a later round.
 - **Why.** It removes the elected node with the smallest change to everything else, and removes the one-at-a-time step.
 - **Consequences.** A silent node holds up every round until it is dropped, so a failure costs at least the detection time. Latency includes a round. Every member sends every round, even when idle. **Limits, said openly:** a restarted node recovers from a peer's log and not from its own file, so losing all three nodes at once loses the state. A log is kept in memory for catch-up with no trimming. Losing a second node from a view of two blocks a dropped node from returning until one comes back. `leader-dispatch` and the busy-leader move have no meaning here. Failure handling has only unit-level tests so far, and the agreement on a drop is simpler than Paxos and has had no formal check.
 - **Where.** `src/rounds.rs`, `tests/rounds.rs`, `src/proto.rs`, `src/config.rs`, `src/node/mod.rs`, `src/raft/mod.rs` (the trait), `docs/protocol.md`, `docs/architecture.md`.
@@ -8106,6 +8107,15 @@ them on the six PCs.
 - **Decision.** UDP messages wait up to 20 ms and not 10, bids 10 ms and not 5. Up to 5,600 bytes may wait for one datagram, and it is split in two if it does not squeeze to 1,400.
 - **Where.** `src/node/datagram.rs`, `src/node/bids.rs`.
 - **How we check it.** `tests/datagram.rs`, then packets a second and results on the six PCs.
+
+### D257 · A returning node starts past its old stream, and every node reads its entry in one view
+
+- **Date:** 2026-11-04 · **Part:** A · **Status:** Implemented, fixes D252 · **Decided by:** the agent, as a bug on the guide's list of real bugs, found by T4's last part on rounds.
+- **Context.** T4's last part at `eba4d14`, in the cell with a failure about every 2 s, gave 41 digest mismatches of 50 checkpoints and 1,241 reports that gave up (`runs/hand-rf/draw/off`). Node 2 was dropped with its stream ending at round 1329, and came back at round 1186, as the member adding it counted from its own round, which was behind. Those rounds then held old and new batches of node 2, and the node returning had thrown the old ones away. Reading the code for this found a second hole: a drop is not in the log, so a member that had not made the drop yet read an entry adding that node as a repeat, and ignored it, while the other member added it.
+- **Decision.** A member making a drop raises its rounds to at least where the dropped stream ends, so a round counted from its own is past that end. An entry adding a node carries the view of the member that made it. A member behind that view stops applying at the entry until it has made the drop. A member past that view ignores it, the same on every node.
+- **Limit.** A member stopped at such an entry stops committing until it has the drop. Its detector asks for that drop, and the other member gives it.
+- **Where.** `src/rounds.rs`, `src/proto.rs` (`RoundControl::Add.view`).
+- **How we check it.** `a_returning_node_starts_past_its_old_stream_on_every_node` fails on the code before this entry. T4's last part again on the six PCs, with digest mismatches at 0.
 
 ### Notes on older entries
 

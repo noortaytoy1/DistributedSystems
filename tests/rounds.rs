@@ -413,3 +413,51 @@ async fn a_node_added_twice_comes_back_at_the_later_round() {
     same_state(&cluster, &[1, 2, 3], 7).await;
     cluster.shutdown().await;
 }
+
+/// A node comes back past the end of its old stream, on every node, whoever adds it and however late
+/// the other member hears of the drop. On the lab PCs a node dropped at round 1329 came back at 1186,
+/// so those rounds held old and new batches, and the digests split (D257).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_returning_node_starts_past_its_old_stream_on_every_node() {
+    const CUT: u64 = 1_000_000;
+    let cluster = TestCluster::start_with(3, |c| {
+        rounds(c);
+        // Drops here are made by hand.
+        c.timers.takeover_missed_heartbeats = 400;
+    })
+    .await;
+    let (c1, c2) = (consensus(&cluster, 1), consensus(&cluster, 2));
+    c1.propose(register(1..=50)).await.unwrap();
+    commit_through(&cluster, 1, 1).await;
+    same_state(&cluster, &[1, 2, 3], 1).await;
+
+    cluster.node(3).ctx.gate.silence();
+    let commit = || RoundsMsg::DropCommit {
+        view: 1,
+        target: 3,
+        cut: CUT,
+        batches: Vec::new(),
+    };
+    let _ = c1.handle_rounds(2, commit()).await;
+    let _ = c1.handle_rounds(3, RoundsMsg::Join).await;
+    view_reached(&cluster, &[1], 2).await;
+    // Node 2 has not made the drop yet, and reads the entry only once it has.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = c2.handle_rounds(1, commit()).await;
+    view_reached(&cluster, &[2], 2).await;
+
+    let PeerReply::Rounds(RoundsReply::Entries { starts, .. }) =
+        c1.handle_rounds(3, RoundsMsg::CatchUp { next: 0 }).await
+    else {
+        panic!("a member answers a catch-up");
+    };
+    let start = starts.iter().find(|(node, _)| *node == 3).map(|(_, s)| *s);
+    assert!(start.is_some_and(|s| s > CUT), "it comes back at {start:?}");
+
+    cluster.node(3).ctx.gate.restore();
+    commit_through(&cluster, 3, 2).await;
+    commit_through(&cluster, 1, 3).await;
+    commit_through(&cluster, 2, 4).await;
+    same_state(&cluster, &[1, 2, 3], 4).await;
+    cluster.shutdown().await;
+}

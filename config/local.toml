@@ -1,6 +1,9 @@
 # Three nodes on one machine. Every node, client and ctl reads this same file.
 # Start a node with:  cargo run --release --bin node -- --config config/local.toml --id 1
 
+# Rotating rounds, with no leader or coordinator (D249). "raft" keeps the elected leader.
+consensus = "rounds"
+
 [[cluster.nodes]]
 id = 1
 peer_addr = "127.0.0.1:7001"

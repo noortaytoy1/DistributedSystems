@@ -57,6 +57,7 @@ run_value() {
 
 write_config() {
   {
+    echo 'consensus = "rounds"'
     nodes_toml
     printf '\n[metrics]\ndir = "runs/current"\n\n[storage]\ndir = "data/raft"\n\n'
     cat "$1"
@@ -74,7 +75,7 @@ ids_with_role() {
 
 wait_for_leader() {
   local deadline=$((SECONDS + 30))
-  until [[ -n "$(ids_with_role leader)" ]]; do
+  until [[ -n "$(ids_with_role peer)$(ids_with_role leader)" ]]; do
     if ((SECONDS > deadline)); then
       echo "no leader after 30 s" >&2
       return 1
@@ -100,6 +101,9 @@ victims_of() {
   local leader follower
   leader=$(ids_with_role leader | head -1)
   follower=$(ids_with_role follower | head -1)
+  # Rotating rounds has neither: one node stands in for each (D249).
+  [[ -n "$leader" ]] || leader=$(ids_with_role peer | head -1)
+  [[ -n "$follower" ]] || follower=$(ids_with_role peer | tail -1)
   case "$1" in
     leader) echo "$leader" ;;
     follower) echo "$follower" ;;

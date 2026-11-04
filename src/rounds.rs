@@ -312,9 +312,15 @@ impl Inner {
             if frontier <= core.applied_round {
                 break;
             }
-            while let Some((&(round, node), _)) = core.pending.first_key_value() {
+            while let Some((&(round, node), next)) = core.pending.first_key_value() {
                 if round > frontier {
                     break;
+                }
+                // Made after a drop this node has not made yet. Every node must read this entry
+                // in the same view, so it waits here until it has that drop too (D257).
+                if matches!(next.control, Some(RoundControl::Add { view, .. }) if view > core.view)
+                {
+                    break 'again;
                 }
                 let Some(batch) = core.pending.remove(&(round, node)) else {
                     break;
@@ -348,8 +354,15 @@ impl Inner {
                 });
             }
         });
-        if let Some(RoundControl::Add { node, start_round }) = batch.control {
-            if !core.members.contains(&node) {
+        if let Some(RoundControl::Add {
+            node,
+            start_round,
+            view,
+        }) = batch.control
+        {
+            // A second entry for one return, or one from before a later drop, is a view behind by
+            // now on every node. A node on its way back is told who is in when it returns.
+            if !core.joining && view == core.view && !core.members.contains(&node) {
                 core.members.insert(node);
                 core.view += 1;
                 core.promise = None;
@@ -395,6 +408,9 @@ impl Inner {
         core.granted = false;
         core.awaiting.remove(&target);
         core.drops.insert(view, (target, cut));
+        // Nothing of this node's stream can be numbered at or below the end of the one dropped, so
+        // a round counted from here for its return is past that end (D257).
+        core.max_seen = core.max_seen.max(cut);
         core.pending
             .retain(|(round, node), _| *node != target || *round <= cut);
         core.covered.remove(&target);
@@ -721,10 +737,15 @@ async fn run_emitter(inner: Arc<Inner>) {
             core.my_round = (core.my_round + 1).max(core.max_seen);
             let round = core.my_round;
             // Counted from this batch's own round, so a late tick cannot place it past that round.
-            let control = core.adding.take().map(|node| RoundControl::Add {
-                node,
-                start_round: round + ADD_MARGIN_ROUNDS,
-            });
+            let view = core.view;
+            let adding = core.adding.take();
+            let control = adding
+                .filter(|node| !core.members.contains(node))
+                .map(|node| RoundControl::Add {
+                    node,
+                    start_round: round + ADD_MARGIN_ROUNDS,
+                    view,
+                });
             if commands.is_empty() && control.is_none() {
                 (None, round)
             } else {
