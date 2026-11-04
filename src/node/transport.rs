@@ -396,6 +396,7 @@ async fn invoke(
         PeerBody::ReadIndex => client.read_index(ctx, from, term).await,
         PeerBody::FaultBid(bid) => client.fault_bid(ctx, from, term, bid).await,
         PeerBody::Bid(bid) => client.bid(ctx, from, term, bid).await,
+        PeerBody::Bids(bids) => client.bids(ctx, from, term, bids).await,
         PeerBody::Heartbeat => client.heartbeat(ctx, from, term).await,
     }
 }
@@ -635,6 +636,16 @@ impl PeerRpc for PeerServer {
         bid: Bid,
     ) -> PeerReply {
         self.deliver(from, term, PeerBody::Bid(bid)).await
+    }
+
+    async fn bids(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        bids: Vec<Bid>,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Bids(bids)).await
     }
 
     async fn heartbeat(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {

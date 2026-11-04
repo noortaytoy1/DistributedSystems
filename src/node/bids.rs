@@ -18,6 +18,9 @@ use crate::config::{AssignmentPolicy, Config};
 use crate::metrics::Event;
 use crate::proto::{Bid, ClientRequest, NodeId, PeerBody, RequestId};
 
+/// How long a bid waits for others to go out with it (D247). It uses part of the bid window.
+const BID_COMBINE_WAIT: Duration = Duration::from_millis(5);
+
 /// How often closed rounds past their grace period are dropped.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -30,6 +33,8 @@ pub struct BidState {
     seen: Mutex<BTreeMap<NodeId, (u64, u64)>>,
     /// Requests this node is planning and committing now. A retry joins them, not repeats them (D243).
     executing: Mutex<BTreeSet<RequestId>>,
+    /// Bids waiting to go to the group together (D247).
+    outgoing: Arc<Mutex<Vec<Bid>>>,
 }
 
 /// Held while this node works on one request. Dropping it ends that.
@@ -52,6 +57,7 @@ impl BidState {
             cpu_permille: AtomicU32::new(0),
             seen: Mutex::new(BTreeMap::new()),
             executing: Mutex::new(BTreeSet::new()),
+            outgoing: Arc::default(),
         }
     }
 
@@ -183,15 +189,41 @@ pub fn on_bid(ctx: &NodeContext, from: NodeId, bid: &Bid) {
     lock(&ctx.bids.rounds).add_bid((bid.request, bid.attempt), from, bid.score, Instant::now());
 }
 
+/// Bids a peer sent together: one lock for all of them (D247).
+pub fn on_bids(ctx: &NodeContext, from: NodeId, bids: &[Bid]) {
+    for bid in bids {
+        ctx.bids.saw_bid(from, bid.score);
+    }
+    let now = Instant::now();
+    let mut rounds = lock(&ctx.bids.rounds);
+    for bid in bids {
+        rounds.add_bid((bid.request, bid.attempt), from, bid.score, now);
+    }
+}
+
 /// Sends the bid to the group without waiting: the window runs by the clock, so a slow peer must
 /// not hold it up. A lost bid can only cause a split decision, which the first commit settles, and
 /// a peer this node has listed as gone gets no copy at all (D154). The task ends within the peer
 /// RPC timeout, so it needs no owner.
+///
+/// The first bid to wait starts the task, and bids made meanwhile go with it, so an idle node runs no
+/// timer and a busy one sends one message per peer per [`BID_COMBINE_WAIT`] (D247).
 fn send_bid(ctx: &NodeContext, bid: Bid) {
+    let first = {
+        let mut waiting = lock(&ctx.bids.outgoing);
+        waiting.push(bid);
+        waiting.len() == 1
+    };
+    if !first {
+        return;
+    }
     let timeout = ctx.config.timers.peer_rpc_timeout();
     let group = ctx.group.clone();
+    let outgoing = ctx.bids.outgoing.clone();
     tokio::spawn(async move {
-        let sent = group.send(timeout, || PeerBody::Bid(bid.clone()));
+        tokio::time::sleep(BID_COMBINE_WAIT).await;
+        let batch = std::mem::take(&mut *lock(&outgoing));
+        let sent = group.send(timeout, || PeerBody::Bids(batch.clone()));
         for (peer, outcome) in sent.await {
             if let Err(e) = outcome {
                 tracing::debug!(peer, "bid not delivered: {e}");

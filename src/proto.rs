@@ -610,6 +610,7 @@ pub trait PeerRpc {
     async fn read_index(from: NodeId, term: Term) -> PeerReply;
     async fn fault_bid(from: NodeId, term: Term, bid: FaultBid) -> PeerReply;
     async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
+    async fn bids(from: NodeId, term: Term, bids: Vec<Bid>) -> PeerReply;
     async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
 
@@ -637,6 +638,8 @@ pub enum PeerBody {
     /// The envelope's term applies the term rule: a dropped bid only stops the round finishing.
     FaultBid(FaultBid),
     Bid(Bid),
+    /// The bids this node made in the last few milliseconds, as one message (D247).
+    Bids(Vec<Bid>),
     Heartbeat,
 }
 

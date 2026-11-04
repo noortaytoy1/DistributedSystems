@@ -306,6 +306,7 @@ table below in sync.
 | D244 | A backup release waits longer, and release scanning never waits for the log | D | Implemented |
 | D245 | The count of open rounds a node leads is kept, not scanned | B | Implemented |
 | D246 | UDP messages wait up to 10 ms to share a datagram, not 2 ms | C | Implemented, amends D236 |
+| D247 | Bids go out together, one message per peer every 5 ms | B | Implemented, amends D126 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7996,6 +7997,19 @@ them on the six PCs.
 - **Consequences.** Up to 8 ms more each way. Copies of one report to three nodes can leave up to 10 ms apart, which uses part of the bid window.
 - **Where.** `src/node/datagram.rs`.
 - **How we check it.** Packets a second from `/proc/net/dev`, and committed answers a second on the six PCs.
+
+### D247 · Bids go out together, one message per peer every 5 ms
+
+- **Date:** 2026-11-04 · **Part:** B · **Status:** Implemented, amends D126 · **Decided by:** the person running the lab session, on the agent's recommendation from reviews.
+- **Context.** Each report made 6 bid calls and 6 Acks between nodes, each with its own tasks and timers: by arithmetic about 120,000 messages a second at 10,000 requests a second.
+- **Options considered.**
+  1. *`PeerBody::Bids(Vec<Bid>)`, gathered for 5 ms (chosen).* One message per peer per 5 ms at most, and still one Ack for each.
+  2. *One-way bids with no Ack.* Fewer messages still, but a bigger change to the peer calls.
+  3. *Leave it to Nagle (D237).* Fewer packets, but the same tasks and timers.
+- **Decision.** `send_bid` adds to a list, and the first bid to wait starts a task that sends the list after `BID_COMBINE_WAIT` = 5 ms. The older `Bid` message stays, for tests and tools. `msgs_bid_per_req` now counts messages, not bids.
+- **Consequences.** A bid leaves up to 5 ms later, from a window of 60 ms in the trials, or 20 ms by default. A stale term drops a whole list, which costs what a lost bid does: at worst a split round that first commit settles (D27). `proto.rs` changed, so this needs its owners' review.
+- **Where.** `src/proto.rs`, `src/node/bids.rs`, `src/node/transport.rs`, `src/node/mod.rs`, `src/metrics.rs`, `docs/protocol.md`.
+- **How we check it.** `cargo test`, then `msgs_bid_per_req` and CPU per node on the six PCs.
 
 ### Notes on older entries
 

@@ -315,6 +315,10 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
             bids::on_bid(&ctx, from, &bid);
             PeerReply::Ack
         }
+        PeerBody::Bids(batch) => {
+            bids::on_bids(&ctx, from, &batch);
+            PeerReply::Ack
+        }
         PeerBody::Raft(_) => PeerReply::Ack,
     }
 }

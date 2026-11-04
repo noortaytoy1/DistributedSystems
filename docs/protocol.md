@@ -133,7 +133,7 @@ group: it holds the membership, and sends between nodes follow it. It adds no me
 
 | Call | Addressed to | Used by |
 |------|--------------|---------|
-| `send(timeout, body)` | the peers on this node's who's-alive list | bids and fault bids |
+| `send(timeout, body)` | the peers on this node's who's-alive list | bids, combined for 5 ms as `Bids` (D247), and fault bids |
 | `probe(timeout, body)` | every configured peer | peer heartbeats |
 | `send_ordered(command)` | every copy, in one order, through Raft | the incident service, responder release, campus loading, degraded replay |
 
