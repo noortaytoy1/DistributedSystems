@@ -78,6 +78,7 @@ to 30 minutes = about 4 hours, before the demo rehearsal. In Plan B the 63 runs 
 - One fault per run, so 3 per cell, and about 2 draws per run: too few to show a distribution.
 - Which of the 34 cells did not run.
 - The commit, the PCs' CPU, memory and disk, `plan_work` and the measured `service_mean_us`.
+- How far apart the clocks were: `node_clock_skew_ms` and `client_clock_skew_ms` (D56, D233).
 - The two responder pools: 3000 in `e1-1000-*` and `e1-3000-*`, 300 elsewhere. A line across that gap is not load
   alone, and the 1500-user cells run past their pool (D219).
 - Anything that differs from this guide: a PC with no sudo, a changed `threads` or `plan_work`, Plan B's start by hand.
@@ -678,7 +679,7 @@ damaged`. The tar on the USB stick is your original, so delete that one line her
 | Write down | Where from | Target, and one-PC rehearsal with `kill -9` as a guide |
 |------------|-----------|---------------------------------------------------------|
 | Clock time of the cut, and of power on | Your watch | |
-| Leader and term before; new leader and term after | `ctl status`. For the time: `failover_gap_ms_max` from `analyze.py runs/hand`. Or by hand, on one survivor's log, on its own clock: the new term's first `raft_state` line with a `leader`, minus its `peer_suspected` time, plus `silent_ms`. Both read up to 50 ms long | A new leader within 1 s (D214). Rehearsal: 675 ms |
+| Leader and term before; new leader and term after | `ctl status`. For the time: `failover_gap_ms_max` from `analyze.py runs/hand`. Or by hand, on one survivor's log, on its own clock: the new term's first `raft_state` line with a `leader`, minus its `peer_suspected` time, plus `silent_ms`. Both read up to 75 ms long | A new leader within 1 s (D214). Rehearsal: 675 ms |
 | Longest with no answer to anyone | `extras.py`, one line per client PC | Rehearsal: 686 ms |
 | `gave up`, `retried` | Each client PC's last line | Gave up 0 (FT-9) |
 | `peer_suspected` on both survivors | `grep '"ev":"peer_suspected"' runs/hand/power/leader/run-1/node-*.jsonl`. Read the lines at the cut's time: the first and last lines are nodes starting and stopping | Within 1 s of the cut. One PC: `silent_ms` about 190 |

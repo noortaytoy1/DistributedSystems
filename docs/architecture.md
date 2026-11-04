@@ -154,7 +154,7 @@ sequenceDiagram
   provisionally (D120). No Byzantine behaviour.
 - **Timing.** No trusted bound on message delay. Safety never depends on timeouts; only liveness
   does.
-- **Clocks.** Synchronised with NTP, and no target depends on how well. Durations are measured on one PC's clock (D56, D233), and the state machine reads no clock (D30). The too-old
+- **Clocks.** Synchronised with NTP, and FT-2 does not depend on how well. Durations are measured on one PC's clock (D56, D233), and the state machine reads no clock (D30). The too-old
   rule compares no two clocks: the client states the report's age, and a node judges "too old" from that (D143). The planner's 5 s fallback and the
   priority read the age from two clocks, the client's and the node's, and NTP error is small against 5 s (D95). A clock error there can only change when
   that fallback fires, and a priority. The plan still goes through the log, so the copies stay equal. The label that says past its deadline
