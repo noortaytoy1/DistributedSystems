@@ -2,8 +2,8 @@
 
 The architecture of RescueMesh Phase 1: what runs where, how the pieces talk, what happens in
 every scenario we must demonstrate, and how we measure it. It started as the Phase 1 architecture
-document (27 Oct 2026) and is now kept in step with the code. Every diagram renders on GitHub
-(Mermaid).
+document (27 Oct 2026) and is now kept in step with the code. The diagrams are Mermaid, which GitHub draws. All were drawn with mermaid-cli 11.4.2,
+and the redrawn ones have not been seen on GitHub yet.
 
 - **Why** each choice was made, and what we rejected: [design-log.md](design-log.md). Decision IDs
   (`D1`, `D26`, ...) in this file point there.
@@ -69,7 +69,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | An assignment says when it was created and when it expires | `assigned_at_ms` in the log; `expires_at_ms` is the planned end | built; the end is not enforced | D144 |
 | The selected peer computes an incident priority and a plan | `Plan.priority`, in points, from severity, age, distance, availability and capability | built; **nothing is ordered by it yet** | D148 |
 | Measured, statistically meaningful results                | JSONL event logs on every process; experiments E1–E8, with a runner and analysis | built; **the lab runs are still to do** | D55, D56, D63, D130, D138, D187 |
-| The leader stays up under load, and saves are never skipped | Our own queue in front of Raft, one write in flight, grouped saves | built; measured on one PC only | D133 |
+| Disk saves cannot stop a leader's heartbeats, and saves are never skipped | Our own queue in front of Raft, one write in flight, grouped saves | built; measured on one PC only | D133 |
 | One node left still handles the clients                  | Degraded mode: labelled provisional answers, replayed through Raft on return | built | D120–D125 |
 | A PC physically off comes back                        | Raft log and vote on disk, then the same catch-up as a silence           | built; rehearsed on one PC with a killed process behind a dropped link; **a real power cut is still to do** | D118, D137, D214 |
 | Remote invocation through a ready-made RPC                 | tarpc on both paths: `PeerRpc` between nodes, `ClientRpc` from clients, typed methods, no hand-written request and reply left | built | D119, D150, D167, D175, D176 |
@@ -975,7 +975,7 @@ sequenceDiagram
     Note over N3: Node 3 times out first: the lab config lists 3, 2, 1,<br/>and the first listed has the shortest wait (D115, D165)
     N3->>N2: Vote (term t+1)
     N2-->>N3: granted
-    Note over N3: Node 3 leads, term t+1<br/>(raft_state event, E3 election time)
+    Note over N3: Node 3 leads, term t+1<br/>(raft_state event, where failover_to_leader_ms_mean stops)
     N3->>N2: AppendEntries (blank log line, heartbeat)
     K->>N2: Report k1-43
     K->>N3: Report k1-43
@@ -988,7 +988,7 @@ sequenceDiagram
     N2-->>N3: saved: 2 of 3, final
     N3-->>N2: Proposed(Committed)
     N2->>K: Answer k1-43
-    Note over N2,N3: A Propose forwarded to node 1 ends when the leader changes<br/>or at its 3 s limit. It is then sent to the new leader
+    Note over N2,N3: A Propose forwarded to node 1 goes to the new leader<br/>once the leader changes, and gives up at its 3 s limit
 ```
 
 ### 6.9 A node rejoins and catches up (built, D46, D75)
@@ -1353,8 +1353,8 @@ sequenceDiagram
 
 One-PC rehearsal, never six-PC results, measured with a prototype of this design, reports answered per second per load generator: at 100
 users, 0 with no queue (225 new terms), 4.6 with the queue alone (0 new terms), and 95.2 and 96.4 with grouped saves (0 new terms). The whole
-table is in D133. The final code then ran 15 sweep cells on one PC, reports over UDP, up to 3000 reports a second: no new term in any cell, and equal digests.
-That too is a one-PC rehearsal, never six-PC results.
+table is in D133. Commit `8bb244e`, from before D218 and D228, then ran 15 sweep cells on one PC, reports over UDP, up to 3000 reports a second: no new term in any cell, and equal digests. That table is in no file in the repo.
+The series at `e4ab477` read the same: 18 cells, 54 runs, no new term in a cell with no fault, and 0 digest mismatches (D229). Those too are one-PC rehearsals, never six-PC results.
 
 ### 6.19 A busy leader steps aside (built, D218, amends D217)
 
@@ -1991,7 +1991,7 @@ flowchart LR
 | E6   | load-score variant      | latency and fairness under skew                     | B     | P-2 (bid window sweep) |
 | Burst | `just_won` on or off, reports in bursts (`--pattern all-at-once`, D182; no cell yet) | longest winning streak, largest queue difference, p99 | B | none |
 | E7   | one program against 10 per client PC, at 300 users | latency, client PC CPU, arrivals | F | none |
-| E8   | a busy first node with the step-aside on | whether and when the leader moves, and time to final either side; compare with `e2e6-skew-expected-wait` | A | none |
+| E8   | a busy first node with the step-aside on | whether and when the leader moves, and time to final either side, from the `commit` lines by hand, as `summary.csv` has no phases for this cell; compare with `e2e6-skew-expected-wait` | A | none |
 
 `e1-1000-*` and `e1-3000-*` use 3000 responders, the other E1 cells 300 (D219). Only `e8-step-aside` turns the step-aside on: every other cell has it off, so measurements stay comparable (D218).
 
