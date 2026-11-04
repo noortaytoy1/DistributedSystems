@@ -299,6 +299,7 @@ table below in sync.
 | D237 | TCP between nodes leaves Nagle on | C | Implemented, amends D20 |
 | D238 | With many responders, each plan looks at its own part of the free list | E, A | Implemented |
 | D239 | A standing-by node looks once per heartbeat, not five times | C | Implemented, amends D110 |
+| D240 | Every zone has every capability | E | Implemented, fixes a bug in `campus::responders` |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7914,6 +7915,20 @@ them on the six PCs.
 - **Consequences.** A takeover can start up to about 40 ms later at the default heartbeat.
 - **Where.** `src/node/takeover.rs`.
 - **How we check it.** `cargo test --test takeover`.
+
+### D240 · Every zone has every capability
+
+- **Date:** 2026-11-04 · **Part:** E · **Status:** Implemented, fixes a bug · **Decided by:** the person running the lab session, on the agent's recommendation.
+- **Context.** `campus::responders` set `zone = i % zones` and `capability = i % 4`. With an even number of zones these share parity. At 6 zones only 12 of the 24 zone and capability pairs existed, and at 60 zones only 60 of 240. Half of all reports had no matching responder in their zone, so they took the nearest across a border. A log review found 33 to 45% of assignments going to responders within 25 m of a border, who are 19% of them. The test checked each field's spread alone, so it passed.
+- **Options considered.**
+  1. *`capability = (i + i / lcm(zones, 4)) % 4` (chosen).* All pairs exist, and each field stays within one of even at any count.
+  2. *`(i / zones) % 4`.* Simpler, and it failed `zones_and_capabilities_are_spread_evenly`: at 6 zones and 30 responders, one capability had twice the others.
+- **Decision.** Option 1, with the test `every_zone_has_every_capability`.
+- **Why.** A log review's simulator put stale plans about 5 to 6 times lower with this fixed. That is a simulation, and it has to be measured.
+- **Consequences.** It changes the simulated workload: plan cost, stale plans, and who is sent. Every result before this entry, including the plan at `0397d37`, ran with the bug. Never compare them without saying so.
+- **Where.** `src/campus.rs`.
+- **How we check it.** Unit test, then stale per commit on the six PCs.
+- **Report notes.** State this beside any comparison of results across it.
 
 ### Notes on older entries
 

@@ -27,11 +27,16 @@ pub const ZONE_SIZE_M: i32 = 500;
 /// The campus responders, registered through Raft when the cluster first forms.
 pub fn responders(cfg: &CampusConfig) -> Vec<Responder> {
     let zones = u32::from(cfg.zones.max(1));
+    // The least common multiple of the zones and the 4 capabilities.
+    let repeat = zones * 4 / [4, 2, 1].into_iter().find(|d| zones % d == 0).unwrap_or(1);
     let mut rng = SplitMix64(cfg.seed);
     (0..cfg.responders)
         .map(|i| {
             let zone = ZoneId::try_from(i % zones).expect("i mod zones fits in a zone ID");
-            let capability = Capability::ALL[(i % 4) as usize];
+            // `i % 4` alone would tie a zone to half of the capabilities with an even number of zones,
+            // and reports would pile onto responders across a border. Moving on by one each time the
+            // pairs repeat gives every zone every capability, and stays even (D240).
+            let capability = Capability::ALL[((i + i / repeat) % 4) as usize];
             let dx = rng.below(ZONE_SIZE_M);
             let dy = rng.below(ZONE_SIZE_M);
             Responder {
@@ -200,6 +205,16 @@ mod tests {
                 assert!(r.zone < zones, "{r:?}");
                 assert!(inside_zone(zones, r.zone, r.location), "{r:?}");
             }
+        }
+    }
+
+    #[test]
+    fn every_zone_has_every_capability() {
+        for zones in [1, 2, 4, 5, 6, 12, 60] {
+            let rs = responders(&cfg(1, zones, u32::from(zones) * 4));
+            let pairs: std::collections::BTreeSet<_> =
+                rs.iter().map(|r| (r.zone, r.capability)).collect();
+            assert_eq!(pairs.len(), usize::from(zones) * 4, "{zones} zones");
         }
     }
 
