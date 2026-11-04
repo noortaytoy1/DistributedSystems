@@ -273,7 +273,7 @@ table below in sync.
 | D211 | The middleware and application boundary, on both the client side and the cloud side | all | Implemented, the cloud side through D156 |
 | D212 | Cloud nodes are peers, client and server are roles per transaction, and three system models | all | Implemented in the docs |
 | D213 | The questions once left for the instructor are closed | all | Implemented |
-| D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs |
+| D214 | Test plan corrected: FT-2's target, FT-9, and names nobody had defined | A, C, D | Implemented in the docs, amended by D231 |
 | D215 | The library boundary names tarpc | all | Implemented in the docs |
 | D216 | Noor's decisions of 2026-11-03, and those still being built | all | Accepted, built |
 | D217 | The Raft leader does not change with load | A, B | Decided, amended by D218 |
@@ -290,6 +290,7 @@ table below in sync.
 | D228 | A busy leader's log is read as one write, not as a queue | A | Implemented, amends D218 |
 | D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227 |
 | D230 | The lab guide after the full rehearsal | all | Implemented in the docs |
+| D231 | Each node's lease is its own, so a failover takes about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -7157,7 +7158,7 @@ line changes.
 
 ### D214 · Test plan corrected: FT-2's target, FT-9, and names nobody had defined
 
-- **Date:** 2026-11-03 · **Part:** A, C, D · **Status:** Implemented in the docs · **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions
+- **Date:** 2026-11-03 · **Part:** A, C, D · **Status:** Implemented in the docs, amended by D231 · **Decided by:** the agent on its recommendation, on Noor's instruction to finish without more questions
   (2026-11-03). Noor can overrule it
 - **Context.** `docs/architecture.md` section 11.2 had three kinds of error.
   1. *FT-2 said "failover within 600 ms".* That cannot pass. openraft waits `election_timeout + leader_lease` once a vote is committed (`core/raft_core.rs:1475-1476`), and `leader_lease` is
@@ -7748,6 +7749,21 @@ them on the six PCs.
 - **How we check it.** A fresh venv on Python 3.10.12, in WSL Ubuntu-22.04, installed numpy 2.2.6, scipy 1.15.3 and matplotlib 3.10.7 from the one line, and `test_analyze.py` passed its 96 tests. `docs_lint.py` over the docs: 48 Mermaid blocks, 0 problems. The team's first lab session is the real check, and the guide says to fix it when it is wrong.
 - **Report notes.** State the choice about `plan_work`, the measured `service_mean_us`, and whether the top cell is past the knee. A closed-loop interval of 0 is arithmetic, not stability.
 
+### D231 · Each node's lease is its own, so a failover takes about 0.38 to 0.83 s
+
+- **Date:** 2026-11-04 · **Part:** A, C, D · **Status:** Implemented in the docs, amends D214 · **Decided by:** Noor Hany Emam, on the agent's recommendation
+- **Context.** Every diagram and table was checked against the code on 2026-11-04. D214 says that `leader_lease` is `election_timeout_max`, 300 ms, for every node, and that the expected times read about 0.45 to 0.85 s. The code does not do that. `election_timeout_max_ms` only limits the width of each node's range. openraft builds a node's lease from that node's own config (`engine/engine_config.rs:56`), and `src/raft/mod.rs` gives each node its own range (D115), so the lease is the top of that range: 225, 375 or 525 ms.
+- **Options considered.**
+  1. *Say what the code does, and keep the target (chosen).* A follower that knows its leader waits its range plus its lease: 375 to 450, 675 to 750 or 975 to 1050 ms, on a 75 ms tick. So the first follower stands after about 0.38 to 0.53 s, or 0.68 to 0.83 s if the first-listed node was the leader. FT-2's target stays at 1 s.
+  2. *Make the code match D214, with one lease for all nodes.* Rejected: openraft takes the lease from the node's own timeout, D115's ranges would have to change, and this would be a change to the leader on the day of the lab.
+  3. *Leave D214 as it is.* Rejected: the docs would contradict it, and it is the number someone will ask about at the demo.
+- **Decision.** Option 1. `docs/architecture.md` and `docs/protocol.md` carry the real lease, waits and range. D214 keeps its text, with this entry named in its status. The rest of D214 stands: FT-2 passes on 0 lost, with a new leader and the first new answer within 1 s.
+- **Why.** The rehearsal agrees: with node 1 leading and silent, the first candidate came 694 to 814 ms later and the new leader 704 to 828 ms later, inside the 0.68 to 0.83 s the rule gives, plus the vote. It fits D115's reason too: the first-listed node, with the shortest range, is the one that takes over from a leader that goes quiet.
+- **Consequences.** **Nothing here changes the wire format or what a node does:** this is the docs. FT-2's margin is smallest when the first-listed node leads, about 0.17 s on these numbers. The same review pass also reworded and redrew diagrams in the two files with no change to what any arrow means. The notable layout changes are in diagrams d08, d26, d39, d41 and d43, checked with mermaid-cli 11.4.2 and not on GitHub. Those docs still say that nothing has run on the six PCs: change that when the lab runs are in.
+- **Where.** `docs/architecture.md` (the failure-detector table in section 9), `docs/protocol.md` (timers).
+- **How we check it.** E3, through `failover_to_leader_ms_mean` (D229). For the diagrams: `docs_lint.py` reads 48 blocks and 0 problems, and mermaid-cli 11.4.2 drew 48 of 48.
+- **Report notes.** Give the rule with the per-node numbers, because it explains the measured figure. Do not repeat "300 ms for every node" or "0.45 to 0.85 s" from D214.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -7843,6 +7859,7 @@ These add to older entries without changing their text. An entry can have more t
 | D186 | "It never kills" and "finishes this run's log copy" are now true of the code. More reasons to leave a run out (D189, D191) |
 | D200 | `client.rs`'s exception to the sockets rule ended with D175, so the frontend's listener is the only one left |
 | D205 | D165 keeps the same values and text, and adds the load rule, the start order and the fault timers |
+| D214 | The lease is each node's own, and the times read about 0.38 to 0.83 s (D231) |
 | D216 | Row 16 is settled: Noor said yes, and the step-aside is built (D218) |
 | D218 | The log half of the rule now reads one write's time, with its own two bars, and not the log wait. "A slow disk alone does not pass for a busy leader" and "the peers' bids keep a cluster overloaded everywhere from moving" did not hold for a log at its limit (D228) |
 | D224 | The gap is per program, so it understates one user's wait. `worst_request_ms` says that (D229) |
