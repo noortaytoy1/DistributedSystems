@@ -227,7 +227,7 @@ table below in sync.
 | D160 | The fault gate has no exception again: `FaultOrder` and the last word are gone | C | Implemented |
 | D161 | `fault_election` event and what is measured | C, all | Implemented |
 | D162 | Elected faults in the experiments and the demo: FT-8 first in quick, `ft8-election-rate`, a timed last scene | C, F | Implemented, see D165 |
-| D163 | What "no coordinator" means: one elected node orders the log, and no node decides for another | A, B, C | Implemented |
+| D163 | What "no coordinator" means: one elected node orders the log, and no node decides for another | A, B, C | Implemented, amended by D232 |
 | D164 | Any serving node registers the campus responders | A, E | Implemented |
 | D165 | Demo settings: E1's values, a load chosen by rule, node 3 first, fault timers shipped off | F, E, A | Implemented |
 | D166 | Measuring the role: `leader_plan_share` in one-leader runs, and commit latency by path | A, B, all | Implemented |
@@ -291,6 +291,7 @@ table below in sync.
 | D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227 |
 | D230 | The lab guide after the full rehearsal | all | Implemented in the docs |
 | D231 | Each node's lease is its own, so a failover takes about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
+| D232 | Three corrections from the study sheets: `write_group`, the true reply rule, the parts table | all | Implemented in the docs, amends D163 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -5026,7 +5027,7 @@ the first real use on the six PCs is still to come.
 ### D163 · What "no coordinator" means here: one elected node orders the log, and no node decides for another
 
 - **Date:** 2026-11-03 · **Part:** A, with B and C · **Status:** Implemented, amends D1 and D114 (wording), D69 (the token), and
-  gives D116's closing argument its final form (D116 itself is already superseded by D158) · **Decided by:** Noor Hany Emam
+  gives D116's closing argument its final form (D116 itself is already superseded by D158), amended by D232 · **Decided by:** Noor Hany Emam
   (item 1 of the 2026-11-03 sitting: keep Raft, shrink the leader). The written reading and the words for the leader's job
   were decided by the agent on its recommendation, on Noor's instruction to finish without more questions (2026-11-03). Noor can
   overrule either.
@@ -7764,6 +7765,26 @@ them on the six PCs.
 - **How we check it.** E3, through `failover_to_leader_ms_mean` (D229). For the diagrams: `docs_lint.py` reads 48 blocks and 0 problems, and mermaid-cli 11.4.2 drew 48 of 48.
 - **Report notes.** Give the rule with the per-node numbers, because it explains the measured figure. Do not repeat "300 ms for every node" or "0.45 to 0.85 s" from D214.
 
+### D232 · Three corrections from the study sheets: `write_group`, the true reply rule, the parts table
+
+- **Date:** 2026-11-04 · **Part:** all · **Status:** Implemented in the docs, amends D163 · **Decided by:** Noor Hany Emam, on the agent's recommendation
+- **Context.** Writing study sheets for the demo against the code showed three places where our words and the code disagree.
+  1. D163 says that `write_local` hands the command to Raft. The function in the code is `write_group` (`src/raft/mod.rs`), which takes a whole group of commands (D133). The architecture's table said the same, and D231's pass corrected that one.
+  2. The rule "Commit, then reply" in AGENTS.md said committed and applied, and the comments on `CloudGroup::send_ordered` and `Consensus::propose` said applied on this node. That holds only on the leader. A winner on a follower forwards its proposal, the leader answers once it has applied it, and the winner replies at once, which can be before its own copy has applied that log line. `docs/protocol.md` and figure `seq_a` already show it this way.
+  3. The parts table in AGENTS.md leaves out `node/service.rs`, `node/step_aside.rs`, `node/takeover.rs` and `node/release.rs`, though each file's header names its owner.
+- **Options considered.**
+  - *The rule:*
+    1. *Say what the code does (chosen).* The guarantee to a client does not change: no reply comes before the commit, and a committed result cannot be lost.
+    2. *Make a forwarded winner wait for its own copy before replying.* Rejected: it adds a wait to every forwarded report for nothing a client can see, because a retry to a node that has not applied yet gets a result from another node or a duplicate answer with the winner, and it changes a node on the morning of the lab.
+  - *The name:* a new entry with D163's status line pointing here, because the log's rule is that old entries keep their text.
+  - *The table:* add each file to the part its header names, since a header and the table must not disagree about who reviews a change. Moving ownership is not this entry's business.
+- **Decision.** **The true rule: a node replies only after the result is committed and the leader has applied it. A winner that forwarded its proposal answers on the leader's word, so it can answer before its own copy has applied that log line.** Degraded mode stays the one exception (D120). `write_group` is the name. `node/service.rs` and `node/step_aside.rs` are A's, `node/takeover.rs` is C's and `node/release.rs` is E's.
+- **Why.** At the demo someone will trace figure `seq_a` and read the rule beside it. They must say the same thing, and the demo is graded on what each of us can answer for.
+- **Consequences.** **Nothing here changes the wire format or what a node does:** this is AGENTS.md, comments and the log. AGENTS.md's rule "one owner per file" now applies to those four files as their headers already said.
+- **Where.** `AGENTS.md` (Parts and owners, Architecture rules), the comments in `src/node/group.rs` and `src/raft/mod.rs`, `src/raft/mod.rs` (`write_group`).
+- **How we check it.** By reading: `Consensus::propose` returns the leader's `Outcome` to a follower, and `node/service.rs` sends the reply on it, with no wait for its own apply.
+- **Report notes.** Say "after the commit". If asked about apply, give the rule above in full.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -7851,6 +7872,7 @@ These add to older entries without changing their text. An entry can have more t
 | D139 | A failed `cd` no longer reads as clean, and a run's `run.json` is written last (D222, D223). See the corrections in D222 |
 | D143 | A report no longer waits in a client's send queue, because there is none, so the limit D143 stated about a frame keeping a young stamp while off the network goes away: a datagram goes now or never (D167) |
 | D162 | The timed scene's values are now comments in `config/lab.example.toml` (D165) |
+| D163 | Its `write_local` is `write_group` in the code, which takes a whole group of commands (D232) |
 | D172 | `udp_request_loss_share` and `udp_cancel_loss_share` are now over each process's whole log, not the measured time (D227) |
 | D172 | `udp_request_loss_share` and `udp_cancel_loss_share` still read about 1% with nothing lost. `udp_copies_lost_share` is the one to quote (D229) |
 | D182 | Warm-up no longer shifts with the first send: it counts from `client_started` (D191) |
