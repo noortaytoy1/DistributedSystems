@@ -67,12 +67,16 @@ pub const CHANNEL_QUEUE: usize = 16 * 1024;
 
 /// How long a message waits for others to the same address (D236, D246). It adds at most this much to
 /// each direction of a call. With nothing waiting, no timer runs.
-pub const COMBINE_WAIT: Duration = Duration::from_millis(10);
+pub const COMBINE_WAIT: Duration = Duration::from_millis(20);
 
 /// First byte of a datagram holding several messages. bincode's variable-length integers never start
 /// with it, and a `ClientMessage` or a `Response` starts with one, so a lone message cannot be taken
 /// for this. Held to that by `a_lone_message_never_starts_like_a_combined_datagram`.
 pub const COMBINED: u8 = 0xFF;
+
+/// How much may wait for one datagram before it is squeezed (D256). What comes out must still fit
+/// [`proto::MAX_DATAGRAM_BYTES`], and is split in two if not.
+const COMBINE_UP_TO_BYTES: usize = 4 * proto::MAX_DATAGRAM_BYTES;
 
 /// First byte of a datagram whose rest is squeezed (D255). bincode's integers never start with this
 /// either: it would mean a number too long for any integer here.
@@ -225,7 +229,7 @@ impl<T: DeserializeOwned> Decoder for BincodeDatagram<T> {
             self.counters.received(src.len());
             if src[0] == SQUEEZED {
                 let datagram = src.split();
-                let Some(expanded) = expand(&datagram[1..], proto::MAX_DATAGRAM_BYTES * 2) else {
+                let Some(expanded) = expand(&datagram[1..], COMBINE_UP_TO_BYTES) else {
                     return Err(io::Error::from(io::ErrorKind::InvalidData));
                 };
                 src.extend_from_slice(&expanded);
@@ -305,7 +309,7 @@ impl Outbox {
         let mut waiting = self.waiting();
         let needs = LENGTH_BYTES + bytes.len();
         let mut wake = false;
-        if !waiting.messages.is_empty() && waiting.bytes + needs > proto::MAX_DATAGRAM_BYTES {
+        if !waiting.messages.is_empty() && waiting.bytes + needs > COMBINE_UP_TO_BYTES {
             let full = Waiting {
                 messages: std::mem::take(&mut waiting.messages),
                 bytes: waiting.bytes,
@@ -341,11 +345,19 @@ impl Outbox {
 
     /// Send what waited, or count why it was lost. Never reports an error and never waits.
     fn send(&self, waiting: Waiting) {
-        let result = match waiting.messages.as_slice() {
+        self.send_messages(&waiting.messages);
+    }
+
+    fn send_messages(&self, messages: &[Vec<u8>]) {
+        let result = match messages {
             [] => return,
             [only] => self.socket.try_send_to(only, self.to),
             several => {
-                let mut datagram = Vec::with_capacity(waiting.bytes);
+                let bytes = several
+                    .iter()
+                    .map(|m| LENGTH_BYTES + m.len())
+                    .sum::<usize>();
+                let mut datagram = Vec::with_capacity(bytes + 1);
                 datagram.push(COMBINED);
                 for message in several {
                     let length = u16::try_from(message.len())
@@ -358,6 +370,12 @@ impl Outbox {
                     datagram.clear();
                     datagram.push(SQUEEZED);
                     datagram.extend_from_slice(&squeezed);
+                }
+                if datagram.len() > proto::MAX_DATAGRAM_BYTES {
+                    let (first, second) = several.split_at(several.len() / 2);
+                    self.send_messages(first);
+                    self.send_messages(second);
+                    return;
                 }
                 self.socket.try_send_to(&datagram, self.to)
             }

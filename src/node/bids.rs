@@ -19,7 +19,7 @@ use crate::metrics::Event;
 use crate::proto::{Bid, ClientRequest, NodeId, PeerBody, RequestId};
 
 /// How long a bid waits for others to go out with it (D247). It uses part of the bid window.
-const BID_COMBINE_WAIT: Duration = Duration::from_millis(5);
+const BID_COMBINE_WAIT: Duration = Duration::from_millis(10);
 
 /// How often closed rounds past their grace period are dropped.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);

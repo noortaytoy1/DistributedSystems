@@ -13,7 +13,7 @@ Each node has two port numbers from the config:
 | Port               | Who uses it        | Pattern                                               |
 |--------------------|--------------------|-------------------------------------------------------|
 | `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 10 ms and squeezed, with no trace context (D167, D170, D236, D254, D255, D246) |
+| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 20 ms and squeezed, with no trace context (D167, D170, D236, D254, D255, D246) |
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
@@ -133,7 +133,7 @@ group: it holds the membership, and sends between nodes follow it. It adds no me
 
 | Call | Addressed to | Used by |
 |------|--------------|---------|
-| `send(timeout, body)` | the peers on this node's who's-alive list | bids, combined for 5 ms as `Bids` (D247), and fault bids |
+| `send(timeout, body)` | the peers on this node's who's-alive list | bids, combined for 10 ms as `Bids` (D247, D256), and fault bids |
 | `probe(timeout, body)` | every configured peer | peer heartbeats |
 | `send_ordered(command)` | every copy, in one order, through Raft | the incident service, responder release, campus loading, degraded replay |
 

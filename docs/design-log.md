@@ -315,6 +315,7 @@ table below in sync.
 | D253 | No scan of the whole responder table on the way of a request | C, E | Implemented, amends D238, D241, D250 |
 | D254 | Client datagrams leave out tarpc's trace context | C | Implemented, amends D170 |
 | D255 | Datagrams and TCP frames are squeezed | C | Implemented |
+| D256 | Messages wait longer so that fewer packets cross the air | C | Implemented, amends D236, D246, D247 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8097,6 +8098,14 @@ them on the six PCs.
 - **Alternatives rejected.** A library: the PCs would need a new dependency fetched mid-session.
 - **Where.** `src/node/squeeze.rs`, `src/node/datagram.rs`, `src/node/transport.rs`.
 - **How we check it.** `src/node/squeeze.rs`'s tests, including input nobody could have squeezed, then bytes per request measured on the six PCs.
+
+### D256 · Messages wait longer so that fewer packets cross the air
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D236, D246, D247 · **Decided by:** the agent, under the request to find what limits the system below 30,000 a second.
+- **Context.** At `cdec322` with 60,000 responders, 25,000 a second was clean and 30,000 a second was not: half the answers in the worst program took over 10.2 s. Each node used under 2 cores and the kernel dropped no datagrams, so neither the CPU nor the socket was the limit. Squeezing left datagrams half empty, as the limit of 1,400 bytes was on what went in.
+- **Decision.** UDP messages wait up to 20 ms and not 10, bids 10 ms and not 5. Up to 5,600 bytes may wait for one datagram, and it is split in two if it does not squeeze to 1,400.
+- **Where.** `src/node/datagram.rs`, `src/node/bids.rs`.
+- **How we check it.** `tests/datagram.rs`, then packets a second and results on the six PCs.
 
 ### Notes on older entries
 
