@@ -1,8 +1,13 @@
-//! tarpc over UDP: one message is one datagram (D167, D170).
+//! tarpc over UDP: messages to one address wait a moment and share one datagram (D167, D170, D236).
 //!
 //! tarpc keeps every job an RPC system has: the generated stubs, call IDs, matching replies,
-//! deadlines and cancels. This file only moves one tarpc message in one packet, because tarpc's own
+//! deadlines and cancels. This file only moves tarpc messages in packets, because tarpc's own
 //! transport needs a byte stream and UDP has none.
+//!
+//! **Combining (D236).** A message waits up to [`COMBINE_WAIT`] for others to the same address, so a
+//! busy program sends far fewer packets: a shared Wi-Fi cell carries packets, not bytes, as its limit.
+//! A datagram holding one message is that message alone, as before. One holding several starts with
+//! [`COMBINED`], then has a 2-byte length before each message.
 //!
 //! tarpc wants a `Stream` of incoming messages and a `Sink` of outgoing ones, and an error from
 //! either ends the channel and every call on it. So the one rule here is: **no error ever reaches
@@ -10,8 +15,9 @@
 //! retry (D52) covers it exactly as it covers a packet lost on the wire.
 //!
 //! - **Read side.** `UdpFramed` with a decoder that takes the whole datagram.
-//! - **Write side.** `try_send_to` directly. `UdpFramed`'s own `Sink` keeps a datagram whose send
-//!   failed and appends the next message to it, so it would never recover (tests/datagram.rs).
+//! - **Write side.** An [`Outbox`] per address, sent with `try_send_to`. `UdpFramed`'s own `Sink`
+//!   keeps a datagram whose send failed and appends the next message to it, so it would never recover
+//!   (tests/datagram.rs).
 //! - **Client end.** One unconnected socket per node. Unconnected, so an ICMP "port unreachable" from
 //!   a dead node never comes back as a socket error (tests/datagram.rs).
 //! - **Node end.** One socket, whose datagrams [`serve`] splits by source address into one tarpc
@@ -30,20 +36,20 @@ use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use futures::{Sink, Stream, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tarpc::{ClientMessage, Response};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::sync::{Notify, mpsc};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Decoder;
 use tokio_util::udp::UdpFramed;
 
@@ -57,6 +63,18 @@ pub const CHANNEL_IDLE: Duration = Duration::from_secs(60);
 /// Messages waiting for one channel. More than this are dropped and counted: the reader must never
 /// wait, or every other program's datagrams would pile up in the kernel behind it.
 pub const CHANNEL_QUEUE: usize = 16 * 1024;
+
+/// How long a message waits for others to the same address (D236). It adds at most this much to each
+/// direction of a call. With nothing waiting, no timer runs.
+pub const COMBINE_WAIT: Duration = Duration::from_millis(2);
+
+/// First byte of a datagram holding several messages. bincode's variable-length integers never start
+/// with it, and a `ClientMessage` or a `Response` starts with one, so a lone message cannot be taken
+/// for this. Held to that by `a_lone_message_never_starts_like_a_combined_datagram`.
+pub const COMBINED: u8 = 0xFF;
+
+/// The length before each message in a combined datagram.
+const LENGTH_BYTES: usize = 2;
 
 /// The receive buffer every socket asks for (D171). One copy from each of 3000 users at once needs
 /// 2.7 MB at the 896 bytes the kernel charges per packet on loopback, and about 7 MB if a network
@@ -104,9 +122,11 @@ pub fn report_buffer(socket: &UdpSocket, log: &EventLog) {
     }
 }
 
-/// Decodes one whole datagram into one message.
+/// Decodes a datagram into its one message, or its several, one call at a time.
 pub struct BincodeDatagram<T> {
     counters: Arc<UdpCounters>,
+    /// Partway through a combined datagram: what is left in the buffer is more of its messages.
+    combined: bool,
     _message: PhantomData<fn() -> T>,
 }
 
@@ -114,8 +134,19 @@ impl<T> BincodeDatagram<T> {
     pub fn new(counters: Arc<UdpCounters>) -> Self {
         Self {
             counters,
+            combined: false,
             _message: PhantomData,
         }
+    }
+}
+
+/// tarpc adds a request's deadline to the clock while decoding, which panics on a huge one. A panic
+/// here would end the reader, and with it the node's whole client port, so one stray packet counts as
+/// a bad datagram like any other.
+fn decode_message<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+    match catch_unwind(AssertUnwindSafe(|| proto::decode(bytes))) {
+        Ok(Ok(message)) => Ok(message),
+        _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
     }
 }
 
@@ -125,48 +156,190 @@ impl<T: DeserializeOwned> Decoder for BincodeDatagram<T> {
 
     fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<T>> {
         if src.is_empty() {
+            self.combined = false;
             return Ok(None);
         }
-        self.counters.received(src.len());
-        // Takes the whole datagram, so an error leaves nothing behind for the next call.
-        let datagram = src.split();
-        // tarpc adds a request's deadline to the clock while decoding, which panics on a huge one.
-        // A panic here would end the reader, and with it the node's whole client port, so one stray
-        // packet counts as a bad datagram like any other.
-        let decoded = catch_unwind(AssertUnwindSafe(|| proto::decode(&datagram)));
-        match decoded {
-            Ok(Ok(message)) => Ok(Some(message)),
-            _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
+        if !self.combined {
+            self.counters.received(src.len());
+            if src[0] != COMBINED {
+                // Takes the whole datagram, so an error leaves nothing behind for the next call.
+                let datagram = src.split();
+                return decode_message(&datagram).map(Some);
+            }
+            src.advance(1);
+            self.combined = true;
+            if src.is_empty() {
+                self.combined = false;
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
+            }
+        }
+        let length = if src.len() >= LENGTH_BYTES {
+            usize::from(u16::from_be_bytes([src[0], src[1]]))
+        } else {
+            usize::MAX
+        };
+        if length == usize::MAX || src.len() - LENGTH_BYTES < length {
+            // A cut or false length: the rest cannot be trusted, and a retry covers what it held.
+            src.clear();
+            self.combined = false;
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        src.advance(LENGTH_BYTES);
+        let message = src.split_to(length);
+        if src.is_empty() {
+            self.combined = false;
+        }
+        // One bad message costs itself only: the rest stay in the buffer for the next call.
+        decode_message(&message).map(Some)
+    }
+}
+
+/// Messages waiting to share a datagram to one address.
+struct Outbox {
+    socket: Arc<UdpSocket>,
+    to: SocketAddr,
+    counters: Arc<UdpCounters>,
+    waiting: Mutex<Waiting>,
+    first_arrived: Notify,
+}
+
+#[derive(Default)]
+struct Waiting {
+    messages: Vec<Vec<u8>>,
+    /// What a combined datagram of these would take, with its first byte.
+    bytes: usize,
+    /// Datagrams already full, for the sender task to send now.
+    full: Vec<Waiting>,
+}
+
+impl Outbox {
+    fn waiting(&self) -> std::sync::MutexGuard<'_, Waiting> {
+        self.waiting.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Encode one message and add it. Never reports an error and never waits.
+    fn push<T: Serialize>(&self, message: &T) {
+        let bytes = match proto::encode(message) {
+            Ok(bytes) if bytes.len() <= proto::MAX_DATAGRAM_BYTES => bytes,
+            // A datagram this large might be split on the wire, and every fragment would have to
+            // arrive. A test holds the largest report and reply under the limit, so this means a bug.
+            encoded => {
+                let size = encoded.map_or(0, |bytes| bytes.len());
+                tracing::warn!(size, "message does not fit one datagram: dropped");
+                self.counters.tx_encode_errors.fetch_add(1, Relaxed);
+                return;
+            }
+        };
+        let mut waiting = self.waiting();
+        let needs = LENGTH_BYTES + bytes.len();
+        let mut wake = false;
+        if !waiting.messages.is_empty() && waiting.bytes + needs > proto::MAX_DATAGRAM_BYTES {
+            let full = Waiting {
+                messages: std::mem::take(&mut waiting.messages),
+                bytes: waiting.bytes,
+                full: Vec::new(),
+            };
+            waiting.full.push(full);
+            wake = true;
+        }
+        if waiting.messages.is_empty() {
+            waiting.bytes = 1;
+            wake = true;
+        }
+        waiting.bytes += needs;
+        waiting.messages.push(bytes);
+        drop(waiting);
+        if wake {
+            self.first_arrived.notify_one();
+        }
+    }
+
+    fn has_full(&self) -> bool {
+        !self.waiting().full.is_empty()
+    }
+
+    /// Sends what is full, then what waited, oldest first.
+    fn flush(&self) {
+        let mut waiting = std::mem::take(&mut *self.waiting());
+        for full in std::mem::take(&mut waiting.full) {
+            self.send(full);
+        }
+        self.send(waiting);
+    }
+
+    /// Send what waited, or count why it was lost. Never reports an error and never waits.
+    fn send(&self, waiting: Waiting) {
+        let result = match waiting.messages.as_slice() {
+            [] => return,
+            [only] => self.socket.try_send_to(only, self.to),
+            several => {
+                let mut datagram = Vec::with_capacity(waiting.bytes);
+                datagram.push(COMBINED);
+                for message in several {
+                    let length = u16::try_from(message.len())
+                        .expect("a message is at most MAX_DATAGRAM_BYTES, which fits two bytes");
+                    datagram.extend_from_slice(&length.to_be_bytes());
+                    datagram.extend_from_slice(message);
+                }
+                self.socket.try_send_to(&datagram, self.to)
+            }
+        };
+        match result {
+            Ok(n) => self.counters.sent(n),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                self.counters.tx_would_block.fetch_add(1, Relaxed);
+            }
+            Err(_) => {
+                self.counters.tx_errors.fetch_add(1, Relaxed);
+            }
         }
     }
 }
 
-/// Send one message, or count why it was lost. Never reports an error and never waits.
-fn send_datagram<T: Serialize>(
-    socket: &UdpSocket,
-    to: SocketAddr,
-    message: &T,
-    counters: &UdpCounters,
-) {
-    let bytes = match proto::encode(message) {
-        Ok(bytes) if bytes.len() <= proto::MAX_DATAGRAM_BYTES => bytes,
-        // A datagram this large might be split on the wire, and every fragment would have to arrive.
-        // A test holds the largest report and reply under the limit, so this means a bug.
-        encoded => {
-            let size = encoded.map_or(0, |bytes| bytes.len());
-            tracing::warn!(size, "message does not fit one datagram: dropped");
-            counters.tx_encode_errors.fetch_add(1, Relaxed);
-            return;
-        }
-    };
-    match socket.try_send_to(&bytes, to) {
-        Ok(n) => counters.sent(n),
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-            counters.tx_would_block.fetch_add(1, Relaxed);
-        }
-        Err(_) => {
-            counters.tx_errors.fetch_add(1, Relaxed);
-        }
+/// An [`Outbox`] and the task that sends what waited. Dropping it sends what is left: a client's last
+/// cancels and a channel's last replies.
+struct Sender {
+    outbox: Arc<Outbox>,
+    task: JoinHandle<()>,
+}
+
+impl Sender {
+    fn new(socket: Arc<UdpSocket>, to: SocketAddr, counters: Arc<UdpCounters>) -> Self {
+        let outbox = Arc::new(Outbox {
+            socket,
+            to,
+            counters,
+            waiting: Mutex::default(),
+            first_arrived: Notify::new(),
+        });
+        let task = tokio::spawn({
+            let outbox = outbox.clone();
+            async move {
+                loop {
+                    outbox.first_arrived.notified().await;
+                    if !outbox.has_full() {
+                        tokio::time::sleep(COMBINE_WAIT).await;
+                    }
+                    // A combined datagram holds many messages, so it waits for room in the kernel's
+                    // send buffer. Many channels share a node's socket, and this is safe for that:
+                    // `writable` keeps a waker for each waiter (D236).
+                    let _ = outbox.socket.writable().await;
+                    outbox.flush();
+                }
+            }
+        });
+        Self { outbox, task }
+    }
+
+    fn push<T: Serialize>(&self, message: &T) {
+        self.outbox.push(message);
+    }
+}
+
+impl Drop for Sender {
+    fn drop(&mut self) {
+        self.task.abort();
+        self.outbox.flush();
     }
 }
 
@@ -190,6 +363,7 @@ pub struct ClientEnd<Req, Resp> {
     socket: Arc<UdpSocket>,
     node: SocketAddr,
     counters: Arc<UdpCounters>,
+    sender: Sender,
     _requests: PhantomData<fn(Req)>,
 }
 
@@ -198,6 +372,7 @@ impl<Req, Resp> ClientEnd<Req, Resp> {
         let socket = Arc::new(socket);
         Self {
             frames: UdpFramed::new(socket.clone(), BincodeDatagram::new(counters.clone())),
+            sender: Sender::new(socket.clone(), node, counters.clone()),
             socket,
             node,
             counters,
@@ -248,7 +423,7 @@ impl<Req: Serialize, Resp> Sink<ClientMessage<Req>> for ClientEnd<Req, Resp> {
             ClientMessage::Cancel { .. } => self.counters.tx_cancels.fetch_add(1, Relaxed),
             _ => 0,
         };
-        send_datagram(&self.socket, self.node, &item, &self.counters);
+        self.sender.push(&item);
         Ok(())
     }
 
@@ -271,8 +446,7 @@ impl<Req: Serialize, Resp> Sink<ClientMessage<Req>> for ClientEnd<Req, Resp> {
 /// The node's transport for one client program: messages from [`serve`], replies to the socket.
 pub struct ServerEnd<Req, Resp> {
     messages: mpsc::Receiver<ClientMessage<Req>>,
-    socket: Arc<UdpSocket>,
-    client: SocketAddr,
+    sender: Sender,
     counters: Arc<UdpCounters>,
     _responses: PhantomData<fn(Resp)>,
 }
@@ -297,7 +471,7 @@ impl<Req, Resp: Serialize> Sink<Response<Resp>> for ServerEnd<Req, Resp> {
 
     fn start_send(self: Pin<&mut Self>, item: Response<Resp>) -> io::Result<()> {
         self.counters.tx_replies.fetch_add(1, Relaxed);
-        send_datagram(&self.socket, self.client, &item, &self.counters);
+        self.sender.push(&item);
         Ok(())
     }
 
@@ -349,8 +523,7 @@ pub async fn serve<Req, Resp, Channel>(
                         counters.channels_opened.fetch_add(1, Relaxed);
                         channels.spawn(open(ServerEnd {
                             messages: rx,
-                            socket: socket.clone(),
-                            client: from,
+                            sender: Sender::new(socket.clone(), from, counters.clone()),
                             counters: counters.clone(),
                             _responses: PhantomData,
                         }));
@@ -415,4 +588,153 @@ fn admit<Req>(
         counters.rx_gate_dropped.fetch_add(1, Relaxed);
     }
     kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tarpc::context;
+
+    fn counters() -> Arc<UdpCounters> {
+        Arc::new(UdpCounters::default())
+    }
+
+    fn combined(messages: &[&[u8]]) -> BytesMut {
+        let mut datagram = BytesMut::new();
+        datagram.extend_from_slice(&[COMBINED]);
+        for m in messages {
+            datagram.extend_from_slice(&(m.len() as u16).to_be_bytes());
+            datagram.extend_from_slice(m);
+        }
+        datagram
+    }
+
+    #[test]
+    fn a_lone_message_never_starts_like_a_combined_datagram() {
+        // A request starts with its variant, and a response with its call ID, the largest there is.
+        let request: ClientMessage<u32> = ClientMessage::Request(tarpc::Request {
+            context: context::current(),
+            id: u64::MAX,
+            message: 7,
+        });
+        assert_ne!(proto::encode(&request).unwrap()[0], COMBINED);
+        let cancel: ClientMessage<u32> = ClientMessage::Cancel {
+            trace_context: context::current().trace_context,
+            request_id: u64::MAX,
+        };
+        assert_ne!(proto::encode(&cancel).unwrap()[0], COMBINED);
+        let response = Response::<u32> {
+            request_id: u64::MAX,
+            message: Ok(7),
+        };
+        assert_ne!(proto::encode(&response).unwrap()[0], COMBINED);
+    }
+
+    #[test]
+    fn a_combined_datagram_gives_each_of_its_messages_and_counts_as_one() {
+        let counters = counters();
+        let mut decoder = BincodeDatagram::<u32>::new(counters.clone());
+        let (a, b) = (
+            proto::encode(&5u32).unwrap(),
+            proto::encode(&900u32).unwrap(),
+        );
+        let mut src = combined(&[&a, &b]);
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(900));
+        assert_eq!(decoder.decode(&mut src).unwrap(), None);
+        assert_eq!(counters.rx_datagrams.load(Relaxed), 1);
+    }
+
+    #[test]
+    fn a_lone_message_still_decodes_after_a_combined_datagram() {
+        let mut decoder = BincodeDatagram::<u32>::new(counters());
+        let a = proto::encode(&5u32).unwrap();
+        let mut src = combined(&[&a]);
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+        assert_eq!(decoder.decode(&mut src).unwrap(), None);
+        let mut src = BytesMut::from(&a[..]);
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+    }
+
+    #[test]
+    fn a_bad_message_costs_only_itself_and_a_false_length_ends_the_datagram() {
+        let mut decoder = BincodeDatagram::<u32>::new(counters());
+        let good = proto::encode(&5u32).unwrap();
+        let mut src = combined(&[&[0xFF, 0xFF, 0xFF], &good]);
+        assert!(decoder.decode(&mut src).is_err());
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+        assert_eq!(decoder.decode(&mut src).unwrap(), None);
+
+        let mut src = BytesMut::from(&[COMBINED, 0x00, 0x09, 0x01][..]);
+        assert!(decoder.decode(&mut src).is_err());
+        assert!(src.is_empty());
+        let mut src = BytesMut::from(&good[..]);
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+
+        let mut src = BytesMut::from(&[COMBINED][..]);
+        assert!(decoder.decode(&mut src).is_err());
+        let mut src = BytesMut::from(&good[..]);
+        assert_eq!(decoder.decode(&mut src).unwrap(), Some(5));
+    }
+
+    async fn pair() -> (Arc<UdpSocket>, UdpSocket, SocketAddr) {
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let receiver = UdpSocket::bind(any).await.unwrap();
+        let to = receiver.local_addr().unwrap();
+        (Arc::new(UdpSocket::bind(any).await.unwrap()), receiver, to)
+    }
+
+    #[tokio::test]
+    async fn messages_sent_together_share_one_datagram() {
+        let (socket, receiver, to) = pair().await;
+        let counters = counters();
+        let sender = Sender::new(socket, to, counters.clone());
+        for n in 0..5u32 {
+            sender.push(&n);
+        }
+        let mut buf = [0u8; 2048];
+        let n = tokio::time::timeout(Duration::from_secs(5), receiver.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut src = BytesMut::from(&buf[..n]);
+        let mut decoder = BincodeDatagram::<u32>::new(Arc::new(UdpCounters::default()));
+        for want in 0..5u32 {
+            assert_eq!(decoder.decode(&mut src).unwrap(), Some(want));
+        }
+        assert_eq!(counters.tx_datagrams.load(Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_full_datagram_goes_at_once_and_none_passes_the_limit() {
+        let (socket, receiver, to) = pair().await;
+        let sender = Sender::new(socket, to, counters());
+        let large = vec![7u8; 600];
+        for _ in 0..3 {
+            sender.push(&large);
+        }
+        let mut buf = [0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(5), receiver.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(n <= proto::MAX_DATAGRAM_BYTES, "{n}");
+        assert_eq!(buf[0], COMBINED);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_sender_sends_what_waited() {
+        let (socket, receiver, to) = pair().await;
+        // A socket says it can send only once it has been asked.
+        socket.writable().await.unwrap();
+        let sender = Sender::new(socket, to, counters());
+        sender.push(&9u32);
+        drop(sender);
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), receiver.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proto::decode::<u32>(&buf[..n]).unwrap(), 9);
+    }
 }

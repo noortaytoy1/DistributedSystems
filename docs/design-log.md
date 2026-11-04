@@ -86,7 +86,7 @@ table below in sync.
 | D17 | Clients use TCP on a dedicated client port | C, F | Superseded by D167 |
 | D18 | Two ports per node; `ctl` shares the client port | C | Implemented, amended by D168, D175 |
 | D19 | One multiplexed connection per peer | C | Superseded by D119 |
-| D20 | `TCP_NODELAY` on every connection                               | C    | Implemented       |
+| D20 | `TCP_NODELAY` on every connection                               | C    | Implemented, amended by D237 |
 | D21 | The term rule does not apply to Raft RPCs                       | all  | Implemented       |
 | D22 | Fault gate semantics                                            | C    | Implemented, see D160 |
 | D23 | Control frames bypass the fault gate                            | C    | Implemented, see D200 |
@@ -234,7 +234,7 @@ table below in sync.
 | D167 | Reports travel over UDP through tarpc: `ClientRpc` on a small datagram adapter | C, F, all | Implemented |
 | D168 | `ctl` stays on tarpc over TCP, on the same port number; `ctl status` checks UDP; no config key | C, F | Implemented |
 | D169 | A call's life: a node that cannot answer stays quiet, the client's cancel ends the call, one deadline per submit | F, C, A | Implemented |
-| D170 | The datagram adapter: one message is one datagram, and no error reaches tarpc | C | Implemented |
+| D170 | The datagram adapter: one message is one datagram, and no error reaches tarpc | C | Implemented, amended by D236 |
 | D171 | UDP receive buffer, firewall rule and drop counting; new dependency `socket2` | C, all | Implemented; no run has had the buffer raised |
 | D172 | What is measured on the UDP path: `udp_counters`, with cancels counted | all | Implemented |
 | D173 | Accepted limits on the UDP path | F, C | Implemented |
@@ -295,6 +295,8 @@ table below in sync.
 | D233 | FT-2 reads figures on one clock, and each run says how far apart its clocks were | all | Implemented, amends D229 |
 | D234 | One write carries up to 2000 commands, not 200 | A | Implemented, amends D133 |
 | D235 | The takeover backstop waits at least 1000 ms, not 200 ms | B, C | Implemented, amends D42, D110 |
+| D236 | UDP messages to one address share a datagram within 2 ms | C | Implemented, amends D170 |
+| D237 | TCP between nodes leaves Nagle on | C | Implemented, amends D20 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -819,7 +821,7 @@ closes the ones older entries left. D216 lists Noor's decisions and what is buil
 - **Where.** `transport.rs::PeerClient`, `serve_peers`, `raft/network.rs::PeerLink`.
 - **How we check it.** `transport::tests::concurrent_calls_get_their_own_replies`.
 
-### D20 · `TCP_NODELAY` on every connection
+### D20 · `TCP_NODELAY` on every connection (amended by D237)
 
 - **Date:** 2026-10-20 · **Part:** C · **Status:** Implemented · **Decided by:** A
 - **Decision.** Nagle's algorithm is off on every connection.
@@ -7853,6 +7855,36 @@ them on the six PCs.
 - **Where.** `src/node/takeover.rs`, `tests/takeover.rs`, `docs/protocol.md`, `docs/architecture.md`.
 - **How we check it.** `cargo test --test takeover`; `takeovers_backstop` in `--rate` steps on the six PCs, against the same steps at `0397d37`.
 - **Report notes.** State the wrong-takeover rate before and after. Do not claim a target is met unless committed answers, not provisional ones, reach it.
+
+### D236 · UDP messages to one address share a datagram within 2 ms
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D170 · **Decided by:** the person running the lab session. The agent recommended 5 ms, and they chose 2 ms.
+- **Context.** On the six PCs the six share one access point. With our software off, plain 100-byte UDP between two PCs carried 10,000 packets a second with no loss, and one stream saturated at about 14,400 to 17,000 packets a second in the worst pairs, with ping at about 130 to 150 ms. D170 sent one message per datagram, about 5 per request from a client: 3 copies and about 2 cancels, plus the reply. In leader mode, each client PC sent about 3,500 packets a second at 2000 requests a second, and up to 27,495 at 5000 with retries. 10,000 requests a second would be about 60,000 packets a second before any retry.
+- **Options considered.**
+  1. *2 ms (chosen).* Adds at most 2 ms each way. By arithmetic, at most about 13,500 datagrams a second up at 10,000 requests a second, near the measured limit, as each of 27 sockets can send every 2 ms.
+  2. *5 ms (the agent's recommendation).* About 5,400 up, adding at most 5 ms each way.
+  3. *10 ms.* Fewest packets, and adds at most 10 ms each way.
+  4. *Send to fewer nodes.* Rejected: D210's group send stays.
+- **Decision.** An `Outbox` per address holds encoded messages. A message waits up to `COMBINE_WAIT` = 2 ms, and a datagram goes at once when the next message would pass `MAX_DATAGRAM_BYTES`. A datagram with one message is that message alone, as in D170. One with several starts with `COMBINED` = `0xFF`, then a 2-byte big-endian length before each message. tarpc, call IDs, deadlines, cancels, retries and the group send do not change.
+- **Why.** A shared Wi-Fi cell limits packets, not bytes. Traffic there was about 10 to 16 Mbit/s at over 10,000 packets a second.
+- **Consequences.** Every call gets up to 2 ms more each way. One lost datagram now loses every message in it, and the client's retry still covers them. A bad message costs itself only, and a false length ends its datagram. `udp_datagrams_per_req` falls, and `rx_datagrams` and `tx_datagrams` count packets, not messages. A reply can leave up to 2 ms after a node is silenced, as it was already on its way (D174's gate stays in the reader). All six PCs need the same build: an old program cannot read a combined datagram.
+- **Where.** `src/node/datagram.rs`; unit tests at its end; `docs/protocol.md`; `docs/architecture.md`.
+- **How we check it.** `cargo test`, then `--rate` steps on the six PCs, reading packets a second from `/proc/net/dev` and provisional answers from the programs' lines.
+- **Report notes.** Results at `0397d37` and `4d67039` sent one message per datagram. Never mix them with results on this build.
+
+### D237 · TCP between nodes leaves Nagle on
+
+- **Date:** 2026-11-04 · **Part:** C · **Status:** Implemented, amends D20 · **Decided by:** the person running the lab session, on the agent's recommendation.
+- **Context.** About 12 bid messages per request go between nodes, each small, and D20 sends each in its own packet. On the six PCs at 2000 requests a second, only 26% of bid rounds saw all 3 bids, and more than one node believed it won. With the same build on one PC over loopback, all rounds saw all 3 bids.
+- **Options considered.**
+  1. *Leave Nagle on (chosen).* One line, no wire change. Small messages share a packet while earlier ones wait for an ACK.
+  2. *A batch message for bids.* More control, and no effect on Raft, but changes `proto.rs` and needs owners' review. It can follow if this falls short.
+- **Decision.** `framed` sets `TCP_NODELAY` off, on every TCP connection that goes through it, for peers and `ctl`.
+- **Why.** Calls on these connections are answered, so replies carry ACKs, which limits how long Nagle holds a message. D20 warned of up to 40 ms a message, so this is measured, not assumed.
+- **Consequences.** A small message can wait for an ACK. That affects bids (a 20 ms window), Raft AppendEntries and heartbeats on the same connections.
+- **Where.** `src/node/transport.rs::framed`.
+- **How we check it.** `bids_seen` in `bid_round_closed`, commit latency, failover and `peer_suspected` on the six PCs.
+- **Report notes.** The measurements behind this are in `analysis/results/RESULTS.md`.
 
 ### Notes on older entries
 

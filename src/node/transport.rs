@@ -126,8 +126,9 @@ pub enum TransportError {
 }
 
 pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
-    // Small messages dominate; Nagle would add up to 40 ms to each one.
-    let _ = stream.set_nodelay(true);
+    // Bids and forwards are small and many, so each one in its own packet is what a shared Wi-Fi cell
+    // cannot carry. Left to Nagle, they share a packet while earlier ones wait for their ACK (D237).
+    let _ = stream.set_nodelay(false);
     LengthDelimitedCodec::builder()
         .max_frame_length(proto::MAX_FRAME_BYTES)
         .new_framed(stream)

@@ -13,12 +13,12 @@ Each node has two port numbers from the config:
 | Port               | Who uses it        | Pattern                                               |
 |--------------------|--------------------|-------------------------------------------------------|
 | `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), one UDP packet per message (D167, D170) |
+| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 2 ms (D167, D170, D236) |
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
-(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is set on
-every connection.
+(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is off on every
+connection, so small messages share packets (D237).
 
 One UDP packet is one tarpc message, encoded with `proto::encode`: bincode with varint integers and no trailing bytes, at
 most 1,400 bytes (`MAX_DATAGRAM_BYTES`). A bad UDP packet, an ICMP error or a failed send counts as a lost message: no error ever
@@ -310,7 +310,9 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `transport.rs::STALE_CONNECTION` | 1 s | a peer connection whose calls have gone unanswered this long is replaced (D119) |
 | `datagram.rs::CHANNEL_IDLE` | 60 s | a user program with no traffic for this long loses its channel on the node (D170) |
 | `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
-| `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message on UDP, so it is never split on an Ethernet path (D170) |
+| `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message, and the largest combined datagram, on UDP, so it is never split on an Ethernet path (D170, D236) |
+| `datagram.rs::COMBINE_WAIT` | 2 ms | how long a message on UDP waits for others to the same address. Full datagrams go at once (D236) |
+| `datagram.rs::COMBINED` | first byte `0xFF` | a datagram of several messages, each after a 2-byte big-endian length. A datagram with one message is that message alone (D236) |
 | `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
 | `proposals.rs::GROUP_LIMIT` | 2000 | most commands in one write, so in one log line and one save. One full group must be sent, saved and answered within `raft_heartbeat_ms` (D133, D228, D234) |
 | `store.rs::MAX_COMMANDS_PER_MESSAGE` | 4096 | most commands in one AppendEntries, so a catch-up message can finish inside its time limit (D133) |

@@ -322,8 +322,8 @@ flowchart TB
 
 | #   | Component                 | Module(s)                                   | Owner | Status   | Responsibility |
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
-| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One TCP connection per peer that carries many calls at once (D119), with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` on TCP (D20). `ClientPort`: UDP and TCP on one number (D168). |
-| not numbered | UDP adapter | `node/datagram.rs`                          | C     | built    | tarpc over UDP: one message is one UDP packet of at most 1,400 bytes, no error reaches tarpc, one channel per user program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
+| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One TCP connection per peer that carries many calls at once (D119), with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, Nagle left on for TCP so small messages share packets (D20, D237). `ClientPort`: UDP and TCP on one number (D168). |
+| not numbered | UDP adapter | `node/datagram.rs`                          | C     | built    | tarpc over UDP: messages to one address share one UDP packet of at most 1,400 bytes, within 2 ms (D236), no error reaches tarpc, one channel per user program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
 | C2  | Report intake (application) | `node/service.rs::handle_request`           | A     | built    | Logs the report, checks `serving`, answers a decided report from state (D37), asks who plans, and plans if it is this node. Checks `serving` again just before any answer leaves (D136). |
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Who plans                 | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (bidding, the default, D114; leader dispatch, the baseline, set by config, D3, D34) | Chooses the node that plans: the lowest bidder (D2) or the leader (D3). |
@@ -691,7 +691,7 @@ stateDiagram-v2
 ### 5.6 A report over UDP (built, D167–D174)
 
 Application code makes one call. The client middleware makes one tarpc call per node. tarpc does the call IDs, deadlines and
-matching. The adapter in `node/datagram.rs` only puts one message in one packet. Nothing on this path holds a connection, so there
+matching. The adapter in `node/datagram.rs` only puts messages in packets, combining what goes to one address within 2 ms (D236). Nothing on this path holds a connection, so there
 are no pings and no reconnects, and a node that comes back just answers.
 
 ```mermaid
