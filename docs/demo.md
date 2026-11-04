@@ -133,7 +133,7 @@ grep '"ev":"rejoined"' runs/lab/node-<leader>.jsonl | tail -1
 ```
 
 Say what happened: the log lines it missed were copied, then replayed through the state rules; its load
-figures and bid rounds were rebuilt locally; and it knew it was current by asking the leader for a target confirmed by a
+figures and bid rounds were not copied, as each node keeps its own and new traffic updates them; and it knew it was current by asking the leader for a target confirmed by a
 majority (D76, D135). Nothing it was working on reaches a client until then, and those clients retry (D136).
 
 ## Too old means not planned (Noor's rule, D143)

@@ -137,8 +137,8 @@ scenarios", D is "Decisions with justification and assessment".
 - The client PCs' network: nothing measures it.
 - Sharing of the draw between nodes: too few rounds on real timers to say anything.
 - A network cut that heals. `ctl silence` is a fair stand-in for a cut, with one exception it cannot show: for about half a second after
-  the cable returns, the cut-off node is still degraded, answers in about 4 ms, beats the committed path, and clients take that answer
-  as final. On one PC over a virtual cable, twice: 225 to 276 such answers, 125 to 136 of them lost first commit. Say so if the report
+  the cable returns, the cut-off node is still degraded, answers in about 5 ms, beats the committed path, and clients stop waiting, with the answer
+  labelled provisional. On one PC over a virtual cable, twice: 225 to 276 such answers, 125 to 136 of them lost first commit. Say so if the report
   discusses a network cut. A power cut restarts the node, so it should not show this.
 - Arrivals after a leader fault. Steady users have no jitter, so they stay bunched for the rest of the run: on one PC
   `arrival_peak_100ms_share_after_fault` read 0.35 against 0.13 before it. Read `after_*` as measured under clumped arrivals.
@@ -262,15 +262,15 @@ plan, one short run each except the first (no new leader in any of them):
 | 2498 | 2868 | 41 | 100 | 0 |
 | 2728 | 2858 | 43 | 109 | 0 |
 | 3054 | 2292 | 96 | 2481 | 6.7% |
-| 3365 | 2082 | 155 | 2689 | 11% |
+| 3365 | 2082 | 155 | 2688 | 11% |
 | 3778 | 1873 | 181 | 6191 | 15% |
 | 4080 | 1762 | 257 | 6502 | 17% |
 
 The cell held at 2728 us and **fell at about 3050 us. Above about 2700, expect the 3000-user cells past the knee. That is the knee, not a bug:** the
 planners run out, and plans wait and retry. The number moves with the PC's speed, and at D129's own target of 4000 that cell has fallen. 1000 users under
 bidding at 4004 us were still fine, p99 56 ms. **`e1-1000-leader` is not.** It has one node's 4 planners, so near 4000 us it falls by arithmetic: 1000 reports a second x 4 ms / 4 threads
-is all of them, all the time. That is its limit, not a bug. One PC, one 30 s run each: p99 10 ms at 3780 us, 2276 ms with 3.7% retried at 3995 us, 5422 ms at 4587 us, and 13.1 s with 5 gave up at 8074 us.
-Bidding read 31 ms at 3995 us and 41 ms at 8074 us. **The team must choose `plan_work` before the series,** and say in the
+is all of them, all the time. That is its limit, not a bug. One PC, one 30 s run each: it held at 3780 us, then read p99 2276 ms with 3.7% retried at 3995 us, 5422 ms at 4587 us, and 13.1 s with 5 gave up at 8074 us.
+**The team must choose `plan_work` before the series,** and say in the
 report which it chose:
 
 - Keep `plan_work = 1000` and report the knee. Our recommendation: it needs no edit, and the sweep then shows where latency turns up. E1's two
