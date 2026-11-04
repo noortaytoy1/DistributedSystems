@@ -74,7 +74,7 @@ table below in sync.
 | D5  | PreVote in Raft                                                 | A, D | Implemented (gate, D75) |
 | D6 | Client sends every request to all three nodes over UDP | F | Amended by D17, D167 |
 | D7  | TCP between cloud nodes                                         | C    | Implemented       |
-| D8  | Reply only after commit                                         | A    | Implemented       |
+| D8  | Reply only after commit                                         | A    | Implemented, amended by D232 |
 | D9  | Request ID plus a replicated table of results                   | A    | Implemented, amended by D27 |
 | D10 | Optimistic check at commit instead of locks                     | A, E | Implemented, amended by D28 |
 | D11 | Single-owner tasks and channels; planner on a thread pool       | all  | Amended by D47    |
@@ -291,7 +291,7 @@ table below in sync.
 | D229 | The analysis reads failover, lost copies and real answers from events that cannot miss | all | Implemented, amends D227, amended by D233 |
 | D230 | The lab guide after the full rehearsal | all | Implemented in the docs |
 | D231 | Each node's lease is its own, so the first candidate usually stands after about 0.38 to 0.83 s | A, C, D | Implemented in the docs, amends D214 |
-| D232 | Three corrections from the study sheets: `write_group`, the true reply rule, the parts table | all | Implemented in the docs, amends D163 |
+| D232 | Three corrections from the study sheets: `write_group`, the true reply rule, the parts table | all | Implemented in the docs, amends D8 and D163 |
 | D233 | FT-2 reads figures on one clock, and each run says how far apart its clocks were | all | Implemented, amends D229 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
@@ -551,7 +551,7 @@ closes the ones older entries left. D216 lists Noor's decisions and what is buil
 
 ### D8 · Reply only after commit
 
-- **Date:** Phase 1 architecture · **Part:** A · **Status:** Implemented · **Decided by:** team
+- **Date:** Phase 1 architecture · **Part:** A · **Status:** Implemented, amended by D232 · **Decided by:** team
 - **Context.** A node could answer the client as soon as it has a plan.
 - **Options considered.** Reply on plan; reply on commit.
 - **Decision.** A node replies only after the result is committed and applied. The reply carries the
@@ -7777,22 +7777,22 @@ them on the six PCs.
 
 ### D232 · Three corrections from the study sheets: `write_group`, the true reply rule, the parts table
 
-- **Date:** 2026-11-04 · **Part:** all · **Status:** Implemented in the docs, amends D163 · **Decided by:** Noor Hany Emam, on the agent's recommendation
+- **Date:** 2026-11-04 · **Part:** all · **Status:** Implemented in the docs, amends D8 and D163 · **Decided by:** Noor Hany Emam, on the agent's recommendation
 - **Context.** Writing study sheets for the demo against the code showed three places where our words and the code disagree.
   1. D163 says that `write_local` hands the command to Raft. The function in the code is `write_group` (`src/raft/mod.rs`), which takes a whole group of commands (D133). The architecture's table said the same, and D231's pass corrected that one.
-  2. The rule "Commit, then reply" in AGENTS.md said committed and applied, and the comments on `CloudGroup::send_ordered` and `Consensus::propose` said applied on this node. That holds only on the leader. A winner on a follower forwards its proposal, the leader answers once it has applied it, and the winner replies at once, which can be before its own copy has applied that log line. `docs/protocol.md` and figure `seq_a` already show it this way.
-  3. The parts table in AGENTS.md leaves out `node/service.rs`, `node/step_aside.rs`, `node/takeover.rs` and `node/release.rs`, though each file's header names its owner.
+  2. The rule "Commit, then reply" in AGENTS.md, from D8, said committed and applied, and the comments on `CloudGroup::send_ordered` and `Consensus::propose` said applied on this node. That holds only on the leader. A winner on a follower forwards its proposal, the leader answers once it has applied it, and the winner replies at once, which can be before its own copy has applied that log line. `docs/protocol.md` and the report's one-report figure already show it this way. A retry is another case: any node answers it from its own copy (D37), with no word from the leader, and openraft sends the commit to followers before it applies on the leader, so a follower can be first.
+  3. The parts table in AGENTS.md leaves out `node/service.rs`, `node/step_aside.rs`, `node/takeover.rs` and `node/release.rs`, though each file's header names its owner, and `node/usage.rs` and `middleware.rs`, which are shared. `bin/node.rs` is in the table, and its header names no owner. Part A's Measures leaves out E8, which the architecture gives to A.
 - **Options considered.**
   - *The rule:*
     1. *Say what the code does (chosen).* The guarantee to a client does not change: no reply comes before the commit, and a committed result cannot be lost.
     2. *Make a forwarded winner wait for its own copy before replying.* Rejected: it adds a wait to every forwarded report for nothing a client can see, because a retry to a node that has not applied yet gets a result from another node or a duplicate answer with the winner, and it changes a node on the morning of the lab.
   - *The name:* a new entry with D163's status line pointing here, because the log's rule is that old entries keep their text.
-  - *The table:* add each file to the part its header names, since a header and the table must not disagree about who reviews a change. Moving ownership is not this entry's business.
-- **Decision.** **The true rule: a node replies only after the result is committed and the leader has applied it. A winner that forwarded its proposal answers on the leader's word, so it can answer before its own copy has applied that log line.** Degraded mode stays the one exception (D120). `write_group` is the name. `node/service.rs` and `node/step_aside.rs` are A's, `node/takeover.rs` is C's and `node/release.rs` is E's.
-- **Why.** At the demo someone will trace figure `seq_a` and read the rule beside it. They must say the same thing, and the demo is graded on what each of us can answer for.
-- **Consequences.** **Nothing here changes the wire format or what a node does:** this is AGENTS.md, comments and the log. AGENTS.md's rule "one owner per file" now applies to those four files as their headers already said.
-- **Where.** `AGENTS.md` (Parts and owners, Architecture rules), the comments in `src/node/group.rs` and `src/raft/mod.rs`, `src/raft/mod.rs` (`write_group`).
-- **How we check it.** By reading: `Consensus::propose` returns the leader's `Outcome` to a follower, and `node/service.rs` sends the reply on it, with no wait for its own apply.
+  - *The table:* add each file to the part its header names, and an owner line to `bin/node.rs`, since a header and the table must not disagree about who reviews a change. Moving ownership is not this entry's business.
+- **Decision.** **The true rule: a node replies only after the result is committed. The winner's answer comes after the leader applied it, so a winner that forwarded its proposal can answer before its own copy has applied that log line. A retry's answer comes after this node applied it.** Degraded mode stays the one exception (D120). `write_group` is the name. `node/service.rs` and `node/step_aside.rs` are A's, `node/takeover.rs` is C's and `node/release.rs` is E's. `node/usage.rs`, `middleware.rs` and `bin/node.rs` are shared.
+- **Why.** At the demo someone will trace the report's one-report figure and read the rule beside it. They must say the same thing, and the demo is graded on what each of us can answer for.
+- **Consequences.** **Nothing here changes the wire format or what a node does:** this is AGENTS.md, comments and the log. AGENTS.md's rule "one owner per file" now applies to those files as their headers already said.
+- **Where.** `AGENTS.md` (Parts and owners, Architecture rules), the comments in `src/node/group.rs` and `src/raft/mod.rs`, `src/raft/mod.rs` (`write_group`), the header of `src/bin/node.rs`.
+- **How we check it.** By reading: `Consensus::propose` returns the leader's `Outcome` to a follower, and `node/service.rs` sends the reply on it, with no wait for its own apply. `handle_request` answers a retry from `ctx.state`, and openraft's `try_commit_quorum_accepted` pushes `ReplicateCommitted` before `Commit`.
 - **Report notes.** Say "after the commit". If asked about apply, give the rule above in full.
 
 ### D233 · FT-2 reads figures on one clock, and each run says how far apart its clocks were
@@ -7830,6 +7830,7 @@ These add to older entries without changing their text. An entry can have more t
 |-------|------|
 | D1 | Its title and context say "coordinator". D163 says what that role is: it orders the log and decides nothing else |
 | D6 | UDP is back for reports, as first planned, now through tarpc. Three unicasts and first reply wins stand (D167) |
+| D8 | "Committed and applied" holds for the winner's answer only on the leader. D232 gives the rule in full |
 | D9 | `Incident.ttl_ms` is not the table trim this entry dropped. Records are never deleted (D149) |
 | D12 | One leader no longer runs the schedule (D158) |
 | D16 | `proto::encode` is now for UDP datagrams and the Raft log file; TCP bodies are tarpc's. On UDP a message is one datagram of at most 1,400 bytes, and a bad one is counted, with no connection to close (D167, D170) |

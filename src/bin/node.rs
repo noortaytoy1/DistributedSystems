@@ -4,6 +4,8 @@
 //! cargo run --release --bin node -- --config config/local.toml --id 1
 //! cargo run --release --bin node -- --config config/local.toml --id 1 --faults off
 //! ```
+//!
+//! Owner: shared.
 
 use std::path::PathBuf;
 

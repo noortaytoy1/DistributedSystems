@@ -92,18 +92,17 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 
 | Part | Mechanism                | Files                                                                | Measures              | Owner |
 |------|--------------------------|----------------------------------------------------------------------|-----------------------|-------|
-| A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `node/service.rs`, `node/step_aside.rs`, `config.rs` | E5, commit latency    |       |
+| A    | Raft and replication     | `raft/`, `state.rs`, `node/mod.rs`, `node/service.rs`, `node/step_aside.rs`, `config.rs` | E5, E8, commit latency |       |
 | B    | Bidding election         | `bidding.rs`, `node/bids.rs`, `node/cpu.rs`                          | E1 policies, E6       |       |
 | C    | Faults and failover      | `node/faults.rs`, `node/heartbeat.rs`, `node/takeover.rs`, `node/transport.rs`, `node/datagram.rs`, `node/degraded.rs`, `node/group.rs`, `bin/ctl.rs` | E3 |       |
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
 | E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`, `node/release.rs`      | E2, CPU and queues    |       |
 | F    | Client and scale         | `client.rs`, `bin/loadgen.rs`, `bin/frontend.rs`, `scripts/start-users.sh` | E1 scaling sweep, E7  |       |
-| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `bin/node.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
+| all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `middleware.rs`, `bin/node.rs`, `node/usage.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
 
 Review pairs: A↔D, B↔E, C↔F.
 
-`raft/` includes `raft/proposals.rs`, the proposal queue (D133). Row A also holds `node/service.rs` and `node/step_aside.rs`, and
-`src/middleware.rs` is shared (D156, D218).
+`raft/` includes `raft/proposals.rs`, the proposal queue (D133).
 
 Files outside a finished part are templates: signatures, doc comments and placeholder bodies that
 compile and never panic. One exception: `node/transport.rs` holds minimal working plumbing
@@ -226,10 +225,10 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Every peer message carries the sender's Raft term.** Receivers drop non-Raft messages
   from an older term and answer `StaleTerm`. Never drop Raft RPCs this way, because openraft
   must see them to reject a stale leader.
-- **Commit, then reply.** A node replies to a client only after the result is committed and the
-  leader has applied it. A winner that forwarded its proposal answers on the leader's word, so it can
-  answer before its own copy has applied that entry (D232). The first committed result per request ID
-  wins; later ones get the winner back. The one
+- **Commit, then reply.** A node replies to a client only after the result is committed. The winner's
+  answer comes after the leader applied it, so a winner that forwarded its proposal can answer before
+  its own copy has applied that entry. A retry's answer comes after this node applied it (D232). The
+  first committed result per request ID wins; later ones get the winner back. The one
   exception is degraded mode (D120): a node left alone answers `Provisional`, clearly labelled, and
   replays the result through Raft when a peer returns. A refusal of a report too old to plan is committed
   like any result, so it is no exception (D143).
