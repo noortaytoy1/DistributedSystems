@@ -153,6 +153,8 @@ The full steps are in [docs/runbook.md](docs/runbook.md), and the demo is in [do
 
 ## Run the experiments
 
+**[experiments/README.md](experiments/README.md) is the guide for the lab:** how long to run, which experiment answers each requirement, with SSH or by hand, and how to stress it until it falls.
+
 ```bash
 cp experiments/hosts.example experiments/hosts     # set the six machines' addresses
 scripts/lab-build.sh experiments/hosts             # the same commit everywhere
