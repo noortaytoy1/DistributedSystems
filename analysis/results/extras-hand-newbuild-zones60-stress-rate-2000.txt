@@ -1,0 +1,23 @@
+{"ts_us":1793806151325344,"src":"node-1","ev":"degraded_entered","held_responders":2342}
+{"ts_us":1793806166824524,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":15500,"provisional":48139}
+{"ts_us":1793806173174748,"src":"node-1","ev":"degraded_entered","held_responders":2342}
+{"ts_us":1793806184278758,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":11104,"provisional":83035}
+{"ts_us":1793806186575669,"src":"node-1","ev":"degraded_entered","held_responders":2342}
+{"ts_us":1793806194174283,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":7600,"provisional":89369}
+{"ts_us":1793806147526233,"src":"node-2","ev":"degraded_entered","held_responders":1992}
+{"ts_us":1793806165027537,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":17499,"provisional":68663}
+{"ts_us":1793806152704079,"src":"node-3","ev":"degraded_entered","held_responders":2342}
+{"ts_us":1793806164803879,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":12100,"provisional":39728}
+sent 149853, answered 144266, gave up 5587, unaccounted 0
+client IDs from 1: longest with no answer to anyone 18293 ms
+client IDs from 2: longest with no answer to anyone 18100 ms
+client IDs from 3: longest with no answer to anyone 18284 ms
+client IDs from 4: longest with no answer to anyone 18047 ms
+client IDs from 5: longest with no answer to anyone 18047 ms
+client IDs from 6: longest with no answer to anyone 18047 ms
+client IDs from 7: longest with no answer to anyone 18535 ms
+client IDs from 8: longest with no answer to anyone 18327 ms
+client IDs from 9: longest with no answer to anyone 18535 ms
+stale per committed 1.53, commands per save 610.3, mean disk sync 4.1 ms
+checkpoints 3, digest mismatches 0
+{'conflict responder_taken': 909, 'conflict lost_first_commit': 1910}

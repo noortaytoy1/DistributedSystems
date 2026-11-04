@@ -1,0 +1,2 @@
+client_sent lines (want 6): 6
+{"ts_us":1793797905854369,"src":"client-9","ev":"client_gave_up","request":{"client":9,"seq":1793797873846073},"attempts":6}

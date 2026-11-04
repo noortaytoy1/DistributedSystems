@@ -1,0 +1,13 @@
+sent 224775, answered 224775, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 48 ms
+client IDs from 2: longest with no answer to anyone 41 ms
+client IDs from 3: longest with no answer to anyone 36 ms
+client IDs from 4: longest with no answer to anyone 36 ms
+client IDs from 5: longest with no answer to anyone 36 ms
+client IDs from 6: longest with no answer to anyone 48 ms
+client IDs from 7: longest with no answer to anyone 36 ms
+client IDs from 8: longest with no answer to anyone 36 ms
+client IDs from 9: longest with no answer to anyone 36 ms
+stale per committed 0.09, commands per save 29.1, mean disk sync 2.2 ms
+checkpoints 160, digest mismatches 0
+no provisional conflicts

@@ -1,0 +1,152 @@
+# Rotating rounds on six PCs, Wi-Fi. Read from runs/hand-<trial>/stress/rate-<rate>/run-1. plan_work 0 unless said.
+
+## cdec322, 24,000 responders, 3 s detection
+rate 10000: answered/s 9999.0, done 599940, gave up 0, retried 229, no responder 0, provisional 0
+  worst program: p50 155.68 p95 251.72 p99 327.19 ms
+  checkpoints 252, digest mismatches 0
+  drop lines 0, panics 0
+rate 15000: answered/s 15003.0, done 900180, gave up 0, retried 1832, no responder 0, provisional 0
+  worst program: p50 180.67 p95 415.21 p99 663.95 ms
+  checkpoints 253, digest mismatches 0
+  drop lines 0, panics 0
+rate 20000: answered/s 19998.0, done 1199880, gave up 0, retried 5595, no responder 0, provisional 0
+  worst program: p50 200.85 p95 402.65 p99 666.60 ms
+  checkpoints 254, digest mismatches 0
+  drop lines 0, panics 0
+
+## cdec322, 24,000 responders, 3 s detection
+rate 25000: answered/s 25002.1, done 1500126, gave up 0, retried 250374, no responder 231181, provisional 0
+  worst program: p50 355.10 p95 2277.38 p99 2420.82 ms
+  checkpoints 240, digest mismatches 0
+  drop lines 0, panics 0
+rate 30000: answered/s 29997.0, done 1799820, gave up 0, retried 403170, no responder 496356, provisional 0
+  worst program: p50 401.87 p95 5478.06 p99 12712.24 ms
+  checkpoints 206, digest mismatches 0
+  drop lines 0, panics 0
+rate 35000: answered/s 34925.1, done 2095508, gave up 4552, retried 1202632, no responder 1087374, provisional 0
+  worst program: p50 11694.31 p95 20756.21 p99 27951.44 ms
+  checkpoints 156, digest mismatches 0
+  drop lines 0, panics 0
+
+## cdec322, 60,000 responders, 3 s detection
+rate 25000: answered/s 25002.1, done 1500126, gave up 0, retried 23682, no responder 0, provisional 0
+  worst program: p50 227.50 p95 497.20 p99 2023.50 ms
+  checkpoints 244, digest mismatches 0
+  drop lines 0, panics 0
+rate 30000: answered/s 29937.5, done 1796247, gave up 3573, retried 884493, no responder 0, provisional 0
+  worst program: p50 10237.84 p95 20060.21 p99 26873.81 ms
+  checkpoints 209, digest mismatches 0
+  drop lines 0, panics 0
+
+## eba4d14, 60,000 responders, 3 s detection
+rate 25000: answered/s 25002.0, done 1500123, gave up 0, retried 31578, no responder 0, provisional 0
+  worst program: p50 227.53 p95 1005.72 p99 2596.87 ms
+  checkpoints 237, digest mismatches 0
+  drop lines 0, panics 0
+rate 30000: answered/s 29997.0, done 1799820, gave up 0, retried 49257, no responder 0, provisional 0
+  worst program: p50 264.88 p95 827.93 p99 2323.02 ms
+  checkpoints 237, digest mismatches 0
+  drop lines 0, panics 0
+
+## eba4d14, 60,000 responders, 3 s detection
+rate 35000: answered/s 34873.3, done 2092398, gave up 7662, retried 1353826, no responder 0, provisional 0
+  worst program: p50 31605.70 p95 42114.49 p99 47474.11 ms
+  checkpoints 198, digest mismatches 0
+  drop lines 0, panics 0
+rate 40000: answered/s 39882.7, done 2392961, gave up 6799, retried 1240748, no responder 73, provisional 0
+  worst program: p50 26509.14 p95 37743.48 p99 42841.36 ms
+  checkpoints 189, digest mismatches 0
+  drop lines 0, panics 0
+
+## eba4d14, 60,000 responders, 1 s detection
+rate 10000: answered/s 9999.0, done 599940, gave up 0, retried 252, no responder 0, provisional 0
+  worst program: p50 153.89 p95 229.51 p99 298.39 ms
+  checkpoints 262, digest mismatches 0
+  drop lines 0, panics 0
+rate 20000: answered/s 19998.0, done 1199880, gave up 0, retried 13, no responder 0, provisional 0
+  worst program: p50 174.65 p95 268.57 p99 345.73 ms
+  checkpoints 262, digest mismatches 0
+  drop lines 0, panics 0
+rate 30000: answered/s 29997.0, done 1799820, gave up 0, retried 232470, no responder 0, provisional 0
+  worst program: p50 290.42 p95 2138.33 p99 2416.53 ms
+  checkpoints 252, digest mismatches 0
+  drop lines 0, panics 0
+
+## eba4d14, 60,000 responders, 1 s detection
+rate 31000: answered/s 30996.1, done 1859765, gave up 0, retried 16098, no responder 0, provisional 0
+  worst program: p50 221.96 p95 474.10 p99 1824.70 ms
+  checkpoints 243, digest mismatches 0
+  drop lines 0, panics 0
+rate 32000: answered/s 32004.0, done 1920240, gave up 0, retried 26428, no responder 0, provisional 0
+  worst program: p50 228.93 p95 970.00 p99 1922.20 ms
+  checkpoints 236, digest mismatches 0
+  drop lines 0, panics 0
+rate 33000: answered/s 33003.0, done 1980181, gave up 0, retried 42808, no responder 0, provisional 0
+  worst program: p50 330.56 p95 958.13 p99 2309.45 ms
+  checkpoints 232, digest mismatches 0
+  drop lines 0, panics 0
+rate 34000: answered/s 34001.2, done 2040072, gave up 52, retried 477293, no responder 0, provisional 0
+  worst program: p50 526.98 p95 5719.53 p99 12312.00 ms
+  checkpoints 255, digest mismatches 0
+  drop lines 0, panics 0
+
+## eba4d14, 60,000 responders, 1 s detection, held 300 s measured. The answered/s on the next line divides by 60, so it is 5 times too high: 8,999,100 done in 300 s is 29,997.0 a second.
+rate 30000: answered/s 149985.0, done 8999100, gave up 0, retried 51287, no responder 0, provisional 0
+  worst program: p50 234.85 p95 468.77 p99 900.08 ms
+  checkpoints 1034, digest mismatches 0
+  drop lines 0, panics 0
+checkpoints 1034, digest mismatches 0
+
+## eba4d14, plan_work 1000, 60,000 responders, 1 s detection
+rate 10000: answered/s 9999.0, done 599940, gave up 0, retried 47, no responder 0, provisional 0
+  worst program: p50 165.21 p95 229.12 p99 289.48 ms
+  checkpoints 361, digest mismatches 0
+  drop lines 0, panics 0
+rate 15000: answered/s 14863.7, done 891824, gave up 8356, retried 409012, no responder 0, provisional 0
+  worst program: p50 8462.29 p95 21437.94 p99 27611.00 ms
+  checkpoints 502, digest mismatches 0
+  drop lines 0, panics 0
+rate 20000: answered/s 19351.9, done 1161115, gave up 38765, retried 897877, no responder 0, provisional 0
+  worst program: p50 36877.04 p95 47372.61 p99 53005.57 ms
+  checkpoints 650, digest mismatches 0
+  drop lines 0, panics 0
+
+## c05c7b9 (final code), 60,000 responders, 1 s detection
+rate 10000: answered/s 9999.0, done 599940, gave up 0, retried 136, no responder 0, provisional 0
+  worst program: p50 149.12 p95 206.31 p99 262.37 ms
+  checkpoints 266, digest mismatches 0
+  drop lines 0, panics 0
+rate 30000: answered/s 29997.0, done 1799820, gave up 0, retried 6052, no responder 0, provisional 0
+  worst program: p50 215.22 p95 376.46 p99 543.38 ms
+  checkpoints 248, digest mismatches 0
+  drop lines 0, panics 0
+
+## c05c7b9, node 3 killed at 10,000 a second, 120 s
+stress-fail-10000    offered  10000  answered/s   9999.0  done  1049896  gave up       0  retried    5150  worst p50     143.4 ms  worst p99     530.5 ms  programs 9  clean
+checkpoints 376, digest mismatches 0
+killed node 3 at 23:40:51.346793960
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer      1      -    16531    16531   3bbba1c717cb3465   479816    true    false    false   1,2,3
+   2       peer      1      -    16541    16541   d223d5ac9f6f547f   480162    true    false    false   1,2,3
+   3 unreachable: cannot connect to 10.40.0.73:8001: Connection refused (os error 111)
+node 1: udp ok
+node 2: udp ok
+node 3: udp no answer. Reports to it vanish: is it running, and is the port open? sudo ufw allow 8001/udp
+restarted node 3 at 23:41:30.082137716
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer      2      -    37613    37613   6ba06c8ea17f496d  1199881    true    false    false   1,2,3
+   2       peer      2      -    37613    37613   6ba06c8ea17f496d  1199881    true    false    false   1,2,3
+   3       peer      2      -    37613    37613   6ba06c8ea17f496d  1199881    true    false    false   1,2,3
+node 1: udp ok
+node 2: udp ok
+node 3: udp ok
+
+## c05c7b9 (final code), 60,000 responders, 1 s detection
+rate 33000: answered/s 33003.0, done 1980180, gave up 0, retried 246136, no responder 0, provisional 0
+  worst program: p50 306.76 p95 2224.77 p99 2430.73 ms
+  checkpoints 248, digest mismatches 0
+  drop lines 0, panics 0
+rate 34000: answered/s 34002.0, done 2040121, gave up 0, retried 51104, no responder 0, provisional 0
+  worst program: p50 272.32 p95 1079.95 p99 2175.04 ms
+  checkpoints 236, digest mismatches 0
+  drop lines 0, panics 0

@@ -1,0 +1,26 @@
+{"ts_us":1793798003522707,"src":"node-1","ev":"rejoined","leader_commit":3070,"applied":3079,"recovery_us":288117}
+{"ts_us":1793798034311086,"src":"node-1","ev":"rejoined","leader_commit":4935,"applied":4938,"recovery_us":168224}
+{"ts_us":1793798130161261,"src":"node-1","ev":"rejoined","leader_commit":9765,"applied":9765,"recovery_us":86626}
+{"ts_us":1793797958867924,"src":"node-2","ev":"rejoined","leader_commit":1012,"applied":1014,"recovery_us":189014}
+{"ts_us":1793798068374657,"src":"node-2","ev":"rejoined","leader_commit":6516,"applied":6518,"recovery_us":183996}
+{"ts_us":1793798165360715,"src":"node-2","ev":"rejoined","leader_commit":11139,"applied":11144,"recovery_us":447081}
+{"ts_us":1793798201794363,"src":"node-2","ev":"rejoined","leader_commit":12384,"applied":12388,"recovery_us":181861}
+{"ts_us":1793798229412632,"src":"node-2","ev":"rejoined","leader_commit":13399,"applied":13400,"recovery_us":99938}
+{"ts_us":1793798097879277,"src":"node-3","ev":"rejoined","leader_commit":7824,"applied":7829,"recovery_us":181517}
+sent 79264, answered 79264, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 4556 ms
+client IDs from 2: longest with no answer to anyone 4600 ms
+client IDs from 3: longest with no answer to anyone 4549 ms
+stale per committed 0.39, commands per save 16.6, mean disk sync 2.9 ms
+checkpoints 134, digest mismatches 0
+no provisional conflicts
+round 1: victim {2} for {7554} ms, called by node-3, leader then 1, took 13.756 ms, lines 3
+round 2: victim {1} for {17102} ms, called by node-3, leader then 1, took 12.951 ms, lines 3
+round 3: victim {1} for {9789} ms, called by node-3, leader then 2, took 12.813 ms, lines 3
+round 4: victim {2} for {8959} ms, called by node-2, leader then 2, took 19.225 ms, lines 3
+round 5: victim {3} for {8321} ms, called by node-2, leader then 3, took 44.035 ms, lines 3
+round 6: victim {1} for {9671} ms, called by node-2, leader then 2, took 10.226 ms, lines 3
+round 7: victim {2} for {14286} ms, called by node-2, leader then 2, took 37.878 ms, lines 3
+round 8: victim {2} for {13692} ms, called by node-2, leader then 3, took 10.994 ms, lines 3
+round 9: victim {2} for {7014} ms, called by node-3, leader then 3, took 13.419 ms, lines 3
+round 10: victim {2} for {16889} ms, called by node-3, leader then 3, took 6.661 ms, lines 3

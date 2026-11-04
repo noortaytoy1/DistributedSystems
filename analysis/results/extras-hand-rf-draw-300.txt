@@ -1,0 +1,19 @@
+{"ts_us":1793827183136499,"src":"node-2","ev":"rejoined","leader_commit":14102,"applied":14106,"recovery_us":70560}
+{"ts_us":1793827277084507,"src":"node-2","ev":"rejoined","leader_commit":28437,"applied":28442,"recovery_us":48927}
+{"ts_us":1793827147429128,"src":"node-3","ev":"rejoined","leader_commit":8269,"applied":8276,"recovery_us":115050}
+{"ts_us":1793827210406861,"src":"node-3","ev":"rejoined","leader_commit":18501,"applied":18501,"recovery_us":51855}
+{"ts_us":1793827245697961,"src":"node-3","ev":"rejoined","leader_commit":23759,"applied":23766,"recovery_us":108389}
+{"ts_us":1793827308494159,"src":"node-3","ev":"rejoined","leader_commit":30081,"applied":30081,"recovery_us":20162}
+sent 49132, answered 49132, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 253 ms
+client IDs from 2: longest with no answer to anyone 262 ms
+client IDs from 3: longest with no answer to anyone 344 ms
+stale per committed 0.00, commands per save 4.1, mean disk sync 2.2 ms
+checkpoints 300, digest mismatches 0
+no provisional conflicts
+round 1: victim {3} for {16951} ms, called by node-3, leader then None, took 21.533 ms, lines 3
+round 2: victim {2} for {11875} ms, called by node-3, leader then None, took 12.743 ms, lines 3
+round 3: victim {3} for {5156} ms, called by node-2, leader then None, took 24.737 ms, lines 3
+round 4: victim {3} for {15010} ms, called by node-2, leader then None, took 15.066 ms, lines 3
+round 5: victim {2} for {7232} ms, called by node-1, leader then None, took 11.086 ms, lines 3
+round 6: victim {3} for {11152} ms, called by node-1, leader then None, took 8.707 ms, lines 3

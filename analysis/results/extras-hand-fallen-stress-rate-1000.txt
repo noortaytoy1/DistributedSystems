@@ -1,0 +1,21 @@
+{"ts_us":1793801404889758,"src":"node-1","ev":"degraded_entered","held_responders":2554}
+{"ts_us":1793801420539424,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":15650,"provisional":19128}
+{"ts_us":1793801410153135,"src":"node-2","ev":"degraded_entered","held_responders":2554}
+{"ts_us":1793801418753362,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":8600,"provisional":10526}
+{"ts_us":1793801398383122,"src":"node-3","ev":"degraded_entered","held_responders":2438}
+{"ts_us":1793801401984436,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":3600,"provisional":4402}
+{"ts_us":1793801409033293,"src":"node-3","ev":"degraded_entered","held_responders":2438}
+{"ts_us":1793801420432270,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":11399,"provisional":18702}
+sent 74925, answered 64434, gave up 10491, unaccounted 0
+client IDs from 1: longest with no answer to anyone 1349 ms
+client IDs from 2: longest with no answer to anyone 1562 ms
+client IDs from 3: longest with no answer to anyone 1965 ms
+client IDs from 4: longest with no answer to anyone 1360 ms
+client IDs from 5: longest with no answer to anyone 1116 ms
+client IDs from 6: longest with no answer to anyone 1899 ms
+client IDs from 7: longest with no answer to anyone 1082 ms
+client IDs from 8: longest with no answer to anyone 866 ms
+client IDs from 9: longest with no answer to anyone 1580 ms
+stale per committed 0.80, commands per save 121.9, mean disk sync 3.2 ms
+checkpoints 12, digest mismatches 0
+{'conflict lost_first_commit': 1120, 'conflict responder_taken': 2228}

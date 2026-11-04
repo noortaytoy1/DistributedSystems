@@ -1,0 +1,31 @@
+{"ts_us":1793799756153788,"src":"node-1","ev":"degraded_entered","held_responders":544}
+{"ts_us":1793799760505665,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":4351,"provisional":5368}
+{"ts_us":1793799781853631,"src":"node-1","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799893153931,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":111300,"provisional":132532}
+{"ts_us":1793799754271806,"src":"node-2","ev":"degraded_entered","held_responders":544}
+{"ts_us":1793799762226961,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":7955,"provisional":9706}
+{"ts_us":1793799782171949,"src":"node-2","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799803871328,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":21699,"provisional":35991}
+{"ts_us":1793799806022496,"src":"node-2","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799809922578,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":3899,"provisional":40790}
+{"ts_us":1793799813722142,"src":"node-2","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799870021733,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":56299,"provisional":103236}
+{"ts_us":1793799872221758,"src":"node-2","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799893121815,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":20900,"provisional":123430}
+{"ts_us":1793799755830826,"src":"node-3","ev":"degraded_entered","held_responders":544}
+{"ts_us":1793799762230968,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":6400,"provisional":8133}
+{"ts_us":1793799782831486,"src":"node-3","ev":"degraded_entered","held_responders":1648}
+{"ts_us":1793799893130421,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":110299,"provisional":133715}
+sent 749925, answered 218922, gave up 531003, unaccounted 0
+client IDs from 1: longest with no answer to anyone 4302 ms
+client IDs from 2: longest with no answer to anyone 4328 ms
+client IDs from 3: longest with no answer to anyone 4304 ms
+client IDs from 4: longest with no answer to anyone 15158 ms
+client IDs from 5: longest with no answer to anyone 8152 ms
+client IDs from 6: longest with no answer to anyone 8334 ms
+client IDs from 7: longest with no answer to anyone 955 ms
+client IDs from 8: longest with no answer to anyone 1043 ms
+client IDs from 9: longest with no answer to anyone 1413 ms
+stale per committed 3.32, commands per save 215.0, mean disk sync 4.0 ms
+checkpoints 4, digest mismatches 0
+{'conflict lost_first_commit': 76, 'conflict responder_taken': 784}

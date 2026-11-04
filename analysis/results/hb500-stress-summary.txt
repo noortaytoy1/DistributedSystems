@@ -1,0 +1,1 @@
+stress-rate-2000     offered   2000  answered/s   1998.0  done   119884  gave up       0  retried     626  worst p50     278.9 ms  worst p99    1811.0 ms  programs 9  FALLEN

@@ -1,0 +1,7 @@
+sent 21270, answered 21270, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 895 ms
+client IDs from 2: longest with no answer to anyone 763 ms
+client IDs from 3: longest with no answer to anyone 807 ms
+stale per committed 0.84, commands per save 15.6, mean disk sync 2.7 ms
+checkpoints 42, digest mismatches 0
+no provisional conflicts

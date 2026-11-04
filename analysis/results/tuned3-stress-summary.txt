@@ -1,0 +1,3 @@
+stress-rate-10000    offered  10000  answered/s   6454.2  done   387251  gave up  212689  retried  382679  worst p50   49848.6 ms  worst p99   62261.7 ms  programs 9  FALLEN
+stress-rate-1000     offered   1000  answered/s    732.9  done    43978  gave up   15962  retried   34023  worst p50   11605.2 ms  worst p99   30044.6 ms  programs 9  FALLEN
+stress-rate-1500     offered   1500  answered/s   1261.8  done    75710  gave up   14473  retried   56182  worst p50   11614.1 ms  worst p99   27363.6 ms  programs 9  FALLEN

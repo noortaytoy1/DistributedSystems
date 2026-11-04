@@ -1,0 +1,6 @@
+{"ts_us":1793825679225279,"src":"node-3","ev":"restarted","term":0,"last_log_index":null}
+{"ts_us":1793825695531782,"src":"node-3","ev":"rejoined","leader_commit":28466,"applied":28467,"recovery_us":16306501}
+sent 0, answered 0, gave up 0, unaccounted 0
+stale per committed 0.00, commands per save 100.3, mean disk sync 2.0 ms
+checkpoints 377, digest mismatches 0
+no provisional conflicts

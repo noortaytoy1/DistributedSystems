@@ -1,0 +1,12 @@
+{"ts_us":1793800718686961,"src":"node-1","ev":"restarted","term":4,"last_log_index":2268}
+{"ts_us":1793800719279606,"src":"node-1","ev":"rejoined","leader_commit":3410,"applied":3426,"recovery_us":592641}
+{"ts_us":1793800703316804,"src":"node-2","ev":"rejoined","leader_commit":2269,"applied":2270,"recovery_us":3485439}
+{"ts_us":1793800682073470,"src":"node-3","ev":"degraded_entered","held_responders":169}
+{"ts_us":1793800699873408,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":17799,"provisional":4975}
+sent 80819, answered 80819, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 3474 ms
+client IDs from 2: longest with no answer to anyone 3553 ms
+client IDs from 3: longest with no answer to anyone 3466 ms
+stale per committed 0.34, commands per save 12.5, mean disk sync 2.8 ms
+checkpoints 157, digest mismatches 0
+{'conflict responder_taken': 3908, 'conflict lost_first_commit': 8}
