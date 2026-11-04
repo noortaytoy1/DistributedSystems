@@ -190,6 +190,8 @@ scripts/run-experiments.sh experiments/hosts full       # 34 cells, about 8 hour
 `quick` runs `ft8-random-faults` and `ft8-election-rate` first, because they are the first real logs the fault-election analysis sees: a bug
 costs minutes, not the hour.
 
+**Keep the six PCs idle during measured runs,** and write down anything else that ran. Near its fall, an upset from outside can tip the system over: `experiments/README.md` section 3 (D230).
+
 If fault elections misbehave on the real network, keep the code and leave them out: pass an explicit cell list without the `ft8` cells. `lab.toml`
 does not reach the cells, because the runner builds each run's config from the cell file. Use `ctl silence` in the demo, and say in the report that
 this was an accepted risk.
@@ -257,6 +259,8 @@ python3 analysis/analyze.py runs      # analysis/out/summary.csv and plots
 `digest_mismatches` must be 0: any other value is a real bug, so keep the logs. `plans_refused` above 0 means a worker pool shed
 work in that cell, and `elections` well above 0 means the cell is above what the machines can hold, except where the cell causes them: `ft8-election-rate` read about 5 on one PC, and `degraded-300` about 55 with `election_duration_mean_ms` at about 22 s, as a lone node keeps calling votes it cannot win. A large `client_gap_max_ms` with `gave_up` above 0 means clients stopped waiting,
 so it is a lower limit on the outage and not a time to recover (D224). For how long the cloud had no leader, read `failover_gap_ms_max`, on one clock (D233). Never `election_duration_mean_ms`, which is the vote alone, and `failover_to_leader_ms_mean` only beside `node_clock_skew_ms`, as it compares two PCs' clocks. For lost copies read `udp_copies_lost_share`, never `udp_request_loss_share` (D229).
+
+**Never give `p99_ms` alone.** Percentiles count only answers, so give `gave_up`, throughput and the longest gap beside it, and say what gave up and done mean: the read-out rule in `experiments/README.md` section 7. Before `analyze.py runs/hand`, move T3's fallen steps aside, unless that PC has over 32 GB of free memory: `experiments/README.md`, T3 (D230).
 
 ## 7. If something goes wrong
 

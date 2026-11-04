@@ -14,9 +14,10 @@ fix this page when you hit one.
 | Plan B | Six cells with 300 users and the real 75 s, :00 and :35: `e3e4-300-leader`, `degraded-300`, `e8-step-aside`, `e2e6-skew-expected-wait`, `e7-p1-300`, `e1-300-bidding`. Then `tar`, merge, `analyze.py`: all six in `summary.csv` |
 | Section 6 | T5 as written. T1, T2 and T4 with 100 to 120 s of load and `kill -9` standing in for the power cut. T3's lines at 100 and 180 reports a second, flat out and the spike, all short |
 | The whole series | Later that day, on one 32-thread PC: 18 cells (`quick`, `degraded-300`, `e1-1000-bidding`, `e8-step-aside`), 3 runs each, through the real runner on `hosts.local`. 54 of 54 runs finished, and `analyze.py` read them all. `quick` took 68.9 minutes, so the runner added about 2 s a run. Also `--rate` up to 6000 a second with 3 programs, and 1000, 1500 and 3000 users |
-| Never tried | Real SSH, a real network, a real power cut, `sudo`, `ufw`, `sysctl`, a USB stick, `--rate` with 9 programs or above 6000 a second, and `full` |
+| By hand, after that | On the same PC, at `6f78acb`: the scenes in `docs/demo.md`, with the page by `curl` and not in a browser, and T1 to T5, with `kill -9` standing in for the power cut. T3 ran 44 steps, with `--rate` from 9 programs up to 10000 a second. Other programs shared the PC for part of this. The 3 plan cells left out above, `e1-1000-leader`, `e4-300-silence-20s` and `e7-p1-300`, ran once each |
+| Never tried | Real SSH, a real network, a real power cut, `sudo`, `ufw`, `sysctl`, a USB stick, and `full` |
 
-**One-PC rehearsal** marks numbers from one PC with one disk (commits `8bb244e` and `e4ab477`). Use them only as a guide to what is
+**One-PC rehearsal** marks numbers from one PC with one disk (commits `8bb244e`, `e4ab477` and `6f78acb`). Use them only as a guide to what is
 normal. They are never results.
 
 **Since `e4ab477` only the analysis, comments and docs have changed.** Nothing changes the wire format or what a node does (D229 to D233), so
@@ -61,12 +62,12 @@ draws per run. These are small samples, and the report must say so.
 
 **Recommendation, with the report due 2026-11-04 at 8 PM. Run the plan: `quick` plus 6 cells by name, about 2 hours of machine
 time. Do not start `full`.** `full` takes about 8 h 45 min on PCs that have never run this, so one problem at hour 6 costs the
-report. After the plan, do section 6, about 1 hour, and rehearse `docs/demo.md` once: its win counts and a page screenshot fill
+report. After the plan, do section 6, about 1.5 hours, and rehearse `docs/demo.md` once: its win counts and a page screenshot fill
 report slots. If lab time is left, run the other 13 cells by name with the same profile (section 4, 58.5 minutes more).
 If time runs short, use the short list in section 7.
 
-**So, in the lab, by estimate:** section 3 about 30 minutes + the plan about 2 hours + section 6 about 1 hour + the analysis up
-to 30 minutes = about 4 hours, before the demo rehearsal. In Plan B the 63 runs take a little over 3 hours by hand, so about 5 hours.
+**So, in the lab, by estimate:** section 3 about 30 minutes + the plan about 2 hours + section 6 about 1.5 hours + the analysis up
+to 30 minutes = about 4.5 hours, before the demo rehearsal. In Plan B the 63 runs take a little over 3 hours by hand, so about 5.5 hours.
 
 **What the report must then state** (D63):
 
@@ -81,10 +82,11 @@ to 30 minutes = about 4 hours, before the demo rehearsal. In Plan B the 63 runs 
 - How far apart the clocks were: `node_clock_skew_ms` and `client_clock_skew_ms` (D56, D233).
 - The two responder pools: 3000 in `e1-1000-*` and `e1-3000-*`, 300 elsewhere. A line across that gap is not load
   alone, and the 1500-user cells run past their pool (D219).
-- Anything that differs from this guide: a PC with no sudo, a changed `threads` or `plan_work`, Plan B's start by hand.
+- Anything that differs from this guide: a PC with no sudo, a changed `threads` or `plan_work`, Plan B's start by hand, anything else that ran on a PC during a measured run.
 - Closed-loop figures as closed-loop. Every user does the same number of requests, so `done` can read the same on every PC and the
   interval on `throughput_rps` can read 0. That is arithmetic, not stability. About 21 ms of a bidding cell's roughly 30 ms is the fixed
   bid window. Near-identical runs say little: the skew cells show the load-awareness, and T3 shows what a closed loop hides.
+- Beside every p99: `gave_up`, throughput and the longest gap, and what gave up and done mean. That is the read-out rule in section 7.
 
 ## 2. Every requirement, and what answers it
 
@@ -94,7 +96,7 @@ scenarios", D is "Decisions with justification and assessment".
 
 | # | Requirement | Source | Answered by | Metric in `analysis/out/summary.csv`, or output to keep | Report |
 |---|-------------|--------|-------------|-------------------------------------------------------|--------|
-| 1 | Request latency: mean, median, p95, p99 | Spec 282 | `e1-*`, and every cell | `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`; plot `e1_latency_throughput.png` | M: Latency |
+| 1 | Request latency: mean, median, p95, p99 | Spec 282 | `e1-*`, and every cell | `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms`, always beside `gave_up`, throughput and the longest gap (section 7); plot `e1_latency_throughput.png` | M: Latency |
 | 2 | Throughput as clients increase | Spec 283, 231 | `e1-30-*`, `e1-300-*`, `e1-1000-*`, `e1-3000-*`; T3 | `throughput_rps` beside `answered_with_responder_rps`, which leaves out answers that sent nobody and provisional answers whose responder did not stand, `no_responder_share`, `gave_up`, `client_pc_cpu_busy_p95`; same plot | M: Throughput against load; Stress testing: What breaks next |
 | 3 | Election frequency, duration, message overhead | Spec 284 | Bidding: any bidding cell. Raft: `e5-faults-off`, `e3e4-*-leader`. Draw: `ft8-*` | Bidding: `bid_rounds`, `bid_window_mean_ms`, `bid_split_decisions`, `msgs_bid_per_req`. Raft: `elections`, `election_duration_mean_ms` (the vote alone), `msgs_raft_vote_per_req`. Draw: `fault_elections`, `fault_rounds_abandoned`, `fault_election_mean_ms`, `fault_bids_per_round`. All: `msgs_all_per_req` | M: Election overhead |
 | 4 | Load distribution, fairness, evidence for the policy | Spec 285, 358 | `e1-*-bidding` against `e1-*-leader`; `e2e6-skew-*` | `share_node_1`, `share_node_2`, `share_node_3`, `fairness_jain`; plot `fairness.png` | M: Load distribution |
@@ -152,6 +154,8 @@ duplicate rate and forwarding overhead; offline reconciliation delay and conflic
 
 About 30 minutes. Do these in order. No PC may sleep during a batch.
 
+**Keep all six PCs idle during measured runs.** Nothing else runs on them: no browser, no build, no update, no copying logs by hand, no `analyze.py`. This page's own lines, such as `tail -f quick.log`, are fine. Near its fall, a system can be tipped over by an upset from outside. One-PC rehearsal, with other programs running beside it: 3000 a second fell within 75 s, where it held for 75 s on the quiet PC, and 2000 and 2200 a second had blips of 10 to 30 s that were gone when repeated quiet. Write down anything else that ran: which PC, when and what. Say so in the report.
+
 **On all six.** A new PC first does [runbook section 1](../docs/runbook.md): the packages, rustup and the clone.
 
 ```bash
@@ -186,7 +190,7 @@ pgrep -af '[t]arget/release/(node|loadgen|frontend|zonefeed)( |$)'    # must pri
 
 | PC | Free disk | Why |
 |----|-----------|-----|
-| The PC that collects and analyses | 30 GB | The plan is about 9 GB and section 6 about 10 GB. A report costs about 2.8 KB of logs across all PCs (one-PC rehearsal). A 300-user run is about 60 MB, a 3000-user run about 600 MB. `full` would be about 46 GB |
+| The PC that collects and analyses | 30 GB | The plan is about 9 GB and section 6 about 10 GB, plus T3's 5-minute step: one that fell left 4.4 GB on one PC. A report costs about 2.8 KB of logs across all PCs (one-PC rehearsal). A 300-user run is about 60 MB, a 3000-user run about 600 MB. `full` would be about 46 GB |
 | Every other PC | 10 GB | Plan B keeps logs on each PC until the end. Node PCs hold most of it: on one PC a 300-user run left about 16 MB per node and 3 MB per client PC |
 
 **On each PC with sudo:**
@@ -540,7 +544,7 @@ What `analyze.py` needs in `run.json`:
 | `run`, `profile`, `commit`, `programs_per_pc`, `pattern`, `think_ms` | For the record |
 
 **Analyse.** Any PC with Python and the logs will do, also a laptop. One 3000-user run needs about 6 GB of free memory: about
-15 log lines a report and 1.7 KB a line in memory (one 300-user run peaked at 650 MB on one PC). All the plan's logs come to about
+15 log lines a report and 1.7 KB a line in memory (one 300-user run peaked at 650 MB on one PC). A fallen T3 step needs far more: see T3. All the plan's logs come to about
 50 million lines. At the 90,000 lines a second measured on one fast PC that is about 10 minutes, so allow 30 on a lab PC. One-PC
 rehearsal: 54 runs and 6.1 GB of logs took 6.1 minutes, with a peak of 5.6 GB of memory.
 
@@ -564,7 +568,7 @@ Then do the checks in Plan A step 6.
 
 ## 6. Tests the runner does not do
 
-By hand, about 1 hour, after the batch. **Use `prepare`, `keep`, `handjson` and the node line from Plan B.** Plan A people, first,
+By hand, about 1.5 hours, after the batch. **Use `prepare`, `keep`, `handjson` and the node line from Plan B.** Plan A people, first,
 on all six: copy `experiments/hosts` and `hand.sh`, repeat any `sed` you made to the cells in section 3, and `rm -rf runs/current`.
 The runner leaves its last run's logs there, already copied, and `prepare` stops on them. Logs go to `runs/hand/`, so they stay
 out of the plots for the report. Analyse them apart, after collecting (USB as in Plan B, or `rsync -a <target>:DistributedSystems/runs/hand/ runs/hand/`):
@@ -573,6 +577,8 @@ out of the plots for the report. Analyse them apart, after collecting (USB as in
 . .venv/bin/activate                # in each new terminal
 python3 analysis/analyze.py runs/hand --out analysis/out-hand
 ```
+
+**After T3, do not run that line yet.** First move T3's fallen steps aside, unless this PC has over 32 GB of free memory: see "Before the analysis" in T3.
 
 Save this as `~/extras.py`. It prints what `summary.csv` does not hold. Run it on a run folder once all six PCs' logs are in it.
 
@@ -716,10 +722,11 @@ is labelled provisional and replayed later, and it may not stand (D120, D122).
 | `members` going `3`, then `2,3`, then `1,2,3` | `ctl status` | |
 | Equal digests at the end | `status-after.txt` | Equal on all three |
 
-### T3. Stress to the breaking point (33 minutes: 11 runs, about 3 minutes each, fewer if it falls early)
+### T3. Stress to the breaking point (about 1 hour by estimate: about 17 runs, about 3 minutes each, fewer if it falls early)
 
 Spec 231; Lecture 9 s1.2. Cells stop at 3000 users in a closed loop, where a slow cloud slows its users. Here `--rate` sends at
-a fixed rate whatever the replies do, and latency counts from the intended send time (D54).
+a fixed rate whatever the replies do, and latency counts from the intended send time (D54). Keep the six PCs idle during each step, as section 3 says.
+The time is an estimate: about 5 steps from the table, 4 small steps, 4 repeats, the 5-minute hold, flat out once and the spike twice.
 
 **Rising steps.** Three programs on each client PC, 9 in all. Client IDs by hand are 1 to 9 and must be unique across
 PCs: client PC 1 uses 1, 2, 3; client PC 2 uses 4, 5, 6; client PC 3 uses 7, 8, 9.
@@ -756,9 +763,17 @@ handjson stress-rate-1000 1 15 60 0 9
 Go up until it has fallen, then one step more. By arithmetic, not measured, planning tops out at 3000 to 5000 plans a
 second (4 threads x 3 nodes, at 4 to 2.4 ms a plan) and 3000 responders at about 5000 assignments a second.
 
-One-PC rehearsal, one run per step, 3 programs, as a guide to the shape: at 3000 a second p50 39 ms, at 4500 p50 12.3 s and 16% gave up, so the knee was
+One-PC rehearsal, one run per step, 3 programs, as a guide to the shape: at 3000 a second p50 39 ms, at 4500 p50 12.3 s and 16% gave up, so the fall was
 between them. A closed loop hides this: 4500 users read p50 185 ms and 0 gave up, because a slow cloud slows its users, and throughput fell as users
 rose, 2868, 2559 and 2443 a second at 3000, 4500 and 6000.
+
+**The table steps over the fall, so look closer.** On one PC 3000 a second was clean and 4000 had fallen, with nothing in between. You can tell from the lines each client PC prints. Clean: `gave up 0`, and `retried` 0 or close. Fallen: `gave up` above 0, or a p99 in seconds. Once a step has fallen:
+
+1. **Small steps.** Go back to the last clean step, and go up by 100 to 200 a second in all, until a step falls. R is the total divided by 9, rounded: 3100 is 344, and 3200 is 356. Name them as above: `keep stress-rate-3100 1 runs/hand` and `handjson stress-rate-3100 1 15 60 0 9`.
+2. **Repeat the steps near the fall.** Run the last clean step and the first fallen step 3 times each. Give each try its own name, as `stress-rate-3100b` and `stress-rate-3100c`, so that `summary.csv` does not average a clean try with a fallen one.
+3. **Hold the last clean step for 5 minutes,** because a 75 s run can hide a fall. On a clean cluster, use the same lines with `--duration-s 300`. Then `keep stress-long-3000 1 runs/hand` and `handjson stress-long-3000 1 15 285 0 9`, with your step's number. If it falls, that is a finding: write down after how long, and if time allows, hold a lower step.
+
+**The fall is a tipping point, not a sharp edge.** One-PC rehearsal, 9 programs, as a guide only. p99 stayed at about 90 ms or less up to 3000 a second, with no gentle knee before the fall. 3000 a second held for 75 s, but fell after about 2 minutes in the one 5-minute try. 2500 a second held for 5 minutes. 3100 a second fell in 4 of 5 tries of 75 s, and the damage differed a lot: 0.7%, 2.4%, 11% and 20% gave up, with p50 from 78 ms to 5.7 s. Fallen near there, it read about 1900 answers a second, p99 about 25 s and up to 27% gave up, with no crash and equal digests. So one clean run near the fall proves little, and one bad run is not the typical damage. Your PCs will fall somewhere else: by arithmetic only, plans of 4000 us would put the fall near 2000 a second.
 
 **If the client PCs give out first** (`client_pc_cpu_busy_p95` at 0.9 or more), make the cloud slower instead. On client
 PC 1, after `ctl status`, each plan then costs about 5 times as much, and a restart undoes it:
@@ -793,10 +808,28 @@ with `--users 333`, `keep stress-spike-333 1 runs/hand` and `handjson stress-spi
 Does the raised buffer stop the drops? One-PC rehearsal, with a capped buffer, was fine at 100 per PC and lost 16% of request
 copies at 333.
 
-**Read the steps,** after the analysis above:
+**Before the analysis: move fallen steps aside, unless this PC has over 32 GB of free memory.** `analyze.py` holds a whole run in memory, about 1.7 KB a log line. On one PC it took 8.6 GB on a fallen step of 5.1 million lines, and the worst 75 s step, at 10000 a second, would take about 30 GB by arithmetic. A PC that runs out wastes the analysis, and loses no logs. On the PC that analyses, after collecting, with your own step names:
 
 ```bash
-grep -E '^stress,[^,]*,(throughput_rps|p50_ms|p99_ms|gave_up|retried_share|elections|no_responder_share|plans_refused|takeovers_backstop|udp_drops_nodes|client_pc_cpu_busy_p95),' analysis/out-hand/summary.csv
+free -g                                                    # read the "available" column
+mkdir -p runs/hand-fallen/stress
+mv runs/hand/stress/rate-3100 runs/hand-fallen/stress/     # every fallen step, unless "available" is over 32
+mv runs/hand/stress/long-3000 runs/hand-fallen/stress/     # every 5-minute step, on any PC
+```
+
+A 5-minute step is bigger still, by arithmetic: about 23 GB at 3000 a second even if it stays clean (900,000 reports x 15 lines x 1.7 KB), and about 45 GB if it falls, as the one that fell on one PC left about 5 times the logs of that 8.6 GB step. `analyze.py` does not read `runs/hand-fallen`, and the `tar` in section 7 keeps it. A step can stay where it is on a smaller PC if its lines x 1.7 KB fit in free memory: `cat runs/hand/stress/rate-3100/run-1/*.jsonl | wc -l`.
+
+Read a step you moved aside with `extras.py` and the programs' printed lines, which do not load the log whole. It has no row in `summary.csv`, so fill its row in the report from these, and say so:
+
+```bash
+python3 ~/extras.py runs/hand-fallen/stress/rate-3100/run-1      # sent, answered, gave up, longest with no answer, stale plans, digests
+cat runs/hand-fallen/stress/rate-3100/run-1/prog-*.txt           # each program: done, gave up, retried, no responder, throughput, p50, p95, p99
+```
+
+**Read the steps,** after the analysis:
+
+```bash
+grep -E '^stress,[^,]*,(throughput_rps|p50_ms|p99_ms|client_gap_pc_max_ms_worst_run|gave_up|retried_share|elections|no_responder_share|plans_refused|takeovers_backstop|udp_drops_nodes|client_pc_cpu_busy_p95),' analysis/out-hand/summary.csv
 ```
 
 How to recognise each point. This is our working rule, not from a document. The report's knee is where latency turns sharply upward.
@@ -810,7 +843,7 @@ How to recognise each point. This is our working rule, not from a document. The 
 | `elections` | 0 | 0 | Above 0 means overload has reached the leader: write it down, it is a finding |
 | `client_pc_cpu_busy_p95` | Under 0.9 | Under 0.9 | 0.9 or more means the client PC is the limit, not the cloud |
 
-Name the limit reached first. Candidates: stale plans, the worker queue, the disk, the planners, UDP drops.
+On one PC the knee and the fall were the same step. Name the limit reached first. Candidates: stale plans, the worker queue, the disk, the planners, UDP drops.
 
 **What counts as a real bug.** Stop, and keep the logs untouched:
 
@@ -869,7 +902,7 @@ same case reads `No answer after 6 attempts`. Keep the two output lines, then `r
 
 - The whole `runs/` folder: every log, `run.json`, `config.toml`, `commit.txt`, `status-after.txt`, `users-*.out`.
 - `analysis/out/`, `analysis/out-hand/`, and `quick.log`, `extra.log`, `analysis.log`.
-- Your written notes from section 6. A photo of the paper will do.
+- Your written notes from section 6, and what else ran on a PC during a measured run. A photo of the paper will do.
 - What you wrote down in section 3: the `dd` times, `lscpu`, `free -h`, `lsblk`, `ping`.
 - A run with a real bug, untouched.
 
@@ -885,6 +918,19 @@ Real totals, per cell and in all, for the report:
 awk -F, '$3=="count" || $3=="provisional_count" || $3=="gave_up" {t[$1"-"$2]+=$4*$5; all+=$4*$5} END {for (c in t) printf "%s %.0f\n", c, t[c]; printf "all %.0f\n", all}' analysis/out/summary.csv | sort
 ```
 
+**The read-out rule, for every result.** Latency percentiles count only answers. A report that gave up has no latency, and a closed-loop user sends nothing while it waits. So an outage can leave p99 looking clean. One-PC rehearsal, twice, with all three nodes silent for 60 s of a 120 s run and no answers in that time: p99 still read 47.5 ms and 67 ms. Only `gave_up`, 598 and 594, and throughput, 140 and 138 a second against 290, showed it. So beside every `p99_ms`, always give these:
+
+| Give | In `summary.csv` | For a step you moved aside, or by hand |
+|------|------------------|----------------------------------------|
+| How many gave up | `gave_up` | `gave up` on each program's printed line, or `extras.py` |
+| Throughput | `throughput_rps`, beside `answered_with_responder_rps` | `throughput` on each program's printed lines |
+| The longest gap | `client_gap_pc_max_ms_worst_run` | `longest with no answer to anyone` from `extras.py` |
+
+Say what two words mean, because neither means what it sounds like:
+
+- **Gave up** means the client stopped waiting. It does not mean that nothing happened. After a 40 s silence on one PC, 8 of 300 reports that gave up had a record on all three nodes, with a responder sent.
+- **Done** means the client got an answer. That includes being told nobody could be sent. On one PC `no responder` was 15.2% of done in `stress-spike-100`.
+
 Each result slot is a `\resultpending` note in `docs/report/main.tex`, on Noor's PC, so bring `analysis/out/` there. Each note names its metrics and
 cells, and section 2 gives the section. Fill those from `analysis/out/summary.csv`, each number with its `ci95_half_width`, apart from the columns named under Conventions in
 `analysis/README.md`, and take the plots from `analysis/out/`. These slots need something else:
@@ -893,7 +939,7 @@ cells, and section 2 gives the section. Fill those from `analysis/out/summary.cs
 |----------------|--------------|------|
 | M: Method; What has been run so far | Lab date, commit, PCs' CPU, memory, disk, network. A row for these runs, with the profile | Section 3 notes |
 | M: Raw data | Totals per cell and in all; where the logs are kept | The `awk` line |
-| Stress testing: What breaks next | One row per load step, and the limit reached first; stale plans per commit; commands per save; the spike | `analysis/out-hand/summary.csv`, `extras.py` |
+| Stress testing: What breaks next | One row per load step, and the limit reached first; stale plans per commit; commands per save; the spike | `analysis/out-hand/summary.csv`, `extras.py`, and for a step moved aside its `prog-*.txt` lines |
 | M: CPU, memory, network and queues; D: The queue with grouped saves | Commands per save and mean disk sync at 300, 1000 and 3000 users | `extras.py` on `e1-*-bidding` runs |
 | S: Scenarios 1 and 2 | Win counts before and after, and a page screenshot | `docs/demo.md` rehearsal |
 | S: Scenario 3, scenes 3b, 3c, 3d | Your notes from T1, T2 and T4 | Section 6 notes |
