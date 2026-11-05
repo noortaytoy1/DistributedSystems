@@ -257,7 +257,7 @@ Offered/s & Planning work & Held & Answered/s & Gave up & p50 ms & p95 ms & p99 
 
 \textbf{A long run.} One run held 20,000 reports a second with planning work 0 on the overnight code for about 18 minutes: 21,237,378 reports answered, nobody gave up, and a p99 of 916 ms in the slowest program. It ended when a memory guard stopped it, with each node using about 11.5 GB.
 
-\textbf{CPU, memory, network and queues.} Table~\ref{tab:resources} gives these on the final build, from what each node logs every second. Without planning work the queue stays empty and each node uses under 1 core on average. With planning work the planning threads fill, and the queue grows towards its limit of 4,096 jobs. Network is the traffic in and out of each node PC, as its operating system counts it.
+\textbf{CPU, memory, network and queues.} Table~\ref{tab:resources} gives these on the final build, from what each node logs every second. Without planning work the queue stays empty and each node uses under 1 core on average. With planning work the planning threads fill, and the queue grows towards its limit of about 4,100 jobs. Network is the traffic in and out of each node PC, as its operating system counts it.
 
 \begin{table}[!htb]
 \centering\small
