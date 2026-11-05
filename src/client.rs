@@ -62,8 +62,10 @@ const UDP_CHECK_TRIES: u32 = 3;
 
 /// Of what a client sends first, the share it may also send as retries (D264).
 const RETRY_BUDGET_PERCENT: u64 = 20;
-/// Retries a second it may always send, so a client with few reports can still retry them all.
-const RETRY_BUDGET_FLOOR_PER_S: u64 = 10;
+/// Retries a second it may always send, so a light load keeps all its retries through an outage:
+/// about 33 reports a second from a program at 300 a second in all, 5 retries each. Over nine
+/// programs this is 1,800 a second, well under what the nodes can take.
+const RETRY_BUDGET_FLOOR_PER_S: u64 = 200;
 /// Retries it can save up, for the burst when a node fails: about 10 s of its share at 20,000 a
 /// second over nine programs. Only an outage longer than that reaches the limit.
 const RETRY_BUDGET_CAP: u64 = 5000;
@@ -521,6 +523,24 @@ mod tests {
             (0..1000).filter(|_| budget.may_retry(later)).count() as u64,
             2 * RETRY_BUDGET_FLOOR_PER_S
         );
+    }
+
+    /// 300 reports a second over nine programs is about 33 each, with up to 5 retries for each
+    /// report while every node is down. The nodes can take that many times over, so a budget that
+    /// stops it only loses reports: 3,512 gave up at 300 a second with a floor of 10.
+    #[test]
+    fn a_light_load_keeps_every_retry_however_long_the_outage() {
+        let start = Instant::now();
+        let mut budget = RetryBudget::new(start);
+        budget.thousandths = 0;
+        for second in 1..=60u64 {
+            let now = start + Duration::from_secs(second);
+            for _ in 0..33 {
+                budget.first_send(now);
+            }
+            let allowed = (0..33 * 5).filter(|_| budget.may_retry(now)).count();
+            assert_eq!(allowed, 33 * 5, "at second {second}");
+        }
     }
 
     #[test]

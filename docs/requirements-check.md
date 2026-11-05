@@ -38,7 +38,7 @@ The PDF's Required Demonstration Scenarios, rows 1, 2, 3, 4 and 9. Our guide num
 |---|---|---|---|---|---|
 | 25 | Servers elect one to go silent for up to 20 s, then it rejoins | Spec 149 | Done | 47 elected faults, 0 gave up, dropped in a median of 1,018 ms | Report section 7 |
 | 26 | Injected failures up to 20 s, service continues | Spec 227 | Done, rerun running | Every failure run uses 20 s | Report section 7 |
-| 27 | **Physically turning off a machine** | Notes Oct 28, Sept 13 | **Not done** | Only `kill -9`. A real power cut needs someone to pull a plug or allow an instant reset. Put off by the person running the lab, to do kills first | Report section 11 |
+| 27 | Physically turning off a machine | Notes Oct 28, Sept 13 | **Replaced by kills** | The person running the lab decided on 2026-11-05 that killing processes with `kill -9` is enough, so no plug is pulled. A kill stops the process at once, as a power cut would, but it cannot lose disk writes the way a real cut can | Report section 11 |
 | 28 | **One node off and one failed: one server handles the three client PCs** | Notes Sept 13 | Done, rerun running | **Fixed today (D261, D262).** Before, commits did not come back by themselves after two kills. Now the last node answers, labelled provisional, and all return by themselves | `tests/kills.rs`, T2 and kill runs |
 | 29 | **5 retries, then an error** | Notes Sept 13, spec 306 | Rerun running | T5 is on the final run list, as the client changed. The retry budget keeps all 5 for a client with few reports, and a unit test checks that | D264 |
 | 7 | Recovery and convergence time at different loads | Spec 287, 167, 152 | Done, rerun running | See Scenario 4 | Report section 8 |
