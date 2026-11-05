@@ -255,4 +255,28 @@ Offered/s & Planning work & Held & Answered/s & Gave up & p50 ms & p95 ms & p99 
 
 \textbf{Clients scale too.} The same 10,000 reports a second from one, two or three client PCs gave the same answered rate, with medians of 120, 130 and 146 ms, so the client PCs were not the limit. On the final build, 333 and 1,000 simulated users per client PC (999 and 3,000 in all, closed loop) answered every report.
 
-\textbf{On a busier network.} At midday on November 5 the network was much busier. The final build answered all of 10,000 and 15,000 reports a second in 3 of 3 runs each, but at 30,000 it answered only 25,160 to 26,046 a second. To see whether the build or the network caused this, the overnight build was run again at midday at 30,000 a second, and it fell the same way. So 30,000 and above need a stable network, and the failure results are reported at 10,000 and 15,000.
+\textbf{A long run.} One run held 20,000 reports a second with planning work 0 on the overnight code for about 18 minutes: 21,237,378 reports answered, nobody gave up, and a p99 of 916 ms in the slowest program. It ended when a memory guard stopped it, with each node using about 11.5 GB.
+
+\textbf{CPU, memory, network and queues.} Table~\ref{tab:resources} gives these on the final build, from what each node logs every second. Without planning work the queue stays empty and each node uses under 1 core on average. With planning work the planning threads fill, and the queue grows towards its limit of 4,096 jobs. Network is the traffic in and out of each node PC, as its operating system counts it.
+
+\begin{table}[!htb]
+\centering\small
+\caption{CPU, memory, network and queues on the final build. Cores and network are means per node; the other columns are the highest value on any node.}
+\label{tab:resources}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Runs & Offered/s & Planning work & Cores & Cores, highest & Memory, MB & Network, MB/s & Queued \\
+\midrule
+No failure & 10,000 & 0 & 0.5 & 0.6 & 466 & 1.3 & 0 \\
+No failure & 15,000 & 0 & 0.7 & 0.9 & 694 & 1.9 & 0 \\
+No failure & 10,000 & 1000 & 12.7 & 20.0 & 488 & 1.4 & 383 \\
+No failure & 12,000 & 1000 & 17.3 & 20.3 & 636 & 1.7 & 4,087 \\
+Kill runs & 300 & 1000 & 0.4 & 3.9 & 49 & 0.2 & 0 \\
+Kill runs & 10,000 & 1000 & 14.6 & 20.8 & 989 & 1.5 & 4,105 \\
+Kill runs & 15,000 & 0 & 0.7 & 2.8 & 1,784 & 2.0 & 1 \\
+Kill runs & 20,000 & 0 & 0.9 & 3.4 & 2,131 & 2.6 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{On a busier network.} At midday on November 5 the network was much busier. The final build answered all of 10,000 and 15,000 reports a second in 3 of 3 runs each, but at 30,000 it answered only 25,160 to 26,046 a second. At 20,000 a second, 2 of 3 runs answered every report, and one fell to 15,298 a second. To see whether the build or the network caused this, the overnight build was run again at midday at 30,000 a second, and it fell the same way. So 30,000 and above need a stable network, and the failure results are reported at 10,000 and 15,000.
