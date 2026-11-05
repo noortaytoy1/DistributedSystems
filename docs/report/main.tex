@@ -169,8 +169,8 @@
   RescueMesh is a three-node cloud that plans responses to campus incidents. A user sends a report once, and the three cloud nodes, which are equal peers, decide among themselves who plans it, record the plan in the same order on every node, and answer. Phase 1 delivers the cloud, the incident service, an election that picks the node for every report by its load, a second election that picks which node fails, and the recovery that brings a failed node back. The first design used Raft for the shared order, as the team's survey recommended. Measurements on the lab PCs showed that Raft's leader was both a coordinator, which the project's peer-to-peer requirement rules out, and the limit on throughput, so it was replaced with a shared log that has no leader. The final system was then measured in 157 runs on six lab PCs, with 199,481,205 requests, and in 49 more runs that kill up to all three nodes. No request was unaccounted for, and the nodes never disagreed on their state in 84,647 comparisons. The system holds 12,000 requests a second with about 4 ms of planning per request, and 30,000 a second with almost none. Raft, on the same code, answered 4,306 a second when offered 10,000.
   \end{minipage}
   \vfill
-  {\small Code, design log and raw results: \url{https://github.com/noortaytoy1/DistributedSystems}\par}
-  {\small Final build \commit{b6221c5}; overnight series \commit{a7ceb34}; November 2026\par}
+  {\small Source code and results: \url{https://github.com/noortaytoy1/DistributedSystems}\par}
+  {\small November 2026\par}
 \end{titlepage}
 
 \tableofcontents
@@ -198,7 +198,7 @@
 
 \bibitem{survey} A.~Elghadban, O.~Leithy, N.~Emam, W.~Elhimer, A.~Abdeen and Y.~Kilany. \emph{Distributed Election Algorithms Survey: RescueMesh}. CSCE 4411 Phase 0 deliverable, October 4, 2026.
 
-\bibitem{repo} The RescueMesh team. \emph{RescueMesh source code, design log and results}. \url{https://github.com/noortaytoy1/DistributedSystems}. The documents cited here are in its \texttt{docs/} folder: \texttt{design-log.md} (decisions D1 to D266), \texttt{architecture.md}, \texttt{shared-log.md}, \texttt{protocol.md}, \texttt{requirements-check.md}, \texttt{phase1-report.md}, \texttt{runbook.md} and \texttt{demo.md}. The results are in \texttt{analysis/results/}, with \texttt{RESULTS.md} as the record of the Raft-era runs.
+\bibitem{repo} The RescueMesh team. \emph{RescueMesh source code and results}. \url{https://github.com/noortaytoy1/DistributedSystems}, 2026.
 
 \bibitem{coulouris} G.~Coulouris, J.~Dollimore, T.~Kindberg and G.~Blair. \emph{Distributed Systems: Concepts and Design}, 5th ed. Addison-Wesley, 2012.
 

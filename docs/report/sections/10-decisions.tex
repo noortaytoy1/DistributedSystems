@@ -2,35 +2,35 @@
 \section{Design decisions changed during development}
 \label{sec:changed}
 
-The team kept a design log from the first day of the code. Every decision has an entry with its context, the options that were rejected, the reasons and the consequences. A changed decision gets a new entry, and the old one is marked as amended or superseded, never rewritten, so the log also records how the design moved (\dlog{D70}). There are 259 entries, numbered from D1 to D266. Table~\ref{tab:changed} lists the changes that shaped the system most. Section~\ref{sec:raft} covers the biggest one, the move away from Raft, in full.
+Many design decisions changed during the phase, most of them because a measurement on the lab PCs showed a problem that the first design had not expected. Table~\ref{tab:changed} lists the changes that shaped the system most, with the reason for each. Section~\ref{sec:raft} covers the biggest one, the move away from Raft, in full.
 
 \begin{table}[!htb]
 \centering\small
 \caption{Decisions that changed, with the reason for each. ``From'' is what the Phase 0 survey or the first design said.}
 \label{tab:changed}
-\begin{tabularx}{\linewidth}{@{}P{3.6cm}P{3.6cm}LP{1.5cm}@{}}
+\begin{tabularx}{\linewidth}{@{}P{3.9cm}P{4.1cm}L@{}}
 \toprule
-From & To & Why & Entries \\
+From & To & Why \\
 \midrule
-Write Raft from scratch & openraft 0.9.25 & weeks of work before anything could be tested & \dlog{D4}, \dlog{D14} \\
-Raft's leader plans every report & bidding for every report; leader dispatch kept as a baseline & the leader did all the CPU work, and nothing was assigned during an election & \dlog{D34}, \dlog{D114} \\
-The Raft leader picks the node that fails & all three draw numbers & one node ordering another silent is a coordinator & \dlog{D12}, \dlog{D158} \\
-Raft orders the log & rotating rounds, no leader & the leader was a coordinator in a cloud meant to be peers; Raft held 7,000 a second and fell at 10,000 & \dlog{D163}, \dlog{D249} \\
-Look for a library with no leader & keep the team's own & none of those tested kept working when a node stopped & \dlog{D259} \\
-One disk save per log entry & grouped saves, one write in flight & saves crowded out the heartbeats & \dlog{D133} \\
-Clients on TCP & clients on UDP through tarpc & a request and reply over UDP, with no connections to keep up & \dlog{D17}, \dlog{D167} \\
-Hand-written request and reply frames & tarpc, with typed methods & a ready-made RPC system, with stubs and deadlines & \dlog{D119}, \dlog{D176} \\
-Detect a failure after 150 ms & after 1 s in the lab & 150 ms dropped healthy nodes on the lab's Wi-Fi & \dlog{D249} \\
-One TCP connection, Nagle on & the log on its own connection, sent at once & a small message could wait behind others & \dlog{D237}, \dlog{D251} \\
-Each message in its own packet & combined for 20 ms, compressed, short forms & on the shared air, packets were what ran out & \dlog{D254} to \dlog{D256} \\
-A plan scans the responder table & a plan looks at 512 in a row & the scan held the state's lock and stalled commits & \dlog{D238}, \dlog{D253} \\
-Bid window 20 ms & 60 ms in the lab config & between PCs at 2,000 a second, only 26\% of rounds saw all 3 bids within 20 ms & lab settings \\
-One node left stays quiet & it answers, labelled provisional & one server must still handle all three client PCs & \dlog{D120} \\
-A restarted node copies a peer's log & it rebuilds from its own file first & two kills stopped commits for good, and three lost the state & \dlog{D261} \\
-5 retries always sent & a retry budget & retries flooded the air during long outages & \dlog{D264} \\
-One program per client PC & 10 per PC by default, sharing the users & one frontend controls many background user processes & \dlog{D181} \\
+Write Raft from scratch & openraft 0.9.25 & weeks of work before anything could be tested \\
+Raft's leader plans every report & bidding for every report; leader dispatch kept as a baseline & the leader did all the CPU work, and nothing was assigned during an election \\
+The Raft leader picks the node that fails & all three draw numbers & one node ordering another silent is a coordinator \\
+Raft orders the log & rotating rounds, no leader & the leader was a coordinator in a cloud meant to be peers; Raft held 7,000 a second and fell at 10,000 \\
+Look for a library with no leader & keep the team's own & none of those tested kept working when a node stopped \\
+One disk save per log entry & grouped saves, one write in flight & saves crowded out the heartbeats \\
+Clients on TCP & clients on UDP through tarpc & a request and reply over UDP, with no connections to keep up \\
+Hand-written request and reply frames & tarpc, with typed methods & a ready-made RPC system, with stubs and deadlines \\
+Detect a failure after 150 ms & after 1 s in the lab & 150 ms dropped healthy nodes on the lab's Wi-Fi \\
+One TCP connection, Nagle on & the log on its own connection, sent at once & a small message could wait behind others \\
+Each message in its own packet & combined for 20 ms, compressed, short forms & on the shared air, packets were what ran out \\
+A plan scans the responder table & a plan looks at 512 in a row & the scan held the state's lock and stalled commits \\
+Bid window 20 ms & 60 ms in the lab & between PCs at 2,000 a second, only 26\% of rounds saw all 3 bids within 20 ms \\
+One node left stays quiet & it answers, labelled provisional & one server must still handle all three client PCs \\
+A restarted node copies a peer's log & it rebuilds from its own file first & two kills stopped commits for good, and three lost the state \\
+5 retries always sent & a retry budget & retries flooded the air during long outages \\
+One program per client PC & 10 per PC by default, sharing the users & one web page controls many background user processes \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-Two habits shaped how these decisions were made. First, every decision went through the same short procedure, written down in \texttt{AGENTS.md}: read the design documents, raise each open question with its options and a recommendation, decide, record the decision, and update the architecture diagrams in the same change. Second, lab results fed straight back into the design. Most entries after \dlog{D230} start from a measurement on the six PCs, and say how the next run would check the change.
+Two habits shaped how these decisions were made. First, every decision was talked through before it was built: the open question was raised with its options and a recommendation, the team decided, and the reasons were written down together with updated architecture diagrams, so a later change could see why the earlier choice was made. Second, lab results fed straight back into the design. In the last weeks of the phase, most changes started from a measurement on the six PCs, and each said how the next run would check it.

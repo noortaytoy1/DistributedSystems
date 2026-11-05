@@ -8226,7 +8226,8 @@ them on the six PCs.
 - **Why.** The report must carry many diagrams, and TikZ keeps them in the repo next to the code they describe.
 - **Consequences.** The Markdown report stays the generated record of results. If a result changes, both need updating: the LaTeX tables are typed from it, not generated.
 - **Where.** `docs/report/`.
-- **How we check it.** It compiles with no undefined references; every number in it traces to a file named in its text.
+- **How we check it.** It compiles with no undefined references; every number in it traces to a result file in the repository.
+- **Notes for the report.** On Omar Leithy's request the report is written as a stand-alone, third-person document: it states requirements without citing course material, and describes the design in its own words, naming no source files, functions, commits or design-log IDs. It cites the repository once as a whole. UML diagrams keep the type and operation names, since that is what a UML class diagram shows.
 
 ### Notes on older entries
 

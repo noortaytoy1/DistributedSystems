@@ -2,7 +2,7 @@
 \section{The shared log with no leader: rotating rounds}
 \label{sec:sharedlog}
 
-The shared log is what keeps the three copies of the state equal. Every command that changes the state, such as a plan or a release, goes into it, and every node applies the commands in the same order. This section explains how the log reaches one order with no leader. The full description is in \texttt{docs/shared-log.md} \cite{repo}.
+The shared log is what keeps the three copies of the state equal. Every command that changes the state, such as a plan or a release, goes into it, and every node applies the commands in the same order. This section explains how the log reaches one order with no leader.
 
 \subsection{The idea}
 
@@ -18,7 +18,7 @@ So the notebooks come out the same, and nobody gave an order. The people are the
 
 \subsection{How it works}
 
-Every 5 ms, each node takes the commands waiting on it and makes its next batch, numbered with a round one higher than the highest round it has seen. It saves the batch to its own disk and sends it to each peer, one call at a time per peer. A peer saves the batch and replies with how far it has saved that node's stream (\code{Have}). A round in which a node had nothing to say makes no batch, but the node's stream still counts as having passed it. Figure~\ref{fig:seq-rounds} shows one round.
+Every 5 ms, each node takes the commands waiting on it and makes its next batch, numbered with a round one higher than the highest round it has seen. It saves the batch to its own disk and sends it to each peer, one call at a time per peer. A peer saves the batch and replies with how far it has saved that node's stream. A round in which a node had nothing to say makes no batch, but the node's stream still counts as having passed it. Figure~\ref{fig:seq-rounds} shows one round.
 
 \begin{figure}[!htb]
 \centering
@@ -27,14 +27,14 @@ Every 5 ms, each node takes the commands waiting on it and makes its next batch,
   \seqactor{6.0}{Node 2}{-6.6}
   \seqactor{12.0}{Node 3}{-6.6}
   \seqself{0}{-0.9}{round 7: makes its batch,\\ saves it to disk}
-  \seqmsg{0}{6.0}{-1.9}{Stream(round 7: my batch)}
-  \seqrep{6.0}{0}{-2.4}{Have(7), after saving it}
+  \seqmsg{0}{6.0}{-1.9}{stream: round 7, my batch}
+  \seqrep{6.0}{0}{-2.4}{saved to round 7}
   \seqmsg{0}{12.0}{-2.9}{}
-  \node[mlabel] at (9.0,-2.9) {Stream(round 7: my batch)};
+  \node[mlabel] at (9.0,-2.9) {stream: round 7, my batch};
   \seqself{6.0}{-3.3}{round 7: makes its batch}
-  \seqmsg{6.0}{12.0}{-4.3}{Stream(round 7: my batch)}
-  \seqmsg{6.0}{0}{-4.3}{Stream(round 7: my batch)}
-  \seqmsg{12.0}{6.0}{-5.0}{Stream(passed round 7, nothing to add)}
+  \seqmsg{6.0}{12.0}{-4.3}{stream: round 7, my batch}
+  \seqmsg{6.0}{0}{-4.3}{stream: round 7, my batch}
+  \seqmsg{12.0}{6.0}{-5.0}{stream: passed round 7, nothing to add}
   \seqmsg{12.0}{0}{-5.3}{}
   \seqnote{6.0}{-6.0}{11.8}{all members have passed round 7, so each node applies node 1's batch, then node 2's: the same order everywhere}
 \end{tikzpicture}
@@ -74,7 +74,7 @@ Every 5 ms, each node takes the commands waiting on it and makes its next batch,
   \draw[thick, badred, densely dashed] (8,-2.6) -- (8,1.0) node[above, font=\scriptsize, align=center, text=badred]{lowest covered 117};
   \node[box, fill=notefill, text width=4.4cm, anchor=north west] at (12.2,-2.7) {acked[2] = 115, acked[3] = 112:\\ the highest is 115, so node 1's own batches are on another disk only up to 115};
 \end{tikzpicture}
-\caption{The frontier on node 1, in an example from \texttt{docs/shared-log.md}. Filled cells are batches node 1 holds; outlined cells are rounds in which node 3 had nothing to say, which still count as passed. Everything up to round 115 is applied, sorted by round and then by node ID; nothing that arrives later can change that part of the order.}
+\caption{The frontier on node 1, in a worked example. Filled cells are batches node 1 holds; outlined cells are rounds in which node 3 had nothing to say, which still count as passed. Everything up to round 115 is applied, sorted by round and then by node ID; nothing that arrives later can change that part of the order.}
 \label{fig:frontier}
 \end{figure}
 
@@ -82,12 +82,12 @@ Every 5 ms, each node takes the commands waiting on it and makes its next batch,
 
 \textbf{Why the highest acked.} A node applies its own batch only after at least one peer has saved it. So whatever a client is told is on at least two disks, and survives the loss of any one node. This is the system's version of the rule ``commit, then reply''.
 
-\textbf{On disk.} Each node appends to its own file, \texttt{node-<id>.rounds}. A save writes every waiting batch and then calls one disk sync for all of them, so a busy node saves more per sync, not more often. Since \dlog{D261} the file also records the order in which the node applied batches, saved before any client is answered, so that a restarted node can rebuild exactly what it told clients (Section~\ref{sec:multi}).
+\textbf{On disk.} Each node appends to its own log file. A save writes every waiting batch and then calls one disk sync for all of them, so a busy node saves more per sync, not more often. Since the fixes for several failures, the file also records the order in which the node applied batches, saved before any client is answered, so that a restarted node can rebuild exactly what it told clients (Section~\ref{sec:multi}).
 
 \textbf{Checking that the copies agree.} After every command each node updates its digest (Section~\ref{sec:datamodel}) and logs it at every 100th log index. The overnight series compared 69,715 of these checkpoints across nodes, and the kill runs 14,932 more. None differed.
 
 \subsection{The team's code and the libraries}
 
-The spec requires the two to be separated, and here the line is sharp. The libraries carry the log: tarpc makes the calls between nodes, bincode and serde encode the batches, and tokio runs the tasks, timers and file writes. Everything about the order is the team's own work: numbering batches into rounds, the sort by round and node ID, the frontier, agreeing to go on without a silent node, bringing a node back, and the log file. That is about 1,650 lines in \texttt{rounds.rs}, of which about 100 hold the ordering itself.
+The spec requires the two to be separated, and here the line is sharp. The libraries carry the log: tarpc makes the calls between nodes, bincode and serde encode the batches, and tokio runs the tasks, timers and file writes. Everything about the order is the team's own work: numbering batches into rounds, the sort by round and node ID, the frontier, agreeing to go on without a silent node, bringing a node back, and the log file. That is about 1,650 lines, of which about 100 hold the ordering itself.
 
-Before writing its own, the team looked for a library that orders a log with no leader (\dlog{D259}). \texttt{synevi} 0.1.0, an implementation of the Accord protocol, was compiled and run on the three node PCs. With no fault its digests matched; with one node stopped for 20 s the other two applied nothing for the whole fault, and all three ended with different digests. The \texttt{fantoch} implementations of EPaxos, Atlas and Tempo all stop at \texttt{todo!("recovery not implemented yet")}. AlephBFT and hbbft are built for attackers and, by their documentation, need four nodes to survive one failure. The others found have a leader (openraft, paxakos, OmniPaxos, Kafka) or carry messages with no agreed order (Zenoh, libp2p's gossipsub). The test's source and output are in \texttt{analysis/results/library-search/}.
+Before writing its own, the team looked for a library that orders a log with no leader. The synevi library, version 0.1.0, an implementation of the Accord protocol, was compiled and run on the three node PCs. With no fault its digests matched; with one node stopped for 20 s the other two applied nothing for the whole fault, and all three ended with different digests. The fantoch implementations of EPaxos, Atlas and Tempo all leave recovery unimplemented. AlephBFT and hbbft are built for attackers and, by their documentation, need four nodes to survive one failure. The others found have a leader (openraft, paxakos, OmniPaxos, Kafka) or carry messages with no agreed order (Zenoh, libp2p's gossipsub). 

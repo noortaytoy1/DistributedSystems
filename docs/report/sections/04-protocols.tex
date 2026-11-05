@@ -2,16 +2,16 @@
 \section{Protocols and message formats}
 \label{sec:proto}
 
-This section describes how the programs talk: the paths, the messages, the timers, the retries and how duplicates are handled. The full tables are in \texttt{docs/protocol.md} and \texttt{docs/shared-log.md} \cite{repo}.
+This section describes how the programs talk: the paths, the messages, the timers, the retries and how duplicates are handled.
 
 \subsection{The life of one report}
 
-The easiest way to see the protocol is to follow one real report. Figure~\ref{fig:seq-report} draws one report from a run at 10,000 reports a second, taken line by line from the event logs of all four PCs it touched (\texttt{analysis/results/request-trace-example.txt}). The times count from the client's send. They come from four different clocks, which were within a few milliseconds of each other, so they are close but not exact.
+The easiest way to see the protocol is to follow one real report. Figure~\ref{fig:seq-report} draws one report from a run at 10,000 reports a second, taken line by line from the event logs of all four PCs it touched. The times count from the client's send. They come from four different clocks, which were within a few milliseconds of each other, so they are close but not exact.
 
 \begin{figure}[!htb]
 \centering
 \begin{tikzpicture}[x=1cm,y=1cm]
-  \seqactor[clientorange!12]{0}{Client 3\\(MeshClient)}{-10.6}
+  \seqactor[clientorange!12]{0}{Client 3\\(middleware)}{-10.6}
   \seqactor{4.4}{Node 1}{-10.6}
   \seqactor{8.8}{Node 2}{-10.6}
   \seqactor{13.2}{Node 3}{-10.6}
@@ -36,7 +36,7 @@ The easiest way to see the protocol is to follow one real report. Figure~\ref{fi
   \node[mlabel] at (6.6,-9.9) {cancel};
   \seqnote{11.0}{-10.25}{4.0}{1,014 ms: node 3 proposes the release of the responder; applied at 1,060 ms}
 \end{tikzpicture}
-\caption{One report at 10,000 a second, from the logs (\commit{eba4d14}, \texttt{plan\_work} 0). Nodes 1 and 2 lost the bid and stood by; they say nothing to the client unless the winner goes quiet. The client gets one answer and cancels its calls to the other two nodes.}
+\caption{One report at 10,000 a second, from the logs (planning work 0). Nodes 1 and 2 lost the bid and stood by; they say nothing to the client unless the winner goes quiet. The client gets one answer and cancels its calls to the other two nodes.}
 \label{fig:seq-report}
 \end{figure}
 
@@ -50,38 +50,38 @@ The easiest way to see the protocol is to follow one real report. Figure~\ref{fi
 \toprule
 Path & Transport & What it carries \\
 \midrule
-Client to all 3 nodes & tarpc over UDP, port 8001 & \code{submit(ClientRequest)}, three copies with one ID; a cancel once answered \\
-Node to client & the same socket & one \code{ClientReply}; the first one wins \\
-Node to node & tarpc over TCP, port 7001; the shared log has its own connection (\dlog{D251}) & log streams, bids, heartbeats, fault bids, catch-up \\
-\texttt{ctl} and web page to a node & tarpc over TCP, port 8001 & status, silence, slowdown, records; passes the fault gate \\
+Client to all 3 nodes & tarpc over UDP, port 8001 & the client request, three copies with one ID; a cancel once answered \\
+Node to client & the same socket & one client reply; the first one wins \\
+Node to node & tarpc over TCP, port 7001; the shared log has its own connection & log streams, bids, heartbeats, fault bids, catch-up \\
+Operator tool and web page to a node & tarpc over TCP, port 8001 & status, silence, slowdown, records; passes the fault gate \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \begin{table}[!htb]
 \centering\small
-\caption{The main messages and records (\texttt{src/proto.rs}). Every number is an integer.}
+\caption{The main messages and records. Every number is an integer.}
 \label{tab:messages}
 \begin{tabularx}{\linewidth}{@{}P{3.5cm}L@{}}
 \toprule
 Message & Fields and meaning \\
 \midrule
-\code{ClientRequest} & \code{id} (client, seq), \code{attempt}, \code{age\_ms}, \code{incident}. A retry keeps the ID and raises \code{attempt}. \code{age\_ms} is how old the report is on the client's own clock, so ``too old'' never compares two clocks (\dlog{D143}). \\
-\code{Incident} & \code{owner}, \code{category}, \code{zone}, \code{location}, \code{severity} 1 to 5, \code{needs}, \code{reported\_at\_ms}, \code{ttl\_ms} (\dlog{D140}). \\
-\code{ClientReply} & \code{id}, \code{from}, and a body: \code{Done(result)}, \code{Expired(result)} for a report too old to plan, or \code{Provisional(plan)} from a node alone (\dlog{D123}). \\
-\code{Bid} & \code{request}, \code{attempt}, \code{score}. Sent in groups, one message per peer every 10 ms (\dlog{D247}, \dlog{D256}). \\
-\code{FaultBid} & \code{round}, \code{ticket}, \code{ms}: one node's numbers in the fault election (\dlog{D158}). \\
-\code{Heartbeat} & nothing but the sender and its view number; any answer means alive (\dlog{D79}). \\
-\code{RoundsMsg::Stream} & \code{after}, \code{through}, \code{batches}: my batches after round \code{after}, and my stream has passed round \code{through}. Answered \code{Have\{have\}} after saving. \\
-\code{RoundsMsg::Drop}, \code{DropCommit} & go on without a silent node, and where its stream ends (Section~\ref{sec:drop}). \\
-\code{RoundsMsg::CatchUp}, \code{Join} & a returning node asks for the applied log, then asks to be added (Section~\ref{sec:rejoin}). \\
-\code{RoundBatch} & \code{node}, \code{round}, \code{commands}, and an optional \code{Add} of a returning node. \\
-\code{Command} & \code{RegisterResponders}, \code{CommitResult} or \code{ReleaseResponder}; each safe to apply twice. \\
+Client request & the report ID (client number and sequence number), the attempt number, the report's age, and the incident. A retry keeps the ID and raises the attempt number. The age is measured on the client's own clock, so ``too old'' never compares two clocks. \\
+Incident & owner, category, zone, location, severity 1 to 5, the capability needed, when it was reported, and how long it stays valid. \\
+Client reply & the report ID, the answering node, and a body: \emph{done} with the result, \emph{expired} for a report too old to plan, or \emph{provisional} with a plan from a node alone. \\
+Bid & the report, the attempt and the score. Sent in groups, one message per peer every 10 ms. \\
+Fault bid & the fault round, a random ticket and a silence length: one node's numbers in the fault election. \\
+Heartbeat & nothing but the sender and its view number; any answer means alive. \\
+Log stream & the sender's batches after a given round, and the round its stream has passed. Answered with how far the receiver has saved that stream. \\
+Drop, drop commit & go on without a silent node, and where its stream ends (Section~\ref{sec:drop}). \\
+Catch-up, join & a returning node asks for the applied log, then asks to be added (Section~\ref{sec:rejoin}). \\
+Batch & the sending node, the round, the commands, and optionally the addition of a returning node. \\
+Command & register responders, commit result or release responder; each safe to apply twice. \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{On the wire.} Between nodes, a TCP frame is a 4-byte length, one byte that says whether the body is compressed, and the body: tarpc's message in bincode. A client datagram holds one or more short messages, each a call ID, a deadline and the call, at most 1,400 bytes after compression. Messages to the same address wait up to 20 ms to share a datagram, and bids wait up to 10 ms, because on the lab's Wi-Fi the number of packets mattered more than their size (\dlog{D254}, \dlog{D255}, \dlog{D256}). Compression is LZ4's block format \cite{lz4}, written by the team in about 100 lines (\texttt{node/squeeze.rs}).
+\textbf{On the wire.} Between nodes, a TCP frame is a 4-byte length, one byte that says whether the body is compressed, and the body: tarpc's message in bincode. A client datagram holds one or more short messages, each a call ID, a deadline and the call, at most 1,400 bytes after compression. Messages to the same address wait up to 20 ms to share a datagram, and bids wait up to 10 ms, because on the lab's Wi-Fi the number of packets mattered more than their size. Compression is LZ4's block format \cite{lz4}, written by the team in about 100 lines.
 
 \subsection{Timers}
 
@@ -93,36 +93,36 @@ Message & Fields and meaning \\
 \toprule
 Timer & Value & Meaning \\
 \midrule
-\texttt{bid\_window\_ms} & 60 ms & how long a node collects bids for a report, from when the report reached it \\
-\texttt{round\_ms} & 5 ms & how often a node makes its next batch for the shared log \\
-\texttt{peer\_heartbeat\_ms} & 50 ms & how often nodes check each other \\
-\texttt{takeover\_missed\_heartbeats} & 20 & so 1 s of silence before a peer is suspected and dropped \\
-takeover backstop & $\ge$ 1.5 s & a loser plans the report if the winner has said nothing (\dlog{D250}) \\
-\texttt{client\_retry\_ms}, \texttt{\_max\_ms} & 2 s, 6 s & the client's waits: 2, 4, 6, 6, 6 and 6 s, each $\pm$20\% \\
-\texttt{client\_max\_retries} & 5 & then the client returns an error \\
-call deadline & 36 s & one per report: 1.2 times all the waits together (\dlog{D169}) \\
-\texttt{propose\_timeout\_ms} & 3 s & how long a command may wait to be applied \\
-\texttt{peer\_rpc\_timeout\_ms} & 500 ms & one small call between nodes \\
-\texttt{degraded\_after\_ms} & 2 s & a node alone this long answers provisionally \\
-\texttt{JOIN\_GRACE}, \texttt{BOOT\_GRACE} & 3 s, 3 s & time to send after being added; time to wait for others after a restart \\
+Bid window & 60 ms & how long a node collects bids for a report, from when the report reached it \\
+Round interval & 5 ms & how often a node makes its next batch for the shared log \\
+Heartbeat interval & 50 ms & how often nodes check each other \\
+Missed heartbeats & 20 & so 1 s of silence before a peer is suspected and dropped \\
+takeover backstop & $\ge$ 1.5 s & a loser plans the report if the winner has said nothing \\
+Client retry wait, and its cap & 2 s, 6 s & the client's waits: 2, 4, 6, 6, 6 and 6 s, each $\pm$20\% \\
+Client retries & 5 & then the client returns an error \\
+call deadline & 36 s & one per report: 1.2 times all the waits together \\
+Proposal timeout & 3 s & how long a command may wait to be applied \\
+Peer call timeout & 500 ms & one small call between nodes \\
+Degraded after & 2 s & a node alone this long answers provisionally \\
+Join grace, restart grace & 3 s, 3 s & time to send after being added; time to wait for others after a restart \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-The first choice for detection was 3 missed heartbeats, about 150 ms. On the lab's Wi-Fi this dropped healthy nodes under load, so it was raised to 1 s (\dlog{D249}). A failure therefore costs at least 1 s, and the results report it that way.
+The first choice for detection was 3 missed heartbeats, about 150 ms. On the lab's Wi-Fi this dropped healthy nodes under load, so it was raised to 1 s. A failure therefore costs at least 1 s, and the results report it that way.
 
 \subsection{Retries, duplicates and requests in flight}
 \label{sec:retries}
 
-\textbf{Retries.} A client should try 5 times and then report an error. The client middleware sends a report, waits 2 s, and sends it again with the same ID, then waits 4 s, then 6 s, up to 5 retries, and then \code{submit} returns an error (\dlog{D52}). Each wait has $\pm$20\% random spread so that clients do not retry together. Test T5 checks this with all nodes off: the client gave up with \texttt{"attempts":6} (Section~\ref{sec:tests}).
+\textbf{Retries.} A client should try 5 times and then report an error. The client middleware sends a report, waits 2 s, and sends it again with the same ID, then waits 4 s, then 6 s, up to 5 retries, and then the submit call returns an error. Each wait has $\pm$20\% random spread so that clients do not retry together. Test T5 checks this with all nodes off: the client gave up after 6 attempts (Section~\ref{sec:tests}).
 
-During a long outage at high load, retries can flood the network that the returning node needs to catch up. This was measured: with a second node killed at 20,000 a second, clients sent about 30,000 retries a second and answers fell to zero (\dlog{D264}). So a client earns 0.2 of a retry for each first send, plus 200 a second, and may save up to 5,000. A short failure uses the savings and is not slowed; a long one cannot flood the air. A retry with nothing to spend is not sent, and its time still passes, so a report still gives up when it always did.
+During a long outage at high load, retries can flood the network that the returning node needs to catch up. This was measured: with a second node killed at 20,000 a second, clients sent about 30,000 retries a second and answers fell to zero. So a client earns 0.2 of a retry for each first send, plus 200 a second, and may save up to 5,000. A short failure uses the savings and is not slowed; a long one cannot flood the air. A retry with nothing to spend is not sent, and its time still passes, so a report still gives up when it always did.
 
-\textbf{Duplicates.} Every report has one ID, made of the client's number and a sequence number. The first result recorded for an ID wins on every node, and a later one gets the winner back (\dlog{D27}). So planning a report twice, by a takeover or by two nodes that both think they won, is wasted work but never a wrong answer. A node that already holds a result answers a retry from its own copy, and a command already decided never goes into the log again (\dlog{D37}, \dlog{D250}).
+\textbf{Duplicates.} Every report has one ID, made of the client's number and a sequence number. The first result recorded for an ID wins on every node, and a later one gets the winner back. So planning a report twice, by a takeover or by two nodes that both think they won, is wasted work but never a wrong answer. A node that already holds a result answers a retry from its own copy, and a command already decided never goes into the log again.
 
 \textbf{Requests in flight at a failure.} A report in flight when a node fails is covered three ways. If the winner goes quiet, the next node in that report's ranking plans it once the winner is suspected, or at the backstop (Section~\ref{sec:takeover}). If the answer is lost, the client's retry reaches all nodes again, and any node that holds the result answers from its copy. If the winner's result was already in the log, any node answers with it. Section~\ref{sec:s3} measures how many reports took each path.
 
-\textbf{The client's view.} Figure~\ref{fig:client-states} is the state machine of one report inside \code{MeshClient}.
+\textbf{The client's view.} Figure~\ref{fig:client-states} is the state machine of one report inside the client middleware.
 
 \begin{figure}[!htb]
 \centering
@@ -133,11 +133,11 @@ During a long outage at high load, retries can flood the network that the return
   \node[state, fill=mwgreen!14, text width=3.6cm] (done) at (10.2,1.3) {\textbf{Done}: a plan on record};
   \node[state, fill=mwgreen!14, text width=3.6cm] (exp) at (10.2,0) {\textbf{Expired}: too old, nobody sent};
   \node[state, fill=notefill, text width=3.6cm] (prov) at (10.2,-1.3) {\textbf{Provisional}: a lone node's plan};
-  \node[state, fill=badred!10, text width=3.6cm] (gave) at (10.2,-2.6) {\textbf{Gave up}: \code{submit} returns an error};
+  \node[state, fill=badred!10, text width=3.6cm] (gave) at (10.2,-2.6) {\textbf{Gave up}: the submit call returns an error};
   \draw[flow] (i) -- node[elabel, above]{new ID} (sent);
-  \draw[flow] (sent.east) -- node[elabel, above, sloped, pos=0.55]{first \code{Done}} (done.west);
-  \draw[flow] (sent.east) -- node[elabel, above, pos=0.55]{first \code{Expired}} (exp.west);
-  \draw[flow] (sent.east) -- node[elabel, below, sloped, pos=0.55]{first \code{Provisional}} (prov.west);
+  \draw[flow] (sent.east) -- node[elabel, above, sloped, pos=0.55]{first done reply} (done.west);
+  \draw[flow] (sent.east) -- node[elabel, above, pos=0.55]{first expired reply} (exp.west);
+  \draw[flow] (sent.east) -- node[elabel, below, sloped, pos=0.55]{first provisional reply} (prov.west);
   \draw[flow] ([xshift=-6pt]sent.south) -- node[elabel, left]{no answer in the wait} ([xshift=-6pt]retry.north);
   \draw[flow] ([xshift=6pt]retry.north) -- node[elabel, right]{resend} ([xshift=6pt]sent.south);
   \draw[flow] (retry) -- node[elabel, above]{5 retries used} (gave);
@@ -149,11 +149,11 @@ During a long outage at high load, retries can flood the network that the return
 \subsection{Choice of RPC}
 \label{sec:rpc}
 
-The remote calls use a ready-made RPC system rather than raw UDP. The team chose RPC, not RMI, and the library \texttt{tarpc} \cite{tarpc} as the system (\dlog{D119}, \dlog{D176}). The service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so Table~\ref{tab:rpc} compares tarpc with the three classic systems, Java RMI, CORBA and Sun RPC \cite{coulouris}, on the same rows.
+The remote calls use a ready-made RPC system rather than raw UDP. The team chose RPC, not RMI, and the library tarpc \cite{tarpc} as the system. The service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so Table~\ref{tab:rpc} compares tarpc with the three classic systems, Java RMI, CORBA and Sun RPC \cite{coulouris}, on the same rows.
 
 \begin{table}[!htb]
 \centering\small
-\caption{tarpc against three classic RPC and RMI systems (\dlog{D176}).}
+\caption{tarpc against three classic RPC and RMI systems.}
 \label{tab:rpc}
 \begin{tabularx}{\linewidth}{@{}P{2.6cm}LLLL@{}}
 \toprule
@@ -161,13 +161,13 @@ The remote calls use a ready-made RPC system rather than raw UDP. The team chose
 \midrule
 Style & RMI & RMI & RPC & RPC \\
 Languages & Java only & many & many & Rust only \\
-Interface & remote interface & CORBA IDL & Sun XDR & a Rust trait with \texttt{\#[tarpc::service]} \\
+Interface & remote interface & CORBA IDL & Sun XDR & a Rust trait marked as a service \\
 Marshalling & Java serialization & CDR & XDR & serde with bincode \\
 Semantics alone & at-most-once & at-most-once & at-least-once & maybe: it never resends \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-tarpc on its own gives ``maybe'' semantics, so at-most-once is provided by the team's own code (\dlog{D177}). From client to cloud, the effect of a report is recorded at most once across all replicas: the client resends with the same ID, the results table filters duplicates by ID, and any node re-sends the answer from its copy. Peer calls are ``maybe'': a lost bid or heartbeat is simply covered by the next one. The one labelled exception is a provisional answer from a node alone, which can differ from what is recorded later (Section~\ref{sec:degraded}).
+tarpc on its own gives ``maybe'' semantics, so at-most-once is provided by the team's own code. From client to cloud, the effect of a report is recorded at most once across all replicas: the client resends with the same ID, the results table filters duplicates by ID, and any node re-sends the answer from its copy. Peer calls are ``maybe'': a lost bid or heartbeat is simply covered by the next one. The one labelled exception is a provisional answer from a node alone, which can differ from what is recorded later (Section~\ref{sec:degraded}).
 
-\textbf{Why UDP for reports.} Reports travel over UDP, but the UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware (\dlog{D178}). UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.
+\textbf{Why UDP for reports.} Reports travel over UDP, but the UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware. UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.

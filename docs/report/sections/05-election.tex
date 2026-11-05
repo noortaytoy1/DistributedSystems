@@ -34,10 +34,10 @@ Load bidding \cite{contractnet} & unique request IDs, a bid timeout & $n$ to $n(
 \toprule
 Job & Chosen in the survey (Oct 4) & Built in the final system \\
 \midrule
-Order of the shared log & Raft leader election & No leader: every node sorts the same batches (\dlog{D249}) \\
-Node that plans a report & Load bidding & Load bidding, as chosen (\dlog{D2}, \dlog{D114}) \\
-Node that fails next & chosen by the Raft leader & a draw by all three nodes (\dlog{D158}) \\
-Recovery of a returning node & the Raft leader sends what it missed & any member sends what it missed (\dlog{D261}) \\
+Order of the shared log & Raft leader election & No leader: every node sorts the same batches \\
+Node that plans a report & Load bidding & Load bidding, as chosen \\
+Node that fails next & chosen by the Raft leader & a draw by all three nodes \\
+Recovery of a returning node & the Raft leader sends what it missed & any member sends what it missed \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -45,25 +45,25 @@ Recovery of a returning node & the Raft leader sends what it missed & any member
 \subsection{The bidding election, for every report}
 \label{sec:bidding}
 
-Every node that receives a report and is serving opens a round for it, sends its bid to its peers, and waits 60 ms from when the report reached it. Then it closes the round by itself. The lowest bid wins, ties go to the lower node ID, and the order of the bids is also the takeover order (\dlog{D2}, \dlog{D43}). There is no ``you won'' message. Every node works out the same winner from the same bids, so nobody coordinates. This follows the announce, bid and award shape of the contract net protocol \cite{contractnet}, except that every node does the award by itself. Each attempt of a report has its own round, so a retry bids again with fresh load (\dlog{D84}).
+Every node that receives a report and is serving opens a round for it, sends its bid to its peers, and waits 60 ms from when the report reached it. Then it closes the round by itself. The lowest bid wins, ties go to the lower node ID, and the order of the bids is also the takeover order. There is no ``you won'' message. Every node works out the same winner from the same bids, so nobody coordinates. This follows the announce, bid and award shape of the contract net protocol \cite{contractnet}, except that every node does the award by itself. Each attempt of a report has its own round, so a retry bids again with fresh load.
 
 \textbf{The bid} is the expected wait at this node, in microseconds:
 \[
-\mathit{score} = \frac{(\mathit{queued} + \mathit{running} + \mathit{just\_won} + 1) \times \mathit{recent\_service\_us}}{\mathit{workers}}
+\mathit{score} = \frac{(\mathit{queued} + \mathit{running} + \mathit{won} + 1) \times \mathit{service}}{\mathit{workers}}
 \]
-Here \emph{queued} and \emph{running} are the worker pool's jobs, \emph{just\_won} counts rounds this node won or is leading but has not started yet, and \emph{recent\_service\_us} is a running average of its own planning time (\dlog{D45}, \dlog{D85}, \dlog{D86}). The $+1$ counts the report being bid on, so an idle fast node beats an idle slow one. \emph{just\_won} matters because a node can win many rounds before its queue shows them; without it, every report in a burst would go to the same node, which the survey warned of \cite{survey}. In the report traced in Figure~\ref{fig:seq-report}, node 3 had 123 such rounds and a planning time of 8 $\mu$s with 20 workers, so it bid $(123+1) \times 8 / 20 = 49$.
+Here \emph{queued} and \emph{running} are the worker pool's jobs, \emph{won} counts rounds this node won or is leading but has not started yet, and \emph{service} is a running average of its own planning time in microseconds. The $+1$ counts the report being bid on, so an idle fast node beats an idle slow one. \emph{won} matters because a node can win many rounds before its queue shows them; without it, every report in a burst would go to the same node, which the survey warned of \cite{survey}. In the report traced in Figure~\ref{fig:seq-report}, node 3 had 123 such rounds and a planning time of 8 $\mu$s with 20 workers, so it bid $(123+1) \times 8 / 20 = 49$.
 
-Expected wait was chosen over the other variants because it measured best. Scenario 2 in Section~\ref{sec:lb} compares it with a queue-only score: when one node's planning was made 5 times slower, the queue-only score barely changed its bid, because a slow plan does not show in the queue at that load, while expected wait moved most of the work away (\dlog{D87}).
+Expected wait was chosen over the other variants because it measured best. Scenario 2 in Section~\ref{sec:lb} compares it with a queue-only score: when one node's planning was made 5 times slower, the queue-only score barely changed its bid, because a slow plan does not show in the queue at that load, while expected wait moved most of the work away.
 
 \textbf{When bids are missed.} A node that misses a bid can decide differently from the others. Then two nodes both plan a report, or none does until the backstop. This costs work and time and is never wrong, because the first result recorded wins. At high load fewer rounds see all three bids, which is what limits fairness above 30,000 reports a second (Table~\ref{tab:elcost}).
 
 \begin{table}[!htb]
 \centering\small
-\caption{What the bidding election costs, overnight (\commit{a7ceb34}), 5 runs per row. ``All 3 bids'' is the share of rounds that saw every node's bid. Calls are per request; bids are sent in groups, so there are far fewer calls than bids.}
+\caption{What the bidding election costs, on the overnight build, 5 runs per row. ``All 3 bids'' is the share of rounds that saw every node's bid. Calls are per request; bids are sent in groups, so there are far fewer calls than bids.}
 \label{tab:elcost}
 \begin{tabular}{@{}rrrrrrr@{}}
 \toprule
-Offered/s & \texttt{plan\_work} & Election p50 ms & p99 ms & All 3 bids & Bid calls & Fairness (Jain) \\
+Offered/s & Planning work & Election p50 ms & p99 ms & All 3 bids & Bid calls & Fairness (Jain) \\
 \midrule
 5,000 & 0 & 61.0 & 62.0 & 97.7\% & 0.089 & 0.999 \\
 10,000 & 0 & 61.0 & 62.0 & 96.2\% & 0.044 & 0.997 \\
@@ -83,7 +83,7 @@ An election takes its 60 ms window plus scheduling. The window is a setting: a s
 \subsection{Takeover: when the winner goes quiet}
 \label{sec:takeover}
 
-Every node that lost a round stands by. If the winner is suspected, or nothing for that report is recorded within the backstop of at least 1.5 s, the next node in the round's ranking plans it (\dlog{D42}, \dlog{D110}, \dlog{D250}). If the old winner's result arrives later, it is a duplicate and changes nothing. Figure~\ref{fig:seq-takeover} shows the case.
+Every node that lost a round stands by. If the winner is suspected, or nothing for that report is recorded within the backstop of at least 1.5 s, the next node in the round's ranking plans it. If the old winner's result arrives later, it is a duplicate and changes nothing. Figure~\ref{fig:seq-takeover} shows the case.
 
 \begin{figure}[!htb]
 \centering
@@ -100,8 +100,8 @@ Every node that lost a round stands by. If the winner is suspected, or nothing f
   \seqlost{4.4}{8.8}{-3.6}{heartbeats}
   \seqself{13.2}{-4.3}{1 s with nothing heard:\\ suspect node 2;\\ nothing recorded yet}
   \seqself{13.2}{-5.4}{take over:\\ plan, record}
-  \seqrep{13.2}{0}{-6.5}{Done(plan by node 3)}
-  \seqnote{6.6}{-7.0}{8.0}{if node 2's own result arrives later, it is a \code{Duplicate} and changes nothing}
+  \seqrep{13.2}{0}{-6.5}{done: plan by node 3}
+  \seqnote{6.6}{-7.0}{8.0}{if node 2's own result arrives later, it is a duplicate and changes nothing}
 \end{tikzpicture}}
 \caption{Takeover. Node 1 also stands by; it would plan only if node 3 were also silent. The same happens without a fault if the winner is merely slow, at the 1.5 s backstop.}
 \label{fig:seq-takeover}
@@ -110,7 +110,7 @@ Every node that lost a round stands by. If the winner is suspected, or nothing f
 \subsection{The fault election}
 \label{sec:faultelection}
 
-The spec requires the three cloud servers to elect, from time to time, one machine to ignore communication for up to 20 s. The survey had the Raft leader choose. This was changed so that no node decides for another (\dlog{D158}): every 30 to 60 s, the three nodes draw random numbers and send them to each other, and the highest goes silent for its own drawn time of 1 to 20 s. The first node whose timer runs out starts a round, and the others draw as soon as they hear of it, so starting a round gives no power. A node that is missing any of the three numbers does nothing, so a node that is off, silent or catching up blocks the next fault. That keeps faults to one at a time on this path (\dlog{D159}). Figure~\ref{fig:seq-faultel} shows a round.
+The spec requires the three cloud servers to elect, from time to time, one machine to ignore communication for up to 20 s. The survey had the Raft leader choose. This was changed so that no node decides for another: every 30 to 60 s, the three nodes draw random numbers and send them to each other, and the highest goes silent for its own drawn time of 1 to 20 s. The first node whose timer runs out starts a round, and the others draw as soon as they hear of it, so starting a round gives no power. A node that is missing any of the three numbers does nothing, so a node that is off, silent or catching up blocks the next fault. That keeps faults to one at a time on this path. Figure~\ref{fig:seq-faultel} shows a round.
 
 \begin{figure}[!htb]
 \centering
@@ -119,19 +119,19 @@ The spec requires the three cloud servers to elect, from time to time, one machi
   \seqactor{5.0}{Node 1}{-6.2}
   \seqactor{10.0}{Node 3}{-6.2}
   \seqself{0}{-0.9}{draws ticket 482113,\\ silence 14.2 s}
-  \seqmsg{0}{5.0}{-1.9}{FaultBid(round 7)}
+  \seqmsg{0}{5.0}{-1.9}{fault bid, round 7}
   \seqmsg{0}{10.0}{-2.2}{}
   \seqself{5.0}{-2.5}{hears round 7: draws 90722, 6.1 s}
-  \seqmsg{5.0}{0}{-3.3}{FaultBid}
-  \seqmsg{5.0}{10.0}{-3.3}{FaultBid}
+  \seqmsg{5.0}{0}{-3.3}{fault bid}
+  \seqmsg{5.0}{10.0}{-3.3}{fault bid}
   \seqself{10.0}{-3.6}{draws 613004, 19 s}
-  \seqmsg{10.0}{5.0}{-4.4}{FaultBid}
+  \seqmsg{10.0}{5.0}{-4.4}{fault bid}
   \seqmsg{10.0}{0}{-4.7}{}
   \seqnote{5.0}{-5.4}{11.0}{each holds all 3 tickets and works out the same winner alone: node 3, the highest}
   \seqself{10.0}{-5.9}{closes its own gate for 19 s}
 \end{tikzpicture}
-\caption{One round of the fault election (\texttt{node/faults.rs}). The others suspect node 3 about 1 s later and go on without it. Nothing goes through the shared log, and no node is in charge.}
+\caption{One round of the fault election. The others suspect node 3 about 1 s later and go on without it. Nothing goes through the shared log, and no node is in charge.}
 \label{fig:seq-faultel}
 \end{figure}
 
-In the experiments the fault election was measured on its own, in 5 runs of 5 minutes at 3,000 reports a second with faults every 20 to 30 s: 47 elected faults, every node elected at least once in 4 of the 5 runs, nobody gave up, and the others dropped the silent node in a median of 1,018 ms (Section~\ref{sec:s4}). In the other experiment cells, the script silences the node at a fixed time with \texttt{ctl silence}, so that runs can be compared.
+In the experiments the fault election was measured on its own, in 5 runs of 5 minutes at 3,000 reports a second with faults every 20 to 30 s: 47 elected faults, every node elected at least once in 4 of the 5 runs, nobody gave up, and the others dropped the silent node in a median of 1,018 ms (Section~\ref{sec:s4}). In the other experiment cells, the script silences the node at a fixed time with the operator tool, so that runs can be compared.
