@@ -318,6 +318,8 @@ table below in sync.
 | D256 | Messages wait longer so that fewer packets cross the air | C | Implemented, amends D236, D246, D247 |
 | D257 | A returning node starts past its old stream, and every node reads its entry in one view | A | Implemented, fixes D252 |
 | D258 | A load program writes its PC's name and address in its log | F | Implemented |
+| D259 | We looked for a shared-log library with no leader, and kept our own | A, all | Implemented |
+| D260 | The Phase 1 experiments: five passes over the night, on the spec's scenarios | all | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8125,6 +8127,31 @@ them on the six PCs.
 - **Decision.** `client_started` gets `host`, read from `/etc/hostname`, and `ip`, the address the system would use to reach the first node. Together with `request.client` on every per-request line, this names the client PC from the log alone.
 - **Where.** `src/metrics.rs`, `src/bin/loadgen.rs`.
 - **How we check it.** Each run's client logs, read by the analysis.
+
+### D259 · We looked for a shared-log library with no leader, and kept our own
+
+- **Date:** 2026-11-05 · **Part:** A, all · **Status:** Implemented · **Decided by:** the person running the lab session, who asked for a library in place of our own code, with no leader or coordinator, and to go back to our own if none worked. The agent searched and tested.
+- **Context.** The ordering in `src/rounds.rs` (D249) is our own code. The spec allows libraries, and asks the report to say which functions they provide. The person running the lab recalled that other teams used a log-sharing library, and could not recall its name, only that it sounded like "kosec". We found nothing by that name.
+- **Options considered.**
+  1. *`synevi` 0.1.0, Accord, no leader.* Compiled and run on the three node PCs. Same digests with no fault. With one node stopped for 20 s, the other two applied nothing for the whole fault, and all three ended with different digests, in two kinds of test. Rejected.
+  2. *`fantoch`: Tempo, Atlas, EPaxos, no leader.* Each has `todo!("recovery not implemented yet")`. Rejected.
+  3. *`AlephBFT`, `hbbft`, no leader.* As far as we know they need 4 nodes to survive one failure. We have 3. Rejected, not run.
+  4. *Kafka.* Rejected by the person running the lab, as a partition leader and a KRaft quorum sit inside it. Not run.
+  5. *`openraft`.* Has a leader. At 10,000 a second on the final code, one run, it answered 4,306.2 a second, and 341,568 gave up.
+  6. *Corosync 3.1.7, Totem.* A token goes round a ring, and when the group changes the lowest node ID builds the new ring. The closest name we could find to what was recalled. **Not run:** its programs were installed without `sudo` on the node PCs, and running them needs approval not yet given. Open if given.
+  7. *Zenoh, `libp2p-gossipsub`, `iroh-gossip`.* As far as we know they only carry messages, with no agreed order, so they could only replace `tarpc`. Not run.
+  8. *Keep our own (chosen).* `tarpc` carries the logs, `bincode` encodes them, `tokio` runs the tasks, and the ordering rule stays ours.
+- **Why.** It is the only option here that was measured to keep serving, with one digest, when a node stops, with no leader.
+- **Consequences.** The report says plainly that the ordering is ours, so its correctness rests on our tests and experiments.
+- **Where.** `docs/shared-log.md`, `analysis/results/library-search/`.
+
+### D260 · The Phase 1 experiments: five passes over the night, on the spec's scenarios
+
+- **Date:** 2026-11-05 · **Part:** all · **Status:** Implemented · **Decided by:** the person running the lab session, who named scenarios 1, 2, 3, 4 and 9, asked for about 8 hours of runs from all client PCs, and for every step logged.
+- **Decision.** `scripts/phase1/run-experiments.sh` runs every cell once in a pass, then repeats, so drift falls across all cells, not on one. Each node keeps its whole log, gzipped. The first analysis found the slowdown in scenario 2 ended wrongly: `ctl skew` sets the planning work, so `--work 0` left that node with none. It was rerun with `--work 1000`, and the first runs are kept and labelled.
+- **What ran.** 157 runs and 199,481,205 requests. The 5 passes took 6 h 37 min and the rerun about 37 min, so about 7.2 hours of the 8 asked for. The person running the lab accepted this and did not want a sixth pass.
+- **A run "held"** if it answered at least 99% of the offered rate, nobody gave up, and p99 stayed under 3 s. p99 under 3 s allows for answers that needed the client's 2 s retry, which the person running the lab accepts as normal for a real system.
+- **Where.** `scripts/phase1/`, `analysis/phase1/`, `docs/phase1-report.md`, `analysis/results/exp8h/`.
 
 ### Notes on older entries
 

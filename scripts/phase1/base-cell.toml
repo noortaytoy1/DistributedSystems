@@ -1,0 +1,30 @@
+# run: users=3000 think_ms=1000
+
+[policy]
+# A busy leader stays leader here, so runs stay comparable (D218).
+leader_overload_ratio = 0
+assignment = "bidding"
+score = "expected-wait"
+cpu_weight = 1
+
+[workers]
+queue_capacity = 4096
+threads = 20
+plan_work = 0
+
+[campus]
+# 300 would cap assignments near 500 a second, and the top of E1 would measure the pool (D219).
+responders = 60000
+
+[faults]
+# Faults only as the run line orders them: the schedule never fires within a run.
+enabled = true
+interval_min_ms = 100000000
+interval_max_ms = 100000000
+
+[timers]
+raft_heartbeat_ms = 100
+bid_window_ms = 60
+election_timeout_min_ms = 400
+election_timeout_max_ms = 550
+takeover_missed_heartbeats = 20

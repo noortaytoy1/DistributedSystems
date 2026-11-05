@@ -4,10 +4,12 @@ Every number here was read from the files in this folder or from `runs/`. Nothin
 
 ## The short version
 
+**The final results are in [docs/phase1-report.md](../../docs/phase1-report.md):** 157 runs, 199,481,205 requests, 0 unaccounted, 0 digest mismatches. The ceiling is 12,000 requests a second with the planning load, and 30,000 with none, each in all 5 runs. **This page is the record of how we got there, on older code and with fewer repeats, and where it differs, that report is right.**
+
 - **The plan ran in full:** 21 cells, 3 runs each, 15 s warm-up and 60 s measured, on six PCs. 1,372,598 operations. No run was left out.
 - **Safety held everywhere it was checked.** In all 21 plan cells and all 31 runs with an `extras.txt` here: 0 digest mismatches, 0 `unaccounted`, 0 panics. `fault_split_decisions` and `reports_expired` were 0 in both summaries.
 - **Failover works.** A new leader in about 800 ms at 300 users, and about 840 ms at 1500. Nobody gave up in those cells.
-- **At the end of the session, with no leader, the system handles 10,000 requests a second, and its measured ceiling on Wi-Fi is about 33,000 to 35,000 a second with `plan_work` 0.** 10,000 was clean in three runs and with a node killed twice. 30,000 was clean in three short runs and a 5-minute hold. On the final code 35,000 was clean and 36,000 fell, one run each. On the build before it, 33,000 was clean, 34,000 began to break and 35,000 fell. See "The ceiling" below. **With `plan_work` 1000, 10,000 was clean and 15,000 fell.** All of the rest of this list and the plan's tables are about the older code at `0397d37`, with Raft.
+- **At the end of the session, with no leader, the system handles 10,000 requests a second, and its reliable ceiling on Wi-Fi is 30,000 a second with `plan_work` 0, and 12,000 with `plan_work` 1000.** 10,000 was clean in three runs and with a node killed twice. 30,000 was clean in three short runs and a 5-minute hold. On the final code 35,000 was clean and 36,000 fell, one run each. On the build before it, 33,000 was clean, 34,000 began to break and 35,000 fell. See "The ceiling" below. **With `plan_work` 1000, 10,000 was clean and 15,000 fell.** All of the rest of this list and the plan's tables are about the older code at `0397d37`, with Raft.
 - **A limit that remains: two failures close together stop commits, and they did not resume for the rest of that run.** Answers stayed correct, with 0 digest mismatches, but 1,303 reports gave up in that test. One failure at a time recovers. See "The ceiling".
 - **A real bug was found and fixed on the way:** digest mismatches came back twice on rotating rounds, and T4's last part found the second (D252, D257). Each fix has a test that fails without it.
 - **T1 to T4 on rotating rounds ran with 3-minute loads and `kill -9`.** T3's plan steps, the plan's 21 cells and T5 were not repeated on rotating rounds, so their tables below are for Raft.
@@ -285,6 +287,8 @@ At 10000 each node used about 1.3 CPU cores, received about 14 Mbit/s and sent a
 **That result was one run, and its repeat fell, with digest mismatches. See "The ceiling" below.** **Known limit:** a restarted node recovers from a peer's log and not its own file (D249).
 
 ## The ceiling: about 33,000 to 35,000 a second with no leader
+
+**Later runs corrected this heading.** Over 5 runs on the final code, 30,000 held in all 5, 33,000 and 35,000 in 3 of 5, and 36,000 in 1 of 5. See [docs/phase1-report.md](../../docs/phase1-report.md).
 
 **Code:** rotating rounds, commits `cdec322` and `eba4d14`, branch `shared-raise-throughput-limits`. **Network:** the same Wi-Fi as everything else here, with node 2 and client 1 sending by cable. Nine load programs, 75 s each, 15 s of it warm-up. Log lines were cut to key lines at these rates, so `unaccounted` was not read, and "digest mismatches" compare fixed-index checkpoints on all three nodes. **`plan_work` 0 unless a row says otherwise, which means no simulated planning load.** Full figures are in `ceiling-summary.txt`.
 

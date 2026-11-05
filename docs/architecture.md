@@ -83,7 +83,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 
 ### Rotating rounds: no elected node (built, D249)
 
-With `consensus = "rounds"` nobody is elected. Each node numbers its own batches by round and sends them to its peers, and every node applies the same order: by round, then by node ID, once all members have passed that round. `src/rounds.rs` sits behind the `Consensus` trait, so nothing above it changes.
+With `consensus = "rounds"` nobody is elected ([shared-log.md](shared-log.md) has all of it, and [phase1-report.md](phase1-report.md) the results). Each node numbers its own batches by round and sends them to its peers, and every node applies the same order: by round, then by node ID, once all members have passed that round. `src/rounds.rs` sits behind the `Consensus` trait, so nothing above it changes.
 
 ```mermaid
 sequenceDiagram

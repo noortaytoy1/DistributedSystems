@@ -1,0 +1,64 @@
+Thu Nov  5 07:53:58 AM EET 2026
+commit a7ceb34b229c0cf7791424109228ff2d6296962d
+== cse1@10.40.2.29
+a7ceb34
+24
+15 GB
+Model name:                           13th Gen Intel(R) Core(TM) i7-13700
+performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+local 10.40.2.29 dev lo table local src 10.40.2.29 uid 1002 
+rtt min/avg/max/mdev = 34.467/43.025/49.662/5.422 ms
+== cse1@10.40.32.242
+a7ceb34
+24
+15 GB
+Model name:                           13th Gen Intel(R) Core(TM) i7-13700
+performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+10.40.2.29 via 10.7.57.1 dev enp0s31f6 src 10.7.57.80 uid 1001 
+rtt min/avg/max/mdev = 16.133/24.521/31.964/5.546 ms
+== cse1@10.40.0.73
+a7ceb34
+24
+15 GB
+Model name:                           13th Gen Intel(R) Core(TM) i7-13700
+performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+10.40.2.29 dev wlp0s20f3 src 10.40.0.73 uid 1002 
+rtt min/avg/max/mdev = 0.015/0.039/0.056/0.015 ms
+== local
+a7ceb34
+24
+15 GB
+Model name:                           13th Gen Intel(R) Core(TM) i7-13700
+balance_performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+10.40.2.29 via 10.7.57.1 dev enp0s31f6 src 10.7.57.193 uid 1004 
+ping: socktype: SOCK_RAW
+ping: socket: Operation not permitted
+ping: => missing cap_net_raw+p capability or setuid?
+== cse1@10.40.1.240
+a7ceb34
+24
+15 GB
+Model name:                              13th Gen Intel(R) Core(TM) i7-13700
+balance_performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+10.40.2.29 dev wlp0s20f3 src 10.40.1.240 uid 1001 
+rtt min/avg/max/mdev = 83.763/92.388/100.932/6.034 ms
+== cse1@10.40.5.45
+a7ceb34
+24
+15 GB
+Model name:                           13th Gen Intel(R) Core(TM) i7-13700
+balance_performance
+8388608
+wlp0s20f3  ESSID:"AUC-WiFi"
+10.40.2.29 dev wlp0s20f3 src 10.40.5.45 uid 1003 
+rtt min/avg/max/mdev = 6.065/54.503/76.509/25.132 ms

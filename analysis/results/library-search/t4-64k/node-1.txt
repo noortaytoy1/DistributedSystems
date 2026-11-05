@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 1: own done 110 (7/s) errors 0 p50 1451.0 ms p99 1738.9 ms max 1785.2 ms | applied 376 digest bb942fafab417f16 | stats total 110 accepts 11 recovers 39
+t10 node 1: done/s 0 applied/s 5 errors 0 applied 5 digest a27e476ada5a03f4
+t11 node 1: done/s 10 applied/s 21 errors 0 applied 26 digest 4a224f1b298cf0b3
+t12 node 1: done/s 0 applied/s 21 errors 0 applied 47 digest f41391c2dc267723
+t13 node 1: done/s 10 applied/s 23 errors 0 applied 70 digest dea10f24f05df434
+t14 node 1: done/s 10 applied/s 26 errors 0 applied 96 digest a0c3fc26077307be
+t15 node 1: done/s 0 applied/s 23 errors 0 applied 119 digest a257a812ccc3e58d
+t16 node 1: done/s 10 applied/s 26 errors 0 applied 145 digest cae6a11c2b4d3f47
+t17 node 1: done/s 10 applied/s 26 errors 0 applied 171 digest b00f1a24ab0246e1
+t18 node 1: done/s 5 applied/s 25 errors 0 applied 196 digest 50d0be193f777664
+t19 node 1: done/s 5 applied/s 22 errors 0 applied 218 digest cefa1b7a019bc972
+t20 node 1: done/s 10 applied/s 27 errors 0 applied 245 digest ffe12d9f5c949b13
+t21 node 1: done/s 10 applied/s 23 errors 0 applied 268 digest 2463c16f998b95c7
+t22 node 1: done/s 0 applied/s 24 errors 0 applied 292 digest a65529f096372a0d
+t23 node 1: done/s 10 applied/s 26 errors 0 applied 318 digest afac948e59405b59
+t24 node 1: done/s 10 applied/s 26 errors 0 applied 344 digest c3efa0faf3110430
+t25 node 1: done/s 10 applied/s 32 errors 0 applied 376 digest bb942fafab417f16
+t26 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t27 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t28 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t29 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t30 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t31 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16
+t32 node 1: done/s 0 applied/s 0 errors 0 applied 376 digest bb942fafab417f16

@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 0: own done 110 (7/s) errors 0 p50 1451.5 ms p99 1829.8 ms max 1922.8 ms | applied 376 digest df5ce5b14ff6e2da | stats total 110 accepts 13 recovers 33
+t10 node 0: done/s 8 applied/s 11 errors 0 applied 14 digest 1381b605f50966fd
+t11 node 0: done/s 2 applied/s 23 errors 0 applied 37 digest 1fd0de32b6afabc3
+t12 node 0: done/s 8 applied/s 22 errors 0 applied 59 digest 56130d1bd584c738
+t13 node 0: done/s 10 applied/s 24 errors 0 applied 83 digest 52883ca60485bbf1
+t14 node 0: done/s 2 applied/s 25 errors 0 applied 108 digest 938a0221a9c01e18
+t15 node 0: done/s 8 applied/s 25 errors 0 applied 133 digest ea6754c40b5e850d
+t16 node 0: done/s 10 applied/s 24 errors 0 applied 157 digest 4a963128dd98df78
+t17 node 0: done/s 3 applied/s 27 errors 0 applied 184 digest e66dc56cb626feaa
+t18 node 0: done/s 9 applied/s 24 errors 0 applied 208 digest 91837561cfed0fd1
+t19 node 0: done/s 8 applied/s 23 errors 0 applied 231 digest b3d4c34245783cf
+t20 node 0: done/s 10 applied/s 24 errors 0 applied 255 digest f100199e737dfe9b
+t21 node 0: done/s 2 applied/s 24 errors 0 applied 279 digest c9da6e6d8b2095c
+t22 node 0: done/s 8 applied/s 26 errors 0 applied 305 digest c43bfe678fa82de4
+t23 node 0: done/s 10 applied/s 25 errors 0 applied 330 digest 648e0be02abbf323
+t24 node 0: done/s 10 applied/s 34 errors 0 applied 364 digest 71be6f42524e556f
+t25 node 0: done/s 0 applied/s 12 errors 0 applied 376 digest df5ce5b14ff6e2da
+t26 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t27 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t28 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t29 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t30 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t31 node 0: done/s 0 applied/s 0 errors 0 applied 376 digest df5ce5b14ff6e2da
+t9 node 0: done/s 2 applied/s 3 errors 0 applied 3 digest 7901ae6f2f907ad

@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 2: own done 103 (7/s) errors 0 p50 1429.7 ms p99 2265.1 ms max 2366.0 ms | applied 376 digest 9bac81105ca05a9e | stats total 103 accepts 14 recovers 38
+t10 node 2: done/s 0 applied/s 5 errors 0 applied 5 digest a27e476ada5a03f4
+t11 node 2: done/s 4 applied/s 22 errors 0 applied 27 digest e36919f011734169
+t12 node 2: done/s 6 applied/s 23 errors 0 applied 50 digest 6f2dc93a433a78c4
+t13 node 2: done/s 10 applied/s 22 errors 0 applied 72 digest b19cd64a62edb191
+t14 node 2: done/s 3 applied/s 28 errors 0 applied 100 digest e780cc89de9719df
+t15 node 2: done/s 7 applied/s 22 errors 0 applied 122 digest b04f1c99017adc5c
+t16 node 2: done/s 10 applied/s 25 errors 0 applied 147 digest c67637922e6bb6b7
+t17 node 2: done/s 4 applied/s 29 errors 0 applied 176 digest 1bc73f145ac69851
+t18 node 2: done/s 7 applied/s 23 errors 0 applied 199 digest bb86efae2791b47d
+t19 node 2: done/s 9 applied/s 21 errors 0 applied 220 digest a624a83b1d9620bd
+t20 node 2: done/s 9 applied/s 27 errors 0 applied 247 digest 851c5800dd2e02fc
+t21 node 2: done/s 4 applied/s 23 errors 0 applied 270 digest 1ccd7986323bd63d
+t22 node 2: done/s 7 applied/s 25 errors 0 applied 295 digest 68cb2e17f4eff8ec
+t23 node 2: done/s 10 applied/s 26 errors 0 applied 321 digest 47e682b2c49468d4
+t24 node 2: done/s 3 applied/s 27 errors 0 applied 348 digest 215d88807ea34c94
+t25 node 2: done/s 10 applied/s 28 errors 0 applied 376 digest 9bac81105ca05a9e
+t26 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t27 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t28 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t29 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t30 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t31 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e
+t32 node 2: done/s 0 applied/s 0 errors 0 applied 376 digest 9bac81105ca05a9e

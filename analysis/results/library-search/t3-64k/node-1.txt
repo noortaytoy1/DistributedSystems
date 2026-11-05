@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 1: own done 131 (9/s) errors 0 p50 1295.6 ms p99 1509.3 ms max 1554.6 ms | applied 390 digest c9fa49db2f824d58 | stats total 131 accepts 12 recovers 19
+t10 node 1: done/s 8 applied/s 11 errors 0 applied 29 digest 3ffbc4d44271dd94
+t11 node 1: done/s 6 applied/s 24 errors 0 applied 53 digest 348987df8f3ee748
+t12 node 1: done/s 10 applied/s 24 errors 0 applied 77 digest 9aa3ddd5f6c20b8f
+t13 node 1: done/s 7 applied/s 24 errors 0 applied 101 digest 6f653d2348eed6c7
+t14 node 1: done/s 7 applied/s 26 errors 0 applied 127 digest f0f8a2fc8d69442e
+t15 node 1: done/s 7 applied/s 22 errors 0 applied 149 digest 527ce4a4ff3b63c
+t16 node 1: done/s 9 applied/s 27 errors 0 applied 176 digest 38c4fbeb27992fd7
+t17 node 1: done/s 7 applied/s 25 errors 0 applied 201 digest 4f5a95a45c05fa99
+t18 node 1: done/s 10 applied/s 27 errors 0 applied 228 digest a3b6ba172afcc621
+t19 node 1: done/s 6 applied/s 25 errors 0 applied 253 digest 17613eb1fecfc3d7
+t20 node 1: done/s 7 applied/s 23 errors 0 applied 276 digest 4128caf6bee1cf8f
+t21 node 1: done/s 7 applied/s 25 errors 0 applied 301 digest 2cd8185edc1ea104
+t22 node 1: done/s 9 applied/s 27 errors 0 applied 328 digest 23159655d68a5d3
+t23 node 1: done/s 5 applied/s 22 errors 0 applied 350 digest 59a0cbc6c4664f3f
+t24 node 1: done/s 9 applied/s 36 errors 0 applied 386 digest e1ddc8b9b3600e83
+t25 node 1: done/s 0 applied/s 4 errors 0 applied 390 digest c9fa49db2f824d58
+t26 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t27 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t28 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t29 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t30 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t31 node 1: done/s 0 applied/s 0 errors 0 applied 390 digest c9fa49db2f824d58
+t9 node 1: done/s 17 applied/s 18 errors 0 applied 18 digest d7006de24a251b99

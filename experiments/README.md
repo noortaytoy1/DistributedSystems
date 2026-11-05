@@ -1,5 +1,7 @@
 # How to run the experiments
 
+**The final Phase 1 series was run by `scripts/phase1/run-experiments.sh`, on rotating rounds, and its results are in [docs/phase1-report.md](../docs/phase1-report.md).** This page is the earlier guide, written for Raft.
+
 For the team in the lab, on the six PCs. Read section 1, do section 3, then Plan A (section 4) if you have SSH
 or Plan B (section 5) if you do not. Then the tests in section 6. Section 7 says what to keep. The older reference on
 cells and keys comes after this guide.

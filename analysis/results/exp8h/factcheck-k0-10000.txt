@@ -1,0 +1,19 @@
+node 1 (10.40.2.29): 1193328 request_received lines, 1193328 unique requests, 383212 replied lines
+node 2 (10.40.32.242): 1502778 request_received lines, 1499827 unique requests, 549743 replied lines
+node 3 (10.40.0.73): 1502750 request_received lines, 1499826 unique requests, 591602 replied lines
+answers checked 1499850: client's `from` has no matching reply line in that node's log: 0; executor differs: 0
+reports that did not reach a node: {1: 306522, 2: 23, 3: 24}
+answers per client PC: {1: 499950, 2: 499950, 3: 499950}
+answers per cloud node: {1: 373719, 2: 545545, 3: 580586}
+client PC x cloud node: {'pc1-node1': 126100, 'pc1-node2': 176914, 'pc1-node3': 196936, 'pc2-node1': 123445, 'pc2-node2': 186025, 'pc2-node3': 190480, 'pc3-node1': 124174, 'pc3-node2': 182606, 'pc3-node3': 193170}
+examples (program, client PC, seq, answered by node, executor, latency us):
+  (1, 1, 1793837667351062, 1, 1, 138521)
+  (1, 1, 1793837667501059, 1, 1, 132260)
+  (2, 1, 1793837667484572, 2, 2, 134455)
+  (3, 1, 1793837667466933, 1, 1, 134321)
+  (4, 2, 1793837667856038, 1, 1, 155467)
+  (5, 2, 1793837667838566, 3, 3, 120536)
+  (6, 2, 1793837667822121, 3, 3, 130300)
+  (7, 3, 1793837667753288, 3, 3, 240347)
+  (8, 3, 1793837667736927, 3, 3, 122739)
+  (9, 3, 1793837667719986, 2, 2, 162401)

@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 2: own done 111 (7/s) errors 0 p50 1332.6 ms p99 1994.7 ms max 2045.1 ms | applied 390 digest 7c6fa80271387470 | stats total 111 accepts 11 recovers 27
+t10 node 2: done/s 0 applied/s 21 errors 0 applied 21 digest b5af381c16abd25
+t11 node 2: done/s 9 applied/s 21 errors 0 applied 42 digest 32c8a00f1240753f
+t12 node 2: done/s 3 applied/s 25 errors 0 applied 67 digest b71c94edb04a0ce2
+t13 node 2: done/s 8 applied/s 23 errors 0 applied 90 digest 1411a96c0f937050
+t14 node 2: done/s 10 applied/s 24 errors 0 applied 114 digest 7ee14e335a13a40f
+t15 node 2: done/s 8 applied/s 26 errors 0 applied 140 digest 296e4d36eb0a57dc
+t16 node 2: done/s 4 applied/s 27 errors 0 applied 167 digest 9c4612754c92ec49
+t17 node 2: done/s 8 applied/s 23 errors 0 applied 190 digest 2087a4ffa2746fb0
+t18 node 2: done/s 10 applied/s 25 errors 0 applied 215 digest f663ec7ef4e05b5f
+t19 node 2: done/s 10 applied/s 25 errors 0 applied 240 digest 88730ccf6ad5dca6
+t20 node 2: done/s 4 applied/s 25 errors 0 applied 265 digest 7721f8aa96f47e6b
+t21 node 2: done/s 6 applied/s 24 errors 0 applied 289 digest 1ef15af3f4bfb12
+t22 node 2: done/s 10 applied/s 25 errors 0 applied 314 digest c2bca49c5056d4b5
+t23 node 2: done/s 7 applied/s 25 errors 0 applied 339 digest e01f222dce25e0d
+t24 node 2: done/s 5 applied/s 30 errors 0 applied 369 digest dd55163cc9d19d3a
+t25 node 2: done/s 9 applied/s 21 errors 0 applied 390 digest 7c6fa80271387470
+t26 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t27 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t28 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t29 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t30 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t31 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
+t32 node 2: done/s 0 applied/s 0 errors 0 applied 390 digest 7c6fa80271387470
