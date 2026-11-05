@@ -387,6 +387,10 @@ pub enum Event {
         request: RequestId,
         attempts: u32,
     },
+    /// Retries a client left unsent, as its retry budget had run out (D264). Its last line.
+    ClientRetriesSkipped {
+        skipped: u64,
+    },
     /// A client connection to `node` was opened (D112). Nothing logs this since reports moved to
     /// UDP, which has no connection (D167). Kept because the analysis reads the name in old runs.
     ClientLinkUp {

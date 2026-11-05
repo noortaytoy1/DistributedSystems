@@ -323,6 +323,7 @@ table below in sync.
 | D261 | Nodes keep working and come back by themselves when two or all three are killed | A, C, D | Implemented, amends D249, D252 |
 | D262 | A lone node answers fast, and goes on until it can commit | C | Implemented, amends D121, D122 |
 | D263 | A client's stub holds every call a full client can have open | C, F | Implemented, amends D173 |
+| D264 | A client spends at most a fifth of its sends on retries | F | Implemented, amends D126 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8189,6 +8190,17 @@ them on the six PCs.
 - **Consequences.** Clients keep sending retries through an outage, so more traffic reaches the air as a node returns. The kill experiments measure it.
 - **Where.** `src/node/transport.rs`, `tests/datagram.rs`.
 - **How we check it.** `a_stub_keeps_sending_with_every_call_a_full_client_can_hold_open` failed at the old limit, with sends stopped. The longest time with no answer in the kill experiments.
+
+### D264 · A client spends at most a fifth of its sends on retries
+
+- **Date:** 2026-11-05 · **Part:** F · **Status:** Implemented, amends D126 · **Decided by:** the person running the lab session, who asked that recovery works under load, on the agent's recommendation.
+- **Context.** D263 alone made things much worse, as measured: with a second node killed 2 s after the first returned at 20,000 a second, answers fell from 19,333 to 7,049 a second, give-ups rose from 89,702 to 1,748,153, and answers reached zero at about 130 s and stayed there until the load ended (`4ea8810`, kept under `runs/old-hand` or `runs/exp8h/killtwoD`). Clients sent about 30,000 retries a second through the outage, on top of new reports, over the air the nodes needed to catch up. The old limit of D173 had been braking this by accident.
+- **Options.** (1) Put the low limit back: it stops all sends for up to 18 s. (2) Longer waits between retries: lowers the flood but keeps it, and delays a retry when a node fails in normal running. (3) A retry budget, the usual answer to a retry storm: chosen.
+- **Decision.** A client earns 0.2 of a retry for each first send, and 10 a second regardless. It can save up to 5000, and starts with 100. A retry with nothing to spend is not sent, and its time still passes, so a report gives up when it always did. At 20,000 a second that keeps the total near 24,000 a second, under the 30,000 measured.
+- **Why.** A short failure uses the savings and is not slowed. A long one cannot flood the air. A client with few reports keeps all its retries, so T5's "5 retries, then an error" still holds.
+- **Consequences.** A report in a long outage can get fewer real tries, so some give up that a lucky retry might have saved. `client_gave_up`'s `attempts` is the attempts allowed, and each program's last log line, `client_retries_skipped`, says how many were not sent.
+- **Where.** `src/client.rs`, `src/metrics.rs`.
+- **How we check it.** Unit tests in `client.rs`, and the kill experiments at 20,000 a second against the figures above.
 
 ### Notes on older entries
 
