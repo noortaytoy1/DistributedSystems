@@ -6,6 +6,7 @@ The submitted Phase 1 report. Why it is LaTeX and lives here: D266 in [../design
 main.tex            preamble, title page, abstract, references
 sections/*.tex      one file per section, in the order main.tex lists them
 figures/*.png       the six measured charts (from analysis/results/exp8h/) and one Raft-era chart
+figures/uml-*.png   the appendix's UML diagrams, drawn by analysis/phase1/uml_figures.py
 ```
 
 Every other figure is drawn in TikZ or pgfplots inside the section files, so it can be edited as text.
