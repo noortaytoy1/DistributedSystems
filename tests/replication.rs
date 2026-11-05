@@ -202,7 +202,9 @@ async fn first_commit_wins_when_several_nodes_execute_one_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan_for_a_taken_responder_comes_back_stale() {
-    let cluster = TestCluster::start(3).await;
+    // No campus: a node that seeds one would add 30 more responders at any moment, and the second
+    // plan could then be given one of those.
+    let cluster = TestCluster::start_with(3, |c| c.campus.responders = 0).await;
     agreed_leader(&cluster, &[1, 2, 3]).await;
     let c = consensus(&cluster, 3);
     c.propose(register([1])).await.unwrap();
