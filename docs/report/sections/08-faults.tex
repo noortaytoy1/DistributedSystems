@@ -2,11 +2,11 @@
 \section{Fault model, failover and recovery}
 \label{sec:faults}
 
-\subsection{The faults and how we inject them}
+\subsection{The faults and how they are injected}
 
 \begin{table}[!htb]
 \centering\small
-\caption{The faults we handle, and how each is made in the experiments.}
+\caption{The faults the system handles, and how each is made in the experiments.}
 \label{tab:faultmodel}
 \begin{tabularx}{\linewidth}{@{}P{3.3cm}LL@{}}
 \toprule
@@ -21,7 +21,7 @@ Messages lost, late, doubled & UDP and Wi-Fi do this by themselves & Retries wit
 \end{tabularx}
 \end{table}
 
-We do not handle Byzantine faults, and we did not physically pull a plug. A kill stops a process at once, as a power cut would, but it cannot lose disk writes the way a real cut can. Section~\ref{sec:limits} states this as a limit.
+Byzantine faults are not handled, and no machine was physically unplugged. A kill stops a process at once, as a power cut would, but it cannot lose disk writes the way a real cut can. Section~\ref{sec:limits} states this as a limit.
 
 \subsection{Failure detection}
 
@@ -54,7 +54,7 @@ A silent member holds up every round, because the frontier needs its stream. So 
 \subsection{Recovery: coming back}
 \label{sec:rejoin}
 
-The spec asks what state is copied, replayed or rebuilt, and how a returning node knows it is current. Figure~\ref{fig:seq-rejoin} shows the steps, and Table~\ref{tab:recovery} answers the questions.
+A recovery protocol must state what is copied, replayed or rebuilt, and how a returning node knows it is current. Figure~\ref{fig:seq-rejoin} shows the steps, and Table~\ref{tab:recovery} gives the answers.
 
 \begin{figure}[!htb]
 \centering
@@ -80,11 +80,11 @@ The spec asks what state is copied, replayed or rebuilt, and how a returning nod
 
 \begin{table}[!htb]
 \centering\small
-\caption{The recovery protocol, against what the spec asks.}
+\caption{The recovery protocol, question by question.}
 \label{tab:recovery}
 \begin{tabularx}{\linewidth}{@{}P{4.2cm}L@{}}
 \toprule
-The spec asks & Our answer \\
+Question & Answer \\
 \midrule
 What is copied, replayed or rebuilt? & First the node replays its own file, in the order it applied, which it saved before answering anyone (\dlog{D261}). Then a member sends what is missing, up to 4,000 commands a reply, and the node replays it through the same state machine. Its bids, suspicions and view are rebuilt from new traffic. One code path serves a silence and a restart. \\
 How does it know it is current? & It asks to be added, and the members stop just before the round it starts at. It has the whole log exactly when its applied round is one before that start round, and only then does it send. A node whose log is not a start of the member's gets \code{Diverged}, writes \code{Reset} to its file, and takes the log again. \\
@@ -123,7 +123,7 @@ Figure~\ref{fig:node-states} brings the pieces together as the life cycle of one
 \subsection{More than one failure}
 \label{sec:multi}
 
-The class notes ask what happens with one node off and another failed, leaving one server. Our first rotating rounds could not handle two failures close together: commits stopped for the rest of the run (\dlog{D261}). Raft would have carried on in some of these cases, as long as two nodes were up, but not with one. We fixed this in four steps on the final build. Each node now saves the order it applied before answering, and rebuilds from its own file when it restarts. A member with nobody else left takes a returning node straight back, with no vote, because in a view of two nothing commits without both, so the survivor holds everything that was applied. With nobody left, the node with the longest log goes first. Figure~\ref{fig:multi} is the decision a restarted node makes.
+The requirements include one node off and another failed, leaving one server. The first version of rotating rounds could not handle two failures close together: commits stopped for the rest of the run (\dlog{D261}). Raft would have carried on in some of these cases, as long as two nodes were up, but not with one. This was fixed in four steps on the final build. Each node now saves the order it applied before answering, and rebuilds from its own file when it restarts. A member with nobody else left takes a returning node straight back, with no vote, because in a view of two nothing commits without both, so the survivor holds everything that was applied. With nobody left, the node with the longest log goes first. Figure~\ref{fig:multi} is the decision a restarted node makes.
 
 \begin{figure}[!htb]
 \centering
@@ -155,14 +155,14 @@ The class notes ask what happens with one node off and another failed, leaving o
 \subsection{One node left: provisional answers}
 \label{sec:degraded}
 
-A single node cannot commit, because the shared log needs a peer to save each batch. Waiting would leave the three client PCs with no answers, which is the opposite of what the class notes ask for. So a node alone answers anyway, with a plan it labels \code{Provisional}, and records it properly once a peer is back (\dlog{D120}, \dlog{D262}). This breaks our rule ``commit, then reply'', and we chose it knowingly: it trades consistency for availability in this one case, as the spec allows for speculative actions that are ``clearly labeled and reconciled''.
+A single node cannot commit, because the shared log needs a peer to save each batch. Waiting would leave the three client PCs with no answers, which defeats the requirement that one server can handle all three. So a node alone answers anyway, with a plan it labels \code{Provisional}, and records it properly once a peer is back (\dlog{D120}, \dlog{D262}). This breaks the rule ``commit, then reply'', and the choice was made knowingly: it trades consistency for availability in this one case, as the spec allows for speculative actions that are ``clearly labeled and reconciled''.
 
 When a peer returns, the lone node replays its provisional plans through the shared log, and the first result recorded still wins. A provisional answer can therefore turn out to differ: another node may have planned the same report first, or the responder may have been taken. The client is not told (\dlog{D122}). In T2, with 300 responders, about 98\% of provisional answers ended differently on record (Section~\ref{sec:kills}), so a provisional answer here means ``someone will come'' rather than ``this responder will come''. Its answers are held in memory until replayed, so killing the lone node loses them.
 
 \subsection{Consistency model}
 \label{sec:consistency}
 
-The spec asks for a consistency model for incidents, presence, resources, leases and offline changes. Phase 1 has incidents and responders; the rest belongs to Phase 2.
+This section gives the consistency model for the state Phase 1 replicates: incidents and responders. Presence, leases and offline changes belong to Phase 2.
 
 \begin{itemize}
   \item \textbf{Writes are totally ordered.} Every change to incidents and responders is a command in the shared log, applied by every node in the same order by a deterministic state machine. So all nodes pass through the same states, and equal digests at the same index show it.

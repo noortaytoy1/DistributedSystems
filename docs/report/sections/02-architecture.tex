@@ -2,14 +2,14 @@
 \section{System architecture and process model}
 \label{sec:arch}
 
-Lecture 8 asks for three models of a system: a physical model of the machines and how they connect, an architectural model of the main parts and how they fit, and a fundamental model of failures and security. We give the three in this order, and then the data model and the one interface that let us swap the shared log.
+A distributed system is usually described by three models: a physical model of the machines and how they connect, an architectural model of the main parts and how they fit, and a fundamental model of failures and security. This section gives the three in this order, followed by the data model and the one interface that made it possible to swap the shared log.
 
 \subsection{Physical model: six PCs}
 \label{sec:physical}
 
 The system runs on six physical PCs in the lab, three cloud nodes and three client PCs (Figure~\ref{fig:deploy}). Each is an Intel i7-13700 with 24 threads and 15 GB of memory, running Ubuntu 24.04. All six are on the campus Wi-Fi. Node 2 and client PC 1 send over a cable and receive over the air. Nothing is shared but the network: there is no shared disk and no shared clock, and every program writes its own event log on its own PC. Every address comes from one config file that is copied to all six PCs (\dlog{D59}, \dlog{D60}), and all six build the same commit with the same pinned Rust compiler (\dlog{D15}).
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \begin{tikzpicture}[x=1cm,y=1cm]
   % Cloud nodes
@@ -43,9 +43,17 @@ Client PCs reach each node on port 8001: reports go over UDP, and \texttt{ctl} a
 \subsection{Architectural model: the parts of a node}
 \label{sec:components}
 
-A cloud node is one \texttt{node} process with no special role. Figure~\ref{fig:components} shows its parts in three layers, and Table~\ref{tab:modules} gives the file and job of each. Arrows point from a part to the part it uses.
+A cloud node is one \texttt{node} process with no special role: the three nodes run the same program, and any of them can do any job. Figure~\ref{fig:components} shows its parts in three layers, and Table~\ref{tab:modules} gives the file, size and job of each.
 
-\begin{figure}[!htb]
+\begin{itemize}
+  \item \textbf{The application} is what the service does. The incident service takes a report, asks the middleware who should plan it, plans it if this node won, records the result, and replies. The planner picks the responder. The state machine holds the responders and the results, and changes them only in the order of the shared log. Responder release frees a responder when its job ends.
+  \item \textbf{The cloud middleware} is how the nodes reach each other and survive failures. The bidding election picks the node that plans each report. The failure detector and the cloud group track who is alive. Takeover, the rejoin gate and degraded mode handle a node that goes quiet, comes back, or is left alone. The fault election picks the node that fails next. The worker pool runs plans off the async runtime. The shared log puts every change in one order on all three nodes.
+  \item \textbf{The transport} carries the messages. Calls between nodes go over TCP and calls from clients over UDP, both through tarpc, with the team's own framing, datagram adapter and compression underneath.
+\end{itemize}
+
+The application never calls the transport or the shared log directly. It reaches the middleware through one module, \texttt{src/middleware.rs}, and a test fails if it reaches past it (Section~\ref{sec:layers}). Arrows in Figure~\ref{fig:components} point from a part to the part it uses.
+
+\begin{figure}[H]
 \centering
 \begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
   % Application, row 1
@@ -75,7 +83,7 @@ A cloud node is one \texttt{node} process with no special role. Figure~\ref{fig:
     \node[group, fill=mwgreen!3, fit=(bid)(raft), label={[grouplabel]north west:Cloud middleware: how the nodes reach each other}] (mwL) {};
   \end{scope}
   % Transport, row 4
-  \node[nodebox, text width=4.4cm, minimum height=1.1cm] (tr) at (1.1,-6.35) {\textbf{Transport} (ours)\\ \texttt{transport.rs}: TCP to peers\\ \texttt{datagram.rs}, \texttt{squeeze.rs}: UDP};
+  \node[nodebox, text width=4.4cm, minimum height=1.1cm] (tr) at (1.1,-6.35) {\textbf{Transport} (the team's)\\ \texttt{transport.rs}: TCP to peers\\ \texttt{datagram.rs}, \texttt{squeeze.rs}: UDP};
   \node[libbox, text width=3.4cm, minimum height=1.1cm] (tarpc) at (6.3,-6.35) {\textbf{tarpc}: stubs, call IDs, deadlines};
   \node[libbox, text width=3.8cm, minimum height=1.1cm] (tokio) at (11.4,-6.35) {\textbf{tokio, serde, bincode}: tasks, timers, sockets, encoding};
   \begin{scope}[on background layer]
@@ -127,7 +135,7 @@ Operator tool & \texttt{bin/ctl.rs} & 378 & Status, silence and slowdown of a no
 \subsection{Application and middleware, on both sides}
 \label{sec:layers}
 
-The class notes of Sept 13 ask us to keep the application and the middleware apart: the application sends a message once, and the middleware makes sure the replicas get it. We drew this line on both sides (\dlog{D211}), as Figure~\ref{fig:layers} shows. On a client PC, a user calls \code{submit} once and names no node. The client middleware, \code{MeshClient}, copies the report to all three nodes, resends it with the same ID if no answer comes, and keeps the first answer. On a node, the incident service asks the middleware who plans this report, and hands a result to it with one call, \code{send\_ordered}, without knowing how the result reaches the other nodes. The file \texttt{src/middleware.rs} is the only interface the application may use, and the test \texttt{tests/layers.rs} fails if application code reaches past it (\dlog{D156}, \dlog{D226}).
+The application and the middleware are kept apart: the application sends a message once, and the middleware makes sure the replicas get it. The line runs through both sides (\dlog{D211}), as Figure~\ref{fig:layers} shows. On a client PC, a user calls \code{submit} once and names no node. The client middleware, \code{MeshClient}, copies the report to all three nodes, resends it with the same ID if no answer comes, and keeps the first answer. On a node, the incident service asks the middleware who plans this report, and hands a result to it with one call, \code{send\_ordered}, without knowing how the result reaches the other nodes. The file \texttt{src/middleware.rs} is the only interface the application may use, and the test \texttt{tests/layers.rs} fails if application code reaches past it (\dlog{D156}, \dlog{D226}).
 
 \begin{figure}[!htb]
 \centering
@@ -135,7 +143,7 @@ The class notes of Sept 13 ask us to keep the application and the middleware apa
   % Client side
   \node[appbox, text width=4.2cm] (user) at (0,0) {\textbf{Application}\\ a simulated user in \texttt{loadgen},\\ or the web page in \texttt{frontend}};
   \node[mwbox, text width=4.2cm] (mesh) at (0,-2.1) {\textbf{Client middleware}: \texttt{MeshClient}\\ copies to all nodes, retries with the same ID, first answer wins, retry budget};
-  \node[libbox, text width=4.2cm] (crpc) at (0,-4.1) {tarpc stubs on our UDP adapter};
+  \node[libbox, text width=4.2cm] (crpc) at (0,-4.1) {tarpc stubs on a UDP adapter};
   \draw[flow] (user) -- node[elabel, right]{one \texttt{submit} call, names no node} (mesh);
   \draw[flow] (mesh) -- (crpc);
   \begin{scope}[on background layer]
@@ -162,7 +170,7 @@ The class notes of Sept 13 ask us to keep the application and the middleware apa
 \subsection{Peers, not client and server}
 \label{sec:peers}
 
-Lecture 9 says that a client-server system fixes each machine's role for its whole life, and that our cloud is not one. Our nodes send and receive requests at the same time: they share work, tell each other their load, check that each other is alive, and copy each other's log. So ``client'' and ``server'' are the roles of one call, not of a machine (\dlog{D212}). When node 1 sends its bid to node 2, node 1 is the client for that call. A moment later node 2 sends its bid to node 1 and the roles swap. Table~\ref{tab:roles} lists the calls.
+A client-server system fixes each machine's role for its whole life, and the RescueMesh cloud is not one. Its nodes send and receive requests at the same time: they share work, tell each other their load, check that each other is alive, and copy each other's log. So ``client'' and ``server'' are the roles of one call, not of a machine (\dlog{D212}). When node 1 sends its bid to node 2, node 1 is the client for that call. A moment later node 2 sends its bid to node 1 and the roles swap. Table~\ref{tab:roles} lists the calls.
 
 \begin{table}[!htb]
 \centering\small
@@ -183,16 +191,16 @@ Status, silence, slowdown & \texttt{ctl} or the web page & one node \\
 \end{tabularx}
 \end{table}
 
-\textbf{Who decides what.} No node decides for another. The node that plans a report is elected by all serving nodes from their bids. Whether a plan stands is decided by the same rule on every node, applied to the same log. Whether a peer is alive is decided by each node for itself. Which node fails next is decided by all three in a draw. Since we removed Raft, no node orders the log for the others either: the order is a sort that every node does by itself (Section~\ref{sec:sharedlog}).
+\textbf{Who decides what.} No node decides for another. The node that plans a report is elected by all serving nodes from their bids. Whether a plan stands is decided by the same rule on every node, applied to the same log. Whether a peer is alive is decided by each node for itself. Which node fails next is decided by all three in a draw. Since Raft was removed, no node orders the log for the others either: the order is a sort that every node does by itself (Section~\ref{sec:sharedlog}).
 
 \subsection{Fundamental model: failures and security}
 \label{sec:fundamental}
 
-\textbf{Failures.} We handle these faults. A node can go silent: it ignores all traffic for 1 to 20 s and keeps its memory, which is the omission failure the spec asks us to inject. A node's process can die and restart, which loses its memory; we use \texttt{kill -9} for this, and the person running the lab decided that a kill stands in for turning a machine off (\dlog{D265}). Two or all three nodes can fail together or one after the other (\dlog{D261}). Messages can be lost, late or duplicated, above all over UDP. We do not handle a node that lies or sends wrong data (Byzantine failure), or a long split of the network in which a client can reach no serving node.
+\textbf{Failures.} The system handles these faults. A node can go silent: it ignores all traffic for 1 to 20 s and keeps its memory, which is the omission failure the spec requires to be injected. A node's process can die and restart, which loses its memory; the experiments use \texttt{kill -9} for this, and a kill stands in for turning a machine off (\dlog{D265}). Two or all three nodes can fail together or one after the other (\dlog{D261}). Messages can be lost, late or duplicated, above all over UDP. The system does not handle a node that lies or sends wrong data (Byzantine failure), or a long split of the network in which a client can reach no serving node.
 
-These faults shape the design in three ways. Every detector we have is a timer, and a timer cannot tell a slow node from a dead one \cite{chandra}. So a wrong guess must be cheap: it may cost repeated work, but never two results for one report. A restart wipes memory, so each node saves what it applied to its own disk before it answers. And a client must never need to know which node failed, so it always sends to all three.
+These faults shape the design in three ways. Every failure detector in the system is a timer, and a timer cannot tell a slow node from a dead one \cite{chandra}. So a wrong guess must be cheap: it may cost repeated work, but never two results for one report. A restart wipes memory, so each node saves what it applied to its own disk before it answers. And a client must never need to know which node failed, so it always sends to all three.
 
-\textbf{Security.} All data is made up, and Phase 1 asks for no security. Nodes trust each other and trust what clients send. The web page listens only on its own PC, with no password (\dlog{D199}).
+\textbf{Security.} All data is synthetic, and Phase 1 has no security requirements. Nodes trust each other and trust what clients send. The web page listens only on its own PC, with no password (\dlog{D199}).
 
 \subsection{Data model}
 \label{sec:datamodel}
@@ -259,12 +267,12 @@ Three commands change the state, and each is safe to apply twice (\dlog{D29}): \
 \label{fig:apply}
 \end{figure}
 
-\textbf{The digest.} After each command, every node computes a new digest from the old one, the log index, the command and its outcome (\dlog{D31}). One different command, order or outcome changes every digest after it. Each node logs its digest at every 100th log index, and comparing these checkpoints across nodes is how we check that the copies agree (\dlog{D138}).
+\textbf{The digest.} After each command, every node computes a new digest from the old one, the log index, the command and its outcome (\dlog{D31}). One different command, order or outcome changes every digest after it. Each node logs its digest at every 100th log index, and comparing these checkpoints across nodes shows whether the copies agree (\dlog{D138}).
 
 \subsection{One interface, two shared logs}
 \label{sec:consensus-trait}
 
-The most useful design choice for this phase turned out to be an interface. From the start, every part of the node reached the shared log only through one Rust trait, \code{Consensus}, and never called Raft directly (\dlog{D14}). When we had to replace Raft (Section~\ref{sec:raft}), we wrote the new shared log, \code{RoundsNode}, as a second implementation of the same trait and chose between them with one config key, \texttt{consensus = "rounds"} or \texttt{"raft"} (\dlog{D249}). Nothing above the trait changed: not the bidding, the planner, the state machine, the replies or the digests. That is also why both designs still build, and why the Raft tests still pass (Section~\ref{sec:tests}). Figure~\ref{fig:uml-consensus} shows the classes.
+The most useful design choice for this phase turned out to be an interface. From the start, every part of the node reached the shared log only through one Rust trait, \code{Consensus}, and never called Raft directly (\dlog{D14}). When Raft had to be replaced (Section~\ref{sec:raft}), the new shared log, \code{RoundsNode}, was written as a second implementation of the same trait, and one config key chooses between them, \texttt{consensus = "rounds"} or \texttt{"raft"} (\dlog{D249}). Nothing above the trait changed: not the bidding, the planner, the state machine, the replies or the digests. That is also why both designs still build, and why the Raft tests still pass (Section~\ref{sec:tests}). Figure~\ref{fig:uml-consensus} shows the classes.
 
 \begin{figure}[!htb]
 \centering

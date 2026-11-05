@@ -81,7 +81,7 @@ Message & Fields and meaning \\
 \end{tabularx}
 \end{table}
 
-\textbf{On the wire.} Between nodes, a TCP frame is a 4-byte length, one byte that says whether the body is compressed, and the body: tarpc's message in bincode. A client datagram holds one or more short messages, each a call ID, a deadline and the call, at most 1,400 bytes after compression. Messages to the same address wait up to 20 ms to share a datagram, and bids wait up to 10 ms, because on the lab's Wi-Fi the number of packets mattered more than their size (\dlog{D254}, \dlog{D255}, \dlog{D256}). Compression is LZ4's block format \cite{lz4}, written by us in about 100 lines (\texttt{node/squeeze.rs}).
+\textbf{On the wire.} Between nodes, a TCP frame is a 4-byte length, one byte that says whether the body is compressed, and the body: tarpc's message in bincode. A client datagram holds one or more short messages, each a call ID, a deadline and the call, at most 1,400 bytes after compression. Messages to the same address wait up to 20 ms to share a datagram, and bids wait up to 10 ms, because on the lab's Wi-Fi the number of packets mattered more than their size (\dlog{D254}, \dlog{D255}, \dlog{D256}). Compression is LZ4's block format \cite{lz4}, written by the team in about 100 lines (\texttt{node/squeeze.rs}).
 
 \subsection{Timers}
 
@@ -109,14 +109,14 @@ call deadline & 36 s & one per report: 1.2 times all the waits together (\dlog{D
 \end{tabularx}
 \end{table}
 
-The first choice for detection was 3 missed heartbeats, about 150 ms. On the lab's Wi-Fi this dropped healthy nodes under load, so we moved to 1 s (\dlog{D249}). A failure therefore costs at least 1 s, and we report it that way.
+The first choice for detection was 3 missed heartbeats, about 150 ms. On the lab's Wi-Fi this dropped healthy nodes under load, so it was raised to 1 s (\dlog{D249}). A failure therefore costs at least 1 s, and the results report it that way.
 
 \subsection{Retries, duplicates and requests in flight}
 \label{sec:retries}
 
-\textbf{Retries.} The class notes say a client should try 5 times and then report an error. Our client sends a report, waits 2 s, and sends it again with the same ID, then waits 4 s, then 6 s, up to 5 retries, and then \code{submit} returns an error (\dlog{D52}). Each wait has $\pm$20\% random spread so that clients do not retry together. Test T5 checks this with all nodes off: the client gave up with \texttt{"attempts":6} (Section~\ref{sec:tests}).
+\textbf{Retries.} A client should try 5 times and then report an error. The client middleware sends a report, waits 2 s, and sends it again with the same ID, then waits 4 s, then 6 s, up to 5 retries, and then \code{submit} returns an error (\dlog{D52}). Each wait has $\pm$20\% random spread so that clients do not retry together. Test T5 checks this with all nodes off: the client gave up with \texttt{"attempts":6} (Section~\ref{sec:tests}).
 
-During a long outage at high load, retries can flood the network that the returning node needs to catch up. We measured this: with a second node killed at 20,000 a second, clients sent about 30,000 retries a second and answers fell to zero (\dlog{D264}). So a client earns 0.2 of a retry for each first send, plus 200 a second, and may save up to 5,000. A short failure uses the savings and is not slowed; a long one cannot flood the air. A retry with nothing to spend is not sent, and its time still passes, so a report still gives up when it always did.
+During a long outage at high load, retries can flood the network that the returning node needs to catch up. This was measured: with a second node killed at 20,000 a second, clients sent about 30,000 retries a second and answers fell to zero (\dlog{D264}). So a client earns 0.2 of a retry for each first send, plus 200 a second, and may save up to 5,000. A short failure uses the savings and is not slowed; a long one cannot flood the air. A retry with nothing to spend is not sent, and its time still passes, so a report still gives up when it always did.
 
 \textbf{Duplicates.} Every report has one ID, made of the client's number and a sequence number. The first result recorded for an ID wins on every node, and a later one gets the winner back (\dlog{D27}). So planning a report twice, by a takeover or by two nodes that both think they won, is wasted work but never a wrong answer. A node that already holds a result answers a retry from its own copy, and a command already decided never goes into the log again (\dlog{D37}, \dlog{D250}).
 
@@ -149,7 +149,7 @@ During a long outage at high load, retries can flood the network that the return
 \subsection{Choice of RPC}
 \label{sec:rpc}
 
-The class notes of Oct 4 ask us not to go down to raw UDP but to use a ready-made RPC or RMI system and say why, and the notes of Oct 28 point at the table in Chapter 2 of Java RMI, CORBA and Sun RPC. We chose RPC, not RMI, and the library \texttt{tarpc} \cite{tarpc} as the system (\dlog{D119}, \dlog{D176}). Our service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so we compared tarpc with them on the same rows (Table~\ref{tab:rpc}).
+The project guidance calls for a ready-made RPC or RMI system rather than raw UDP, with the reason for the choice, and points to the course's comparison of Java RMI, CORBA and Sun RPC. The team chose RPC, not RMI, and the library \texttt{tarpc} \cite{tarpc} as the system (\dlog{D119}, \dlog{D176}). The service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so Table~\ref{tab:rpc} compares tarpc with them on the same rows.
 
 \begin{table}[!htb]
 \centering\small
@@ -157,7 +157,7 @@ The class notes of Oct 4 ask us not to go down to raw UDP but to use a ready-mad
 \label{tab:rpc}
 \begin{tabularx}{\linewidth}{@{}P{2.6cm}LLLL@{}}
 \toprule
- & Java RMI & CORBA & Sun RPC & tarpc (ours) \\
+ & Java RMI & CORBA & Sun RPC & tarpc (chosen) \\
 \midrule
 Style & RMI & RMI & RPC & RPC \\
 Languages & Java only & many & many & Rust only \\
@@ -168,6 +168,6 @@ Semantics alone & at-most-once & at-most-once & at-least-once & maybe: it never 
 \end{tabularx}
 \end{table}
 
-tarpc on its own gives ``maybe'' semantics, so at-most-once is our work (\dlog{D177}). From client to cloud, the effect of a report is recorded at most once across all replicas: the client resends with the same ID, the results table filters duplicates by ID, and any node re-sends the answer from its copy. Peer calls are ``maybe'': a lost bid or heartbeat is simply covered by the next one. The one labelled exception is a provisional answer from a node alone, which can differ from what is recorded later (Section~\ref{sec:degraded}).
+tarpc on its own gives ``maybe'' semantics, so at-most-once is provided by the team's own code (\dlog{D177}). From client to cloud, the effect of a report is recorded at most once across all replicas: the client resends with the same ID, the results table filters duplicates by ID, and any node re-sends the answer from its copy. Peer calls are ``maybe'': a lost bid or heartbeat is simply covered by the next one. The one labelled exception is a provisional answer from a node alone, which can differ from what is recorded later (Section~\ref{sec:degraded}).
 
-\textbf{Why UDP for reports.} The note ``Request reply protocol + UDP'' can be read as ``use UDP'' or as ``UDP is the level not to go down to''. We did both: reports travel over UDP, but our UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware (\dlog{D178}). UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.
+\textbf{Why UDP for reports.} The guidance ``Request reply protocol + UDP'' can be read as ``use UDP'' or as ``UDP is the level not to go down to''. The design meets both readings: reports travel over UDP, but the UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware (\dlog{D178}). UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.

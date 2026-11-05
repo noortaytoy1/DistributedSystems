@@ -136,19 +136,19 @@
 
 \begin{titlepage}
   \centering
-  \vspace*{1.2cm}
+  \vspace*{0.2cm}
   {\large The American University in Cairo\par}
   {\normalsize Department of Computer Science and Engineering\par}
-  \vspace{2.2cm}
+  \vspace{1.1cm}
   {\Huge\bfseries RescueMesh\par}
-  \vspace{0.4cm}
+  \vspace{0.3cm}
   {\Large A Cloud-P2P Environment for Smart-Campus Emergency Response\par}
-  \vspace{0.6cm}
+  \vspace{0.4cm}
   {\Large Phase 1 Report: Cloud Processing, Load Balancing and Fault Tolerance\par}
-  \vspace{1.6cm}
+  \vspace{0.8cm}
   {\large CSCE 4411, Distributed Systems, Fall 2026\par}
   {\large Instructor: Prof.\ Amr El-Kadi\par}
-  \vspace{1.6cm}
+  \vspace{0.8cm}
   \begin{tabular}{@{}ll@{}}
     \toprule
     Name & Student ID \\
@@ -161,14 +161,17 @@
     Yahia Kilany & 900226128 \\
     \bottomrule
   \end{tabular}
+  \vspace{1.0cm}
+
+  {\large\bfseries Abstract\par}
+  \vspace{0.3cm}
+  \begin{minipage}{0.88\linewidth}
+  RescueMesh is a three-node cloud that plans responses to campus incidents. A user sends a report once, and the three cloud nodes, which are equal peers, decide among themselves who plans it, record the plan in the same order on every node, and answer. Phase 1 delivers the cloud, the incident service, an election that picks the node for every report by its load, a second election that picks which node fails, and the recovery that brings a failed node back. The first design used Raft for the shared order, as the team's survey recommended. Measurements on the lab PCs showed that Raft's leader was both a coordinator, which the project's peer-to-peer requirement rules out, and the limit on throughput, so it was replaced with a shared log that has no leader. The final system was then measured in 157 runs on six lab PCs, with 199,481,205 requests, and in 49 more runs that kill up to all three nodes. No request was unaccounted for, and the nodes never disagreed on their state in 84,647 comparisons. The system holds 12,000 requests a second with about 4 ms of planning per request, and 30,000 a second with almost none. Raft, on the same code, answered 4,306 a second when offered 10,000.
+  \end{minipage}
   \vfill
   {\small Code, design log and raw results: \url{https://github.com/noortaytoy1/DistributedSystems}\par}
   {\small Final build \commit{b6221c5}; overnight series \commit{a7ceb34}; November 2026\par}
 \end{titlepage}
-
-\begin{abstract}
-\noindent RescueMesh is a three-node cloud that plans responses to campus incidents. A user sends a report once, and the three cloud nodes, which are equal peers, decide among themselves who plans it, record the plan in the same order on every node, and answer. In this phase we built the cloud, the incident service, an election that picks the node for every report by its load, a second election that picks which node fails, and the recovery that brings a failed node back. We started with Raft for the shared order, as our survey recommended. The lab showed that Raft's leader was both the coordinator the class notes rule out and the limit on throughput, so we replaced it with a shared log that has no leader. We then ran 157 measured runs on six lab PCs, with 199,481,205 requests, and 49 more runs that kill up to all three nodes. No request was unaccounted for, and the nodes never disagreed on their state in 84,647 comparisons. The system holds 12,000 requests a second with about 4 ms of planning per request, and 30,000 a second with almost none. Raft, on the same code, answered 4,306 a second when offered 10,000.
-\end{abstract}
 
 \tableofcontents
 \newpage
@@ -193,7 +196,7 @@
 
 \bibitem{spec} A.~El-Kadi. \emph{RescueMesh: A Cloud-P2P Environment for Smart-Campus Emergency Response and Resource Coordination}. CSCE 4411 term project description, The American University in Cairo, Fall 2026.
 
-\bibitem{notes} Class notes on the project, CSCE 4411, Fall 2026: Sept 6, Sept 9, Sept 13, Oct 4 and Oct 28.
+\bibitem{notes} CSCE 4411 term project guidance, The American University in Cairo, Fall 2026.
 
 \bibitem{survey} A.~Elghadban, O.~Leithy, N.~Emam, W.~Elhimer, A.~Abdeen and Y.~Kilany. \emph{Distributed Election Algorithms Survey: RescueMesh}. CSCE 4411 Phase 0 deliverable, October 4, 2026.
 

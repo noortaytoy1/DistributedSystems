@@ -2,7 +2,7 @@
 \section{Parallelization, workload and planner}
 \label{sec:conc}
 
-The spec asks us to support concurrent requests and to document the parallel model on both the client and the cloud side. A node is busy in three ways at once: it receives reports from clients, it plans them, and it talks to its peers. These must not hold each other up.
+The spec requires concurrent request processing and a documented parallel model on both the client and the cloud side. A node is busy in three ways at once: it receives reports from clients, it plans them, and it talks to its peers. These must not hold each other up.
 
 \subsection{Inside a cloud node}
 
@@ -50,7 +50,7 @@ A node runs on tokio, a Rust runtime that runs many small tasks on a few threads
 
 A few rules keep this safe, and the build checks some of them (\dlog{D47}, \dlog{D66}). No task may block the runtime: no sleeping threads, and no blocking file or network calls. No lock may be held across a wait, which the linter denies. Every task is owned, so it ends when its owner or its channel does. Writing a log line goes through a channel to one writer thread, so it never holds up a request.
 
-One rule came from our team rather than the books. In the lab rehearsal, saving to disk once crowded out the leader's heartbeats, and the cluster went through 225 elections in one run with no report answered (\dlog{D133}). The rule since then is that saving to disk and the ``I am alive'' message of a node come first, and processing requests can never crowd them out. In the final build the heartbeats run on their own loop, the shared log saves every waiting batch with one disk sync, and planning can only fill the worker pool.
+One rule came from the team's own experience rather than from the textbooks. In the lab rehearsal, saving to disk once crowded out the leader's heartbeats, and the cluster went through 225 elections in one run with no report answered (\dlog{D133}). The rule since then is that saving to disk and the ``I am alive'' message of a node come first, and processing requests can never crowd them out. In the final build the heartbeats run on their own loop, the shared log saves every waiting batch with one disk sync, and planning can only fill the worker pool.
 
 \subsection{On a client PC}
 
@@ -87,7 +87,7 @@ Each report is drawn uniformly at random (\texttt{campus.rs}, \dlog{D99}): a zon
 
 \subsection{The planner}
 
-The spec asks for a planner that is deterministic, explainable and tunable, and substantial enough to create real computing load. Ours takes the report, its age and the free responders as arguments, and reads no network, no clock and no randomness, so the same inputs give the same plan on any node (\dlog{D49}). Figure~\ref{fig:planner} shows how it picks.
+The planner is deterministic, explainable and tunable, as the spec requires, and its cost can be raised to create real computing load. It takes the report, its age and the free responders as arguments, and reads no network, no clock and no randomness, so the same inputs give the same plan on any node (\dlog{D49}). Figure~\ref{fig:planner} shows how it picks.
 
 \begin{figure}[!htb]
 \centering
@@ -118,4 +118,4 @@ The spec asks for a planner that is deterministic, explainable and tunable, and 
 
 \textbf{Priority.} The priority says how urgent a report is, in whole points, and it never changes who is sent (\dlog{D148}). One step of severity is worth 100 points, and the other factors are measured against it: severity gives 100 to 500, age 1 point per 50 ms up to 400, distance 1 point per 10 m up to 100, availability $100/(\text{free}+1)$, and 100 more if no free responder has the needed capability. For example, a severity 4 report, 1 s old, with a matching responder 300 m away and 9 free, scores $400 + 20 + 30 + 10 + 0 = 460$.
 
-\textbf{Tunable load.} Choosing the nearest responder is cheap, a few microseconds. The spec wants planning to create real load, so a setting, \texttt{plan\_work}, adds a busy loop of integer mixing that never changes the plan (\dlog{D96}). We measured its cost from the nodes' own bids overnight: with \texttt{plan\_work} 0 a plan takes about 8 $\mu$s, and with 1000 it takes 3.9 ms at the median and 4.7 ms at p99. We report every result with its \texttt{plan\_work}, because the two give very different ceilings.
+\textbf{Tunable load.} Choosing the nearest responder is cheap, a few microseconds. The spec requires planning that creates real computing load, so a setting, \texttt{plan\_work}, adds a busy loop of integer mixing that never changes the plan (\dlog{D96}). Its cost, measured from the nodes' own bids overnight: with \texttt{plan\_work} 0 a plan takes about 8 $\mu$s, and with 1000 it takes 3.9 ms at the median and 4.7 ms at p99. Every result in this report states its \texttt{plan\_work}, because the two give very different ceilings.

@@ -1,8 +1,8 @@
 % ==============================================================================================
-\section{Raft: why we chose it, why we left it, and what we measured}
+\section{Raft: why it was chosen, why it was replaced, and the measurements}
 \label{sec:raft}
 
-The biggest decision we changed in this phase was the shared log. We started with Raft, as the survey recommended, built the whole system on it, and measured it on the six PCs. On November 4 we replaced it with our own shared log that has no leader (\dlog{D249}). This section explains the choice, the problems that made us change it, and the results on both sides. Figure~\ref{fig:timeline} gives the order of events.
+The biggest decision that changed in this phase was the shared log. The system started with Raft, as the survey recommended, was built on it, and was measured on the six PCs. On November 4, Raft was replaced with the team's own shared log, which has no leader (\dlog{D249}). This section explains the choice, the problems that led to the change, and the results on both sides. Figure~\ref{fig:timeline} gives the order of events.
 
 \begin{figure}[!htb]
 \centering
@@ -14,7 +14,7 @@ The biggest decision we changed in this phase was the shared log. We started wit
       2.2/Oct 20/{Raft built on the\\ openraft library\\ (\dlog{D14})}/nodeblue/-1,
       4.4/Nov 1 to 3/{The leader shrunk: bidding\\ default, fault election,\\ any-node seeding (\dlog{D163})}/nodeblue/1,
       6.6/Nov 3/{Saves block heartbeats:\\ own queue in front of\\ Raft (\dlog{D133})}/badred/-1,
-      8.8/Nov 4/{Lab: Raft holds 7,000/s,\\ falls at 10,000/s;\\ class rules out a leader}/badred/1,
+      8.8/Nov 4/{Lab: Raft holds 7,000/s,\\ falls at 10,000/s;\\ the leader is a\\ coordinator}/badred/1,
       11.0/Nov 4/{Rotating rounds replace\\ Raft (\dlog{D249}); fixes\\ \dlog{D252} to \dlog{D257}}/mwgreen/-1,
       13.2/{Nov 5, night}/{Overnight series,\\ 157 runs on \commit{a7ceb34}}/mwgreen/1,
       15.2/{Nov 5, day}/{Two and three failures\\ (\dlog{D261} to \dlog{D264});\\ final runs, \commit{b6221c5}}/mwgreen/-1} {
@@ -27,15 +27,15 @@ The biggest decision we changed in this phase was the shared log. We started wit
 \label{fig:timeline}
 \end{figure}
 
-\subsection{Why we chose Raft}
+\subsection{Why Raft was chosen}
 
-The survey compared six algorithms and chose Raft to elect the cloud's coordinator (\dlog{D1}) \cite{survey}. The reasons still hold as reasons, and we want to state them fairly:
+The survey compared six algorithms and chose Raft to elect the cloud's coordinator (\dlog{D1}) \cite{survey}. The reasons still hold as reasons, and they are stated fairly here:
 
 \begin{itemize}
   \item \textbf{Safety without trusting timeouts.} Raft elects at most one leader per term by majority vote, and a committed entry is never lost, however late messages are \cite{raft}. Timeouts affect only how fast it reacts. Bully, by contrast, can end with two coordinators when a slow node is taken for a dead one.
   \item \textbf{Three nodes survive one failure.} A majority of three is two, so the cloud keeps going while one node is silent, which is exactly the spec's fault.
-  \item \textbf{One protocol for election and replication.} Raft's log gives every node the same incidents, responders and results, and a returning node gets what it missed from the leader. We did not need a second mechanism for the state.
-  \item \textbf{A tested library.} We used openraft 0.9.25 \cite{openraft} rather than writing Raft ourselves, which would have taken weeks before anything could be tested (\dlog{D4}, \dlog{D14}).
+  \item \textbf{One protocol for election and replication.} Raft's log gives every node the same incidents, responders and results, and a returning node gets what it missed from the leader. No second mechanism was needed for the state.
+  \item \textbf{A tested library.} The team used openraft 0.9.25 \cite{openraft} rather than writing Raft from scratch, which would have taken weeks before anything could be tested (\dlog{D4}, \dlog{D14}).
 \end{itemize}
 
 The survey was clear that Raft does not choose a node by load, so the bidding election stayed separate. It also listed Raft's costs: more machinery than Bully or a ring, a gap with no leader after a failure, and ``all write requests go through the leader, so the leader can become a bottleneck'' \cite{survey}. That last line turned out to matter most.
@@ -69,7 +69,7 @@ Figure~\ref{fig:seq-raft} shows one report in the Raft design. The bidding alrea
 \subsection{What went wrong}
 \label{sec:raftproblems}
 
-Five problems came up, in the class notes, in rehearsals on one PC, and then on the six lab PCs. Table~\ref{tab:raftproblems} lists them with the evidence for each.
+Five problems came up: one against the project's requirements, and four in rehearsals on one PC and then on the six lab PCs. Table~\ref{tab:raftproblems} lists them with the evidence for each.
 
 \begin{table}[!htb]
 \centering\small
@@ -77,10 +77,10 @@ Five problems came up, in the class notes, in rehearsals on one PC, and then on 
 \label{tab:raftproblems}
 \begin{tabularx}{\linewidth}{@{}P{3.2cm}LL@{}}
 \toprule
-Problem & Evidence & What we tried before switching \\
+Problem & Evidence & What was tried before switching \\
 \midrule
-1. The leader is a coordinator & The class notes say twice that the leader must not act as a coordinator and that the nodes must be peers (Sept 13, Oct 28) \cite{notes}. In Raft every commit passes through the leader. & We moved every decision away from the leader: bidding picks the planner (\dlog{D114}), the fault election picks the victim (\dlog{D158}), any node loads the responders (\dlog{D164}). The leader only ordered the log (\dlog{D163}). A strict reader could still call that a coordinator, and our own entry said so. \\
-2. Disk saves silenced the leader & openraft saves each log entry inside its core task, and can work through up to 1,000 queued writes before it sends a heartbeat. In a one-PC rehearsal with 300 users, the followers stopped hearing the leader 0.78 s into the load: 225 elections in one run, and not one report answered (\dlog{D133}). & Our own queue in front of openraft: one write in flight per node, and everything waiting goes into that one write. It fixed the elections, at the cost of a second queue to tune. \\
+1. The leader is a coordinator & The project requires the leader of an election not to act as a coordinator, and the nodes to be peers \cite{notes}. In Raft every commit passes through the leader. & Every decision was moved away from the leader: bidding picks the planner (\dlog{D114}), the fault election picks the victim (\dlog{D158}), any node loads the responders (\dlog{D164}). The leader only ordered the log (\dlog{D163}). A strict reader could still call that a coordinator, and the design log said so. \\
+2. Disk saves silenced the leader & openraft saves each log entry inside its core task, and can work through up to 1,000 queued writes before it sends a heartbeat. In a one-PC rehearsal with 300 users, the followers stopped hearing the leader 0.78 s into the load: 225 elections in one run, and not one report answered (\dlog{D133}). & A queue of the team's own in front of openraft: one write in flight per node, and everything waiting goes into that one write. It fixed the elections, at the cost of a second queue to tune. \\
 3. One write at a time through one node & At \commit{0397d37}, the leader sent one write at a time of at most 200 commands. Measured: about 46 ms per write between PCs, so a ceiling of about 4,350 commands, or 1,630 reports, a second. On one PC over loopback the same write took 4.3 ms. & Bigger writes (\dlog{D234}), grouped bids and forwards (\dlog{D247}, \dlog{D248}). The ceiling rose, but stayed at the leader. \\
 4. Overload fed itself & When commits slowed, losers of a bid took over the report, plans went stale, clients retried and elections followed. Figure~\ref{fig:collapse}(a) shows it second by second. & Longer backstop (\dlog{D235}), fewer scans of the responder table (\dlog{D238} to \dlog{D246}). \\
 5. A busy leader cannot hand over & A busy leader slows every commit, but openraft 0.9.25 has no command to hand leadership over, and followers refuse votes while the leader's lease holds (\dlog{D217}, \dlog{D218}). & A busy leader stops its own heartbeats so that a normal vote picks another. Each change costs about 0.8 s with no answers. \\
@@ -131,11 +131,11 @@ Problems 3 and 4 together set the throughput limit. Figure~\ref{fig:collapse}(a)
 \label{fig:collapse}
 \end{figure}
 
-\textbf{Why we switched.} On November 4 the person running the lab reported that the professor rules out a leader or coordinator altogether, which settled problem 1. On the same day, the best Raft build held 7,000 reports a second and fell at 10,000 (\dlog{D249}), and the class asked for at least 10,000. The step that held throughput back was the one-at-a-time path through the leader, so a leaderless log could remove both problems at once. We considered three options (\dlog{D249}). Each node owning a share of the responders with no global order would have changed the state, the digests, recovery and the analysis, and a lost node would take a third of the responders with it. Deleting Raft outright would have rewritten about 15 test files with no way back. We chose rotating rounds behind the same \code{Consensus} interface (Section~\ref{sec:consensus-trait}), so that nothing above the log changed and Raft stayed available as a setting. We also looked for a library that orders a log with no leader, and tested the closest one on the three node PCs; it failed when one node stopped (\dlog{D259}, Section~\ref{sec:library}).
+\textbf{Why the switch.} Problem 1 could not be fixed while Raft stayed: as long as one elected node orders every commit, the cloud has a coordinator, and the requirement is a cloud of peers with none. On the same day, the best Raft build held 7,000 reports a second and fell at 10,000 (\dlog{D249}), while the target for the system was at least 10,000. The step that held throughput back was the one-at-a-time path through the leader, so a leaderless log could remove both problems at once. Three options were considered (\dlog{D249}). Each node owning a share of the responders with no global order would have changed the state, the digests, recovery and the analysis, and a lost node would take a third of the responders with it. Deleting Raft outright would have rewritten about 15 test files with no way back. The team chose rotating rounds behind the same \code{Consensus} interface (Section~\ref{sec:consensus-trait}), so that nothing above the log changed and Raft stayed available as a setting. The team also looked for a library that orders a log with no leader, and tested the closest one on the three node PCs; it failed when one node stopped (\dlog{D259}, Section~\ref{sec:library}).
 
 \subsection{Results with Raft}
 
-\textbf{The 21-cell plan.} The first full experiment plan ran on Raft, at \commit{0397d37}, with 3 runs per cell and closed-loop users: 1,372,598 operations in all. Table~\ref{tab:raftplan} shows the main cells. Every cell had 0 digest mismatches and 0 reports unaccounted for, so Raft kept the state correct throughout. These runs had a bug we found later: the campus generator tied zone and capability together, so only half of the zone and capability pairs had responders (\dlog{D240}).
+\textbf{The 21-cell plan.} The first full experiment plan ran on Raft, at \commit{0397d37}, with 3 runs per cell and closed-loop users: 1,372,598 operations in all. Table~\ref{tab:raftplan} shows the main cells. Every cell had 0 digest mismatches and 0 reports unaccounted for, so Raft kept the state correct throughout. These runs had a bug that was found later: the campus generator tied zone and capability together, so only half of the zone and capability pairs had responders (\dlog{D240}).
 
 \begin{table}[!htb]
 \centering\small
@@ -158,7 +158,7 @@ Cell & Answered/s & p50 ms & p99 ms & Gave up & Retried & Gap ms & Elections \\
 \end{tabular}
 \end{table}
 
-Three results here are worth saying plainly. First, \textbf{failover under Raft was fast}: a new leader in 802 ms on average at 300 users and 841 ms at 1,500, and nobody gave up. Second, \textbf{on Raft, bidding lost to leader dispatch}. At low load leader dispatch answered in half the time, because bidding waits for its window and then forwards the result to the leader anyway, and at 3,000 users bidding collapsed while leader dispatch held better. With Raft underneath, bidding paid for the election and still queued behind the leader. Third, load was not shared evenly under bidding at 300 users (Jain 0.594, with node 3 winning 72\%). We later found that node 3 alone had its CPU energy setting at \texttt{performance}, so its plans took 3.2 ms against 7.7 and 9.4 ms on the others, and bidding correctly sent it more work. That is evidence that the bid follows real speed, but it made the plan's fairness numbers uneven.
+Three results here are worth saying plainly. First, \textbf{failover under Raft was fast}: a new leader in 802 ms on average at 300 users and 841 ms at 1,500, and nobody gave up. Second, \textbf{on Raft, bidding lost to leader dispatch}. At low load leader dispatch answered in half the time, because bidding waits for its window and then forwards the result to the leader anyway, and at 3,000 users bidding collapsed while leader dispatch held better. With Raft underneath, bidding paid for the election and still queued behind the leader. Third, load was not shared evenly under bidding at 300 users (Jain 0.594, with node 3 winning 72\%). It later turned out that node 3 alone had its CPU energy setting at \texttt{performance}, so its plans took 3.2 ms against 7.7 and 9.4 ms on the others, and bidding correctly sent it more work. That is evidence that the bid follows real speed, but it made the plan's fairness numbers uneven.
 
 Figure~\ref{fig:raft-results} shows two of these results as charts: the median latency of the two policies on Raft, and the p99 latency before, during and after a fault in the lab guide's tests on Raft.
 
@@ -193,7 +193,7 @@ Figure~\ref{fig:raft-results} shows two of these results as charts: the median l
 \label{fig:raft-results}
 \end{figure}
 
-\textbf{The throughput ladder.} Table~\ref{tab:ladder} lists the highest fixed rate that held at each build, in the order we built them. Raft rose from 600 to 7,000 reports a second as we fixed what limited it, and never reached 10,000.
+\textbf{The throughput ladder.} Table~\ref{tab:ladder} lists the highest fixed rate that held at each build, in the order they were built. Raft rose from 600 to 7,000 reports a second as each limit was fixed, and never reached 10,000.
 
 \begin{table}[!htb]
 \centering\small
@@ -216,10 +216,10 @@ Build & Shared log & Held/s & \texttt{plan\_work} & What fell \\
 \end{tabularx}
 \end{table}
 
-The 7,000 row has a caveat: its answers all came, with nobody giving up, but its p99 was 1.2 s, which failed the stricter test we used at the time. The folder's run files record its \texttt{plan\_work}, and that value is not copied into the repository.
+The 7,000 row has a caveat: its answers all came, with nobody giving up, but its p99 was 1.2 s, which failed the stricter test used at the time. The folder's run files record its \texttt{plan\_work}, and that value is not copied into the repository.
 % CHECK: confirm the plan_work of the f4 runs (analysis/results/f4-stress-summary.txt) from their run.json on client PC 1.
 
-\textbf{The cleanest comparison.} After the switch we ran Raft once more, on the final code, at 10,000 reports a second with 60,000 responders, by setting \texttt{consensus = "raft"} (\texttt{runs/phase1/raft0/10000}). Nothing else changed. Figure~\ref{fig:raft-vs-rounds} sets it beside the same rate on rotating rounds. Raft is one run and rounds five, so the comparison is indicative, but the gap is not small.
+\textbf{The cleanest comparison.} After the switch, Raft was run once more, on the final code, at 10,000 reports a second with 60,000 responders, by setting \texttt{consensus = "raft"} (\texttt{runs/phase1/raft0/10000}). Nothing else changed. Figure~\ref{fig:raft-vs-rounds} sets it beside the same rate on rotating rounds. Raft is one run and rounds five, so the comparison is indicative, but the gap is not small.
 
 \begin{figure}[!htb]
 \centering
@@ -252,7 +252,7 @@ Gave up & 341,568 & 0 \\
 \end{tabular}
 \vspace{0.8cm}
 \end{minipage}
-\caption{Raft against rotating rounds on the final code, at the class's target of 10,000 reports a second. Rounds is \texttt{s0-10000} from the overnight series (Section~\ref{sec:stress}).}
+\caption{Raft against rotating rounds on the final code, at the target of 10,000 reports a second. Rounds is \texttt{s0-10000} from the overnight series (Section~\ref{sec:stress}).}
 \label{fig:raft-vs-rounds}
 \end{figure}
 
@@ -281,13 +281,13 @@ T1 shows the two designs' failover from different angles. Under Raft, reports st
 
 \subsection{What the switch cost}
 
-Removing the leader was not free, and we list the costs here, beside the gains.
+Removing the leader was not free, and the costs are listed here, beside the gains.
 
 \begin{itemize}
   \item \textbf{Failure detection sets the failover time.} A silent member holds up every round until the others drop it, so a failure costs at least the 1 s detection time, against Raft's 0.8 s new leader.
-  \item \textbf{The ordering is our own code}, about 1,650 lines in \texttt{rounds.rs}, with no library's users behind it. Its correctness rests on our tests and experiments. The first version gave different digests on the lab PCs twice, and each bug was fixed with a test that fails without the fix (\dlog{D252}, \dlog{D257}).
+  \item \textbf{The ordering is the team's own code}, about 1,650 lines in \texttt{rounds.rs}, with no library's users behind it. Its correctness rests on the team's tests and experiments. The first version gave different digests on the lab PCs twice, and each bug was fixed with a test that fails without the fix (\dlog{D252}, \dlog{D257}).
   \item \textbf{Two failures close together stopped commits} in the first version, where Raft would have carried on with two of three. Making the system survive two and three failures took four more decisions (\dlog{D261} to \dlog{D264}), and with all three killed it can still lose a few answers (Section~\ref{sec:limits}).
   \item \textbf{Every node sends every round}, even when idle, so the log costs messages at no load.
 \end{itemize}
 
-What we gained is the reason we accept these costs: no node orders the others, the throughput limit moved from 7,000 to 30,000 reports a second without planning and to 12,000 with it, and every member can commit as long as the others are alive.
+The gains are the reason these costs are accepted: no node orders the others, the throughput limit moved from 7,000 to 30,000 reports a second without planning and to 12,000 with it, and every member can commit as long as the others are alive.

@@ -4,11 +4,11 @@
 
 \subsection{What the survey found}
 
-In Phase 0 each of us surveyed one election algorithm and we compared them on the same rows \cite{survey}. Table~\ref{tab:survey} is a short form of that comparison. Three findings shaped everything after it. First, with only three peers, message complexity does not matter: even the $O(n^2)$ algorithms need only a few messages. Second, the assumptions about failure matter most. The ring algorithms assume no node fails during an election, and in RescueMesh an election happens because a node failed. Bully depends on a timeout that tells a slow node from a dead one, which no timeout can do \cite{chandra}, so it can end with two coordinators. Third, electing a coordinator and choosing a node for each request are two different jobs. A coordinator stays until it fails, while load changes with every request.
+In Phase 0 each team member surveyed one election algorithm, and the team compared them on the same rows \cite{survey}. Table~\ref{tab:survey} is a short form of that comparison. Three findings shaped everything after it. First, with only three peers, message complexity does not matter: even the $O(n^2)$ algorithms need only a few messages. Second, the assumptions about failure matter most. The ring algorithms assume no node fails during an election, and in RescueMesh an election happens because a node failed. Bully depends on a timeout that tells a slow node from a dead one, which no timeout can do \cite{chandra}, so it can end with two coordinators. Third, electing a coordinator and choosing a node for each request are two different jobs. A coordinator stays until it fails, while load changes with every request.
 
 \begin{table}[!htb]
 \centering\scriptsize
-\caption{The surveyed algorithms, in short \cite{survey}. $n$ is the number of nodes; we have 3.}
+\caption{The surveyed algorithms, in short \cite{survey}. $n$ is the number of nodes; RescueMesh has 3.}
 \label{tab:survey}
 \begin{tabularx}{\linewidth}{@{}P{1.9cm}LLLp{1.3cm}L@{}}
 \toprule
@@ -28,7 +28,7 @@ Load bidding \cite{contractnet} & unique request IDs, a bid timeout & $n$ to $n(
 
 \begin{table}[!htb]
 \centering\small
-\caption{The election jobs: what the survey chose and what we built.}
+\caption{The election jobs: what the survey chose and what was built.}
 \label{tab:jobs}
 \begin{tabularx}{\linewidth}{@{}P{3.0cm}LL@{}}
 \toprule
@@ -53,7 +53,7 @@ Every node that receives a report and is serving opens a round for it, sends its
 \]
 Here \emph{queued} and \emph{running} are the worker pool's jobs, \emph{just\_won} counts rounds this node won or is leading but has not started yet, and \emph{recent\_service\_us} is a running average of its own planning time (\dlog{D45}, \dlog{D85}, \dlog{D86}). The $+1$ counts the report being bid on, so an idle fast node beats an idle slow one. \emph{just\_won} matters because a node can win many rounds before its queue shows them; without it, every report in a burst would go to the same node, which the survey warned of \cite{survey}. In the report traced in Figure~\ref{fig:seq-report}, node 3 had 123 such rounds and a planning time of 8 $\mu$s with 20 workers, so it bid $(123+1) \times 8 / 20 = 49$.
 
-We chose expected wait over the other variants because it measured best. Scenario 2 in Section~\ref{sec:lb} compares it with a queue-only score: when one node's planning was made 5 times slower, the queue-only score barely changed its bid, because a slow plan does not show in the queue at that load, while expected wait moved most of the work away (\dlog{D87}).
+Expected wait was chosen over the other variants because it measured best. Scenario 2 in Section~\ref{sec:lb} compares it with a queue-only score: when one node's planning was made 5 times slower, the queue-only score barely changed its bid, because a slow plan does not show in the queue at that load, while expected wait moved most of the work away (\dlog{D87}).
 
 \textbf{When bids are missed.} A node that misses a bid can decide differently from the others. Then two nodes both plan a report, or none does until the backstop. This costs work and time and is never wrong, because the first result recorded wins. At high load fewer rounds see all three bids, which is what limits fairness above 30,000 reports a second (Table~\ref{tab:elcost}).
 
@@ -110,7 +110,7 @@ Every node that lost a round stands by. If the winner is suspected, or nothing f
 \subsection{The fault election}
 \label{sec:faultelection}
 
-The spec asks the three cloud servers to elect, from time to time, one machine to ignore communication for up to 20 s. The survey had the Raft leader choose. We changed this so that no node decides for another (\dlog{D158}): every 30 to 60 s, the three nodes draw random numbers and send them to each other, and the highest goes silent for its own drawn time of 1 to 20 s. The first node whose timer runs out starts a round, and the others draw as soon as they hear of it, so starting a round gives no power. A node that is missing any of the three numbers does nothing, so a node that is off, silent or catching up blocks the next fault. That keeps faults to one at a time on this path (\dlog{D159}). Figure~\ref{fig:seq-faultel} shows a round.
+The spec requires the three cloud servers to elect, from time to time, one machine to ignore communication for up to 20 s. The survey had the Raft leader choose. This was changed so that no node decides for another (\dlog{D158}): every 30 to 60 s, the three nodes draw random numbers and send them to each other, and the highest goes silent for its own drawn time of 1 to 20 s. The first node whose timer runs out starts a round, and the others draw as soon as they hear of it, so starting a round gives no power. A node that is missing any of the three numbers does nothing, so a node that is off, silent or catching up blocks the next fault. That keeps faults to one at a time on this path (\dlog{D159}). Figure~\ref{fig:seq-faultel} shows a round.
 
 \begin{figure}[!htb]
 \centering
