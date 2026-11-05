@@ -85,6 +85,11 @@ impl StateReader {
         outcomes
     }
 
+    /// Forget everything, for a node that must take the log from the start again (D261).
+    pub(crate) fn reset(&self) {
+        *self.write() = CloudState::new();
+    }
+
     /// Apply one command with no log behind it, for a test that needs a state to read.
     #[cfg(test)]
     pub(crate) fn apply_for_tests(&self, cmd: crate::proto::Command) {

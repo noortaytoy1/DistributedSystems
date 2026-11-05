@@ -106,6 +106,10 @@ pub fn spawn(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
             let up = tracker.time_up(now);
             // A hold that is gone was released, and is forgotten here.
             let still_held: Vec<HoldMade> = ctx.state.with(|s| {
+                // The state started again from the log (D261).
+                if tracker.taken > s.holds_made() {
+                    tracker.taken = 0;
+                }
                 let new = s.holds_made_after(tracker.taken);
                 let new = &new[..new.len().min(TAKE_IN_PER_LOOK)];
                 tracker.take_in(ctx.id, new, ms, now);

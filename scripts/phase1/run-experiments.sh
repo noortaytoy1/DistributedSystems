@@ -149,6 +149,15 @@ collect() {
   cat runs-config/status-after.txt
   stop_all
   wait_until_stopped || true
+  if ((${KILL_AUDIT:-0})); then
+    # What each node's own file says it applied, to check that every answer is in every record (D261).
+    local audit=() i
+    for i in "${!NODE_IDS[@]}"; do
+      on_host "${NODE_SSH[$i]}" "[ -f runs-config/watch-tcp.pid ] && kill \$(cat runs-config/watch-tcp.pid); $BIN/roundlog data/raft/node-${NODE_IDS[$i]}.rounds 2>runs/current/applied-${NODE_IDS[$i]}.txt | gzip -1 >runs/current/applied-ids-${NODE_IDS[$i]}.txt.gz" &
+      audit+=($!)
+    done
+    wait "${audit[@]}" || say "warning: the audit of the node files failed"
+  fi
   if [[ -e "$out" ]]; then
     mkdir -p runs/old-hand
     mv "$out" "runs/old-hand/$name-run-$run-$(date +%Y%m%d-%H%M%S)"
@@ -281,7 +290,7 @@ t2() {
   ctl status | tee runs-config/t2-three.txt
   wait_load
   sleep 5
-  collect oneleft-300 1 "$WARM_S" $((LOAD_S - WARM_S)) 300 30
+  collect oneleft-300 "${T2_REP:-1}" "$WARM_S" $((LOAD_S - WARM_S)) 300 30
   cp runs-config/t2-alone.txt runs-config/t2-two.txt runs-config/t2-three.txt "$LAST_OUT"/
   say "T2 saved in $LAST_OUT"
 }
@@ -658,12 +667,18 @@ setup_note() {
 # A run at fixed rates. FAULT is one of: "silence AT MS NODE", "kill AT BACK NODE", "skew ON OFF WORK NODE", or empty.
 fixed_run() { # name rep warm duration fault program lines...
   local name=$1 rep=$2 warm=$3 dur=$4 fault=$5; shift 5
-  local kind a b c d measured=$((dur - warm)) t0 idx row
+  local kind a b c d measured=$((dur - warm)) t0 idx row i
   check_disk
   say "RUN $name, repeat $rep, $dur s${fault:+, fault: $fault}"
   prepare phase1
   for host in "${NODE_SSH[@]}" "${CLIENT_SSH[@]}"; do copy_to "$host" "scripts/phase1/slim-node.sh" runs-config/slim-node.sh; done
   start_cluster
+  if ((${KILL_AUDIT:-0})); then
+    for i in "${!NODE_IDS[@]}"; do
+      copy_to "${NODE_SSH[$i]}" scripts/phase1/watch-tcp.sh runs-config/watch-tcp.sh
+      on_host "${NODE_SSH[$i]}" "nohup bash runs-config/watch-tcp.sh 7001 runs/current/tcp-peers.txt >/dev/null 2>&1 & echo \$! >runs-config/watch-tcp.pid"
+    done
+  fi
   t0=$(date +%s%6N)
   : >runs-config/fault-times.txt
   echo "start $t0" >>runs-config/fault-times.txt
@@ -688,6 +703,25 @@ fixed_run() { # name rep warm duration fault program lines...
       sleep $((b - a))
       echo "start_again $(date +%s%6N) node $c" >>runs-config/fault-times.txt
       restart_node "$idx"
+      ;;
+    killplan)
+      # Steps by seconds from the start of the load: 30:kill:2 50:kill:1,3 70:back:2.
+      local step at what who n now pids started=$SECONDS
+      for step in $a $b $c $d; do
+        IFS=: read -r at what who <<<"$step"
+        while ((SECONDS - started < at)); do sleep 0.1; done
+        now=$(date +%s%6N)
+        if ((WIN_FROM == 0)); then WIN_FROM=$((now - 3000000)); WIN_TO=$((now + 5000000)); fi
+        pids=()
+        for n in ${who//,/ }; do
+          idx=$(node_index "$n")
+          if [[ $what == kill ]]; then cut_power "$idx" & else start_node "$idx" ">>" & fi
+          pids+=($!)
+        done
+        wait "${pids[@]}"
+        echo "$what $now node $who" >>runs-config/fault-times.txt
+        say "$what node $who, at $at s"
+      done
       ;;
     skew)
       sleep "$a"
@@ -760,6 +794,55 @@ holds() {
   mapfile -t L < <(even_load 10000 315 3); fixed_run "h1-10000" 1 15 315 "" "${L[@]}" || true
 }
 
+# T2 with the second failure a killed process, not a silence: both nodes lose their memory.
+# Every order of killing nodes, under load, and each coming back by itself (D261).
+kill_suite() { # rate plan_work rep [cases]
+  local rate=$1 pw=$2 rep=$3 cases=${4:-"one twoA twoB twoC twoD allA allB"} x y z steps kc
+  x=$(( (rep - 1) % 3 + 1 )); y=$(( x % 3 + 1 )); z=$(( y % 3 + 1 ))
+  make_cell "$pw" expected-wait
+  mapfile -t L < <(even_load "$rate" 150 3)
+  for kc in $cases; do
+    case "$kc" in
+      one)  steps="40:kill:$x 60:back:$x" ;;
+      twoA) steps="30:kill:$x 50:kill:$y 70:back:$x 90:back:$y" ;;
+      twoB) steps="30:kill:$x 50:kill:$y 70:back:$y 90:back:$x" ;;
+      twoC) steps="30:kill:$x,$y 50:back:$x 70:back:$y" ;;
+      twoD) steps="30:kill:$x 50:back:$x 52:kill:$y 72:back:$y" ;;
+      allA) steps="40:kill:1,2,3 60:back:1,2,3" ;;
+      allB) steps="30:kill:1,2,3 50:back:$y 70:back:$z 90:back:$x" ;;
+    esac
+    fixed_run "kill$kc-$rate" "$rep" 15 150 "killplan $steps" "${L[@]}" || true
+  done
+}
+
+t2_both_killed() { # name rep: first_back second_back are positions 0 or 1
+  local name=$1 rep=$2 first_back=$3 second_back=$4 a=0 b=1
+  say "T2, both killed: $name, repeat $rep, back in the order $first_back then $second_back"
+  check_disk
+  prepare e1-300-bidding
+  start_cluster
+  start_load
+  sleep "$CUT_AT_S"
+  cut_power "$a"
+  say "Killed node ${NODE_IDS[$a]}."
+  sleep 5
+  cut_power "$b"
+  say "Killed node ${NODE_IDS[$b]}."
+  sleep 25
+  ctl status | tee runs-config/t2-alone.txt
+  restart_node "$first_back"
+  sleep 15
+  ctl status | tee runs-config/t2-two.txt
+  restart_node "$second_back"
+  sleep 15
+  ctl status | tee runs-config/t2-three.txt
+  wait_load
+  sleep 5
+  collect "$name" "$rep" "$WARM_S" $((LOAD_S - WARM_S)) 300 30
+  cp runs-config/t2-alone.txt runs-config/t2-two.txt runs-config/t2-three.txt "$LAST_OUT"/
+  say "$name saved in $LAST_OUT"
+}
+
 case "${1:-}" in
   rf) say "TRIAL rf"; fail_step 10000 stress-fail-10000 120 45 75 3; stop_all ;;
   trace) trace_step 10000 25 runs/phase1/request-trace.txt ;;
@@ -767,6 +850,9 @@ case "${1:-}" in
   smoke) setup_note; make_cell 0 expected-wait; mapfile -t L < <(even_load 3000 25 3); fixed_run "smoke-3000" 1 5 25 "silence 10 3000 2" "${L[@]}"; make_cell 1000 expected-wait; mapfile -t L < <(even_load 1000 25 2); fixed_run "smoke-skew" 1 5 25 "skew 8 16 5000 1" "${L[@]}"; stop_all ;;
   raftcheck) export CONSENSUS=raft ROLE=leader; make_cell 0 expected-wait; for r in 10000 20000 30000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "raft0-$r" 1 15 75 "" "${L[@]}" || true; done; stop_all ;;
   e2fix) setup_note; export SKEW_BACK=1000; for rep in 1 2 3 4 5; do v=$(( (rep - 1) % 3 + 1 )); make_cell 1000 expected-wait; mapfile -t L < <(even_load 3000 180 3); fixed_run "e2-skewfix" "$rep" 15 180 "skew 60 120 5000 $v" "${L[@]}" || true; make_cell 1000 queue-only; fixed_run "e2-queuefix" "$rep" 15 180 "skew 60 120 5000 $v" "${L[@]}" || true; done; stop_all ;;
+  t2check) setup_note; for rep in 1 2 3; do export T2_REP=$rep; t2; done; t2_both_killed twokill-silent-order 1 1 0; t2_both_killed twokill-other-order 1 0 1; stop_all ;;
+  long) setup_note; make_cell "${LONG_PW:-0}" expected-wait; mapfile -t L < <(even_load "${LONG_RATE:-20000}" "${LONG_S:-7215}" 3); fixed_run "long${LONG_PW:-0}-${LONG_RATE:-20000}" "${LONG_REP:-1}" 15 "${LONG_S:-7215}" "" "${L[@]}"; stop_all ;;
+  kills) setup_note; export KILL_AUDIT=1; for rep in ${4:-1}; do for rate in ${2:-20000}; do kill_suite "$rate" "${3:-0}" "$rep" "${5:-one twoA twoB twoC twoD allA allB}"; done; done; stop_all ;;
   series) setup_note; for rep in ${2:-1 2 3}; do say "=== PASS $rep"; pass "$rep"; [[ "$rep" == 1 ]] && holds; say "=== PASS $rep DONE"; done; stop_all ;;
   all) t5; t1; t2; t4; t3; stop_all; finish ;;
   finish) finish ;;

@@ -17,20 +17,24 @@
 //!   `takeover_missed_heartbeats` x `peer_heartbeat_ms`. One asks and the other promises, so two of
 //!   three always agree, and one promise per view means there can be only one next view. They agree
 //!   where its stream ends, at the higher of what they hold, and share what either lacks.
-//! - **One node left.** It cannot drop anyone, so it stops committing, and the node's degraded mode
-//!   answers provisionally (D120). When a peer returns, its rounds carry on.
+//! - **One node left.** It cannot commit alone, and the node's degraded mode answers provisionally
+//!   (D120). When a peer returns its rounds carry on, and a peer that restarted, or a third node
+//!   while its partner is silent, it brings straight back in, as it holds all that was applied (D261).
+//! - **All of them gone.** Each rebuilds from its own file. Once two can talk, the one with the
+//!   longest log goes first, and the others come back to it (D261).
 //! - **A node that returns.** It is sent the applied log in order, asks to be added, and a member adds
 //!   it through an entry in its stream, at a round far enough ahead that all members agree. The
 //!   members, and not the log, tell it that round: a drop is not in the log, so an old entry looks
 //!   the same as the current one (D252).
-//! - **Limit.** A restarted node recovers from a peer's log and not from its own file, so losing all
-//!   three at once loses the state. See D249.
+//! - **Its file.** Every batch is saved before it counts, and the order applied is saved before anyone
+//!   is answered, so what a client was told survives losing all three (D261).
 //!
 //! Owner: A (Raft and replication).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -40,12 +44,14 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use serde::Serialize;
+
 use crate::config::Config;
 use crate::metrics::{Event, EventLog};
 use crate::node::transport::PeerSet;
 use crate::proto::{
-    Command, CommandGroup, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError,
-    RaftRpc, RoundBatch, RoundControl, RoundsMsg, RoundsReply,
+    Command, CommandGroup, LogRecord, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply,
+    ProposeError, RaftRpc, RoundBatch, RoundControl, RoundsMsg, RoundsReply,
 };
 use crate::raft::store::{CHECKPOINT_EVERY, StateReader};
 use crate::raft::{Consensus, ConsensusStatus, LogWork, Role};
@@ -78,6 +84,10 @@ const JOIN_WHEN_WITHIN: u64 = 200;
 const IO_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a node just added has to send its first message before it counts as silent.
 const JOIN_GRACE: Duration = Duration::from_secs(3);
+/// How long a node on its way back waits with nobody to talk to before it serves what it has.
+const ALONE_AFTER: Duration = Duration::from_secs(3);
+/// How long nodes on their way back, with no member among them, wait for the others.
+const BOOT_GRACE: Duration = Duration::from_secs(3);
 
 type Answer = oneshot::Sender<Result<Outcome, ProposeError>>;
 
@@ -136,8 +146,11 @@ struct Core {
     drops: BTreeMap<u64, (NodeId, u64)>,
     /// A returning node to add through this node's next batch.
     adding: Option<NodeId>,
-    /// Members added and not heard from yet, and the round each comes back at.
-    awaiting: BTreeMap<NodeId, u64>,
+    /// Members added and not heard from yet: each one's first round, and the log's round for it.
+    awaiting: BTreeMap<NodeId, (u64, u64)>,
+    /// Applied since the last save of the order, and the answers that wait for that save.
+    marks: Vec<(NodeId, u64)>,
+    ready: Vec<(Answer, Outcome)>,
     started: Instant,
 }
 
@@ -156,6 +169,8 @@ struct Inner {
     saver: mpsc::UnboundedSender<SaveJob>,
     applied: watch::Sender<Option<u64>>,
     contact: watch::Sender<Option<u64>>,
+    /// On its way back, with nobody reachable: it serves what it has.
+    alone: AtomicBool,
     wake: Notify,
     stats: Stats,
     round: Duration,
@@ -217,8 +232,11 @@ impl RoundsNode {
             drops: BTreeMap::new(),
             adding: None,
             awaiting: BTreeMap::new(),
+            marks: Vec::new(),
+            ready: Vec::new(),
             started: now,
         };
+        let path_for_replay = path.clone();
         let (saver, jobs) = mpsc::unbounded_channel();
         let timers = &config.timers;
         let inner = Arc::new(Inner {
@@ -230,6 +248,7 @@ impl RoundsNode {
             saver,
             applied: watch::channel(None).0,
             contact: watch::channel(None).0,
+            alone: AtomicBool::new(false),
             wake: Notify::new(),
             stats: Stats::default(),
             round: Duration::from_millis(timers.round_ms),
@@ -238,6 +257,11 @@ impl RoundsNode {
             rpc_timeout: timers.peer_rpc_timeout(),
         });
         let state = inner.state.clone();
+        if let (Some(path), true) = (path_for_replay, restarted) {
+            // Off the async threads: the file can be gigabytes long.
+            let replaying = inner.clone();
+            tokio::task::spawn_blocking(move || replaying.replay(&path)).await?;
+        }
         inner.log_view();
         let mut tasks = vec![
             tokio::spawn(run_saver(inner.clone(), path, jobs)),
@@ -275,10 +299,7 @@ impl Inner {
             .fetch_add(commands as u64, Ordering::Relaxed);
         let mut bytes = Vec::new();
         for batch in batches {
-            if let Ok(encoded) = crate::proto::encode(batch.as_ref()) {
-                bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-                bytes.extend_from_slice(&encoded);
-            }
+            write_record(&mut bytes, &RecordRef::Batch(batch.as_ref()));
         }
         let (done, saved) = oneshot::channel();
         if self.saver.send(SaveJob { bytes, done }).is_ok() {
@@ -340,6 +361,121 @@ impl Inner {
         if applied_any {
             self.applied.send_replace(Some(core.index));
         }
+        self.save_order(core);
+    }
+
+    /// Saves the order just applied, then answers whoever waited on it, so anything a client was
+    /// told can be rebuilt from this node's file alone (D261).
+    fn save_order(&self, core: &mut Core) {
+        if core.marks.is_empty() {
+            return;
+        }
+        let mut bytes = Vec::new();
+        for (node, round) in core.marks.drain(..) {
+            write_record(&mut bytes, &RecordRef::Applied { node, round });
+        }
+        let ready = std::mem::take(&mut core.ready);
+        let (done, saved) = oneshot::channel();
+        if self.saver.send(SaveJob { bytes, done }).is_ok() {
+            tokio::spawn(async move {
+                let _ = saved.await;
+                for (answer, outcome) in ready {
+                    let _ = answer.send(Ok(outcome));
+                }
+            });
+        }
+    }
+
+    /// Rebuilds the state from this node's file, in the order it applied. Batches it saved and did
+    /// not apply are not used: the others hold them if they count (D261).
+    fn replay(&self, path: &Path) {
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let mut file = std::io::BufReader::new(file);
+        let mut saved: HashMap<(NodeId, u64), Arc<RoundBatch>> = HashMap::new();
+        let mut core = lock(&self.core);
+        let mut length = [0u8; 4];
+        // A record cut short is the last thing written before the end came.
+        while file.read_exact(&mut length).is_ok() {
+            let mut record = vec![0u8; u32::from_be_bytes(length) as usize];
+            if file.read_exact(&mut record).is_err() {
+                break;
+            }
+            let Ok(record) = crate::proto::decode::<LogRecord>(&record) else {
+                break;
+            };
+            match record {
+                LogRecord::Batch(batch) => {
+                    core.max_seen = core.max_seen.max(batch.round);
+                    saved.insert((batch.node, batch.round), Arc::new(batch));
+                }
+                LogRecord::Applied { node, round } => {
+                    if let Some(batch) = saved.remove(&(node, round)) {
+                        self.apply_entry_while_joining(&mut core, &batch);
+                        core.applied_round = core.applied_round.max(round);
+                    }
+                }
+                LogRecord::Reset => {
+                    self.start_log_again(&mut core);
+                    saved.clear();
+                }
+            }
+        }
+        core.my_round = core.my_round.max(core.max_seen);
+        tracing::info!(
+            node = self.id,
+            entries = core.ordered.len(),
+            "rebuilt from the log file"
+        );
+        self.applied
+            .send_replace((core.index > 0).then_some(core.index));
+    }
+
+    /// Forgets the log and the state, to take them from a peer.
+    fn start_log_again(&self, core: &mut Core) {
+        core.index = 0;
+        core.ordered.clear();
+        core.applied_round = 0;
+        for stream in core.streams.values_mut() {
+            stream.clear();
+        }
+        self.state.reset();
+    }
+
+    /// Takes `node` in, for a node that is the only member left. There is nobody to agree with, and
+    /// nothing else can commit, so this does not go through the log. Its stream starts past
+    /// everything seen. Until then it applies what this node holds past `base` (D261).
+    fn add_alone(&self, core: &mut Core, node: NodeId) {
+        let base = core.applied_round;
+        let start = core.my_round.max(core.max_seen) + 1;
+        tracing::info!(
+            node = self.id,
+            added = node,
+            base,
+            start,
+            "taking a node back in, alone"
+        );
+        self.add_member(core, node, start, base);
+    }
+
+    fn add_member(&self, core: &mut Core, node: NodeId, start_round: u64, base: u64) {
+        core.members.insert(node);
+        core.view += 1;
+        core.promise = None;
+        core.granted = false;
+        core.awaiting.insert(node, (start_round, base));
+        core.covered.insert(node, start_round - 1);
+        core.acked.insert(node, base);
+        core.sent.insert(node, base);
+        core.streams.entry(node).or_default();
+        core.last_heard.insert(node, Instant::now() + JOIN_GRACE);
+        self.log.log(Event::RaftState {
+            term: core.view,
+            leader: None,
+            role: Role::Peer.as_str().to_string(),
+            last_applied: Some(core.index),
+        });
     }
 
     fn apply_batch(&self, core: &mut Core, batch: &Arc<RoundBatch>) {
@@ -363,23 +499,11 @@ impl Inner {
             // A second entry for one return, or one from before a later drop, is a view behind by
             // now on every node. A node on its way back is told who is in when it returns.
             if !core.joining && view == core.view && !core.members.contains(&node) {
-                core.members.insert(node);
-                core.view += 1;
-                core.promise = None;
-                core.granted = false;
-                core.awaiting.insert(node, start_round);
-                core.covered.insert(node, start_round - 1);
-                core.acked.insert(node, start_round - 1);
-                core.sent.insert(node, start_round - 1);
-                core.streams.entry(node).or_default();
-                core.last_heard.insert(node, Instant::now() + JOIN_GRACE);
-                self.log.log(Event::RaftState {
-                    term: core.view,
-                    leader: None,
-                    role: Role::Peer.as_str().to_string(),
-                    last_applied: Some(index),
-                });
+                self.add_member(core, node, start_round, start_round - 1);
             }
+        }
+        if !core.joining {
+            core.marks.push((batch.node, batch.round));
         }
         core.ordered.push(batch.clone());
         if batch.node == self.id {
@@ -390,7 +514,7 @@ impl Inner {
                         self.stats
                             .answered_us
                             .fetch_add(entered.elapsed().as_micros() as u64, Ordering::Relaxed);
-                        let _ = answer.send(Ok(outcome.clone()));
+                        core.ready.push((answer, outcome.clone()));
                     }
                 }
             }
@@ -482,7 +606,7 @@ impl Inner {
                 self.install_drop(&mut core, view, target, cut);
                 RoundsReply::Done
             }
-            RoundsMsg::CatchUp { next } => self.on_catch_up(next),
+            RoundsMsg::CatchUp { next, last } => self.on_catch_up(from, next, last),
             RoundsMsg::Join => self.on_join(from),
             RoundsMsg::Applied => {
                 let core = lock(&self.core);
@@ -520,7 +644,7 @@ impl Inner {
             if core
                 .awaiting
                 .get(&from)
-                .is_some_and(|start| after + 1 != *start)
+                .is_some_and(|(start, _)| after + 1 != *start)
             {
                 return RoundsReply::NotMember { view: core.view };
             }
@@ -603,10 +727,22 @@ impl Inner {
         }
     }
 
-    fn on_catch_up(&self, next: u64) -> RoundsReply {
+    fn on_catch_up(&self, from: NodeId, next: u64, last: Option<(NodeId, u64)>) -> RoundsReply {
         let core = lock(&self.core);
         if core.joining {
-            return RoundsReply::NotYet;
+            return RoundsReply::Joining {
+                total: core.ordered.len() as u64,
+                view: core.view,
+            };
+        }
+        if next > 0 {
+            let here = core
+                .ordered
+                .get(next as usize - 1)
+                .map(|batch| (batch.node, batch.round));
+            if here.is_none() || here != last {
+                return RoundsReply::Diverged;
+            }
         }
         let start = (next as usize).min(core.ordered.len());
         let mut commands = 0;
@@ -618,13 +754,27 @@ impl Inner {
             commands += batch.commands.len();
             batches.push(batch.as_ref().clone());
         }
+        let held = match core.awaiting.get(&from) {
+            Some((first, _)) => core
+                .pending
+                .values()
+                .filter(|batch| batch.node != self.id && batch.round < *first)
+                .map(|batch| batch.as_ref().clone())
+                .collect(),
+            None => Vec::new(),
+        };
         RoundsReply::Entries {
             batches,
             total: core.ordered.len() as u64,
             applied_round: core.applied_round,
             view: core.view,
             members: core.members.iter().copied().collect(),
-            starts: core.awaiting.iter().map(|(n, s)| (*n, *s)).collect(),
+            starts: core
+                .awaiting
+                .iter()
+                .map(|(node, (first, base))| (*node, *first, *base))
+                .collect(),
+            held,
         }
     }
 
@@ -637,16 +787,57 @@ impl Inner {
         if core.awaiting.contains_key(&from) {
             return RoundsReply::Done;
         }
-        if core.members.contains(&from) {
+        let others: Vec<NodeId> = core
+            .members
+            .iter()
+            .copied()
+            .filter(|m| *m != self.id)
+            .collect();
+        let now = Instant::now();
+        let gone = |core: &Core, other: NodeId| {
+            other == from
+                || core
+                    .last_heard
+                    .get(&other)
+                    .is_none_or(|heard| now.saturating_duration_since(*heard) >= self.suspect_after)
+        };
+        if others.iter().all(|other| gone(&core, *other)) {
+            // The node asking is here, restarted or back, and every other member has gone quiet.
+            // So this node and the one asking are two of the three, and nothing can commit
+            // without this node. Nobody is left to agree with, so this does not wait for anyone.
+            // Without this they would wait for each other for ever (D261).
+            for other in others {
+                let view = core.view + 1;
+                let cut = core.covered.get(&other).copied().unwrap_or(0);
+                self.install_drop(&mut core, view, other, cut);
+            }
+            core.adding = None;
+            self.add_alone(&mut core, from);
+        } else if core.members.contains(&from) {
             // It restarted while still listed, so its stream is gone: the detector drops it.
-            let long_ago = Instant::now() - self.suspect_after * 2;
+            let long_ago = now - self.suspect_after * 2;
             core.last_heard.insert(from, long_ago);
             return RoundsReply::NotYet;
-        }
-        if core.adding.is_none() && core.members.len() >= 2 {
+        } else if core.adding.is_none() {
             core.adding = Some(from);
         }
+        drop(core);
+        self.wake.notify_waiters();
         RoundsReply::Done
+    }
+}
+
+#[derive(Serialize)]
+enum RecordRef<'a> {
+    Batch(&'a RoundBatch),
+    Applied { node: NodeId, round: u64 },
+    Reset,
+}
+
+fn write_record(bytes: &mut Vec<u8>, record: &RecordRef<'_>) {
+    if let Ok(encoded) = crate::proto::encode(record) {
+        bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&encoded);
     }
 }
 
@@ -1009,8 +1200,12 @@ async fn try_drop(inner: &Inner, target: NodeId, other: NodeId, view: u64) {
 }
 
 /// While left out: apply a member's log in order, ask to be added, and come back at its round.
+/// With no member to ask, wait for the others, then start again from whoever holds the most (D261).
 async fn run_catch_up(inner: Arc<Inner>) {
     let mut asked = Instant::now() - Duration::from_secs(10);
+    let mut no_member_since: Option<Instant> = None;
+    // The member that was asked last. Asking two could have both take this node in.
+    let mut prefer: Option<NodeId> = None;
     loop {
         {
             let mut core = lock(&inner.core);
@@ -1020,51 +1215,92 @@ async fn run_catch_up(inner: Arc<Inner>) {
             }
         }
         if !lock(&inner.core).joining {
+            no_member_since = None;
+            prefer = None;
             tokio::time::sleep(inner.round.max(CATCH_UP_PAUSE)).await;
             continue;
         }
         let mut progressed = false;
-        for client in inner.peers.iter() {
-            let (next, term) = {
+        let mut member_answered = false;
+        let mut on_their_way: Vec<(NodeId, u64, u64)> = Vec::new();
+        let mut clients: Vec<_> = inner.peers.iter().cloned().collect();
+        clients.sort_by_key(|client| Some(client.peer()) != prefer);
+        for client in clients {
+            let (next, last, term) = {
                 let core = lock(&inner.core);
-                (core.ordered.len() as u64, core.view)
+                let last = core.ordered.last().map(|batch| (batch.node, batch.round));
+                (core.ordered.len() as u64, last, core.view)
             };
             let envelope = PeerEnvelope {
                 from: inner.id,
                 term,
-                body: PeerBody::Rounds(RoundsMsg::CatchUp { next }),
+                body: PeerBody::Rounds(RoundsMsg::CatchUp { next, last }),
             };
             let reply = client.call(envelope, CATCH_UP_TIMEOUT).await;
-            let Ok(PeerReply::Rounds(RoundsReply::Entries {
-                batches,
-                total,
-                applied_round,
-                view,
-                members,
-                starts,
-            })) = reply
-            else {
-                continue;
+            let (batches, total, applied_round, view, members, starts, held) = match reply {
+                Ok(PeerReply::Rounds(RoundsReply::Entries {
+                    batches,
+                    total,
+                    applied_round,
+                    view,
+                    members,
+                    starts,
+                    held,
+                })) => (batches, total, applied_round, view, members, starts, held),
+                Ok(PeerReply::Rounds(RoundsReply::Joining { total, view })) => {
+                    on_their_way.push((client.peer(), total, view));
+                    continue;
+                }
+                Ok(PeerReply::Rounds(RoundsReply::Diverged)) => {
+                    let mut core = lock(&inner.core);
+                    tracing::warn!(
+                        node = inner.id,
+                        "what this node holds is not the log: starting again"
+                    );
+                    inner.start_log_again(&mut core);
+                    let mut bytes = Vec::new();
+                    write_record(&mut bytes, &RecordRef::Reset);
+                    let (done, _) = oneshot::channel();
+                    let _ = inner.saver.send(SaveJob { bytes, done });
+                    member_answered = true;
+                    break;
+                }
+                _ => continue,
             };
+            member_answered = true;
+            inner.alone.store(false, Ordering::Relaxed);
             progressed = !batches.is_empty();
             let reached = next + batches.len() as u64;
             let done = reached >= total;
             let close = reached + JOIN_WHEN_WITHIN >= total;
             let ask_to_join = {
                 let mut core = lock(&inner.core);
+                let mut bytes = Vec::new();
                 for batch in batches {
                     let batch = Arc::new(batch);
+                    write_record(&mut bytes, &RecordRef::Batch(&batch));
+                    write_record(
+                        &mut bytes,
+                        &RecordRef::Applied {
+                            node: batch.node,
+                            round: batch.round,
+                        },
+                    );
                     inner.apply_entry_while_joining(&mut core, &batch);
+                }
+                if !bytes.is_empty() {
+                    let (done, _) = oneshot::channel();
+                    let _ = inner.saver.send(SaveJob { bytes, done });
                 }
                 inner
                     .applied
                     .send_replace((core.index > 0).then_some(core.index));
                 core.max_seen = core.max_seen.max(applied_round);
                 let me = inner.id;
-                match starts.iter().find(|(node, _)| *node == me).map(|(_, s)| *s) {
-                    Some(start_round) => {
-                        // The members stop at the round before it until this node's stream comes.
-                        if done && applied_round == start_round - 1 {
+                match starts.iter().find(|(node, _, _)| *node == me) {
+                    Some(&(_, start_round, base)) => {
+                        // The members stop at `base` and hold the rest until this node's stream comes.
+                        if done && applied_round == base {
                             // Back in: every member now waits for this node's stream from this round.
                             // Batches this node made while silent or left out were never in the
                             // order. Their rounds can be above this one, and sending them now would
@@ -1075,7 +1311,7 @@ async fn run_catch_up(inner: Arc<Inner>) {
                             core.joining = false;
                             core.view = view;
                             core.my_round = start_round - 1;
-                            core.applied_round = start_round - 1;
+                            core.applied_round = base;
                             core.pending.clear();
                             core.members = members.into_iter().collect();
                             core.covered.clear();
@@ -1084,17 +1320,24 @@ async fn run_catch_up(inner: Arc<Inner>) {
                             core.last_heard.clear();
                             let everyone: Vec<NodeId> = core.members.iter().copied().collect();
                             for member in everyone {
-                                core.covered.insert(member, start_round - 1);
+                                core.covered.insert(member, base);
                                 core.acked.insert(member, start_round - 1);
                                 core.sent.insert(member, start_round - 1);
                                 core.last_heard.insert(member, Instant::now() + JOIN_GRACE);
                             }
+                            core.covered.insert(me, start_round - 1);
+                            let held: Vec<Arc<RoundBatch>> =
+                                held.into_iter().map(Arc::new).collect();
+                            Inner::hold(&mut core, &held);
                             core.promise = None;
                             core.granted = false;
                             core.adding = None;
-                            core.awaiting =
-                                starts.iter().copied().filter(|(n, _)| *n != me).collect();
-                            tracing::info!(node = inner.id, start_round, "back as a member");
+                            core.awaiting = starts
+                                .iter()
+                                .filter(|(node, _, _)| *node != me)
+                                .map(|(node, first, base)| (*node, (*first, *base)))
+                                .collect();
+                            tracing::info!(node = inner.id, start_round, base, "back as a member");
                             inner.contact.send_replace(Some(core.index));
                         }
                         false
@@ -1113,12 +1356,70 @@ async fn run_catch_up(inner: Arc<Inner>) {
                     term,
                     body: PeerBody::Rounds(RoundsMsg::Join),
                 };
+                prefer = Some(client.peer());
                 let _ = client.call(join, inner.rpc_timeout).await;
             }
             break;
         }
+        if member_answered {
+            no_member_since = None;
+        } else {
+            let since = *no_member_since.get_or_insert_with(Instant::now);
+            if on_their_way.is_empty() {
+                // Nobody to talk to. This node cannot commit, but it can answer provisionally.
+                if since.elapsed() >= ALONE_AFTER && !inner.alone.swap(true, Ordering::Relaxed) {
+                    let index = lock(&inner.core).index;
+                    tracing::warn!(
+                        node = inner.id,
+                        "on the way back with nobody reachable: serving what this node has"
+                    );
+                    inner.contact.send_replace(Some(index));
+                }
+            } else if since.elapsed() >= BOOT_GRACE {
+                inner.alone.store(false, Ordering::Relaxed);
+                let mut core = lock(&inner.core);
+                let mine = core.ordered.len() as u64;
+                let goes_first = on_their_way.iter().all(|(peer, total, _)| {
+                    (mine, std::cmp::Reverse(inner.id)) > (*total, std::cmp::Reverse(*peer))
+                });
+                if goes_first {
+                    let view = on_their_way
+                        .iter()
+                        .map(|(_, _, view)| *view)
+                        .max()
+                        .unwrap_or(0);
+                    core.view = core.view.max(view) + 1;
+                    core.joining = false;
+                    core.members = BTreeSet::from([inner.id]);
+                    core.pending.clear();
+                    core.covered.clear();
+                    core.acked.clear();
+                    core.sent.clear();
+                    core.last_heard.clear();
+                    core.awaiting.clear();
+                    core.promise = None;
+                    core.granted = false;
+                    core.adding = None;
+                    core.my_round = core.my_round.max(core.max_seen);
+                    let round = core.my_round;
+                    core.covered.insert(inner.id, round);
+                    tracing::info!(
+                        node = inner.id,
+                        entries = mine,
+                        view = core.view,
+                        "all were gone: going first, with the longest log"
+                    );
+                    inner.contact.send_replace(Some(core.index));
+                }
+            }
+        }
         if !progressed {
-            tokio::time::sleep(CATCH_UP_PAUSE).await;
+            let pause = if member_answered {
+                CATCH_UP_PAUSE
+            } else {
+                Duration::from_millis(100)
+            };
+            tokio::time::sleep(pause).await;
         }
     }
 }
@@ -1285,7 +1586,9 @@ impl Consensus for RoundsNode {
             match best {
                 Some(0) => Ok(None),
                 Some(top) => Ok(Some(top)),
-                None if joining => Err(ProposeError::Timeout),
+                None if joining && !self.inner.alone.load(Ordering::Relaxed) => {
+                    Err(ProposeError::Timeout)
+                }
                 None => Ok((index > 0).then_some(index)),
             }
         })

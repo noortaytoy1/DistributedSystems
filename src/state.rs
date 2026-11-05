@@ -193,6 +193,11 @@ impl CloudState {
         planner::pick(&p.incident, looking_at(REPICK_LOOKS_WIDE), age_ms)
     }
 
+    /// How many holds have been made.
+    pub fn holds_made(&self) -> usize {
+        self.hold_log.len()
+    }
+
     /// The holds made after the first `seen`, oldest first.
     pub fn holds_made_after(&self, seen: usize) -> &[HoldMade] {
         self.hold_log.get(seen..).unwrap_or(&[])

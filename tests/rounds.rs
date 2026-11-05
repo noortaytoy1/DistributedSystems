@@ -446,12 +446,22 @@ async fn a_returning_node_starts_past_its_old_stream_on_every_node() {
     let _ = c2.handle_rounds(1, commit()).await;
     view_reached(&cluster, &[2], 2).await;
 
-    let PeerReply::Rounds(RoundsReply::Entries { starts, .. }) =
-        c1.handle_rounds(3, RoundsMsg::CatchUp { next: 0 }).await
+    let PeerReply::Rounds(RoundsReply::Entries { starts, .. }) = c1
+        .handle_rounds(
+            3,
+            RoundsMsg::CatchUp {
+                next: 0,
+                last: None,
+            },
+        )
+        .await
     else {
         panic!("a member answers a catch-up");
     };
-    let start = starts.iter().find(|(node, _)| *node == 3).map(|(_, s)| *s);
+    let start = starts
+        .iter()
+        .find(|(node, _, _)| *node == 3)
+        .map(|(_, s, _)| *s);
     assert!(start.is_some_and(|s| s > CUT), "it comes back at {start:?}");
 
     cluster.node(3).ctx.gate.restore();

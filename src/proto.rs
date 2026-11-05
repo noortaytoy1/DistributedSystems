@@ -669,6 +669,17 @@ pub enum RoundControl {
     },
 }
 
+/// One record of a node's log file under rotating rounds (D249, D261).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LogRecord {
+    /// A batch saved here, this node's or a peer's.
+    Batch(RoundBatch),
+    /// The batch this node applied next. Saved before the callers of that batch are answered.
+    Applied { node: NodeId, round: u64 },
+    /// What came before this no longer counts: this node held something the others do not.
+    Reset,
+}
+
 /// Messages between nodes under rotating rounds (D249).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RoundsMsg {
@@ -691,8 +702,12 @@ pub enum RoundsMsg {
         cut: u64,
         batches: Vec<RoundBatch>,
     },
-    /// A returning node asks for the applied log, from entry number `next`.
-    CatchUp { next: u64 },
+    /// A returning node asks for the applied log, from entry number `next`. `last` names the entry
+    /// before that, so a node that holds something else finds out (D261).
+    CatchUp {
+        next: u64,
+        last: Option<(NodeId, u64)>,
+    },
     /// A returning node that has caught up asks to be added.
     Join,
     /// How far has this node applied?
@@ -727,9 +742,20 @@ pub enum RoundsReply {
         applied_round: u64,
         view: u64,
         members: Vec<NodeId>,
-        /// Members added and not heard from yet, and the round each comes back at (D252).
-        starts: Vec<(NodeId, u64)>,
+        /// Members added and not heard from yet: each one's first round, and the round the log has
+        /// reached for it (D252, D261).
+        starts: Vec<(NodeId, u64, u64)>,
+        /// For a node added by a lone member: batches past that point from other streams, which
+        /// it must apply too and cannot get from a stream any more (D261).
+        held: Vec<RoundBatch>,
     },
+    /// This node is on its way back as well, and holds this many entries of the log (D261).
+    Joining {
+        total: u64,
+        view: u64,
+    },
+    /// What the asker holds is not a start of this node's log: it must start again (D261).
+    Diverged,
     Applied {
         index: u64,
     },
