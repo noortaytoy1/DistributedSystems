@@ -2,7 +2,7 @@
 \section{The shared log with no leader: rotating rounds}
 \label{sec:sharedlog}
 
-The shared log is what keeps the three copies of the state equal. Every command that changes the state, such as a plan or a release, goes into it, and every node applies the commands in the same order. This section explains how the log reaches one order with no leader. The full description, with every function and constant, is \texttt{docs/shared-log.md} \cite{repo}.
+The shared log is what keeps the three copies of the state equal. Every command that changes the state, such as a plan or a release, goes into it, and every node applies the commands in the same order. This section explains how the log reaches one order with no leader. The full description is in \texttt{docs/shared-log.md} \cite{repo}.
 
 \subsection{The idea}
 
@@ -14,11 +14,11 @@ The easiest way to explain it is with three people, A, B and C, who each keep a 
   \item Nobody files card 10 until all three have moved past 10, because then nobody can still send a card numbered 10 or lower.
 \end{enumerate}
 
-So the notebooks come out the same, and nobody gave an order. The people are the nodes, the cards are batches of commands, the numbers are rounds, and the notebook is the log. This is close to Lamport's total-order multicast \cite{lamport}, sent in batches: the round numbers work like Lamport clocks, and a message is delivered once every process has moved past it. What the team added is the agreement to go on without a silent node, and the way to bring it back. ``Rotating rounds'' is not a great name, since nothing rotates, but it is the name in the code.
+So the notebooks come out the same, and nobody gave an order. The people are the nodes, the cards are batches of commands, the numbers are rounds, and the notebook is the log. This is close to Lamport's total-order multicast \cite{lamport}, sent in batches: the round numbers work like Lamport clocks, and a message is delivered once every process has moved past it. What the team added is the agreement to go on without a silent node, and the way to bring it back.
 
 \subsection{How it works}
 
-Every 5 ms, each node takes the commands waiting on it and makes its next batch, numbered with a round one higher than the highest round it has seen (\code{run\_emitter}). It saves the batch to its own disk and sends it to each peer, one call at a time per peer (\code{run\_sender}). A peer saves the batch and replies with how far it has saved that node's stream (\code{Have}). A round in which a node had nothing to say makes no batch, but the node's stream still counts as having passed it. Figure~\ref{fig:seq-rounds} shows one round.
+Every 5 ms, each node takes the commands waiting on it and makes its next batch, numbered with a round one higher than the highest round it has seen. It saves the batch to its own disk and sends it to each peer, one call at a time per peer. A peer saves the batch and replies with how far it has saved that node's stream (\code{Have}). A round in which a node had nothing to say makes no batch, but the node's stream still counts as having passed it. Figure~\ref{fig:seq-rounds} shows one round.
 
 \begin{figure}[!htb]
 \centering
@@ -42,7 +42,7 @@ Every 5 ms, each node takes the commands waiting on it and makes its next batch,
 \label{fig:seq-rounds}
 \end{figure}
 
-\textbf{When a round is safe to apply.} Each node keeps, for every member, how far it holds that member's stream (\code{covered}), and for every peer, how far that peer has saved its own stream (\code{acked}). The \emph{frontier} is the highest round that is safe to apply: the lowest \code{covered} over all members, and no higher than the highest \code{acked} over the peers (\code{frontier}, line 290 of \texttt{rounds.rs}). Figure~\ref{fig:frontier} works through an example.
+\textbf{When a round is safe to apply.} Each node keeps, for every member, how far it holds that member's stream (\emph{covered}), and for every peer, how far that peer has saved its own stream (\emph{acked}). The \emph{frontier} is the highest round that is safe to apply: the lowest \emph{covered} over all members, and no higher than the highest \emph{acked} over the peers. Figure~\ref{fig:frontier} works through an example.
 
 \begin{figure}[!htb]
 \centering
@@ -78,16 +78,16 @@ Every 5 ms, each node takes the commands waiting on it and makes its next batch,
 \label{fig:frontier}
 \end{figure}
 
-\textbf{Why every node gets the same order.} Streams arrive in order over TCP. Once a node holds member $m$'s stream up to round 117, no batch of $m$ at or below 117 can still arrive. So every batch at or below the frontier is already here, and sorting them by round and then by node ID gives one order, which no later message can change. Every node sorts the same batches by the same key, and no node decides anything, so there is nothing to lead. In the code the waiting batches sit in a \code{BTreeMap} keyed by (round, node), so the order comes from the key itself (\code{apply\_ready}).
+\textbf{Why every node gets the same order.} Streams arrive in order over TCP. Once a node holds member $m$'s stream up to round 117, no batch of $m$ at or below 117 can still arrive. So every batch at or below the frontier is already here, and sorting them by round and then by node ID gives one order, which no later message can change. Every node sorts the same batches by the same key, and no node decides anything, so there is nothing to lead. The waiting batches are kept sorted by the pair (round, node), so the order comes from the key itself.
 
 \textbf{Why the highest acked.} A node applies its own batch only after at least one peer has saved it. So whatever a client is told is on at least two disks, and survives the loss of any one node. This is the system's version of the rule ``commit, then reply''.
 
-\textbf{On disk.} Each node appends to its own file, \texttt{node-<id>.rounds}. A save writes every waiting batch and then calls one disk sync for all of them (\code{run\_saver}), so a busy node saves more per sync, not more often. Since \dlog{D261} the file also records the order in which the node applied batches, saved before any client is answered, so that a restarted node can rebuild exactly what it told clients (Section~\ref{sec:multi}).
+\textbf{On disk.} Each node appends to its own file, \texttt{node-<id>.rounds}. A save writes every waiting batch and then calls one disk sync for all of them, so a busy node saves more per sync, not more often. Since \dlog{D261} the file also records the order in which the node applied batches, saved before any client is answered, so that a restarted node can rebuild exactly what it told clients (Section~\ref{sec:multi}).
 
 \textbf{Checking that the copies agree.} After every command each node updates its digest (Section~\ref{sec:datamodel}) and logs it at every 100th log index. The overnight series compared 69,715 of these checkpoints across nodes, and the kill runs 14,932 more. None differed.
 
 \subsection{The team's code and the libraries}
 
-The spec requires the two to be separated, and here the line is sharp. The libraries carry the log: tarpc makes the calls between nodes, bincode and serde encode the batches, and tokio runs the tasks, timers and file writes. Everything about the order is the team's own work: numbering batches into rounds, the sort by round and node ID, the frontier, agreeing to go on without a silent node, bringing a node back, and the log file. That is about 1,650 lines in \texttt{rounds.rs}, of which about 100 hold the idea itself (\code{frontier}, \code{apply\_ready}, \code{apply\_batch}).
+The spec requires the two to be separated, and here the line is sharp. The libraries carry the log: tarpc makes the calls between nodes, bincode and serde encode the batches, and tokio runs the tasks, timers and file writes. Everything about the order is the team's own work: numbering batches into rounds, the sort by round and node ID, the frontier, agreeing to go on without a silent node, bringing a node back, and the log file. That is about 1,650 lines in \texttt{rounds.rs}, of which about 100 hold the ordering itself.
 
 Before writing its own, the team looked for a library that orders a log with no leader (\dlog{D259}). \texttt{synevi} 0.1.0, an implementation of the Accord protocol, was compiled and run on the three node PCs. With no fault its digests matched; with one node stopped for 20 s the other two applied nothing for the whole fault, and all three ended with different digests. The \texttt{fantoch} implementations of EPaxos, Atlas and Tempo all stop at \texttt{todo!("recovery not implemented yet")}. AlephBFT and hbbft are built for attackers and, by their documentation, need four nodes to survive one failure. The others found have a leader (openraft, paxakos, OmniPaxos, Kafka) or carry messages with no agreed order (Zenoh, libp2p's gossipsub). The test's source and output are in \texttt{analysis/results/library-search/}.

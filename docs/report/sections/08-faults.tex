@@ -25,7 +25,7 @@ Byzantine faults are not handled, and no machine was physically unplugged. A kil
 
 \subsection{Failure detection}
 
-Every node asks every peer ``are you alive?'' each 50 ms, and any answer counts (\code{node/heartbeat.rs}, \dlog{D41}, \dlog{D79}). A peer not heard from for 20 heartbeats, so 1 s, is suspected. The shared log also watches each member's stream, every 25 ms, and counts a member silent after the same 1 s (\code{run\_detector}). Each node decides for itself, and a guess can be wrong, since a slow node looks like a dead one \cite{chandra}. A wrong guess costs a drop and a rejoin, and never two different states, because the drop below needs two nodes to agree. The heartbeats are sent to every configured peer, never only to the current members, so that two nodes that dropped each other still hear each other again.
+Every node asks every peer ``are you alive?'' each 50 ms, and any answer counts (\dlog{D41}, \dlog{D79}). A peer not heard from for 20 heartbeats, so 1 s, is suspected. The shared log also watches each member's stream, every 25 ms, and counts a member silent after the same 1 s. Each node decides for itself, and a guess can be wrong, since a slow node looks like a dead one \cite{chandra}. A wrong guess costs a drop and a rejoin, and never two different states, because the drop below needs two nodes to agree. The heartbeats are sent to every configured peer, never only to the current members, so that two nodes that dropped each other still hear each other again.
 
 \subsection{Failover: going on without a silent node}
 \label{sec:drop}
@@ -47,7 +47,7 @@ A silent member holds up every round, because the frontier needs its stream. So 
   \seqmsg{0}{6.0}{-5.9}{DropCommit(view 5, cut 212, batches you lack)}
   \seqnote{3.0}{-6.75}{5.9}{both: remove node 3, discard its batches after 212,\\ apply what is now safe; rounds go on with nodes 1 and 2}
 \end{tikzpicture}
-\caption{Dropping a silent node (\code{try\_drop}, \code{on\_drop}, \code{install\_drop} in \texttt{rounds.rs}). A promise given to a peer is never taken back; without this rule, the lab PCs once made two different drops as the same view, and the digests split (\dlog{D252}).}
+\caption{Dropping a silent node. A promise given to a peer is never taken back; without this rule, the lab PCs once made two different drops as the same view, and the digests split (\dlog{D252}).}
 \label{fig:seq-drop}
 \end{figure}
 
@@ -74,7 +74,7 @@ A recovery protocol must state what is copied, replayed or rebuilt, and how a re
   \seqnote{6.0}{-7.25}{11.6}{all members reach the Add at the same place in the order, and wait at start round $-1$;\\ node 3 has the whole log when its applied round is start round $-1$, and starts sending from there}
   \seqself{0}{-8.0}{member again: bids, plans, answers}
 \end{tikzpicture}
-\caption{A node comes back (\code{run\_catch\_up}, \code{on\_catch\_up}, \code{on\_join}). It is added through an entry in the shared order, so all members add it at the same place, and its new stream starts past the end of its old one (\dlog{D257}).}
+\caption{A node comes back. It is added through an entry in the shared order, so all members add it at the same place, and its new stream starts past the end of its old one (\dlog{D257}).}
 \label{fig:seq-rejoin}
 \end{figure}
 
@@ -87,7 +87,7 @@ A recovery protocol must state what is copied, replayed or rebuilt, and how a re
 Question & Answer \\
 \midrule
 What is copied, replayed or rebuilt? & First the node replays its own file, in the order it applied, which it saved before answering anyone (\dlog{D261}). Then a member sends what is missing, up to 4,000 commands a reply, and the node replays it through the same state machine. Its bids, suspicions and view are rebuilt from new traffic. One code path serves a silence and a restart. \\
-How does it know it is current? & It asks to be added, and the members stop just before the round it starts at. It has the whole log exactly when its applied round is one before that start round, and only then does it send. A node whose log is not a start of the member's gets \code{Diverged}, writes \code{Reset} to its file, and takes the log again. \\
+How does it know it is current? & It asks to be added, and the members stop just before the round it starts at. It has the whole log exactly when its applied round is one before that start round, and only then does it send. A node whose log is not a start of the member's is told so, writes a reset mark to its file, and takes the log again. \\
 When does it take part again? & Its proposals are refused, and it bids, plans and answers nothing, until it is a member again (\dlog{D75}). This is checked again just before each reply, so a reply that was waiting during the fault stays quiet (\dlog{D136}). \\
 \bottomrule
 \end{tabularx}
@@ -131,8 +131,8 @@ The requirements include one node off and another failed, leaving one server. Th
   \node[fend] (s) {restart: replay own file, in the order applied};
   \node[fdec, below=of s] (m) {a member\\ answers?};
   \node[fdec, right=1.6cm of m] (pref) {its log a start\\ of the member's?};
-  \node[fstep, right=1.1cm of pref, text width=2.6cm] (reset) {write \code{Reset}, take the log again};
-  \node[fstep, below=0.9cm of pref, text width=3.4cm] (join) {catch up, \code{Join}; if the member is alone, it takes the node back with no vote (\code{add\_alone})};
+  \node[fstep, right=1.1cm of pref, text width=2.6cm] (reset) {write a reset mark, take the log again};
+  \node[fstep, below=0.9cm of pref, text width=3.4cm] (join) {catch up and ask to join; if the member is alone, it takes the node back with no vote};
   \node[fdec, below=of m] (others) {others reachable\\ within 3 s?};
   \node[fstep, below=of others, text width=3.4cm] (longest) {the longest log goes first (lowest ID on a tie); the others return to it};
   \node[fstep, left=1.0cm of longest, text width=2.8cm] (alone) {serve what it has, answer provisionally until it can commit};
@@ -148,7 +148,7 @@ The requirements include one node off and another failed, leaving one server. Th
   \draw[flow] (longest.east) -- (longest.east -| join.west) |- (back.west);
   \draw[flow] (join) -- (back);
 \end{tikzpicture}
-\caption{What a node does after a restart (\code{run\_catch\_up}, \dlog{D261}). A node that cannot commit yet answers provisionally, so a client is never left with silence for long.}
+\caption{What a node does after a restart (\dlog{D261}). A node that cannot commit yet answers provisionally, so a client is never left with silence for long.}
 \label{fig:multi}
 \end{figure}
 

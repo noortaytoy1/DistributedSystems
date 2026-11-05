@@ -101,7 +101,7 @@ The application never calls the transport or the shared log directly. It reaches
   \draw[flow] (tr) -- (tarpc);
   \draw[flow] (tarpc) -- (tokio);
 \end{tikzpicture}
-\caption{Inside one cloud node. Purple parts are the application, green parts the middleware, and grey dashed boxes libraries. The application reaches the middleware only through \texttt{src/middleware.rs}. The shared log is \texttt{rounds.rs} in every lab run; Raft stays in the code behind the same interface (Section~\ref{sec:consensus-trait}). Every part writes events to \texttt{metrics.rs}, and all share one \texttt{NodeContext}.}
+\caption{Inside one cloud node. Purple parts are the application, green parts the middleware, and grey dashed boxes libraries. The application reaches the middleware only through \texttt{src/middleware.rs}. The shared log is \texttt{rounds.rs} in every lab run; Raft is kept behind the same interface (Section~\ref{sec:consensus-trait}). Every part writes events to \texttt{metrics.rs}, and all share one node context.}
 \label{fig:components}
 \end{figure}
 
@@ -150,7 +150,7 @@ The application and the middleware are kept apart: the application sends a messa
     \node[group, fill=clientorange!4, fit=(user)(crpc), label={[grouplabel]north west:A client PC}] {};
   \end{scope}
   % Node side
-  \node[appbox, text width=5.0cm] (svc) at (8.4,0) {\textbf{Application}: the incident service\\ \texttt{handle\_request}, \texttt{execute}, \texttt{plan\_on\_workers}, \texttt{send\_done}; the planner; the state rules};
+  \node[appbox, text width=5.0cm] (svc) at (8.4,0) {\textbf{Application}: the incident service\\ takes reports, plans them and answers; the planner; the state rules};
   \node[mwbox, text width=2.3cm] (el) at (6.6,-2.1) {bidding election};
   \node[mwbox, text width=2.3cm] (gr) at (10.2,-2.1) {cloud group and shared log};
   \node[mwbox, text width=5.0cm] (ft) at (8.4,-3.2) {failure detector, takeover, rejoin, degraded mode, fault election};

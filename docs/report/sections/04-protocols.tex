@@ -149,11 +149,11 @@ During a long outage at high load, retries can flood the network that the return
 \subsection{Choice of RPC}
 \label{sec:rpc}
 
-The project guidance calls for a ready-made RPC or RMI system rather than raw UDP, with the reason for the choice, and points to the course's comparison of Java RMI, CORBA and Sun RPC. The team chose RPC, not RMI, and the library \texttt{tarpc} \cite{tarpc} as the system (\dlog{D119}, \dlog{D176}). The service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so Table~\ref{tab:rpc} compares tarpc with them on the same rows.
+The remote calls use a ready-made RPC system rather than raw UDP. The team chose RPC, not RMI, and the library \texttt{tarpc} \cite{tarpc} as the system (\dlog{D119}, \dlog{D176}). The service is procedures over replicated state: nothing in it has an object identity that a client would name or hold, which is what RMI adds. Rust rules out using Java RMI or CORBA as they are, so Table~\ref{tab:rpc} compares tarpc with the three classic systems, Java RMI, CORBA and Sun RPC \cite{coulouris}, on the same rows.
 
 \begin{table}[!htb]
 \centering\small
-\caption{tarpc against the systems in the slides (\dlog{D176}).}
+\caption{tarpc against three classic RPC and RMI systems (\dlog{D176}).}
 \label{tab:rpc}
 \begin{tabularx}{\linewidth}{@{}P{2.6cm}LLLL@{}}
 \toprule
@@ -170,4 +170,4 @@ Semantics alone & at-most-once & at-most-once & at-least-once & maybe: it never 
 
 tarpc on its own gives ``maybe'' semantics, so at-most-once is provided by the team's own code (\dlog{D177}). From client to cloud, the effect of a report is recorded at most once across all replicas: the client resends with the same ID, the results table filters duplicates by ID, and any node re-sends the answer from its copy. Peer calls are ``maybe'': a lost bid or heartbeat is simply covered by the next one. The one labelled exception is a provisional answer from a node alone, which can differ from what is recorded later (Section~\ref{sec:degraded}).
 
-\textbf{Why UDP for reports.} The guidance ``Request reply protocol + UDP'' can be read as ``use UDP'' or as ``UDP is the level not to go down to''. The design meets both readings: reports travel over UDP, but the UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware (\dlog{D178}). UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.
+\textbf{Why UDP for reports.} Reports travel over UDP, but the UDP adapter holds no RPC logic. Call IDs, deadlines and matching replies to calls stay tarpc's, and retries stay in the middleware (\dlog{D178}). UDP saves the connection set-up per client and node, the pings and reconnects, and acknowledgements that a reply already gives. It costs a full wait when an answer is lost, a larger kernel buffer and a firewall rule.
