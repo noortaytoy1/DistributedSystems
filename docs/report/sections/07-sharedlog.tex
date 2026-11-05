@@ -1,0 +1,93 @@
+% ==============================================================================================
+\section{The shared log with no leader: rotating rounds}
+\label{sec:sharedlog}
+
+The shared log is what keeps the three copies of the state equal. Every command that changes the state, such as a plan or a release, goes into it, and every node applies the commands in the same order. This section explains how our log reaches one order with no leader. The full description, with every function and constant, is \texttt{docs/shared-log.md} \cite{repo}.
+
+\subsection{The idea}
+
+The easiest way to explain it is with three people, A, B and C, who each keep a notebook. All three notebooks must end up the same, and nobody is the boss.
+
+\begin{enumerate}
+  \item Each person writes their work on numbered cards and posts a copy to the other two. The number is one higher than the highest number they have seen.
+  \item Everyone files the cards in the same order: lowest number first, and for the same number, A before B before C.
+  \item Nobody files card 10 until all three have moved past 10, because then nobody can still send a card numbered 10 or lower.
+\end{enumerate}
+
+So the notebooks come out the same, and nobody gave an order. The people are the nodes, the cards are batches of commands, the numbers are rounds, and the notebook is the log. As far as we know this is Lamport's total-order multicast \cite{lamport}, sent in batches: the round numbers work like Lamport clocks, and a message is delivered once every process has moved past it. What we added is the agreement to go on without a silent node, and the way to bring it back. ``Rotating rounds'' is not a great name, since nothing rotates, but it is the name in the code.
+
+\subsection{How it works}
+
+Every 5 ms, each node takes the commands waiting on it and makes its next batch, numbered with a round one higher than the highest round it has seen (\code{run\_emitter}). It saves the batch to its own disk and sends it to each peer, one call at a time per peer (\code{run\_sender}). A peer saves the batch and replies with how far it has saved that node's stream (\code{Have}). A round in which a node had nothing to say makes no batch, but the node's stream still counts as having passed it. Figure~\ref{fig:seq-rounds} shows one round.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \seqactor{0}{Node 1}{-6.6}
+  \seqactor{6.0}{Node 2}{-6.6}
+  \seqactor{12.0}{Node 3}{-6.6}
+  \seqself{0}{-0.9}{round 7: makes its batch,\\ saves it to disk}
+  \seqmsg{0}{6.0}{-1.9}{Stream(round 7: my batch)}
+  \seqrep{6.0}{0}{-2.4}{Have(7), after saving it}
+  \seqmsg{0}{12.0}{-2.9}{}
+  \node[mlabel] at (9.0,-2.9) {Stream(round 7: my batch)};
+  \seqself{6.0}{-3.3}{round 7: makes its batch}
+  \seqmsg{6.0}{12.0}{-4.3}{Stream(round 7: my batch)}
+  \seqmsg{6.0}{0}{-4.3}{Stream(round 7: my batch)}
+  \seqmsg{12.0}{6.0}{-5.0}{Stream(passed round 7, nothing to add)}
+  \seqmsg{12.0}{0}{-5.3}{}
+  \seqnote{6.0}{-6.0}{11.8}{all members have passed round 7, so each node applies node 1's batch, then node 2's: the same order everywhere}
+\end{tikzpicture}
+\caption{One round of the shared log. Each node sends only its own batches. A batch of node 1 is applied only after a peer has saved it, so anything a client is told is on at least two disks. Most replies are drawn only once.}
+\label{fig:seq-rounds}
+\end{figure}
+
+\textbf{When a round is safe to apply.} Each node keeps, for every member, how far it holds that member's stream (\code{covered}), and for every peer, how far that peer has saved its own stream (\code{acked}). The \emph{frontier} is the highest round that is safe to apply: the lowest \code{covered} over all members, and no higher than the highest \code{acked} over the peers (\code{frontier}, line 290 of \texttt{rounds.rs}). Figure~\ref{fig:frontier} works through an example.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=0.9cm,y=0.75cm]
+  % header
+  \foreach \r in {111,...,121} { \node[font=\scriptsize] at (\r-111+1.5,0.6) {\r}; }
+  \node[font=\scriptsize\bfseries, anchor=east] at (0.9,0.6) {round};
+  % rows: node, covered, empty rounds
+  \foreach \n/\cov/\y in {1/120/0, 2/117/-1, 3/118/-2} {
+    \node[font=\scriptsize\bfseries, anchor=east] at (0.9,\y) {node \n};
+    \foreach \r in {111,...,121} {
+      \pgfmathtruncatemacro{\c}{\r-111+1}
+      \ifnum\r>\cov
+        \draw[black!25, dashed] (\c,\y-0.38) rectangle (\c+1,\y+0.38);
+      \else
+        \fill[nodeblue!35] (\c+0.04,\y-0.34) rectangle (\c+0.96,\y+0.34);
+      \fi
+    }
+    \node[font=\scriptsize, anchor=west] at (12.2,\y) {covered$[\n] = \cov$};
+  }
+  % empty rounds of node 3 (covered, no batch)
+  \foreach \r in {113,116} {
+    \pgfmathtruncatemacro{\c}{\r-111+1}
+    \fill[white] (\c+0.04,-2.34) rectangle (\c+0.96,-1.66);
+    \draw[nodeblue!35, line width=0.8pt] (\c+0.04,-2.34) rectangle (\c+0.96,-1.66);
+  }
+  % frontier and min covered lines
+  \draw[very thick, mwgreen!70!black] (6,1.0) -- (6,-2.6) node[below, font=\scriptsize, align=center, text=mwgreen!50!black]{frontier 115\\ apply up to here};
+  \draw[thick, badred, densely dashed] (8,-2.6) -- (8,1.0) node[above, font=\scriptsize, align=center, text=badred]{lowest covered 117};
+  \node[box, fill=notefill, text width=4.4cm, anchor=north west] at (12.2,-2.7) {acked[2] = 115, acked[3] = 112:\\ the highest is 115, so node 1's own batches are on another disk only up to 115};
+\end{tikzpicture}
+\caption{The frontier on node 1, in an example from \texttt{docs/shared-log.md}. Filled cells are batches node 1 holds; outlined cells are rounds in which node 3 had nothing to say, which still count as passed. Everything up to round 115 is applied, sorted by round and then by node ID; nothing that arrives later can change that part of the order.}
+\label{fig:frontier}
+\end{figure}
+
+\textbf{Why every node gets the same order.} Streams arrive in order over TCP. Once a node holds member $m$'s stream up to round 117, no batch of $m$ at or below 117 can still arrive. So every batch at or below the frontier is already here, and sorting them by round and then by node ID gives one order, which no later message can change. Every node sorts the same batches by the same key, and no node decides anything, so there is nothing to lead. In the code the waiting batches sit in a \code{BTreeMap} keyed by (round, node), so the order comes from the key itself (\code{apply\_ready}).
+
+\textbf{Why the highest acked.} A node applies its own batch only after at least one peer has saved it. So whatever a client is told is on at least two disks, and survives the loss of any one node. This is our version of the rule ``commit, then reply''.
+
+\textbf{On disk.} Each node appends to its own file, \texttt{node-<id>.rounds}. A save writes every waiting batch and then calls one disk sync for all of them (\code{run\_saver}), so a busy node saves more per sync, not more often. Since \dlog{D261} the file also records the order in which the node applied batches, saved before any client is answered, so that a restarted node can rebuild exactly what it told clients (Section~\ref{sec:multi}).
+
+\textbf{Checking that the copies agree.} After every command each node updates its digest (Section~\ref{sec:datamodel}) and logs it at every 100th log index. In the overnight series we compared 69,715 of these checkpoints across nodes, and in the kill runs 14,932 more. None differed.
+
+\subsection{What is ours and what is a library}
+
+The spec asks us to separate the two, and here the line is sharp. The libraries carry the log: tarpc makes the calls between nodes, bincode and serde encode the batches, and tokio runs the tasks, timers and file writes. Everything about the order is ours: numbering batches into rounds, the sort by round and node ID, the frontier, agreeing to go on without a silent node, bringing a node back, and the log file. That is about 1,650 lines in \texttt{rounds.rs}, of which about 100 hold the idea itself (\code{frontier}, \code{apply\_ready}, \code{apply\_batch}).
+
+Before writing our own, we looked for a library that orders a log with no leader (\dlog{D259}). We compiled and ran \texttt{synevi} 0.1.0, an implementation of the Accord protocol, on the three node PCs. With no fault its digests matched; with one node stopped for 20 s the other two applied nothing for the whole fault, and all three ended with different digests. The \texttt{fantoch} implementations of EPaxos, Atlas and Tempo all stop at \texttt{todo!("recovery not implemented yet")}. AlephBFT and hbbft are built for attackers and, as far as we know, need four nodes to survive one failure. The rest that we found have a leader (openraft, paxakos, OmniPaxos, Kafka) or carry messages with no agreed order (Zenoh, libp2p's gossipsub). The test's source and output are in \texttt{analysis/results/library-search/}.

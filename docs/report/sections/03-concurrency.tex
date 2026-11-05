@@ -1,0 +1,121 @@
+% ==============================================================================================
+\section{Parallelization, workload and planner}
+\label{sec:conc}
+
+The spec asks us to support concurrent requests and to document the parallel model on both the client and the cloud side. A node is busy in three ways at once: it receives reports from clients, it plans them, and it talks to its peers. These must not hold each other up.
+
+\subsection{Inside a cloud node}
+
+A node runs on tokio, a Rust runtime that runs many small tasks on a few threads. Every client call, every peer call and every report gets its own task (\dlog{D47}). Planning is CPU work, so it does not run on the runtime. It runs on a separate pool of plain threads with a bounded queue: 20 threads and a queue of 4,096 jobs in the lab (\dlog{D48}, \dlog{D71}). When the pool is full, the node refuses the job, logs \texttt{overloaded}, and stays quiet, and the client's retry goes to the nodes again (\dlog{D36}). A node that already holds 16,000 reports in progress refuses new ones at the door in the same way (\dlog{D250}, \dlog{D253}). Figure~\ref{fig:node-conc} shows the tasks and how they meet.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
+  % Left column: requests from clients
+  \node[nodebox, text width=3.2cm] (udp) at (0,0) {\textbf{UDP reader}\\ checks the fault gate,\\ one task per call};
+  \node[nodebox, text width=3.2cm] (rep) at (0,-1.6) {\textbf{one task per report}\\ \texttt{handle\_request}: bid, plan, propose, reply};
+  \node[fdec] (adm) at (0,-3.35) {room in\\ the pool?};
+  \draw[flow] (udp) -- (rep);
+  \draw[flow] (rep) -- node[elabel, right]{plan} (adm);
+  \draw[flow] (adm.west) -- ++(-0.45,0) |- node[elabel, pos=0.25, left, align=center]{no:\\ stay\\ quiet} (rep.west);
+  % Middle column: the shared log's tasks
+  \node[mwbox, text width=3.3cm] (em) at (4.5,0) {\texttt{run\_emitter}: every 5 ms, this node's next batch};
+  \node[mwbox, text width=3.3cm] (snd) at (4.5,-1.2) {\texttt{run\_sender}: one task per peer, one call at a time};
+  \node[mwbox, text width=3.3cm] (sav) at (4.5,-2.4) {\texttt{run\_saver}: one disk sync for all waiting batches};
+  \node[mwbox, text width=3.3cm] (det) at (4.5,-3.6) {\texttt{run\_detector}: every 25 ms, a silent member?};
+  \node[mwbox, text width=3.3cm] (cat) at (4.5,-4.8) {\texttt{run\_catch\_up}: only while left out};
+  \begin{scope}[on background layer]
+    \node[group, fill=mwgreen!3, fit=(em)(cat), inner sep=4pt, label={[grouplabel, anchor=north]south:Shared log (\texttt{rounds.rs})}] (logg) {};
+  \end{scope}
+  \draw[flow] (rep.east) -- node[elabel, above, pos=0.4]{propose} (em.west);
+  % Right column: peers and loops
+  \node[nodebox, text width=3.0cm] (peer) at (9.0,0) {\textbf{peer port}\\ one task per connection and per call};
+  \node[box, fill=white, text width=3.0cm] (loops) at (9.0,-3.2) {\textbf{Loops of their own}\\ heartbeats, every 50 ms\\ fault election\\ rejoin and degraded watch\\ responder release\\ 1 s reporter: CPU, memory, network, queues};
+  \draw[flow] (peer.west) -- node[elabel, above]{streams} (snd.east);
+  \coordinate (rtbottom) at (4.5,-5.75);
+  \begin{scope}[on background layer]
+    \node[group, fill=nodeblue!3, fit=(udp)(adm)(logg)(peer)(loops)(rtbottom), inner sep=7pt, label={[grouplabel]north west:tokio runtime: async tasks, never blocked}] (rt) {};
+  \end{scope}
+  % Outside the runtime
+  \node[appbox, text width=3.2cm] (pool) at (0,-7.3) {\textbf{Worker pool}: 20 plain threads, queue 4,096; the planner runs here};
+  \draw[flow] (adm.south) -- node[elabel, right]{yes} (pool.north);
+  \node[box, fill=libgray!10, text width=2.4cm] (logw) at (12.9,-0.3) {\textbf{Event-log writer}\\ one thread, JSON Lines};
+  \node[box, fill=notefill, text width=2.4cm] (ctx) at (12.9,-2.7) {\textbf{NodeContext}\\ state behind a read-write lock; atomics: serving, gate};
+  \draw[dflow] (rt.east |- logw.west) -- (logw.west);
+  \draw[densely dashed, black!50] (rt.east |- ctx.west) -- (ctx.west);
+\end{tikzpicture}
+\caption{Concurrency inside one node, at the final build. Planning is the only CPU-heavy work, and it never runs on the async runtime, so heartbeats and the shared log keep their timing however busy the node is.}
+\label{fig:node-conc}
+\end{figure}
+
+A few rules keep this safe, and the build checks some of them (\dlog{D47}, \dlog{D66}). No task may block the runtime: no sleeping threads, and no blocking file or network calls. No lock may be held across a wait, which the linter denies. Every task is owned, so it ends when its owner or its channel does. Writing a log line goes through a channel to one writer thread, so it never holds up a request.
+
+One rule came from our team rather than the books. In the lab rehearsal, saving to disk once crowded out the leader's heartbeats, and the cluster went through 225 elections in one run with no report answered (\dlog{D133}). The rule since then is that saving to disk and the ``I am alive'' message of a node come first, and processing requests can never crowd them out. In the final build the heartbeats run on their own loop, the shared log saves every waiting batch with one disk sync, and planning can only fill the worker pool.
+
+\subsection{On a client PC}
+
+A client PC runs several real operating-system programs, \texttt{loadgen}, and each simulated user is a tokio task inside one of them (\dlog{D181}). All users of one program share one client middleware, \code{MeshClient}, with one UDP socket per node. Figure~\ref{fig:client-conc} shows the shape. One script, \texttt{scripts/start-users.sh}, starts and stops a PC's programs, gives each a unique client ID from the PC's number, and adds up their totals at the end (\dlog{D183}, \dlog{D184}). By default it starts 10 programs per PC; the experiments here used 3 per PC.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
+  \node[box, fill=white, text width=3.2cm] (who) at (0,0) {\textbf{One place sets the load}\\ the experiment runner, a person, or the web page};
+  \node[clientbox, text width=3.6cm] (script) at (0,-2.0) {\texttt{start-users.sh --machine M}\\ starts P programs, client IDs, start spread, PID file, totals};
+  \foreach \k/\y in {0/0.6, 1/-1.0, 2/-2.6} {
+    \node[clientbox, text width=4.4cm] (p\k) at (5.6,\y) {\textbf{loadgen, client ID \k}\\ users as tokio tasks, or a fixed rate\\ one \texttt{MeshClient}, one UDP socket per node};
+  }
+  \node[nodebox, text width=2.0cm] (n1) at (10.6,0.6) {Node 1};
+  \node[nodebox, text width=2.0cm] (n2) at (10.6,-1.0) {Node 2};
+  \node[nodebox, text width=2.0cm] (n3) at (10.6,-2.6) {Node 3};
+  \node[box, fill=libgray!10, text width=3.6cm] (logs) at (5.6,-4.3) {\texttt{client-<id>.jsonl}, one per program; totals in \texttt{users-M-B.out}};
+  \draw[flow] (who) -- (script);
+  \foreach \k in {0,1,2} {
+    \draw[flow] (script.east) -- (p\k.west);
+    \foreach \n in {1,2,3} { \draw[->, thin, black!45] (p\k.east) -- (n\n.west); }
+  }
+  \draw[flow] (p2.south) -- (logs.north);
+\end{tikzpicture}
+\caption{A client PC. Every program sends every report to all three nodes, so the cloud sees each report three times and the user sees one answer.}
+\label{fig:client-conc}
+\end{figure}
+
+\textbf{Closed and open loop.} A program can run two ways (\dlog{D54}). In a closed loop, each user sends a report, waits for the answer, waits a moment, and sends the next. This is how a person behaves, but a slow cloud slows its own users down, which hides the problem. In an open loop, a program sends at a fixed rate whatever happens, evenly spaced, and latency counts from when a report was due to go, so a queue in the load program is not hidden. The overnight series and the final runs use the open loop: 9 programs, 3 on each client PC, each with its own random seed. A program keeps at most 20,000 reports open and waits for a free place beyond that.
+
+\subsection{The workload}
+
+Each report is drawn uniformly at random (\texttt{campus.rs}, \dlog{D99}): a zone, a position in it, a severity from 1 to 5, a category from the spec's list of events, and the capability it needs, which the category decides (\dlog{D141}). Each report is valid for 60 s (\dlog{D143}). The campus has 60,000 responders in the speed and kill runs and 300 in the lab guide's tests, spread evenly over zones and capabilities. Choosing a responder holds it for 200 ms times the report's severity, so 0.2 to 1 s, and then it is released through the shared log (\dlog{D111}). Each report costs the log about 2.3 commands: the result, the release, and sometimes a duplicate when two nodes planned the same report.
+
+\subsection{The planner}
+
+The spec asks for a planner that is deterministic, explainable and tunable, and substantial enough to create real computing load. Ours takes the report, its age and the free responders as arguments, and reads no network, no clock and no randomness, so the same inputs give the same plan on any node (\dlog{D49}). Figure~\ref{fig:planner} shows how it picks.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, node distance=0.5cm]
+  \node[fend] (s) {a report: zone, position, severity, needs, age};
+  \node[fstep, below=of s, text width=5.6cm] (look) {look at 512 responders in a row, from a point set by the report's ID (\dlog{D238}, \dlog{D253})};
+  \node[fdec, below=of look] (any) {a free one with\\ the capability?};
+  \node[fstep, right=1.3cm of any, text width=3.6cm] (best) {lowest score wins:\\ distance in metres, +200 m if in another zone (\dlog{D93}, \dlog{D101})};
+  \node[fdec, below=of any] (sev) {severity $\ge 4$, or\\ age $\ge$ 5 s?};
+  \node[fstep, right=1.3cm of sev, text width=3.6cm] (fall) {nearest free responder of any capability (\dlog{D94}, \dlog{D95})};
+  \node[fbad, below=of sev] (none) {nobody is sent};
+  \node[fstep, below=0.9cm of fall, text width=3.6cm] (pri) {priority in points from severity, age, distance, availability, capability (\dlog{D148})};
+  \node[fend, below=of pri] (plan) {Plan: responder, cost, priority};
+  \draw[flow] (s) -- (look);
+  \draw[flow] (look) -- (any);
+  \draw[flow] (any) -- node[elabel, above]{yes} (best);
+  \draw[flow] (any) -- node[elabel, right]{no} (sev);
+  \draw[flow] (sev) -- node[elabel, above]{yes} (fall);
+  \draw[flow] (sev) -- node[elabel, right]{no} (none);
+  \draw[flow] (best.east) -- ++(0.4,0) |- (pri.east);
+  \draw[flow] (fall) -- (pri);
+  \draw[flow] (none) |- (pri.west);
+  \draw[flow] (pri) -- (plan);
+\end{tikzpicture}
+\caption{The planner (\texttt{src/planner.rs}). If nobody free among the 512 has the capability, it looks at the whole table before falling back. Ties go to the same zone, then the lowest responder ID.}
+\label{fig:planner}
+\end{figure}
+
+\textbf{Priority.} The priority says how urgent a report is, in whole points, and it never changes who is sent (\dlog{D148}). One step of severity is worth 100 points, and the other factors are measured against it: severity gives 100 to 500, age 1 point per 50 ms up to 400, distance 1 point per 10 m up to 100, availability $100/(\text{free}+1)$, and 100 more if no free responder has the needed capability. For example, a severity 4 report, 1 s old, with a matching responder 300 m away and 9 free, scores $400 + 20 + 30 + 10 + 0 = 460$.
+
+\textbf{Tunable load.} Choosing the nearest responder is cheap, a few microseconds. The spec wants planning to create real load, so a setting, \texttt{plan\_work}, adds a busy loop of integer mixing that never changes the plan (\dlog{D96}). We measured its cost from the nodes' own bids overnight: with \texttt{plan\_work} 0 a plan takes about 8 $\mu$s, and with 1000 it takes 3.9 ms at the median and 4.7 ms at p99. We report every result with its \texttt{plan\_work}, because the two give very different ceilings.

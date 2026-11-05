@@ -1,0 +1,89 @@
+% ==============================================================================================
+\section{Introduction}
+\label{sec:intro}
+
+RescueMesh is a simulated emergency service for a university campus. A person reports an incident, such as a blocked road, a power outage or a lab incident, and the cloud sends back a plan: which responder goes, how far away it is, and how urgent the incident is. The cloud is three machines that work together as equal peers. If one of them stops, the person who reported should not notice. All incidents, zones, people and responders are made up \cite{spec}.
+
+This report covers Phase 1 of the term project, which was due on November 4, 2026. Phase 1 asks for these things \cite{spec}:
+
+\begin{itemize}
+  \item a three-node cloud that runs the Incident Processing and Coordination Service;
+  \item a distributed election that picks which node does each piece of work, with a load measure we can justify;
+  \item many requests handled at the same time, with the parallel model written down for the client and for the cloud nodes;
+  \item injected failures of a cloud node of up to 20 s, while the service carries on without the client noticing;
+  \item a failed node that comes back and catches up with the others before it takes part again;
+  \item stress tests at rising load, with enough data to be statistically meaningful.
+\end{itemize}
+
+The class notes add more to this \cite{notes}. The cloud nodes must be peers, and the leader of an election must not act as a coordinator between them (Sept 13 and Oct 28). The application and the middleware must be kept apart, so the application sends a message once and the middleware makes the copies (Sept 13). A client should try 5 times and then report an error (Sept 13). The system should handle one machine turned off and another failed, leaving one server for all three client PCs (Sept 13), and the professor wants to see a machine turned off (Oct 28). We should use a ready-made RPC or RMI system and say why we picked it (Oct 4), and we should document what we did, what happened and who did what (Oct 28).
+
+\subsection{What we built, in short}
+
+Each of the three cloud nodes runs the same program. A client program sends every report to all three nodes over UDP. The nodes then hold a small election for that report: each sends the others a bid, which is its expected waiting time, and the lowest bid wins. The winner plans the report on a pool of worker threads and puts the result into a shared log. Every node applies the shared log in the same order, so all three hold the same state. The first result recorded for a report wins, which makes a repeated plan harmless. Only after the result is in the log does the winner answer the client.
+
+Two things in this design changed a lot during the phase, and both are central to this report. First, the shared log was Raft at the start, as our survey recommended \cite{survey}. On the lab PCs Raft's leader turned out to be both a coordinator, which the class notes rule out, and the limit on throughput. We replaced it with our own shared log that has no leader, which we call rotating rounds. Section~\ref{sec:raft} explains why we chose Raft, what went wrong with it, and the measured results before and after. Second, we made the system survive more than one failure at a time, up to all three nodes killed, which the class notes ask for and which our first design could not do.
+
+\subsection{The results, in short}
+
+The five demonstration scenarios that the professor asked for in class are 1, 2, 3, 4 and 9 of the spec's list. Table~\ref{tab:scenarios} gives our verdict on each, and Sections~\ref{sec:lb} and \ref{sec:results} give the measurements.
+
+\begin{table}[!htb]
+\centering\small
+\caption{The five Phase 1 demonstration scenarios and what we measured on the six lab PCs.}
+\label{tab:scenarios}
+\begin{tabularx}{\linewidth}{@{}P{2.4cm}Lp{1.1cm}@{}}
+\toprule
+Scenario & What we measured & Verdict \\
+\midrule
+1. Normal cloud operation & All 3 nodes kept winning work as the load went from 1,000 to 9,000 requests a second and back. Each won between 31\% and 35\% at every level, while their bids rose about 13 times with the load. & Met \\
+2. Load imbalance & One node was made 5 times slower. Its share of the work fell from 33.4\% to 4.9\% and came back to 33.3\% afterwards. A control run with nothing slowed stayed flat. & Met \\
+3. Server failure & At six loads from 1,000 to 30,000 a second, the other two nodes went on without the failed one in about 1 s, at the offered rate. Nobody gave up up to 20,000 a second. & Met \\
+4. Server recovery & The failed node rebuilt its state and was a full member again 0.8 s to 10.5 s after the fault, up to 20,000 a second. All 45 runs ended with the same state on all three nodes. & Met \\
+9. Scale and stress & 157 runs and 199,481,205 requests overnight, with 0 requests unaccounted for and 0 state mismatches. The ceiling is 12,000 a second with the planning load, and 30,000 with almost none. & Met \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{How to read this report}
+
+\begin{itemize}
+  \item \textbf{Builds.} Most tables come from two builds. Commit \commit{a7ceb34} ran the overnight series on November 5, 2026, from about 1 a.m.\ to 8 a.m., on a quiet network. Commit \commit{b6221c5} is the final build: the same design plus the fixes for two and three nodes failing. It ran the same day from about 11 a.m., when the network was much busier. The Raft results come from earlier builds, named where they appear.
+  \item \textbf{Decisions.} Names like \dlog{D249} point to entries in our design log, \texttt{docs/design-log.md} \cite{repo}. Each entry records the context, the options we rejected, the reasons and the consequences. There are 259 of them, numbered from D1 to D266.
+  \item \textbf{Numbers.} Every result comes from the event logs that each program writes, through the scripts in \texttt{analysis/}. The tables in Section~\ref{sec:kills} are generated by \texttt{analysis/phase1/kills\_tables.py}. A value written as $a \pm b$ is a mean across runs with its 95\% confidence interval by Student's $t$.
+  \item \textbf{Words.} The class notes call all six machines nodes. In this report a \emph{node} is one of the three cloud machines, and a \emph{client PC} is one of the three machines that run users. A \emph{report} is one incident a user sends, and a \emph{plan} is the answer.
+\end{itemize}
+
+\subsection{Where each requirement is answered}
+
+Table~\ref{tab:reqmap} maps each report requirement of the spec, and each class note, to the section that answers it. Our own list of requirements, with its source line in the spec or the date in the notes and a status for each, is \texttt{docs/requirements-check.md} \cite{repo}.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Where this report answers each requirement.}
+\label{tab:reqmap}
+\begin{tabularx}{\linewidth}{@{}Lp{2.6cm}@{}}
+\toprule
+Requirement, and where it is asked & Section \\
+\midrule
+System architecture and process and node model (spec, Report Requirements) & \ref{sec:arch} \\
+Client and cloud parallelization models (spec, Phase 1) & \ref{sec:conc} \\
+Protocols and message formats, timeouts, retries and duplicates (spec) & \ref{sec:proto} \\
+A ready-made RPC or RMI system, and why (notes, Oct 4 and Oct 28) & \ref{sec:rpc} \\
+Election survey and the reasons for the chosen algorithm (spec) & \ref{sec:election}, \ref{sec:raft} \\
+Load-balancing policy and measured evidence for it (spec) & \ref{sec:bidding}, \ref{sec:lb} \\
+Peers, and no coordinator (notes, Sept 13 and Oct 28) & \ref{sec:peers}, \ref{sec:raft}, \ref{sec:sharedlog} \\
+Application and middleware kept apart (notes, Sept 13) & \ref{sec:layers} \\
+Fault model, failure detection, failover, recovery and convergence (spec) & \ref{sec:faults} \\
+Elect a node to fail for up to 20 s, and how it recovers (spec; notes, Sept 13 and Oct 28) & \ref{sec:faultelection}, \ref{sec:rejoin} \\
+One node off and one failed, one server left (notes, Sept 13) & \ref{sec:degraded}, \ref{sec:kills} \\
+5 retries, then an error (notes, Sept 13) & \ref{sec:retries}, \ref{sec:tests} \\
+Consistency model for incidents and resources (spec) & \ref{sec:consistency} \\
+Test plan and use cases, with failures (spec) & \ref{sec:tests} \\
+Methodology, raw data, plots and tables, analysis and limits (spec) & \ref{sec:results}, \ref{sec:method}, \ref{sec:limits} \\
+Decisions changed during development, with reasons (spec) & \ref{sec:raft}, \ref{sec:changed} \\
+Which functions are libraries and which are ours (spec, Implementation Scope) & \ref{sec:library} \\
+Discovery, P2P and offline operation (spec) & Phase 2, \ref{sec:phase2} \\
+Who did what (spec; notes, Oct 28) & \ref{sec:team} \\
+\bottomrule
+\end{tabularx}
+\end{table}
