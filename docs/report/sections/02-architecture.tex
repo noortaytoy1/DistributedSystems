@@ -1,0 +1,304 @@
+% ==============================================================================================
+\section{System architecture and process model}
+\label{sec:arch}
+
+A distributed system is usually described by three models: a physical model of the machines and how they connect, an architectural model of the main parts and how they fit, and a fundamental model of failures and security. This section gives the three in this order, followed by the data model and the one interface that made it possible to swap the shared log.
+
+\subsection{Physical model: six PCs}
+\label{sec:physical}
+
+The system runs on six physical PCs in the lab, three cloud nodes and three client PCs (Figure~\ref{fig:deploy}). Each is an Intel i7-13700 with 24 threads and 15 GB of memory, running Ubuntu 24.04. All six are on the campus Wi-Fi. Node 2 and client PC 1 send over a cable and receive over the air. Nothing is shared but the network: there is no shared disk and no shared clock, and every program writes its own event log on its own PC. Every address comes from one config file that is copied to all six PCs, and all six run the same build of the program.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  % Cloud nodes
+  \foreach \i/\x/\ip in {1/0/10.40.2.29, 2/5.3/10.40.32.242, 3/10.6/10.40.0.73} {
+    \node[nodebox, text width=3.9cm] (n\i) at (\x,0) {\textbf{Node \i}\\[1pt] peer port 7001 (TCP)\\ client port 8001 (UDP and TCP)\\ \texttt{\ip}\\ writes its own event log\\ and its own copy of the log};
+  }
+  \draw[<->, thick, nodeblue] (n1) -- node[elabel, above]{tarpc on TCP} (n2);
+  \draw[<->, thick, nodeblue] (n2) -- node[elabel, above]{tarpc on TCP} (n3);
+  \draw[<->, thick, nodeblue] (n1.north) to[bend left=11] node[elabel, above]{the shared log's streams, bids, heartbeats and fault bids, between every pair} (n3.north);
+  \begin{scope}[on background layer]
+    \node[group, fill=nodeblue!3, fit=(n1)(n3), inner sep=8pt, label={[grouplabel]north west:Cloud: three equal peers}] (cloud) {};
+  \end{scope}
+  % Client PCs
+  \foreach \i/\x/\ids in {1/0/{1, 2, 3}, 2/5.3/{4, 5, 6}, 3/10.6/{7, 8, 9}} {
+    \node[clientbox, text width=3.9cm] (c\i) at (\x,-5.9) {\textbf{Client PC \i}\\[1pt] 3 load programs, client IDs \ids\\ each with its own client middleware\\ one UDP socket per node\\ the demo web page\\ writes its own event logs};
+  }
+  \begin{scope}[on background layer]
+    \node[group, fill=clientorange!3, fit=(c1)(c3), inner sep=8pt, label={[grouplabel, anchor=north west]south west:Client PCs: many simulated users each}] (clients) {};
+  \end{scope}
+  \draw[->, very thick, clientorange!80!black] ($(clients.north)+(-2.65,0)$) -- node[elabel, left, align=right]{every report to all 3 nodes,\\UDP, port 8001} ($(cloud.south)+(-2.65,0)$);
+  \draw[->, very thick, nodeblue!80!black] ($(cloud.south)+(2.65,0)$) -- node[elabel, right, align=left]{one answer, the first wins;\\ cancels go to the others} ($(clients.north)+(2.65,0)$);
+  \node[box, fill=libgray!10, text width=2.3cm] (ctl) at (5.3,-2.85) {\textbf{Operator tool}, any PC; TCP port 8001};
+  \draw[->, semithick, libgray!80!black] (ctl.north) -- (ctl.north |- cloud.south);
+\end{tikzpicture}
+\caption{Deployment. The same node program runs on each cloud PC, and the same load programs on each client PC. The IP addresses are the ones in the final logs. In the experiments each client PC ran 3 load programs, so 9 in all; by default the start script starts 10 per PC.}
+\label{fig:deploy}
+\end{figure}
+
+Client PCs reach each node on port 8001: reports go over UDP, and the operator tool and the web page's status checks go over TCP on the same port number. Nodes reach each other on port 7001 over TCP. Adding load changes no logic, because more programs or a higher rate are all it takes.
+
+\subsection{Architectural model: the parts of a node}
+\label{sec:components}
+
+A cloud node is one process with no special role: the three nodes run the same program, and any of them can do any job. Figure~\ref{fig:components} shows its parts in three layers, and Table~\ref{tab:modules} gives the job of each.
+
+\begin{itemize}
+  \item \textbf{The application} is what the service does. The incident service takes a report, asks the middleware who should plan it, plans it if this node won, records the result, and replies. The planner picks the responder. The state machine holds the responders and the results, and changes them only in the order of the shared log. Responder release frees a responder when its job ends.
+  \item \textbf{The cloud middleware} is how the nodes reach each other and survive failures. The bidding election picks the node that plans each report. The failure detector and the cloud group track who is alive. Takeover, the rejoin gate and degraded mode handle a node that goes quiet, comes back, or is left alone. The fault election picks the node that fails next. The worker pool runs plans off the async runtime. The shared log puts every change in one order on all three nodes.
+  \item \textbf{The transport} carries the messages. Calls between nodes go over TCP and calls from clients over UDP, both through tarpc, with the team's own framing, datagram adapter and compression underneath.
+\end{itemize}
+
+The application never calls the transport or the shared log directly. It reaches the middleware through one narrow interface, and a test fails if it reaches past it (Section~\ref{sec:layers}). Arrows in Figure~\ref{fig:components} point from a part to the part it uses.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
+  % Application, row 1
+  \node[appbox, text width=3.3cm, minimum height=1.1cm] (svc) at (0,0) {\textbf{Incident service}};
+  \node[appbox, text width=2.9cm, minimum height=1.1cm] (plan) at (3.75,0) {\textbf{Planner, campus}};
+  \node[appbox, text width=2.9cm, minimum height=1.1cm] (rel) at (7.15,0) {\textbf{Responder release}};
+  \node[appbox, text width=2.9cm, minimum height=1.1cm] (state) at (12.6,0) {\textbf{State machine}};
+  \begin{scope}[on background layer]
+    \node[group, fill=apppurple!3, fit=(svc)(state), label={[grouplabel]north west:Application: what the service does}] (appL) {};
+  \end{scope}
+  % Middleware, rows 2 and 3
+  \foreach \n/\x/\t/\f in {bid/0/{\textbf{Bidding election}}/mwgreen!12,
+                          take/3.15/{\textbf{Takeover}}/mwgreen!12,
+                          deg/6.3/{\textbf{Degraded mode}}/mwgreen!12,
+                          work/9.45/{\textbf{Worker pool}}/mwgreen!12,
+                          log/12.6/{\textbf{Shared log}\\ rotating rounds}/mwgreen!32} {
+    \node[mwbox, fill=\f, text width=2.65cm, minimum height=0.95cm] (\n) at (\x,-2.55) {\t};
+  }
+  \foreach \n/\x/\t in {grp/0/{\textbf{Cloud group}},
+                       hb/3.15/{\textbf{Failure detector}},
+                       rej/6.3/{\textbf{Rejoin gate}},
+                       flt/9.45/{\textbf{Fault gate, election}},
+                       raft/12.6/{\textbf{Raft, off}\\ openraft}} {
+    \node[mwbox, text width=2.65cm, minimum height=0.95cm] (\n) at (\x,-3.85) {\t};
+  }
+  \begin{scope}[on background layer]
+    \node[group, fill=mwgreen!3, fit=(bid)(raft), label={[grouplabel]north west:Cloud middleware: how the nodes reach each other}] (mwL) {};
+  \end{scope}
+  % Transport, row 4
+  \node[nodebox, text width=4.4cm, minimum height=1.1cm] (tr) at (1.1,-6.35) {\textbf{Transport} (the team's)\\ framing over TCP to peers\\ UDP adapter, compression};
+  \node[libbox, text width=3.4cm, minimum height=1.1cm] (tarpc) at (6.3,-6.35) {\textbf{tarpc}: stubs, call IDs, deadlines};
+  \node[libbox, text width=3.8cm, minimum height=1.1cm] (tokio) at (11.4,-6.35) {\textbf{tokio, serde, bincode}: tasks, timers, sockets, encoding};
+  \begin{scope}[on background layer]
+    \node[group, fill=nodeblue!3, fit=(tr)(tokio), label={[grouplabel]north west:Transport and libraries}] (trL) {};
+  \end{scope}
+  % Arrows: within a row, and between layers
+  \draw[flow] (svc) -- (plan);
+  \draw[flow] (log.north) -- node[elabel, right]{applies, in order} (state.south);
+  \draw[flow] (svc.south) -- node[elabel, right]{who plans?} (bid.north);
+  \draw[flow] (rel.south) -- node[elabel, right]{send in order} (rel.south |- mwL.north);
+  \draw[flow] (bid) -- (grp);
+  \draw[flow] (take) -- (hb);
+  \draw[densely dashed, black!50] (log) -- node[elabel]{one interface} (raft);
+  \draw[flow] (mwL.south -| tarpc) -- (tarpc.north);
+  \draw[flow] (tr) -- (tarpc);
+  \draw[flow] (tarpc) -- (tokio);
+\end{tikzpicture}
+\caption{Inside one cloud node. Purple parts are the application, green parts the middleware, and grey dashed boxes libraries. The application reaches the middleware only through one interface. The shared log is rotating rounds in every lab run; Raft is kept behind the same interface (Section~\ref{sec:consensus-trait}). Every part writes events to the node's event log, and all share one node context.}
+\label{fig:components}
+\end{figure}
+
+\begin{table}[!htb]
+\centering\small
+\caption{The parts of a node and of a client PC, and the job of each.}
+\label{tab:modules}
+\begin{tabularx}{\linewidth}{@{}P{4.2cm}L@{}}
+\toprule
+Part & Job \\
+\midrule
+Incident service & Takes a report, bids, plans if it wins, records the plan, replies \\
+Bidding election & The election for each report (Section~\ref{sec:bidding}) \\
+Planner & Picks a responder and a priority; makes the made-up campus \\
+Worker pool & Runs plans off the async runtime, with a bounded queue \\
+Shared log & One order for all commands, with no leader (Section~\ref{sec:sharedlog}) \\
+Raft, kept but off & openraft behind the same interface (Section~\ref{sec:raft}) \\
+State machine & Results and responder holds, the same on every node \\
+Failure detector, group & Suspects a quiet peer; keeps this node's view of who is in \\
+Takeover, release & Plans a report whose winner went quiet; frees responders \\
+Fault gate and election & Elects the node that fails, and silences it \\
+Rejoin, degraded mode & Stops serving until current; answers alone \\
+Transport & TCP between nodes, UDP from clients, compression \\
+Client middleware & Sends to all nodes, retries, keeps the first answer \\
+Load programs and web page & Simulated users, and a small web page for the demo \\
+Operator tool & Status, silence and slowdown of a node \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Application and middleware, on both sides}
+\label{sec:layers}
+
+The application and the middleware are kept apart: the application sends a message once, and the middleware makes sure the replicas get it. The line runs through both sides, as Figure~\ref{fig:layers} shows. On a client PC, a user submits a report with one call and names no node. The client middleware copies the report to all three nodes, resends it with the same ID if no answer comes, and keeps the first answer. On a node, the incident service asks the middleware who plans this report, and hands a result to it with one call, without knowing how the result reaches the other nodes. The middleware offers the application one narrow interface, and an automated test fails if application code reaches past it.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  % Client side
+  \node[appbox, text width=4.2cm] (user) at (0,0) {\textbf{Application}\\ a simulated user in a load program,\\ or the demo web page};
+  \node[mwbox, text width=4.2cm] (mesh) at (0,-2.1) {\textbf{Client middleware}\\ copies to all nodes, retries with the same ID, first answer wins, retry budget};
+  \node[libbox, text width=4.2cm] (crpc) at (0,-4.1) {tarpc stubs on a UDP adapter};
+  \draw[flow] (user) -- node[elabel, right]{one call, names no node} (mesh);
+  \draw[flow] (mesh) -- (crpc);
+  \begin{scope}[on background layer]
+    \node[group, fill=clientorange!4, fit=(user)(crpc), label={[grouplabel]north west:A client PC}] {};
+  \end{scope}
+  % Node side
+  \node[appbox, text width=5.0cm] (svc) at (8.4,0) {\textbf{Application}: the incident service\\ takes reports, plans them and answers; the planner; the state rules};
+  \node[mwbox, text width=2.3cm] (el) at (6.6,-2.1) {bidding election};
+  \node[mwbox, text width=2.3cm] (gr) at (10.2,-2.1) {cloud group and shared log};
+  \node[mwbox, text width=5.0cm] (ft) at (8.4,-3.2) {failure detector, takeover, rejoin, degraded mode, fault election};
+  \node[libbox, text width=5.0cm] (nrpc) at (8.4,-4.3) {tarpc stubs on TCP and UDP};
+  \draw[flow] (svc.south -| el.north) -- node[elabel, left]{who plans?} (el.north);
+  \draw[flow] (svc.south -| gr.north) -- node[elabel, right]{send in order} (gr.north);
+  \begin{scope}[on background layer]
+    \node[group, fill=nodeblue!3, fit=(svc)(nrpc), label={[grouplabel]north west:Each cloud node}] (nodeside) {};
+  \end{scope}
+  \draw[->, very thick, clientorange!80!black] (crpc.east) -- node[elabel, above, align=center]{the same report\\to every node} (nrpc.west);
+  \draw[dflow] (user.east) -- node[elabel, above, align=center]{what the user believes:\\ one request, one answer} (svc.west);
+\end{tikzpicture}
+\caption{The line between application and middleware runs through every client PC and every node. The dashed arrow is what the application sees; the solid arrow is what really happens.}
+\label{fig:layers}
+\end{figure}
+
+\subsection{Peers, not client and server}
+\label{sec:peers}
+
+A client-server system fixes each machine's role for its whole life, and the RescueMesh cloud is not one. Its nodes send and receive requests at the same time: they share work, tell each other their load, check that each other is alive, and copy each other's log. So ``client'' and ``server'' are the roles of one call, not of a machine. When node 1 sends its bid to node 2, node 1 is the client for that call. A moment later node 2 sends its bid to node 1 and the roles swap. Table~\ref{tab:roles} lists the calls.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Who is client and who is server, per call.}
+\label{tab:roles}
+\begin{tabularx}{\linewidth}{@{}P{3.6cm}P{3.6cm}L@{}}
+\toprule
+Call & Client for this call & Server for this call \\
+\midrule
+A report & a client PC's middleware & whichever node answers first \\
+A bid & the node that received the report & every peer in its view \\
+A shared log stream & every node, for its own batches & every other member \\
+A heartbeat & every node & every configured peer \\
+A fault bid & every node that may bid & every peer in its view \\
+A catch-up after a fault & the returning node & any member \\
+Status, silence, slowdown & the operator tool or the web page & one node \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Who decides what.} No node decides for another. The node that plans a report is elected by all serving nodes from their bids. Whether a plan stands is decided by the same rule on every node, applied to the same log. Whether a peer is alive is decided by each node for itself. Which node fails next is decided by all three in a draw. Since Raft was removed, no node orders the log for the others either: the order is a sort that every node does by itself (Section~\ref{sec:sharedlog}).
+
+\subsection{Fundamental model: failures and security}
+\label{sec:fundamental}
+
+\textbf{Failures.} The system handles these faults. A node can go silent: it ignores all traffic for 1 to 20 s and keeps its memory, which is the omission failure the spec requires to be injected. A node's process can die and restart, which loses its memory; the experiments use \texttt{kill -9} for this, and a kill stands in for turning a machine off. Two or all three nodes can fail together or one after the other. Messages can be lost, late or duplicated, above all over UDP. The system does not handle a node that lies or sends wrong data (Byzantine failure), or a long split of the network in which a client can reach no serving node.
+
+These faults shape the design in three ways. Every failure detector in the system is a timer, and a timer cannot tell a slow node from a dead one \cite{chandra}. So a wrong guess must be cheap: it may cost repeated work, but never two results for one report. A restart wipes memory, so each node saves what it applied to its own disk before it answers. And a client must never need to know which node failed, so it always sends to all three.
+
+\textbf{Security.} All data is synthetic, and Phase 1 has no security requirements. Nodes trust each other and trust what clients send. The web page listens only on its own PC, with no password.
+
+\subsection{Data model}
+\label{sec:datamodel}
+
+Figure~\ref{fig:uml-data} is the UML class diagram of the replicated state. Every node holds one copy of the cloud state, and only the state machine changes it, in log order. Every number in it is an integer, so that every node computes exactly the same thing. Its tables are sorted maps, never hash maps, so that their order is the same on every node.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \node[umlclass=7.2cm] (cs) at (0,0) {\textbf{CloudState}
+    \nodepart{two} responders: BTreeMap$\langle$ResponderId, ResponderSlot$\rangle$\\ results: BTreeMap$\langle$RequestId, CommittedResult$\rangle$\\ counters: Counters;\quad last\_index: u64;\quad digest: u64
+    \nodepart{three} apply(index, Command): Outcome\\ free\_responders(): list;\quad result(id): CommittedResult?\\ status\_at(id, now\_ms): IncidentStatus};
+  \node[umlclass=3.6cm] (slot) at (-5.6,-3.9) {\textbf{ResponderSlot}
+    \nodepart{two} responder: Responder\\ held\_by: RequestId?
+    \nodepart{three} };
+  \node[umlclass=3.6cm] (resp) at (-5.6,-6.9) {\textbf{Responder}
+    \nodepart{two} id: u32\\ zone: u16\\ location: Point\\ capability: Capability
+    \nodepart{three} };
+  \node[umlclass=4.4cm] (cr) at (0,-4.6) {\textbf{CommittedResult}
+    \nodepart{two} request: RequestId\\ incident: Incident\\ executor: NodeId\\ plan: Plan\\ age\_ms, assigned\_at\_ms: u64\\ log\_index: u64
+    \nodepart{three} too\_old\_on\_arrival(): bool\\ status(held, now\_ms): IncidentStatus};
+  \node[umlclass=4.2cm] (inc) at (5.6,-3.9) {\textbf{Incident}
+    \nodepart{two} owner: UserId\\ category: Category\\ zone: u16;\quad location: Point\\ severity: 1 to 5\\ needs: Capability\\ reported\_at\_ms, ttl\_ms: u64
+    \nodepart{three} is\_too\_old(age\_ms): bool};
+  \node[umlclass=4.2cm] (plan) at (5.6,-7.6) {\textbf{Plan}
+    \nodepart{two} responder: ResponderId?\\ cost: u64 (metres)\\ priority: u32 (points)
+    \nodepart{three} };
+  \node[umlclass=3.0cm] (rid) at (0,-8.4) {\textbf{RequestId}
+    \nodepart{two} client: u64\\ seq: u64
+    \nodepart{three} };
+  \draw[compose] (slot.north) |- node[elabel, pos=0.25, left]{*} ($(cs.south west)+(0,0.3)$);
+  \draw[compose] (cr.north) -- node[elabel, right]{*} (cs.south);
+  \draw[compose] (resp.north) -- (slot.south);
+  \draw[compose] (inc.west) -- (inc.west -| cr.east);
+  \draw[compose] (plan.west) -| ($(cr.south east)+(-0.4,0)$);
+  \draw[compose] (rid.north) -- (cr.south);
+\end{tikzpicture}
+\caption{UML class diagram of the replicated state. A filled diamond means the whole owns the part. A ``?'' marks an optional field. An incident's status is never stored: it is worked out on read from the record and the hold.}
+\label{fig:uml-data}
+\end{figure}
+
+Three commands change the state, and each is safe to apply twice: \emph{register responders} adds the campus's responders, \emph{commit result} records the plan for one report, and \emph{release responder} frees a responder when its job ends. The first result committed for a report ID wins on every node, and any later one is marked a duplicate and gets the winner back. A plan whose responder another report took in the meantime is \emph{stale}. In the final build it is chosen again at apply, the same way on every node. Figure~\ref{fig:apply} draws the rule.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, node distance=0.55cm]
+  \node[fend] (start) {a result for report $r$ at log index $i$};
+  \node[fdec, below=of start] (have) {result for $r$\\already?};
+  \node[fbad, right=1.4cm of have, text width=3.2cm] (dup) {a duplicate: the winner\\ is returned, the first result stands};
+  \node[fdec, below=of have] (free) {its responder\\still free?};
+  \node[fstep, right=1.4cm of free, text width=3.4cm] (again) {choose again at apply, from a part of the free list set by $r$; every node chooses the same};
+  \node[fstep, below=of free, text width=4.4cm] (hold) {hold the responder for $r$;\\ record the plan for $r$ at index $i$};
+  \node[fend, below=of hold, text width=4.4cm] (dig) {digest = FNV(digest, $i$, command, outcome)};
+  \draw[flow] (start) -- (have);
+  \draw[flow] (have) -- node[elabel, above]{yes} (dup);
+  \draw[flow] (have) -- node[elabel, right]{no} (free);
+  \draw[flow] (free) -- node[elabel, above]{no} (again);
+  \draw[flow] (free) -- node[elabel, right]{yes} (hold);
+  \draw[flow] (again.south) |- (hold.east);
+  \draw[flow] (hold) -- (dig);
+  \draw[flow] (dup.south) -- ++(0,-0.4) -| ($(again.east)+(0.4,0)$) |- (dig.east);
+\end{tikzpicture}
+\caption{How every node applies one result. No clock, no network and no randomness is read here, so every node reaches the same state and the same digest.}
+\label{fig:apply}
+\end{figure}
+
+\textbf{The digest.} After each command, every node computes a new digest from the old one, the log index, the command and its outcome. One different command, order or outcome changes every digest after it. Each node logs its digest at every 100th log index, and comparing these checkpoints across nodes shows whether the copies agree.
+
+\subsection{One interface, two shared logs}
+\label{sec:consensus-trait}
+
+The most useful design choice for this phase turned out to be an interface. From the start, every part of the node reached the shared log only through one interface, \emph{Consensus}, and never called Raft directly. When Raft had to be replaced (Section~\ref{sec:raft}), the new shared log was written as a second implementation of the same interface, and one setting in the config file chooses between them. Nothing above the interface changed: not the bidding, the planner, the state machine, the replies or the digests. That is also why both designs still build, and why the Raft tests still pass (Section~\ref{sec:tests}). Figure~\ref{fig:uml-consensus} shows the classes.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \node[umliface=5.6cm] (tr) at (0,0) {$\langle\langle$trait$\rangle\rangle$ \textbf{Consensus}
+    \nodepart{two} propose(Command): Future$\langle$Outcome$\rangle$\\ status(): ConsensusStatus\\ is\_alone(): bool\\ handle\_rounds(from, RoundsMsg): PeerReply\\ handle\_rpc(from, RaftRpc): PeerReply\\ read\_index(): Future$\langle$u64?$\rangle$};
+  \node[umlclass=4.6cm] (rn) at (-3.4,-4.6) {\textbf{RoundsNode}
+    \nodepart{two} streams, pending, covered, acked\\ view, members, starts\\ file: node-<id>.rounds
+    \nodepart{three} frontier(), apply\_ready()\\ try\_drop(), on\_join(), run\_catch\_up()};
+  \node[umlclass=4.6cm] (rf) at (3.4,-4.6) {\textbf{RaftNode}
+    \nodepart{two} openraft::Raft (library)\\ ProposalQueue\\ file: node-<id>.wal
+    \nodepart{three} client\_write(group)\\ read\_index\_local()};
+  \node[umlclass=3.7cm] (ctx) at (-6.0,-1.6) {\textbf{NodeContext}
+    \nodepart{two} consensus: Arc$\langle$dyn Consensus$\rangle$\\ group: CloudGroup\\ workers: WorkerPool\\ serving, gate
+    \nodepart{three} };
+  \node[umlclass=3.2cm] (grp) at (6.0,-1.6) {\textbf{CloudGroup}
+    \nodepart{two} view: View
+    \nodepart{three} send(), probe()\\ send\_ordered(cmd)};
+  \node[box, fill=notefill, text width=5.4cm, font=\scriptsize] (cfg) at (0,-7.6) {one setting chooses the log: rotating rounds in every lab run; Raft is still available};
+  \draw[realize] (rn.north) -- (tr.south west);
+  \draw[realize] (rf.north) -- (tr.south east);
+  \draw[assoc] (ctx.north) |- node[elabel, above, pos=0.75]{uses} (tr.west);
+  \draw[assoc] (grp.north) |- node[elabel, above, pos=0.75]{calls propose} (tr.east);
+  \draw[dflow] (cfg.west) -| (rn.south);
+  \draw[dflow] (cfg.east) -| (rf.south);
+\end{tikzpicture}
+\caption{UML class diagram of the shared log's interface. A dashed arrow with an open triangle means ``implements''. The rest of the node sees only the interface, so it cannot tell which log is underneath.}
+\label{fig:uml-consensus}
+\end{figure}

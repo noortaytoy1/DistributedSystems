@@ -1,0 +1,86 @@
+% ==============================================================================================
+\section{Limits}
+\label{sec:limits}
+
+This section lists what the results do not show, and what the system does not do, as plainly as the results themselves.
+
+\begin{enumerate}
+  \item \textbf{No machine was physically turned off.} The experiments used \texttt{kill -9} in its place. A kill stops the process at once, as a power cut would, but it cannot lose disk writes the way a real cut can.
+  \item \textbf{All three killed can lose a few answers.} If nodes return one at a time and the node with the longest log returns last, the others have gone on without its tail, and it starts again from their log. Answers that only it had applied are lost, though the nodes still agree. This happened in 2 of 49 kill runs: 566 of 48,331,376 answers, or 0.0012\%. No run with one or two nodes killed lost any. A fix would have that node hand over its tail first; it is not built.
+  \item \textbf{A returning node's file can miss a few batches.} In 5 of 49 kill runs one node's file lacked batches it was handed on return, which it holds in memory but does not save. Its memory and digest matched the others'. If that node restarted again, it would find its log is not a start of the others' and take the log again.
+  \item \textbf{Provisional answers usually change.} In T2 with 300 responders, about 98\% of the lone node's answers ended differently on record, and clients are not told. Killing the lone node loses the provisional answers it has not replayed.
+  \item \textbf{Memory grows with the log,} about 590 bytes per report per node, and nothing trims it. At 20,000 a second a node runs out after about 18 to 20 minutes; at 1,000 a second it would take about 6.5 hours.
+  \item \textbf{A slow patch can feed itself.} Past about 2 s, retries and takeovers plan reports again, which adds load. At 20,000 a second and above this may not recover while the load continues. The retry budget bounds it but does not end it.
+  \item \textbf{Results above 15,000 a second depend on the network.} The lab runs on shared, mostly wireless networking. The final build has not been run at 30,000 on a quiet network.
+  \item \textbf{A failure costs at least 1 s}, the detection time, since a silent node holds up every round until it is dropped.
+  \item \textbf{The planning load is simulated.} The planning work is a busy loop that stands in for a harder planning job; the real choice of a responder takes microseconds.
+  \item \textbf{The ordering is the team's own code.} Its correctness rests on the team's tests and these experiments, not on a library's users, and the agreement on a drop has had no formal check.
+  \item \textbf{Fewer repeats for some failure runs.} The kill cases have 3 runs at 10,000 a second, 2 at 15,000, and 1 at 20,000 and 300, with random nodes and times.
+\end{enumerate}
+
+% ==============================================================================================
+\section{Libraries and the team's own work}
+\label{sec:library}
+
+The spec requires the report to make clear which functions come from libraries, and which distributed protocols, election logic, consistency mechanisms and recovery procedures the team designed and built. Table~\ref{tab:library} draws the line. Only two libraries do distributed-systems work: tarpc makes the remote calls, and openraft is still compiled in but is off in every lab run.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Libraries and the team's own work.}
+\label{tab:library}
+\begin{tabularx}{\linewidth}{@{}LL@{}}
+\toprule
+Done by a library & Designed and built by the team \\
+\midrule
+Remote calls, call IDs, deadlines: tarpc 0.37 \cite{tarpc} & The bidding election and its load score \\
+Async tasks, timers, sockets, file writes: tokio 1 \cite{tokio} & The shared log: its order, dropping a silent node, and bringing a node back \\
+Encoding: serde 1, bincode 1.3 \cite{serde} & The state machine, first result wins, the digest \\
+Splitting TCP into frames: tokio-util 0.7 & Failure detection and takeover \\
+A socket option for buffers: socket2 0.6 & The fault election and gate; rejoin; the lone node's provisional answers \\
+Log lines as JSON: serde\_json & The UDP adapter and compression \\
+Raft: openraft 0.9.25 \cite{openraft}, built in but off & The planner; the client middleware with its retries and budget; all experiments and analysis \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{AI and open source.} Much of the code, the tests, the analysis scripts and the first drafts of the documents were written with an AI coding assistant, Claude Code, under the team's direction. Every design decision was made by a team member, and the team's working agreement required the assistant to raise each decision, with its options, before writing any code. All libraries above are open source and used under their licences.
+
+% ==============================================================================================
+\section{Phase 2: what comes next}
+\label{sec:phase2}
+
+Discovery, presence, peer-to-peer exchange, offline operation and conflicting claims belong to Phase 2, and none of them is built yet. The plan builds on what Phase 1 left in place. The discovery directory would be a second state machine on the same shared log: a registration and each lease renewal become commands, so the directory is the same on all three nodes with no new replication protocol. The campus already has zones, which become the topics of a publish-subscribe service: a peer subscribes to the zones it cares about, and incident summaries spread between peers with duplicate suppression by report ID and a hop limit on forwarding. Claims on resources would be leases with fencing tokens, where the token is the claim's position in the shared log, so a late write from an old holder is refused without any node issuing tokens. Offline changes can build on two pieces that already exist: answers labelled provisional, and the rule that the first result in the order wins.
+
+% ==============================================================================================
+\section{Team contributions}
+\label{sec:team}
+
+The team worked as one: decisions were discussed together, the parts were split for ownership but built to fit one system, and every member can explain the whole of it. For credit, Table~\ref{tab:team} lists the areas each member mainly built, from the project's history. The Phase 0 survey was split by algorithm, as its title page shows \cite{survey}.
+% CONFIRM: drafted from the git history and the survey's title page. The team should check each row before submitting.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Main contributions. Every member also reviewed others' work and took part in the lab sessions.}
+\label{tab:team}
+\begin{tabularx}{\linewidth}{@{}P{2.9cm}L@{}}
+\toprule
+Member & Main contributions \\
+\midrule
+Noor Emam & Led the design decisions and the lab sessions on the six PCs; the experiment series and final runs; the move to a shared log with no leader and the recovery from several failures; most of the design documentation. Survey: Hirschberg-Sinclair. \\
+Omar Leithy & Raft and replication on openraft; the state machine, digest and durable log; the client middleware and load generator; tarpc between nodes; the lone node's provisional answers; the first experiment runner and analysis. Survey: ring election. \\
+Aabed Elghadban & Fault injection: the fault gate, manual faults and the first fault schedule; the rejoin gate; takeover of a silent winner. Survey: Bully. \\
+Ahmed Abdeen & The bidding election: bid rounds, load scores, planning time, and its multi-node tests. Survey: load-aware election. \\
+Yahia Kilany & The planner and the seeded campus; the zone penalty; the bounded worker pool. Survey: ZooKeeper Fast Leader Election. \\
+Wahiba Elhimer & The transport's reconnect back-off for a peer that is down. Survey: Raft leader election. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ==============================================================================================
+\section{Conclusion}
+
+RescueMesh Phase 1 is a cloud of three peers that shares work by an election, survives a node going silent for up to 20 s, rebuilds a returning node's state, and holds up under measured stress. The five demonstration scenarios are met on six lab PCs, with 0 requests unaccounted for and 0 state mismatches in more than 84,000 comparisons.
+
+The most important lesson came from a decision that changed. The survey's reasons for Raft were sound, and Raft kept every copy correct in every run. But two things that only the lab could show made it the wrong fit: its leader is a coordinator in a cloud that is meant to be peers, and the leader's one write at a time capped throughput at 7,000 reports a second on the lab's network. Because every part of the node reached the log through one interface, Raft could be replaced with a log that has no leader in about a day, with everything above it kept, and both could be measured. On the same build at 10,000 reports a second, Raft answered 4,306 a second and rotating rounds answered all of them. The cost is a log that is the team's own code, a failover that waits for detection, and the work it took to survive two and three failures, all of which is measured and listed above.
+
+The second lesson is that the network shapes everything. The timers, the bid window, the packet sizes and even the ceiling were all set by what the lab's shared Wi-Fi could carry, and none of it showed up on one PC. The same is likely to hold in Phase 2, when the peers start talking to each other directly.

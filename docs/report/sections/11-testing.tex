@@ -1,0 +1,97 @@
+% ==============================================================================================
+\section{Test plan and methodology}
+\label{sec:testing}
+
+\subsection{Automated tests}
+\label{sec:tests}
+
+From October 21, every change went through a pull request, and the CI run on GitHub checks formatting, runs the linter with warnings as errors, and runs the full test suite on Ubuntu. On the final build, the full suite passes 545 tests on Ubuntu with 0 failures: 339 unit tests of single parts, and 206 multi-node tests that start real nodes on one machine and talk to them over real sockets. Table~\ref{tab:testfiles} lists the multi-node tests by what they check. Both shared logs are tested, but not equally. Raft is still the default setting, so most multi-node tests start their cluster on Raft; the 17 tests of the shared log and of kills run on rotating rounds, which every lab run used. The parts above the shared log, such as bidding, takeover and the lone node, are the same code on both, and the lab runs exercised them on rounds at scale.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Multi-node tests on the final build, all passing.}
+\label{tab:testfiles}
+\begin{tabularx}{\linewidth}{@{}P{3.6cm}rL@{}}
+\toprule
+Area & Tests & What they check \\
+\midrule
+Shared log & 10 & one order, drops, rejoins; each bug found on the lab PCs fails without its fix \\
+Kills & 7 & one, two and all three nodes killed, in each order; 6 of 7 failed before the fix \\
+Layers & 7 & the application reaches the middleware only through its interface \\
+Replication & 11 & commit before reply, retries get the same result, one leader per term (Raft) \\
+Bidding and takeover & 11 & the lowest bid wins; a silent winner is taken over; a leader gets no extra say \\
+Faults and detection & 22 & the fault gate and the fault election; detection; the view \\
+Rejoin and restart & 11 & a returning node serves nothing until current; restarts from disk \\
+Lone node & 11 & a lone node answers provisionally and replays later \\
+Client and UDP & 37 & retries, cancels, the UDP adapter, compression, the call limits \\
+Incidents and proposals & 26 & incident records and status; the queue in front of Raft; a busy leader \\
+Load programs, web page & 28 & the load programs and the web page \\
+Experiment runner & 25 & the runner, through a stand-in for SSH with six separate folders \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two rules kept the tests honest. Tests never sleep for a fixed time; they wait for a condition with a deadline, so they are neither slow on fast machines nor flaky on slow ones. And a test that touches timing must pass 10 times in a row before it merges.
+
+\subsection{The lab guide's tests}
+
+Besides the experiment cells, five named tests from the team's lab guide ran on the six PCs. All five pass on the final build.
+
+\begin{table}[!htb]
+\centering\small
+\caption{The lab guide's tests.}
+\label{tab:labtests}
+\begin{tabularx}{\linewidth}{@{}P{0.6cm}P{4.4cm}L@{}}
+\toprule
+Test & What it does & Result on the final build \\
+\midrule
+T1 & kill the busiest node under load with \texttt{kill -9}, then restart it & all 81,647 reports answered, 0 gave up, equal digests \\
+T2 & kill one node and silence another: one node left for all three client PCs & all reports answered in 3 runs; about 4,850 provisional answers each; equal digests \\
+T3 & raise the load until it breaks & Section~\ref{sec:stress}; flat out and a spike of 333 users per PC with 0 gave up \\
+T4 & the fault election on real timers; then one node off & draws went ahead with every node up; with node 3 off for 60 s no draw went ahead; equal digests \\
+T5 & all nodes off, one report sent & the client gave up after 6 attempts: 5 retries, then an error \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Fact checks on the raw logs.} Summaries can hide mistakes, so two scripts recompute results from the raw per-request lines and trust no summary. One recounted a run at 35,000 a second: 2,625,084 requests sent and answered, 0 unaccounted, 0 answered twice. The other matched each of 3,749,625 answers in three runs at 10,000 a second, a plain one, one with a 20 s fault and one with a kill, to a reply line in the answering node's own log, with 0 mismatches. In the kill runs every answer a client got was looked for in each node's file (Section~\ref{sec:kills}).
+
+\subsection{Methodology}
+\label{sec:method}
+
+Figure~\ref{fig:pipeline} shows how an experiment runs, from the run's definition to the tables in this report.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
+  \node[box, fill=white, text width=2.5cm] (cell) at (0,0) {\textbf{A cell}\\ load, planning work, fault, length};
+  \node[box, fill=mwgreen!12, text width=2.8cm] (run) at (3.5,0) {\textbf{Experiment runner}\\ a script over SSH from client PC 1};
+  \node[nodebox, text width=2.4cm] (nodes) at (7.4,1.0) {3 cloud nodes\\ one config, wiped state};
+  \node[clientbox, text width=2.4cm] (clients) at (7.4,-1.0) {3 client PCs\\ 3 load programs each};
+  \node[box, fill=libgray!10, text width=2.8cm] (logs) at (11.0,0) {\textbf{One folder per run}\\ every JSON Lines log, the config, the commit, the final status};
+  \node[box, fill=apppurple!10, text width=2.6cm] (an) at (11.0,-2.6) {\textbf{Analysis}\\ Python: percentiles, 95\% intervals, fact checks};
+  \node[box, fill=notefill, text width=2.6cm] (rep) at (7.4,-3.2) {tables and charts in this report};
+  \draw[flow] (cell) -- (run);
+  \draw[flow] (run) -- node[elabel, above, sloped]{start} (nodes);
+  \draw[flow] (run) -- node[elabel, below, sloped]{start} (clients);
+  \draw[flow] (clients) -- node[elabel, right]{reports} (nodes);
+  \draw[flow] (run.south) |- node[elabel, pos=0.75, below]{silence, kill or slowdown at fixed times} ($(clients.south west)+(0,-0.6)$) -| (clients.south);
+  \draw[flow] (nodes.east) -- (logs.north west);
+  \draw[flow] (clients.east) -- (logs.south west);
+  \draw[flow] (logs) -- (an);
+  \draw[flow] (an) -- (rep);
+\end{tikzpicture}
+\caption{How an experiment runs. The runner refuses to start if any RescueMesh program is left running on any PC, and marks a run complete only when all its logs are in, so a stopped batch leaves nothing half-counted.}
+\label{fig:pipeline}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Design.} The overnight series ran every cell once per pass, then repeated the pass 5 times, so that any drift over the night falls across all cells and not on one. The 5 passes took 6 h 37 min, 5.1 h of it with load running.
+  \item \textbf{Load.} Open loop: 9 programs at a fixed rate, 3 on each client PC, evenly spaced, each with its own seed in each pass. Each report goes to all 3 nodes.
+  \item \textbf{Settings.} One commit built on all six PCs. 60,000 responders, 20 planning threads, a 60 ms bid window, 1 s detection, the expected-wait score. The CPU energy setting was read at the start of each part and saved with the runs.
+  \item \textbf{Measured.} The first 15 s of each run is warm-up and left out. Rates are answers finished per second. Latency is measured on the client's clock with a monotonic timer, from when a report was due to go. Durations are never computed from two machines' clocks; where a figure needs two clocks, the report states how far apart they were, which was 3 to 6 ms.
+  \item \textbf{Statistics.} Means across runs with 95\% confidence intervals by Student's $t$; percentiles over all requests of a run. Five runs give wide intervals at the edge of the ceiling, so the run-to-run range is shown there.
+  \item \textbf{Runs left out.} The analysis names and leaves out a run with missing programs or logs, a damaged log, or a fault that never fired. Two Scenario 2 cells ran with a script mistake that left the slowed node with no planning work after the slowdown; they are kept and labelled, and the tables use the rerun cells.
+\end{itemize}
+
+\textbf{Raw data.} The raw logs are too large to publish, but nothing is deleted: every client's every request, every node's every event, and each run's status and settings are kept on the lab PCs. The per-run and per-cell figures behind every table in this report are published with the project \cite{repo}. Figure~\ref{fig:seq-report} draws one report followed through every PC's log.

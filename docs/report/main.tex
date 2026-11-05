@@ -1,0 +1,231 @@
+% RescueMesh, Phase 1 report. CSCE 4411, Fall 2026.
+% Builds on Overleaf with pdfLaTeX (the default) and with XeLaTeX or Tectonic.
+% Every figure is drawn in TikZ or pgfplots here, except the six charts in figures/,
+% which analysis/phase1/make_plots.py made from the logs.
+\documentclass[10pt,a4paper]{article}
+
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{lmodern}
+\else
+  \usepackage{fontspec}
+\fi
+\usepackage{microtype}
+\usepackage[margin=2.1cm,top=2.3cm,bottom=2.3cm]{geometry}
+\usepackage[section]{placeins}
+\usepackage{graphicx}
+\usepackage[table]{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,shapes.multipart,calc,fit,backgrounds,decorations.pathreplacing}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.8}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.15}
+\setcounter{tocdepth}{1}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small RescueMesh, Phase 1 report}
+\fancyhead[R]{\small CSCE 4411, Fall 2026}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---------------------------------------------------------------------------------------------
+% Names from the code. An underscore written as \_ may break the line there.
+\DeclareRobustCommand{\code}[1]{\texttt{\begingroup\renewcommand{\_}{\textunderscore\allowbreak}#1\endgroup}}
+% A decision in docs/design-log.md.
+\newcommand{\dlog}[1]{\textsf{#1}}
+% Commit hashes.
+\newcommand{\commit}[1]{\texttt{#1}}
+% Table columns that wrap.
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+% ---------------------------------------------------------------------------------------------
+% Colours: one per kind of thing, used the same way in every diagram.
+\definecolor{nodeblue}{HTML}{2A78D6}
+\definecolor{clientorange}{HTML}{EB6834}
+\definecolor{mwgreen}{HTML}{1BAF7A}
+\definecolor{apppurple}{HTML}{7B5CC4}
+\definecolor{libgray}{HTML}{8A8A85}
+\definecolor{notefill}{HTML}{FFF6D5}
+\definecolor{badred}{HTML}{C8372D}
+
+\tikzset{
+  >={Stealth[length=2.2mm]},
+  box/.style={draw=black!65, rounded corners=2pt, align=center, font=\footnotesize, inner sep=3pt},
+  nodebox/.style={box, fill=nodeblue!10},
+  clientbox/.style={box, fill=clientorange!10},
+  mwbox/.style={box, fill=mwgreen!12},
+  appbox/.style={box, fill=apppurple!10},
+  libbox/.style={box, fill=libgray!14, dashed},
+  group/.style={draw=black!45, rounded corners=4pt, inner sep=6pt},
+  grouplabel/.style={font=\footnotesize\bfseries, anchor=south west, inner sep=1.5pt},
+  flow/.style={->, semithick},
+  dflow/.style={->, semithick, densely dashed},
+  % Flowcharts
+  fstep/.style={box, fill=white, minimum height=0.7cm, text width=3.6cm},
+  fdec/.style={diamond, aspect=2.4, draw=black!65, fill=notefill, align=center, font=\scriptsize, inner sep=1pt},
+  fend/.style={box, fill=mwgreen!14, rounded corners=6pt, minimum height=0.65cm},
+  fbad/.style={box, fill=badred!10, rounded corners=6pt, minimum height=0.65cm},
+  elabel/.style={font=\scriptsize, fill=white, inner sep=1pt},
+  % State diagrams
+  state/.style={draw=black!65, rounded corners=7pt, fill=nodeblue!8, align=center, font=\footnotesize, minimum height=0.8cm, inner sep=4pt},
+  sinit/.style={circle, fill=black, inner sep=0pt, minimum size=6pt},
+  % Sequence diagrams
+  actor/.style={draw=black!65, rounded corners=2pt, fill=#1, minimum width=2.15cm, minimum height=0.75cm, align=center, font=\scriptsize\bfseries, inner sep=2pt},
+  actor/.default=nodeblue!10,
+  life/.style={densely dashed, black!35},
+  msg/.style={->, semithick},
+  rep/.style={->, semithick, densely dashed},
+  lostmsg/.style={semithick, badred},
+  mlabel/.style={font=\scriptsize, above, inner sep=1.2pt},
+  snote/.style={draw=black!35, fill=notefill, font=\scriptsize, align=center, inner sep=2.5pt, rounded corners=1pt},
+  % UML classes
+  umlclass/.style={draw=black!70, fill=white, rectangle split, rectangle split parts=3, rectangle split part fill={nodeblue!14,white,white}, font=\scriptsize, align=left, inner sep=3pt, text width=#1},
+  umlclass/.default=3.6cm,
+  umliface/.style={draw=black!70, fill=white, rectangle split, rectangle split parts=2, rectangle split part fill={mwgreen!16,white}, font=\scriptsize, align=left, inner sep=3pt, text width=#1},
+  umliface/.default=4.6cm,
+  compose/.style={-{Diamond[fill=black,length=2.6mm,width=1.8mm]}},
+  realize/.style={-{Triangle[open,length=2.6mm,width=2.2mm]}, densely dashed},
+  assoc/.style={->},
+}
+
+% Sequence diagram helpers. x and y are in cm; y counts down from the actors.
+% \seqactor[fill]{x}{label}{y of the lifeline's end}
+\newcommand{\seqactor}[4][nodeblue!10]{%
+  \node[actor=#1] at (#2,0) {#3};
+  \draw[life] (#2,-0.4) -- (#2,#4);}
+% \seqmsg{from x}{to x}{y}{label}
+\newcommand{\seqmsg}[4]{\draw[msg] (#1,#3) -- node[mlabel]{#4} (#2,#3);}
+% \seqrep{from x}{to x}{y}{label}: a reply
+\newcommand{\seqrep}[4]{\draw[rep] (#1,#3) -- node[mlabel]{#4} (#2,#3);}
+% \seqlost{from x}{to x}{y}{label}: a message that never arrives
+\newcommand{\seqlost}[4]{\draw[lostmsg] (#1,#3) -- node[mlabel]{#4} ($(#1,#3)!0.62!(#2,#3)$) node[font=\small, text=badred, inner sep=0pt]{$\boldsymbol{\times}$};}
+% \seqself{x}{y}{label}: work a node does by itself
+\newcommand{\seqself}[3]{%
+  \draw[msg] (#1,#2) -- ++(0.32,0) -- ++(0,-0.28) -- ++(-0.32,0);
+  \node[font=\scriptsize, anchor=west, align=left, inner sep=1pt] at ({#1+0.38},{#2-0.14}) {#3};}
+% \seqnote{x centre}{y}{width in cm}{text}
+\newcommand{\seqnote}[4]{\node[snote, text width=#3cm] at (#1,#2) {#4};}
+
+% ---------------------------------------------------------------------------------------------
+\begin{document}
+
+\begin{titlepage}
+  \centering
+  \vspace*{0.2cm}
+  {\large The American University in Cairo\par}
+  {\normalsize Department of Computer Science and Engineering\par}
+  \vspace{1.1cm}
+  {\Huge\bfseries RescueMesh\par}
+  \vspace{0.3cm}
+  {\Large A Cloud-P2P Environment for Smart-Campus Emergency Response\par}
+  \vspace{0.4cm}
+  {\Large Phase 1 Report: Cloud Processing, Load Balancing and Fault Tolerance\par}
+  \vspace{0.8cm}
+  {\large CSCE 4411, Distributed Systems, Fall 2026\par}
+  {\large Instructor: Prof.\ Amr El-Kadi\par}
+  \vspace{0.8cm}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Name & Student ID \\
+    \midrule
+    Aabed Elghadban & 900223106 \\
+    Omar Leithy & 900221663 \\
+    Noor Emam & 900222081 \\
+    Wahiba Elhimer & 900264053 \\
+    Ahmed Abdeen & 900225815 \\
+    Yahia Kilany & 900226128 \\
+    \bottomrule
+  \end{tabular}
+  \vspace{1.0cm}
+
+  {\large\bfseries Abstract\par}
+  \vspace{0.3cm}
+  \begin{minipage}{0.88\linewidth}
+  RescueMesh is a three-node cloud that plans responses to campus incidents. A user sends a report once, and the three cloud nodes, which are equal peers, decide among themselves who plans it, record the plan in the same order on every node, and answer. Phase 1 delivers the cloud, the incident service, an election that picks the node for every report by its load, a second election that picks which node fails, and the recovery that brings a failed node back. The first design used Raft for the shared order, as the team's survey recommended. Measurements on the lab PCs showed that Raft's leader was both a coordinator, which the project's peer-to-peer requirement rules out, and the limit on throughput, so it was replaced with a shared log that has no leader. The final system was then measured in 157 runs on six lab PCs, with 199,481,205 requests, and in 49 more runs that kill up to all three nodes. No request was unaccounted for, and the nodes never disagreed on their state in 84,647 comparisons. The system holds 12,000 requests a second with about 4 ms of planning per request, and 30,000 a second with almost none. Raft, on the same code, answered 4,306 a second when offered 10,000.
+  \end{minipage}
+  \vfill
+  {\small Source code and results: \url{https://github.com/noortaytoy1/DistributedSystems}\par}
+  {\small November 2026\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\input{sections/01-introduction}
+\input{sections/02-architecture}
+\input{sections/03-concurrency}
+\input{sections/04-protocols}
+\input{sections/05-election}
+\input{sections/06-raft}
+\input{sections/07-sharedlog}
+\input{sections/08-faults}
+\input{sections/09-results}
+\input{sections/10-decisions}
+\input{sections/11-testing}
+\input{sections/12-closing}
+
+\newpage
+\begin{thebibliography}{99}
+\addcontentsline{toc}{section}{References}
+\small
+
+\bibitem{spec} A.~El-Kadi. \emph{RescueMesh: A Cloud-P2P Environment for Smart-Campus Emergency Response and Resource Coordination}. CSCE 4411 term project description, The American University in Cairo, Fall 2026.
+
+\bibitem{survey} A.~Elghadban, O.~Leithy, N.~Emam, W.~Elhimer, A.~Abdeen and Y.~Kilany. \emph{Distributed Election Algorithms Survey: RescueMesh}. CSCE 4411 Phase 0 deliverable, October 4, 2026.
+
+\bibitem{repo} The RescueMesh team. \emph{RescueMesh source code and results}. \url{https://github.com/noortaytoy1/DistributedSystems}, 2026.
+
+\bibitem{coulouris} G.~Coulouris, J.~Dollimore, T.~Kindberg and G.~Blair. \emph{Distributed Systems: Concepts and Design}, 5th ed. Addison-Wesley, 2012.
+
+\bibitem{raft} D.~Ongaro and J.~Ousterhout. In search of an understandable consensus algorithm. In \emph{Proc.\ USENIX ATC}, 2014, pp.~305--319.
+
+\bibitem{lamport} L.~Lamport. Time, clocks, and the ordering of events in a distributed system. \emph{Communications of the ACM}, 21(7):558--565, 1978.
+
+\bibitem{garcia} H.~Garcia-Molina. Elections in a distributed computing system. \emph{IEEE Transactions on Computers}, C-31(1):48--59, 1982.
+
+\bibitem{contractnet} R.~G.~Smith. The contract net protocol: high-level communication and control in a distributed problem solver. \emph{IEEE Transactions on Computers}, C-29(12):1104--1113, 1980.
+
+\bibitem{chandra} T.~D.~Chandra and S.~Toueg. Unreliable failure detectors for reliable distributed systems. \emph{Journal of the ACM}, 43(2):225--267, 1996.
+
+\bibitem{jain} R.~Jain, D.-M.~Chiu and W.~Hawe. A quantitative measure of fairness and discrimination for resource allocation in shared computer systems. DEC Technical Report TR-301, 1984.
+
+\bibitem{openraft} openraft 0.9.25, a Raft library for Rust. \url{https://crates.io/crates/openraft}.
+
+\bibitem{tarpc} tarpc 0.37, an RPC framework for Rust. \url{https://crates.io/crates/tarpc}.
+
+\bibitem{tokio} tokio 1, an asynchronous runtime for Rust. \url{https://tokio.rs}.
+
+\bibitem{serde} serde 1 and bincode 1.3, serialization for Rust. \url{https://serde.rs}, \url{https://crates.io/crates/bincode}.
+
+\bibitem{lz4} Y.~Collet. LZ4 block format description. \url{https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md}.
+
+\bibitem{claude} Anthropic. \emph{Claude Code}, with the Claude Opus models. An AI coding assistant, used under the team's direction to write code, tests, analysis scripts and drafts of the documentation. \url{https://claude.com/claude-code}, 2026.
+
+\end{thebibliography}
+
+\end{document}

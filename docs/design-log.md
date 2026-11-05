@@ -325,6 +325,7 @@ table below in sync.
 | D263 | A client's stub holds every call a full client can have open | C, F | Implemented, amends D173 |
 | D264 | A client spends at most a fifth of its sends on retries | F | Implemented, amends D126 |
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
+| D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8215,6 +8216,18 @@ them on the six PCs.
 - **Why.** The requirement is the scenarios. Repeating what stands cost time the PCs did not have.
 - **Consequences.** Kill cases have 3 runs at 10,000 a second, 2 at 15,000, 1 at 20,000 and 300. Scenarios 1 and 2, and the stall points, stand on `a7ceb34`. The final build has no result on a quiet network at 30,000.
 - **Where.** `scripts/phase1/final-series.sh`, `docs/phase1-report.md` sections 8a, 11 and 13.
+
+### D266 · The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ
+
+- **Date:** 2026-11-05 · **Part:** all · **Status:** Implemented · **Decided by:** Omar Leithy (format, Overleaf, the place, the team section drafted from git, Phase 2 as one paragraph); the layout and the choice of diagrams by the agent on his request for many diagrams.
+- **Context.** The spec asks for a report with the architecture, protocols, election rationale, measured evidence, fault handling, tests, method, changed decisions and each member's part, and the professor wants diagrams. `docs/phase1-report.md` holds the results as Markdown tables and is the record; the submitted report needs to read as a report, with figures.
+- **Options considered.** (1) *LaTeX in the repo, built on Overleaf (chosen).* (2) A Markdown report: no sequence diagrams or UML in print without a separate tool. (3) Mermaid diagrams rendered to PNG: a second tool and pictures that cannot be edited on Overleaf. (4) A new top-level `report/` folder: against the rule on new top-level folders.
+- **Decision.** `docs/report/main.tex` with one file per section in `sections/` and the six measured charts copied from `analysis/results/exp8h/` (plus the Raft-era `hand-fault_phases.png`) into `figures/`. Every other figure is TikZ or pgfplots in the source, so it is text, versioned and editable. Numbers are copied from `docs/phase1-report.md`, `analysis/results/RESULTS.md`, `docs/shared-log.md` and the design log, never measured anew. It builds with pdfLaTeX (Overleaf's default) and with XeLaTeX; it was checked with Tectonic 0.17 on WSL.
+- **Why.** The report must carry many diagrams, and TikZ keeps them in the repo next to the code they describe.
+- **Consequences.** The Markdown report stays the generated record of results. If a result changes, both need updating: the LaTeX tables are typed from it, not generated.
+- **Where.** `docs/report/`.
+- **How we check it.** It compiles with no undefined references; every number in it traces to a result file in the repository.
+- **Notes for the report.** On Omar Leithy's request the report is written as a stand-alone, third-person document: it states requirements without citing course material, and describes the design in its own words, naming no source files, functions, commits or design-log IDs. It cites the repository once as a whole. UML diagrams keep the type and operation names, since that is what a UML class diagram shows.
 
 ### Notes on older entries
 
