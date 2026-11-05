@@ -855,6 +855,7 @@ case "${1:-}" in
   kills) setup_note; export KILL_AUDIT=1; for rep in ${4:-1}; do for rate in ${2:-20000}; do kill_suite "$rate" "${3:-0}" "$rep" "${5:-one twoA twoB twoC twoD allA allB}"; done; done; stop_all ;;
   plain) setup_note; for rep in ${2:-1 2 3 4 5}; do make_cell 0 expected-wait; for r in 10000 20000 30000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final0-$r" "$rep" 15 75 "" "${L[@]}" || true; done; make_cell 1000 expected-wait; for r in 10000 12000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final1-$r" "$rep" 15 75 "" "${L[@]}" || true; done; done; stop_all ;;
   guide) setup_note; t5; t1; for rep in 1 2 3; do export T2_REP=$rep; t2; done; stop_all ;;
+  users) setup_note; for rep in ${2:-1 2 3}; do for u in 300 1000 3000; do closed_step "users-$u-run$rep" "e1-$u-bidding" "$u" || true; done; done; stop_all ;;
   series) setup_note; for rep in ${2:-1 2 3}; do say "=== PASS $rep"; pass "$rep"; [[ "$rep" == 1 ]] && holds; say "=== PASS $rep DONE"; done; stop_all ;;
   all) t5; t1; t2; t4; t3; stop_all; finish ;;
   finish) finish ;;
