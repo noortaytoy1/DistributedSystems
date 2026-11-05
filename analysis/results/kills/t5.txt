@@ -1,0 +1,4 @@
+client 9: done 0, gave up 1, retried 0, no responder 0, provisional 0, expired 0
+{"ts_us":1793877648358549,"src":"client-9","ev":"client_gave_up","request":{"client":9,"seq":1793877615930316},"attempts":6}
+client 9: done 0, gave up 1, retried 0, no responder 0, provisional 0, expired 0
+{"ts_us":1793881621264668,"src":"client-9","ev":"client_gave_up","request":{"client":9,"seq":1793881591678687},"attempts":6}

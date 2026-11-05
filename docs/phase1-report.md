@@ -2,6 +2,8 @@
 
 CSCE 4411, Fall 2026. This report follows the spec's "Report Requirements". Every table of results here is generated from the logs by `analysis/phase1/make_tables.py`, and no result is typed by hand. The design log, [design-log.md](design-log.md), holds every decision in full, D1 to D260. The shared log has its own page, [shared-log.md](shared-log.md).
 
+**Two builds, labelled on each table.** Commit `a7ceb34` ran the overnight series on 2026-11-05, from about 1 a.m. to 8 a.m., on a quiet network. Commit `b6221c5`, the final build, is the same no-leader design plus the fixes for two and three nodes failing (D261 to D264). It ran that day from about 11:45 a.m., when the network was much busier. Tables without a label are from `a7ceb34`.
+
 **Phase 2 is not part of this report.** Discovery, P2P, offline operation and conflicting claims between clients (scenarios 5 to 8) are not built.
 
 ## 1. The result
@@ -35,6 +37,12 @@ CSCE 4411, Fall 2026. This report follows the spec's "Report Requirements". Ever
 - **With no simulated planning (`plan_work` 0): 30,000 a second** held in all 5 runs, and in a 5-minute hold. Above that it depends on the run: 33,000 held in 3 of 5, 35,000 in 3 of 5, and 36,000 in 1 of 5.
 
 Quote the ceiling with its `plan_work`. The spec wants planning substantial enough to create real computing load, so the first figure is the fair one, and the second shows what the protocol and the network can carry.
+
+"Held" is our own strict test: at least 99% of the rate answered, nobody gave up, and p99 under 3 s. It is not a requirement. The checks that must hold are 0 unaccounted and 0 digest mismatches, and every overnight run passes them, up to the highest load tried, 36,000 a second, where over 99.9% of reports were answered. Answers a second stop rising at about 34,000 (section 9).
+
+**The network matters.** On the same day, at midday, the network was much busier. At 30,000 a second, 81,022 of one program's 200,000 reports gave up on the overnight build, and the final build answered 25,160 to 26,046 a second. So 30,000 and above need a stable network, and the main failure results here are at 10,000 and 15,000 a second. The final build answered all of 15,000 a second in all 3 midday speed runs. It has not been run at 30,000 on a quiet network.
+
+**Failures of up to all three nodes** are in section 8a, on the final build: 49 runs and 50,587,740 reports, 0 unaccounted and 0 digest mismatches in 14,932 checks. With all three killed and returning one at a time, 566 answered reports did not survive, in 2 of those runs (section 11).
 
 ## 2. Architecture and process model
 
@@ -80,6 +88,32 @@ Client PC 1's address is the one it reaches the cloud from, its cable.
 **Parallelization, a client PC.** Each PC ran 3 `loadgen` programs in these experiments, so 9 in all, each with its own client ID. A program at a fixed rate starts a task per report at evenly spaced times, so a slow answer does not delay the next report. Details: [architecture.md](architecture.md) section 10b.
 
 **Adding load changes no logic.** More programs, or a higher rate, are all it takes.
+
+## 2a. Workload and planner
+
+**The workload.** Each of 9 load programs, 3 on each client PC, sends reports at a fixed rate, evenly spaced, with its own random seed. This is an open loop: a report goes when it is due, whether or not earlier ones were answered, and latency counts from when it was due (D54). A program keeps at most 20,000 reports open, and waits for a free place beyond that. Each report is drawn uniformly (`src/campus.rs`, D99): a zone, a position in it, severity 1 to 5, a category, and the capability it needs, one of 4. Each is valid for 60 s. It goes to all 3 nodes over UDP, and small messages are combined and compressed (D254 to D256).
+
+**Retries.** With no answer, a client tries again after 2 s, then 4 s, then 6 s, up to 5 retries, then gives up with an error. A client spends at most a fifth of its first sends on retries, plus 200 a second, with up to 5,000 saved up (D264). So a short failure gets all its retries, and a long outage does not flood the network. A retry with nothing to spend is not sent, and its time still passes.
+
+**The campus.** 60,000 responders in the speed and kill runs, and 300 in the guide's T1 and T2, spread evenly over zones and capabilities. Choosing a responder holds it for 200 ms times the report's severity, so 0.2 to 1 s, then it is released through the log.
+
+**What each report costs the log.** About 2.3 commands, measured at one moment in one run at 20,000 a second with no failures: `CommitResult` when it is planned, `ReleaseResponder` when the job ends, and some duplicates when two nodes plan the same report, where the first wins. The release goes through the log because the state may not read a clock, so all nodes free a responder at the same point in the order. Throughput here counts reports, not commands.
+
+**The planner** (`src/planner.rs`, D49, D93, D94, D101). It has no network, clock or randomness, and runs on a pool of 20 threads.
+
+1. Look at 512 responders in a row from a point set by the report's ID (D238, D253). If nobody free among them has the capability, look at all of them.
+2. Among free responders with the capability, score each by Manhattan distance, plus a penalty for another zone. The lowest wins, then a responder in the same zone, then the lowest ID.
+3. If nobody with the capability is free and the report is severe or old, send the nearest free responder of any capability. Otherwise, nobody.
+4. Work out priority, in points, from five factors: severity (100 to 500), age (0 to 400), distance (0 to 100), availability (0 to 100), capability (0 or 100). It never changes who is sent.
+
+**`plan_work`.** A busy loop of integer mixing that stands in for a harder planning job, as the spec wants planning that creates real load. It never changes the plan. Measured from the nodes' own bids, overnight:
+
+| `plan_work` | Planning time per report, median | p99 |
+|---|---:|---:|
+| 0 | 8 microseconds | 8 microseconds |
+| 1000 | 3.9 ms | 4.7 ms |
+
+**After planning.** The winner proposes `CommitResult`, and the first commit per report wins. If the responder was taken meanwhile, one is chosen again at apply, the same way on every node (D241).
 
 ## 3. Protocols and message formats
 
@@ -203,7 +237,13 @@ Calls are low because bids and log batches are combined. An election's duration 
 
 ## 6. Fault model and recovery protocol
 
-**Faults handled.** A node stops answering for up to 20 s, or its process dies and restarts. One failure at a time. No Byzantine behaviour: all nodes are trusted.
+**Faults handled.** A node stops answering for up to 20 s, or its process dies and restarts, including two or all three nodes together or in any order (D261). No Byzantine behaviour: all nodes are trusted. A kill stands in for a power cut, as allowed for this phase.
+
+| Nodes left | What happens |
+|---|---|
+| 2 | They agree to go on without the third, in about 1 s |
+| 1 | It cannot commit alone. It answers, labelled provisional, while nobody else can commit (D120, D262). A node that returns is taken back straight away, as this node holds all that was applied |
+| 0 | Each node rebuilds from its own file when it restarts. Once two can talk, the one with the longest log goes first, and the others return to it. One that restarts alone answers provisionally after about 3 s |
 
 **Detection.** A peer not heard from for 1 s is suspected, by heartbeats for bidding and takeover, and by its log stream for the shared log.
 
@@ -213,7 +253,7 @@ Calls are low because bids and log batches are combined. An election's duration 
 
 | The spec asks | Answer |
 |---|---|
-| What is copied, replayed or rebuilt? | The whole applied log is sent by a peer, up to 4,000 commands a reply, and replayed through the state machine. So the state is rebuilt, with one code path for a fault and for a restart |
+| What is copied, replayed or rebuilt? | First the node replays its own file, in the order it applied, which is saved before any client is answered (D261). Then a peer sends what is missing, up to 4,000 commands a reply, and it is replayed through the state machine. So the state is rebuilt, with one code path for a fault and for a restart |
 | How does the node know it is current? | It asks to be added. The members stop at the round before its start, and it has the whole log when their log ends and their round is that one. Then all continue together |
 | When does it take part again? | Its proposals are refused until it is back as a member |
 
@@ -294,6 +334,185 @@ From the same runs, a 5 s fault at 10,000 a second, and a process killed and sta
 | Others dropped the silent node | 47 | 1018 | 1031 | 1036 |
 | It caught up to the log, from the end of its silence | 47 | 428 | 760 | 1141 |
 
+## 8a. Two and three nodes killed
+
+This goes beyond one failure at a time, and is on the final build. Each run is 90 s with 10 s of warm-up, and both the nodes and the times are random: the first kill comes 15 to 30 s in, nodes stay down 5 to 20 s, and the last return leaves at least 25 s to recover. The times used are in each run's `fault-times.txt`. Runs at 300 and 10,000 a second have planning work, about 3.9 ms a report, and runs at 15,000 and 20,000 do not. Each report's outcome was checked: after the run, `roundlog` lists what each node's own file applied, and every answer a client got is looked for there. Because the times are random, results vary between runs of a case. Where it matters, one run may be a spike, and all are kept.
+
+Give-ups are reported and are not a failure: with one node left there is about a third of the capacity, and with none, nobody can answer. The checks that must hold are 0 unaccounted and 0 digest mismatches.
+
+**TCP.** A returning node's connections to its peers are made again by themselves, as the `peer_reconnected` column below and each node's `tcp-peers-<node>.txt`, read from `ss` once a second, show.
+
+<!-- KILLS:BEGIN -->
+<!-- Generated by analysis/phase1/kills_tables.py. Do not edit. -->
+
+Commits in these tables: `b6221c5`.
+
+### Totals
+
+| Runs | Sent | Answered | Of those, provisional | Gave up | Unaccounted | Checkpoints compared | Digest mismatches |
+|---|---|---|---|---|---|---|---|
+| 49 | 50,587,740 | 48,331,376 | 1,650,953 | 2,256,364 | 0 | 14,932 | 0 |
+
+### Every answer checked against each node's own file
+
+In 42 of 49 runs every answer is in all three files. The others:
+
+| Case | Load | Run | Kills and returns, seconds | Answered | Committed answers in no node's file | Provisional answers in no node's file | Missing from one node's file only, committed and provisional | Resets | Final digests differ |
+|---|---|---|---|---|---|---|---|---|---|
+| allB | 10000 | 1 | 21:kill:1,2,3 34:back:3 37:back:2 44:back:1 | 749,221 | 69 | 0 | 0 | 1 | False |
+| allB | 15000 | 2 | 17:kill:1,2,3 30:back:3 39:back:2 42:back:1 | 1,150,869 | 497 | 0 | 0 | 1 | False |
+| twoA | 10000 | 1 | 17:kill:2 23:kill:3 30:back:2 35:back:3 | 870,015 | 0 | 0 | 142 | 0 | False |
+| twoA | 10000 | 3 | 22:kill:2 29:kill:1 32:back:2 38:back:1 | 896,676 | 0 | 0 | 155 | 0 | False |
+| twoC | 10000 | 1 | 25:kill:2,3 36:back:2 46:back:3 | 838,670 | 0 | 0 | 51 | 1 | False |
+| twoD | 10000 | 2 | 15:kill:3 23:back:3 25:kill:2 32:back:2 | 899,910 | 0 | 0 | 28 | 0 | False |
+| twoA | 10000 | 2 | 28:kill:1 33:kill:2 39:back:1 46:back:2 | 891,948 | 0 | 0 | 46 | 0 | False |
+
+In all: 566 of 48,331,376 answers are in no node's file, 0.0012%.
+
+### Kills at 300/s, with planning
+
+| Kill case | Runs | Equivalent answers/s | Answered | Gave up, per run | Unaccounted | Digest mismatches | p50 ms | p99 | Longest with no answer | Longest with no commit | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| One node | 1 | 300 | 100.0% | 0 | 0 | 0 | 151 | 0.3 s | 1.0 s | 1.0 s | b6221c5 |
+| Two, first killed returns first | 1 | 300 | 100.0% | 0 | 0 | 0 | 142 | 5.6 s | 1.6 s | 6.9 s | b6221c5 |
+| Two, last killed returns first | 1 | 300 | 100.0% | 0 | 0 | 0 | 140 | 5.6 s | 1.6 s | 4.9 s | b6221c5 |
+| Two at the same moment | 1 | 300 | 100.0% | 0 | 0 | 0 | 139 | 5.5 s | 1.6 s | 10.9 s | b6221c5 |
+| Second killed just after first returns | 1 | 300 | 100.0% | 0 | 0 | 0 | 147 | 0.7 s | 1.0 s | 1.0 s | b6221c5 |
+| All three, back together | 1 | 300 | 99.9% | 22 | 0 | 0 | 149 | 24.9 s | 22.2 s | 22.2 s | b6221c5 |
+| All three, back one at a time | 1 | 300 | 100.0% | 0 | 0 | 0 | 145 | 16.8 s | 12.0 s | 12.0 s | b6221c5 |
+
+### Kills at 10,000/s, with planning
+
+| Kill case | Runs | Equivalent answers/s | Answered | Gave up, per run | Unaccounted | Digest mismatches | p50 ms | p99 | Longest with no answer | Longest with no commit | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| One node | 3 | 10,000 ± 0 | 100.0% | 0 | 0 | 0 | 219-310 | 1.1 s-7.1 s | 0.9 s-1.0 s | 0.9 s-1.0 s | b6221c5 |
+| Two, first killed returns first | 3 | 9,848 ± 392 | 96.7%-99.6% | 3,234-29,895 | 0 | 0 | 372-853 | 21.9 s-24.8 s | 1.0 s-3.7 s | 1.6 s-8.7 s | b6221c5 |
+| Two, last killed returns first | 3 | 9,778 ± 478 | 96.5%-100.0% | 0-31,219 | 0 | 0 | 236-773 | 11.8 s-25.3 s | 1.4 s-1.9 s | 1.4 s-9.1 s | b6221c5 |
+| Two at the same moment | 3 | 9,555 ± 529 | 93.2%-97.3% | 23,978-61,240 | 0 | 0 | 344-1,029 | 25.0 s-25.2 s | 1.3 s-1.4 s | 8.1 s-10.9 s | b6221c5 |
+| Second killed just after first returns | 3 | 10,000 ± 0 | 100.0% | 0 | 0 | 0 | 217-293 | 2.0 s-6.1 s | 1.0 s-1.0 s | 1.0 s-1.0 s | b6221c5 |
+| All three, back together | 3 | 9,197 ± 1,343 | 86.4%-97.3% | 24,639-121,952 | 0 | 0 | 317-1,045 | 24.9 s-26.1 s | 8.6 s-21.4 s | 8.6 s-21.4 s | b6221c5 |
+| All three, back one at a time | 3 | 8,567 ± 542 | 83.3%-87.5% | 112,501-150,689 | 0 | 0 | 688-993 | 25.7 s-26.2 s | 11.4 s-19.4 s | 11.4 s-19.4 s | b6221c5 |
+
+### Kills at 15,000/s, no simulated planning
+
+| Kill case | Runs | Equivalent answers/s | Answered | Gave up, per run | Unaccounted | Digest mismatches | p50 ms | p99 | Longest with no answer | Longest with no commit | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| One node | 2 | 15,000 ± 0 | 100.0% | 0 | 0 | 0 | 196-239 | 1.1 s-2.0 s | 1.0 s-1.0 s | 1.0 s-1.0 s | b6221c5 |
+| Two, first killed returns first | 2 | 15,000 ± 0 | 100.0% | 0 | 0 | 0 | 175-194 | 5.6 s-5.6 s | 1.5 s-1.6 s | 7.2 s-8.4 s | b6221c5 |
+| Two, last killed returns first | 2 | 15,000 ± 0 | 100.0% | 0 | 0 | 0 | 176-180 | 5.6 s-5.6 s | 1.4 s-1.5 s | 2.5 s-3.3 s | b6221c5 |
+| Two at the same moment | 2 | 15,000 ± 0 | 100.0% | 0 | 0 | 0 | 192-305 | 5.9 s-6.0 s | 1.2 s-1.3 s | 3.4 s-8.0 s | b6221c5 |
+| Second killed just after first returns | 2 | 13,934 ± 13,553 | 85.8%-100.0% | 0-191,979 | 0 | 0 | 202-418 | 2.0 s-25.0 s | 1.0 s-3.8 s | 1.0 s-3.8 s | b6221c5 |
+| All three, back together | 2 | 13,128 ± 14,999 | 79.7%-95.4% | 62,303-274,766 | 0 | 0 | 318-1,749 | 24.9 s-26.0 s | 9.0 s-18.6 s | 9.0 s-18.6 s | b6221c5 |
+| All three, back one at a time | 2 | 13,404 ± 7,868 | 85.2%-93.5% | 87,948-199,401 | 0 | 0 | 242-1,454 | 25.4 s-25.8 s | 14.4 s-16.0 s | 16.0 s-16.6 s | b6221c5 |
+
+### Kills at 20,000/s, no simulated planning
+
+| Kill case | Runs | Equivalent answers/s | Answered | Gave up, per run | Unaccounted | Digest mismatches | p50 ms | p99 | Longest with no answer | Longest with no commit | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| One node | 1 | 20,000 | 100.0% | 0 | 0 | 0 | 210 | 2.0 s | 0.8 s | 0.8 s | b6221c5 |
+| Two, first killed returns first | 1 | 20,000 | 100.0% | 1 | 0 | 0 | 185 | 15.0 s | 2.8 s | 7.1 s | b6221c5 |
+| Two, last killed returns first | 1 | 19,988 | 99.9% | 1,109 | 0 | 0 | 337 | 13.6 s | 0.9 s | 5.0 s | b6221c5 |
+| Two at the same moment | 1 | 20,000 | 100.0% | 0 | 0 | 0 | 265 | 6.6 s | 1.4 s | 7.7 s | b6221c5 |
+| Second killed just after first returns | 1 | 18,623 | 93.1% | 123,960 | 0 | 0 | 284 | 24.0 s | 0.4 s | 0.4 s | b6221c5 |
+| All three, back together | 1 | 16,192 | 81.0% | 342,701 | 0 | 0 | 5,805 | 29.3 s | 14.5 s | 14.5 s | b6221c5 |
+| All three, back one at a time | 1 | 18,361 | 91.8% | 147,476 | 0 | 0 | 1,202 | 25.4 s | 8.8 s | 8.8 s | b6221c5 |
+
+### Answers by how many nodes were up
+
+| Load | Nodes up | Stretches | Answers/s | Committed/s | Provisional/s | p50 ms | p99 |
+|---|---|---|---|---|---|---|---|
+| 300/s, with planning | 3 | 15 | 303 | 303 | 0 | 139-164 | 0.2 s-25.1 s |
+| 300/s, with planning | 2 | 9 | 330 | 312 | 18 | 136-5,023 | 0.2 s-18.9 s |
+| 300/s, with planning | 1 | 4 | 312 | 7 | 305 | 52-5,457 | 6.4 s-13.5 s |
+| 300/s, with planning | 0 | 2 | 8 | 8 | 0 | 147-148 | 0.2 s-0.2 s |
+| 10,000/s, with planning | 3 | 44 | 10,208 | 10,208 | 0 | 187-1,342 | 0.3 s-26.8 s |
+| 10,000/s, with planning | 2 | 27 | 8,984 | 8,621 | 363 | 181-2,483 | 2.2 s-20.0 s |
+| 10,000/s, with planning | 1 | 12 | 1,975 | 441 | 1,534 | 0-1,147 | 0.0 s-13.1 s |
+| 10,000/s, with planning | 0 | 6 | 337 | 337 | 0 | 184-275 | 0.3 s-0.4 s |
+| 15,000/s, no simulated planning | 3 | 30 | 14,348 | 14,346 | 2 | 172-4,796 | 0.4 s-26.7 s |
+| 15,000/s, no simulated planning | 2 | 18 | 16,146 | 14,014 | 2,132 | 145-4,029 | 2.0 s-23.6 s |
+| 15,000/s, no simulated planning | 1 | 8 | 11,512 | 801 | 10,711 | 47-6,111 | 2.4 s-19.5 s |
+| 15,000/s, no simulated planning | 0 | 4 | 762 | 762 | 0 | 166-453 | 0.3 s-2.4 s |
+| 20,000/s, no simulated planning | 3 | 14 | 18,485 | 18,423 | 62 | 173-7,179 | 0.4 s-30.3 s |
+| 20,000/s, no simulated planning | 2 | 9 | 17,548 | 15,102 | 2,446 | 163-7,847 | 2.4 s-24.0 s |
+| 20,000/s, no simulated planning | 1 | 4 | 12,898 | 1,204 | 11,695 | 0-184 | 0.0 s-6.8 s |
+| 20,000/s, no simulated planning | 0 | 2 | 1,338 | 1,338 | 0 | 380-1,071 | 2.2 s-12.3 s |
+
+Stretches shorter than 3 s are left out. The last stretch after all nodes are back includes the time to work through what built up.
+
+### Coming back, seconds after the restart
+
+| Load | Rebuilt from its own file | A peer's TCP connection back (`peer_reconnected`) | Seen in `ss`, 1 s steps | Member again | Serving again | First committed answer |
+|---|---|---|---|---|---|---|
+| 300/s, with planning | 0.2-0.3 | 0.25-0.53 | 1-15 | 0.3-8.4 | 0.3-4.0 | 0.0-4.2 |
+| 10,000/s, with planning | 0.4-1.2 | 0.27-1.18 | 1-16 | 0.5-26.6 | 0.6-26.7 | 0.0-8.8 |
+| 15,000/s, no simulated planning | 0.5-1.1 | 0.36-1.08 | 1-17 | 0.8-52.6 | 0.9-52.7 | 0.0-7.9 |
+| 20,000/s, no simulated planning | 0.8-1.3 | 0.29-0.86 | 1-9 | 1.1-57.1 | 1.2-57.4 | 0.0-4.4 |
+
+### CPU, memory, network and queues in the kill runs
+
+| Load | Cores, mean per node | Cores, highest | Memory, highest MB | Network MB/s per node | Queued, highest | Planning, highest | Retries the budget skipped |
+|---|---|---|---|---|---|---|---|
+| 300/s, with planning | 0.4 | 3.9 | 49 | 0.2 | 0 | 6 | 0 |
+| 10,000/s, with planning | 14.6 | 20.8 | 989 | 1.5 | 4,105 | 20 | 5,614,458 |
+| 15,000/s, no simulated planning | 0.7 | 2.8 | 1,784 | 2.0 | 1 | 9 | 5,292,247 |
+| 20,000/s, no simulated planning | 0.9 | 3.4 | 2,131 | 2.6 | 0 | 8 | 4,127,739 |
+
+### Speed with no failures, on the final build, midday
+
+| Test | Cell | Run | Users | Sent | Answered | Answers/s | Provisional | Gave up | Unaccounted | Digest mismatches | p50 ms | p95 ms | p99 ms | First try % | Cores per node | Memory MB | Network MB/s | Queued, most | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| final0 | 10000 | 1 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 174 | 259 | 312 | 100.0 | 0.5 | 461 | 1.3 | 0 | b6221c5 |
+| final0 | 10000 | 2 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 181 | 269 | 324 | 100.0 | 0.5 | 460 | 1.3 | 0 | b6221c5 |
+| final0 | 10000 | 3 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 194 | 418 | 595 | 99.98 | 0.5 | 466 | 1.3 | 0 | b6221c5 |
+| final0 | 15000 | 1 | - | 1,125,225 | 1,125,225 | 15,003 | 0 | 0 | 0 | 0 | 217 | 407 | 609 | 99.84 | 0.7 | 694 | 1.9 | 0 | b6221c5 |
+| final0 | 15000 | 2 | - | 1,125,225 | 1,125,225 | 15,003 | 0 | 0 | 0 | 0 | 206 | 341 | 423 | 99.99 | 0.7 | 685 | 1.9 | 0 | b6221c5 |
+| final0 | 15000 | 3 | - | 1,125,225 | 1,125,225 | 15,003 | 0 | 0 | 0 | 0 | 211 | 334 | 403 | 99.98 | 0.7 | 678 | 1.9 | 0 | b6221c5 |
+| final0 | 20000 | 1 | - | 1,499,850 | 1,499,850 | 19,998 | 0 | 0 | 0 | 0 | 218 | 431 | 835 | 99.52 | 0.9 | 901 | 2.5 | 0 | b6221c5 |
+| final0 | 20000 | 2 | - | 1,499,850 | 1,499,850 | 19,998 | 0 | 0 | 0 | 0 | 294 | 2,256 | 2,420 | 79.99 | 0.9 | 1,384 | 2.9 | 0 | b6221c5 |
+| final0 | 20000 | 3 | - | 1,499,850 | 1,147,334 | 15,298 | 0 | 352,516 | 0 | 0 | 6,513 | 29,174 | 41,310 | 55.42 | 0.8 | 2,511 | 2.3 | 1 | b6221c5 |
+| final0 | 30000 | 1 | - | 2,249,775 | 1,898,082 | 25,308 | 0 | 351,693 | 0 | 0 | 9,049 | 27,357 | 40,109 | 75.36 | 0.9 | 2,672 | 2.8 | 0 | b6221c5 |
+| final0 | 30000 | 2 | - | 2,249,775 | 1,887,022 | 25,160 | 0 | 362,753 | 0 | 0 | 10,052 | 34,968 | 47,039 | 65.45 | 0.9 | 2,638 | 2.7 | 1 | b6221c5 |
+| final0 | 30000 | 3 | - | 2,249,775 | 1,953,462 | 26,046 | 0 | 296,313 | 0 | 0 | 2,081 | 18,015 | 25,722 | 72.61 | 0.9 | 2,252 | 2.9 | 1 | b6221c5 |
+| final1 | 10000 | 1 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 193 | 289 | 343 | 99.99 | 12.3 | 474 | 1.4 | 259 | b6221c5 |
+| final1 | 10000 | 2 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 199 | 301 | 362 | 99.99 | 12.4 | 480 | 1.4 | 169 | b6221c5 |
+| final1 | 10000 | 3 | - | 749,925 | 749,925 | 9,999 | 0 | 0 | 0 | 0 | 220 | 356 | 447 | 100.0 | 13.2 | 488 | 1.4 | 383 | b6221c5 |
+| final1 | 12000 | 1 | - | 899,781 | 899,781 | 11,997 | 0 | 0 | 0 | 0 | 234 | 586 | 716 | 99.99 | 17.1 | 601 | 1.7 | 2,382 | b6221c5 |
+| final1 | 12000 | 2 | - | 899,781 | 899,781 | 11,997 | 0 | 0 | 0 | 0 | 325 | 1,022 | 1,753 | 99.11 | 17.5 | 636 | 1.7 | 4,087 | b6221c5 |
+
+### The guide's T1, T2 and T4
+
+| Test | Cell | Run | Users | Sent | Answered | Answers/s | Provisional | Gave up | Unaccounted | Digest mismatches | p50 ms | p95 ms | p99 ms | First try % | Cores per node | Memory MB | Network MB/s | Queued, most | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| draw | off | 1 | 300 | 52,290 | 52,290 | 174 | 0 | 0 | 0 | 0 | 109 | 3,021 | 5,349 | 83.06 | 0.2 | 160 | 0.2 | 56 | b6221c5 |
+| oneleft | 300 | 1 | 300 | 80,815 | 80,815 | 269 | 4,876 | 0 | 0 | 0 | 101 | 135 | 193 | 99.63 | 0.4 | 67 | 0.2 | 9 | b6221c5 |
+| oneleft | 300 | 2 | 300 | 47,838 | 47,838 | 266 | 4,846 | 0 | 0 | 0 | 108 | 161 | 243 | 99.36 | 0.4 | 45 | 0.2 | 12 | b6221c5 |
+| oneleft | 300 | 3 | 300 | 47,737 | 47,737 | 265 | 4,834 | 0 | 0 | 0 | 109 | 172 | 241 | 99.37 | 0.4 | 45 | 0.2 | 13 | b6221c5 |
+| power | leader | 1 | 300 | 81,647 | 81,647 | 272 | 0 | 0 | 0 | 0 | 98 | 126 | 197 | 99.98 | 0.4 | 68 | 0.3 | 4 | b6221c5 |
+
+### Flat out, the spike, and users per PC
+
+| Test | Cell | Run | Users | Sent | Answered | Answers/s | Provisional | Gave up | Unaccounted | Digest mismatches | p50 ms | p95 ms | p99 ms | First try % | Cores per node | Memory MB | Network MB/s | Queued, most | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| stress | flat-900 | 1 | 900 | 228,463 | 228,463 | 3,046 | 0 | 0 | 0 | 0 | 132 | 1,737 | 1,965 | 97.14 | 3.5 | 163 | 0.6 | 64 | b6221c5 |
+| stress | spike-100 | 1 | 300 | 18,906 | 18,906 | 252 | 0 | 0 | 0 | 0 | 136 | 1,730 | 1,801 | 96.44 | 0.3 | 29 | 0.2 | 0 | b6221c5 |
+| stress | spike-333 | 1 | 999 | 43,145 | 43,145 | 575 | 0 | 0 | 0 | 0 | 1,714 | 2,370 | 2,500 | 69.52 | 0.7 | 51 | 0.2 | 64 | b6221c5 |
+| users | 333-run1 | 1 | 999 | 67,257 | 67,257 | 897 | 0 | 0 | 0 | 0 | 108 | 151 | 214 | 99.95 | 1.1 | 61 | 0.3 | 39 | b6221c5 |
+| users | 1000-run1 | 1 | 3000 | 183,861 | 183,861 | 2,451 | 0 | 0 | 0 | 0 | 138 | 1,696 | 1,785 | 98.54 | 3.1 | 142 | 0.6 | 64 | b6221c5 |
+
+### T2's provisional answers
+
+| Run | Provisional answers | Changed in the end | Responder taken | Lost first commit | Final digests differ | Commit |
+|---|---|---|---|---|---|---|
+| 1 | 4,876 | 4,797 | 4,539 | 258 | False | b6221c5 |
+| 2 | 4,846 | 4,774 | 4,528 | 246 | False | b6221c5 |
+| 3 | 4,834 | 4,787 | 4,512 | 275 | False | b6221c5 |
+<!-- KILLS:END -->
+
+**T5.** All nodes off, one report sent: the client gave up with `"attempts":6`, so 5 retries and then an error, on `b6221c5` (`analysis/results/kills/t5.txt`).
+
+**T4's last part.** With node 3 off for 60 s, no failure draw went ahead. Draws went on before it and after it returned, and all three nodes ended with one digest (`runs/exp8h/draw/off/run-1`).
+
 ## 9. Scenario 9: scale and stress
 
 **`plan_work` 0, no simulated planning.** 75 s runs, 60 s measured, 5 runs per rate. A run "held" if it answered at least 99% of the offered rate, nobody gave up, and p99 stayed under 3 s. The ± is a 95% confidence interval across runs, by Student's t.
@@ -338,6 +557,30 @@ From the same runs, a 5 s fault at 10,000 a second, and a process killed and sta
 | 2 client PCs | 10,002 ± 2 | 0 | 130 ± 1 | 180 ± 23 | 300,734 ± 58 | 302,723 ± 249 | 0 ± 0 |
 | 3 client PCs | 9,994 ± 11 | 0 | 146 ± 2 | 268 ± 28 | 200,482 ± 32 | 201,716 ± 83 | 201,766 ± 89 |
 
+**Where it stalls.** This is what a stress test is meant to show. Up to the point where answers stop rising, the system keeps up. Past it, runs start to differ, and the slowest answers take seconds. Nothing crashed, and every run still accounted for every report.
+
+<!-- STALL:BEGIN -->
+| Work per report | Offered/s | Runs | Answers/s | Lowest-highest run | Reports answered | Gave up, all runs | p50 ms | p99 | Cores per node |
+|---|---|---|---|---|---|---|---|---|---|
+| Almost no planning | 5,000 | 5 | 5,004 | 5,003-5,006 | 100.00% | 0 | 135-140 | 0.21 s-0.25 s | 0.3 |
+| Almost no planning | 10,000 | 5 | 9,994 | 9,978-9,999 | 100.00% | 0 | 144-149 | 0.24 s-0.30 s | 0.5 |
+| Almost no planning | 20,000 | 5 | 20,007 | 19,999-20,028 | 100.00% | 0 | 166-174 | 0.34 s-0.59 s | 0.9 |
+| Almost no planning | 30,000 | 5 | 30,020 | 29,990-30,050 | 100.00% | 0 | 204-230 | 0.49 s-0.86 s | 1.4 |
+| Almost no planning | 33,000 | 5 | 32,197 | 30,845-32,996 | 100.00% | 5 | 246-297 | 1.74 s-6.40 s | 1.5 |
+| Almost no planning | 35,000 | 5 | 34,215 | 32,693-35,240 | 99.99% | 1,799 | 328-872 | 2.32 s-17.73 s | 1.6 |
+| Almost no planning | 36,000 | 5 | 34,070 | 32,680-35,978 | 99.98% | 2,160 | 256-1,087 | 2.19 s-19.08 s | 1.6 |
+| About 3.9 ms of planning | 1,000 | 5 | 999 | 999-999 | 100.00% | 0 | 129-132 | 0.20 s-0.24 s | 1.1 |
+| About 3.9 ms of planning | 5,000 | 5 | 5,004 | 5,003-5,005 | 100.00% | 0 | 139-142 | 0.22 s-0.26 s | 5.4 |
+| About 3.9 ms of planning | 8,000 | 5 | 8,000 | 7,998-8,003 | 100.00% | 0 | 149-156 | 0.24 s-0.27 s | 9.7 |
+| About 3.9 ms of planning | 10,000 | 5 | 9,999 | 9,994-10,006 | 100.00% | 0 | 158-163 | 0.26 s-0.67 s | 13.1 |
+| About 3.9 ms of planning | 12,000 | 5 | 11,995 | 11,991-12,000 | 100.00% | 0 | 169-181 | 0.28 s-0.72 s | 16.8 |
+| About 3.9 ms of planning | 14,000 | 5 | 13,705 | 13,586-13,849 | 100.00% | 60 | 637-1,026 | 0.95 s-7.56 s | 20.2 |
+<!-- STALL:END -->
+
+**On a busier network.** The same day at midday, the final build answered 25,160 to 26,046 a second at 30,000, with 296,313 to 362,753 giving up in each of 3 runs, and at 20,000 a second one run of 3 fell to 15,298, with 352,516 giving up. These count the whole run, warm-up included. The tables are in section 8a. To see whether the code or the network caused this, we ran the overnight build again at midday at 30,000: one program checked got 118,958 of its 200,000 reports answered, and 81,022 gave up. So the network is the most likely cause. That is one comparison run, and we did not measure the air directly, or run the six PCs on cable, so a wired LAN should go faster but this is not tested. The setup is mostly Wi-Fi, shared with others, and node 2 and client PC 1 send by cable.
+
+**Why a slow patch gets worse.** When replies pass about 1.5 to 2 s, clients retry and other nodes take over, so one report is planned again, which adds load. A fallen run at 20,000 a second started 204,108 takeovers, and a healthy one none in its log. This does not recover while the load continues, so it is a limit of the design and not only of the network (section 11).
+
 **What limits it.**
 
 - **With planning load, the CPU.** Cores per node rise with the rate, to about 20 at 14,000 a second, the size of the planning pool.
@@ -363,30 +606,39 @@ Each is in full in [design-log.md](design-log.md).
 | UDP combined for 10 ms, bids for 5 ms | 20 ms and 10 ms | Fewer packets on the air | D246, D247, D256 |
 | Drop after about 300 ms of silence | After 1 s in the lab | Real false drops were measured at 300 ms | D249 |
 | Look for a shared-log library | **Keep our own** | None tested works with no leader | D259 |
+| A node recovers only from a peer | From its own file first, and a lone member takes a node back | Two kills stopped commits for good, and three lost the state | D261 |
+| A lone node copies all responders per report | It looks at 512, and answers until it can commit | About 2,700 answers a second at 20,000 offered, and silence while a peer caught up | D262 |
+| A stub stops at 20,000 open calls | 130,000 | Clients sent nothing for up to 18 s after an outage | D263 |
+| Retries with no limit | A budget of a fifth of first sends, plus 200 a second | With the higher limit alone, answers fell to 7,049 a second and 1,748,153 gave up | D264 |
 
-**Bugs found by the experiments,** each fixed with a test that fails without the fix: two nodes making different drops as the same view, a node returning at an out of date round, and a returning node starting inside its old stream (D252, D257). Each showed as digest mismatches, which is what the checkpoints are for.
+**Bugs found by the experiments,** each fixed with a test that fails without the fix: two nodes making different drops as the same view, a node returning at an out of date round, a returning node starting inside its old stream (D252, D257), the hang after two or three kills (6 of 7 tests in `tests/kills.rs` failed before D261), a client's stub running out of open calls (D263), and a retry budget too small for a light load, where 3,512 gave up at 300 a second with all three killed, and 1 did after the fix (D264). Each showed as digest mismatches, which is what the checkpoints are for.
 
 ## 11. Limits
 
-1. **Two failures close together stop commits.** If a second node fails while the first is still on its way back, the last member cannot drop anyone, and a member that restarts while still listed cannot return. Answers stay correct, but nothing commits, and what brings it back has not been tested. T4's last part showed it, with 1,303 of 9,892 reports giving up, and 0 digest mismatches. Raft would carry on here. **The spec's scenarios fail one node at a time, so they do not reach this.**
-2. **`plan_work` is simulated CPU work,** a busy loop that does not change the plan. The real choice of a responder takes microseconds.
-3. **T1 and T2 used `kill -9` and 3-minute loads,** by choice of the person running the lab, not real power cuts. A real cut can lose disk writes that `kill -9` cannot.
-4. **A restarted node recovers from a peer's log, not its own file,** so losing all three at once loses the state (D249).
-5. **Memory grows with the log,** about 5,175 MB per node after 5 minutes at 30,000 a second. Nothing trims it.
-6. **Detection is 1 s.** The first choice was about 300 ms, and it gave false drops under load. A failure costs at least this much.
-7. **Wi-Fi conditions change,** and the lab's network is shared with others. That is one reason the rates above 30,000 vary from run to run.
-8. **Node 2 and client PC 1 send by cable.** The others use the air both ways, so the setup is not symmetric.
-9. **Corosync was not tested,** as its programs need approval that was not given before this report (D259).
-10. **The shared log's ordering is our own code,** with no library's users behind it. See [shared-log.md](shared-log.md) section 3 for what we tried instead.
+1. **A slow patch can feed itself.** Past about 2 s, retries and takeovers plan reports again, and at 20,000 a second and above this may not recover while the load continues (section 9). The retry budget (D264) bounds it but does not end it.
+2. **Results above 15,000 a second depend on the network.** 30,000 held overnight, on `a7ceb34`. The final build has not been run at 30,000 on a quiet network, and has not been stressed past 30,000 at all. The disk write before each answer and the retry budget were added for failures, and their effect on the top speed is not measured separately.
+3. **Provisional answers can change.** A lone node's answer is labelled provisional, and many later change: see T2's table in section 8a, with 300 responders. The final record stays one record on all nodes. Killing a lone node loses the provisional answers it has not replayed, as they are in memory (D122).
+4. **All three killed can lose a few answered reports.** If nodes return one at a time, and the node holding the longest log returns last, the others have gone on without its tail, and it starts again from theirs (`Reset`, D261). Answers that only it had applied are lost, though the nodes still agree. Measured: 69 and 497 answers, in 2 of 49 kill runs, so 566 of 48,331,376 in all, or 0.0012%. No run with one or two nodes killed lost any. A fix would have that node hand over its tail first, and is not built.
+4a. **A returning node's file can miss a few batches.** In 5 of 49 runs, one node's file lacked a few batches it had applied, those it was handed when it returned, which are held but not saved. Its memory and final digest match the others, and the other two files hold them. If that node restarted again, it would find its log is not a start of the others', and take the log again.
+5. **`plan_work` is simulated CPU work,** a busy loop that does not change the plan. The real choice of a responder takes microseconds.
+6. **`kill -9` stands in for a power cut.** It stops a process at once, as a cut would, but cannot lose disk writes as a real cut can.
+7. **Memory grows with the log,** about 590 bytes per report per node, and nothing trims it. At 20,000 a second, a run stopped by our memory guard after about 18 minutes, with 21,237,378 answered, 0 gave up and p99 915.6 ms (`runs/exp8h/long0/20000/run-1`, `d4e25c3`). So it cannot run for hours at this rate.
+8. **Detection is 1 s.** The first choice was about 300 ms, and it gave false drops under load. A failure costs at least this much.
+9. **The network is shared and not symmetric.** Node 2 and client PC 1 send by cable, and the others use the air both ways.
+10. **Fewer repeats for some failure runs.** Kills have 3 runs per case at 10,000 a second, 2 at 15,000, and 1 at 20,000 and 300. They are random, so read them with that in mind.
+11. **Corosync was not tested** (D259).
+12. **The shared log's ordering is our own code,** with no library's users behind it. See [shared-log.md](shared-log.md) section 3 for what we tried instead.
 
 ## 12. Test plan
 
-- **Unit and multi-node tests:** `cargo test`, 30 groups, all pass at `a7ceb34`. `tests/rounds.rs` holds the shared log's, including each bug above. `tests/layers.rs` holds the layering rules.
+- **Unit and multi-node tests:** `cargo test`, all pass at `b6221c5`. `tests/rounds.rs` holds the shared log's, and `tests/kills.rs` kills one, two and all three nodes in each order, including each bug above. `tests/layers.rs` holds the layering rules.
 - **Experiments:** scripts in `scripts/phase1/`. One command runs them all, and they need nobody present.
 - **Fact checks on the logs,** from raw per-request lines, trusting no summary: `analysis/phase1/audit.py` and `analysis/phase1/factcheck.py`. In three runs at 10,000 a second, a plain one, one with a 20 s fault and one with a kill, each of 3,749,625 answers was matched to a reply line in the answering node's own log, with 0 mismatches (`analysis/results/exp8h/factcheck-*.txt`).
 - **Conflicts:** only between a lone node's provisional answers and what commits later, as T2 showed. Claims between clients are Phase 2.
 
 ## 13. Methodology and raw data
+
+**The final runs, `b6221c5`, 2026-11-05, 10:56 a.m. to 3:06 p.m.** Speed: 10,000, 15,000, 20,000 and 30,000 a second with almost no planning, and 10,000 and 12,000 with planning, 75 s each, with 15 s of warm-up. Kills: section 8a. The guide's T1 and T2 run 1 had 5 minutes of load, and T2 runs 2 and 3, kept as well, had 3. T4's last part, flat out, the spike at 100 and 333 users per PC, and 333 and 1,000 users per PC ran once each. The web page was tried with `curl` on one PC (`analysis/results/kills/frontend-check.txt`). The list and its order are in `scripts/phase1/final-series.sh`. The stall on planning load (14,000 a second) and the rates over 30,000 were not run on this build, because the overnight series covers them on `a7ceb34`. Scenarios 1 and 2 were also not run on this build: the fixes did not change the bidding. The rest of this section is about the overnight series.
 
 - **Design.** 157 runs. 5 passes through all cells, in the same order each time, so that drift over the night falls across all rates, not on one. The two 5-minute holds ran once. The 5 passes took 6 h 37 min, 5.1 h of it with load running, and the rerun of scenario 2 about 37 min. About 8 hours were asked for, and about 7.2 ran, though the folder is named `exp8h`.
 - **Load.** Open loop: 9 programs at a fixed rate, 3 on each client PC, evenly spaced, each with its own seed in each pass. Each report goes to all 3 nodes.

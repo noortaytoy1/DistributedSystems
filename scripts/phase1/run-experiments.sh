@@ -404,6 +404,21 @@ closed_step() {
   collect "$name" 1 "$warm" "$measured" $((users * ${#CLIENT_IDS[@]})) 30
 }
 
+users_step() {
+  local name=$1 cell=$2 users=$3 warm=$WARM_S measured=$((STEP_S - WARM_S)) i
+  check_disk
+  say "T3: $name"
+  prepare "$cell"
+  start_cluster
+  LOAD_PIDS=()
+  for i in "${!CLIENT_IDS[@]}"; do
+    on_host "${CLIENT_SSH[$i]}" "BIN=$BIN bash scripts/start-users.sh --config runs-config/run.toml --machine ${CLIENT_IDS[$i]} --users $users --think-ms 1000 --duration-s $STEP_S --warmup-s $WARM_S --out runs/current" &
+    LOAD_PIDS+=($!)
+  done
+  wait_load
+  collect "$name" 1 "$warm" "$measured" $((users * ${#CLIENT_IDS[@]})) 30
+}
+
 flat_step() {
   local i first id cmd sample row
   check_disk
@@ -858,6 +873,10 @@ case "${1:-}" in
   plain) setup_note; for rep in ${2:-1 2 3 4 5}; do make_cell 0 expected-wait; for r in 10000 20000 30000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final0-$r" "$rep" 15 75 "" "${L[@]}" || true; done; make_cell 1000 expected-wait; for r in 10000 12000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final1-$r" "$rep" 15 75 "" "${L[@]}" || true; done; done; stop_all ;;
   guide) setup_note; t5; t1; for rep in 1 2 3; do export T2_REP=$rep; t2; done; stop_all ;;
   users) setup_note; for rep in ${2:-1 2 3}; do for u in 300 1000 3000; do closed_step "users-$u-run$rep" "e1-$u-bidding" "$u" || true; done; done; stop_all ;;
+  speed) setup_note; make_cell "$2" expected-wait; mapfile -t L < <(even_load "$4" 75 3); for rep in $5; do fixed_run "$3-$4" "$rep" 15 75 "" "${L[@]}" || true; done; stop_all ;;
+  t4only) setup_note; t4_last; stop_all ;;
+  t3extra) setup_note; flat_step; closed_step stress-spike-100 e1-300-bidding 100; closed_step stress-spike-333 e1-1000-bidding 333; stop_all ;;
+  userssteady) setup_note; users_step users-333-run1 e1-1000-bidding 333; users_step users-1000-run1 e1-3000-bidding 1000; stop_all ;;
   series) setup_note; for rep in ${2:-1 2 3}; do say "=== PASS $rep"; pass "$rep"; [[ "$rep" == 1 ]] && holds; say "=== PASS $rep DONE"; done; stop_all ;;
   all) t5; t1; t2; t4; t3; stop_all; finish ;;
   finish) finish ;;

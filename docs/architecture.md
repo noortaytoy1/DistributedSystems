@@ -1765,6 +1765,8 @@ would make the client wait out its retries and give up on a report the cloud had
 
 ## 9. Faults, detection and recovery
 
+**More than one node failing (built, D261, D262).** Under rotating rounds each node saves the order it applied before answering, and rebuilds from its own file when it restarts. A member with nobody else left takes a returning node straight back in, with no vote. With no member left, the node with the longest log goes first. A node that cannot commit yet answers provisionally. Clients keep a retry budget (D264). [shared-log.md](shared-log.md) has the details. Where this section describes Raft, it applies only with `consensus = "raft"`.
+
 ### 9.1 Fault model
 
 - **Injected omission.** The fault gate drops every peer call and every report in and out (D13, D22). The

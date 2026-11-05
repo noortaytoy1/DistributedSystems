@@ -348,3 +348,21 @@ Under rounds, some names are kept from Raft: `raft_state.term` is the view, `raf
 | `client_link_up` | `node` | A client connection to `node` was opened (D112). Nothing logs this since reports moved to UDP, which has no connection (D167). Kept because the analysis reads the name in old runs. |
 | `client_link_down` | `node`, `reason` | A client connection to `node` closed or stopped answering pings (D112). As `client_link_up`. |
 | `machine_usage` | `cpu_busy_ticks`, `cpu_total_ticks`, `mem_available_kb` | Once a second, from one program on each client PC: the whole PC's CPU and memory (D185). A saturated client PC reads as cloud latency, so the analysis must be able to see it. The tick counts are cumulative. |
+
+## Recovery from more than one failure (D261, D262)
+
+**The file.** `node-<id>.rounds` holds records, each a 4-byte length and then a bincode `LogRecord`:
+
+| Record | Meaning |
+|---|---|
+| `Batch(RoundBatch)` | A batch saved here |
+| `Applied { node, round }` | The batch this node applied next, saved before anyone is answered |
+| `Reset` | What came before no longer counts: this node held something the others did not |
+
+**Rebuilding.** `replay` reads the file when a node starts, and applies batches in the order of the `Applied` records. It stops at a record cut short. `src/bin/roundlog.rs` prints the same, for checks.
+
+**New messages.** `CatchUp` carries `last`, the last entry held. A node whose log is not a start of the member's gets `Diverged`, writes `Reset` and takes the log again. A node on its way back answers `CatchUp` with `Joining { total, view }`. `Entries` gains `held`, and each of its `starts` now gives a first round and the round the log has reached for that node.
+
+**Taking a node back with nobody to ask (`on_join`, `add_alone`).** If every other member is silent, or is the node asking, this node drops them and adds the one asking, with no vote. A commit needs every member, so it holds all that was applied. The node asking starts past every round seen, and until then applies what this node holds past `base`.
+
+**All gone (`run_catch_up`).** With no member to ask, a node waits `BOOT_GRACE` (3 s) for others. The one with the longest log, then the lowest ID, goes first. With nobody reachable for `ALONE_AFTER` (3 s), it serves what it has, and `is_alone` keeps it answering provisionally until it can commit.

@@ -324,6 +324,7 @@ table below in sync.
 | D262 | A lone node answers fast, and goes on until it can commit | C | Implemented, amends D121, D122 |
 | D263 | A client's stub holds every call a full client can have open | C, F | Implemented, amends D173 |
 | D264 | A client spends at most a fifth of its sends on retries | F | Implemented, amends D126 |
+| D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8166,6 +8167,7 @@ them on the six PCs.
 - **Decision.** (1) **Own file.** `node-<id>.rounds` now holds `LogRecord`s: `Batch`, `Applied { node, round }` and `Reset`. A node saves the order it applied before answering, so what a client was told can be rebuilt. On restart it applies its file in that order. (2) **Taking a node back alone.** A member whose other members are all silent, or are the node asking, drops them and adds the node asking, with no vote: `add_alone`. The returning node starts past every round seen. Until then it applies the batches the member still holds, sent as `held`. (3) **All gone.** A node with no member to ask waits 3 s for others. Then the one with the longest log, lowest ID on a tie, goes first, and the others come back to it. (4) **Nobody reachable.** After 3 s a returning node serves what it has, so degraded mode can answer. (5) **Check.** `CatchUp` carries the last entry held. A node whose log is not a start of the member's gets `Diverged`, writes `Reset` and takes the log again.
 - **Why safe.** In a two-member view nothing commits without both, so the member left holds all that was applied. A node's own batch is applied only once a peer has it, so with one survivor nothing answered is lost.
 - **Limits.** If two nodes are killed within the same few milliseconds, a batch applied and answered by them that the third never received is lost if it holds no copy, and they reset to the third's log on return. The file audit measures this in the kill experiments. A lone node's provisional answers are in memory until replayed (D122), so killing it loses them. A real power cut is not tested, only `kill -9`. Answers now wait for one more disk write, so throughput was measured again.
+- **Measured limits, on `b6221c5`.** All three killed, returning one at a time with the longest log last: 69 and 497 answered reports lost, in 2 of 49 kill runs, 566 of 48,331,376 answers. In 5 of 49 runs, one node's file lacked the batches handed to it on return (`held`), which are held but not saved, though its memory and digest matched. Neither is fixed: the code was frozen for the final runs. Both are in the report's section 11.
 - **Where.** `src/rounds.rs`, `src/proto.rs`, `src/raft/store.rs`, `src/node/release.rs`, `src/bin/roundlog.rs`, `tests/kills.rs`, `scripts/phase1/run-experiments.sh` (`kills`), `scripts/phase1/watch-tcp.sh`, `analysis/phase1/kills_analyze.py`.
 - **How we check it.** `cargo test --test kills`. On the six PCs, `run-experiments.sh kills`: every order of kills under load, with the digest check, and `roundlog` listing what each node's file applied, to compare with each answer a client got.
 - **For the report.** The professor's requirement is fault tolerance with no leader. This is the part that keeps the promise when more than one node fails.
@@ -8204,6 +8206,15 @@ them on the six PCs.
 - **Amended the same day.** The floor goes from 10 to 200 retries a second per program. At 300 a second with all three nodes killed for 20 s (`bece4d8`, `runs/exp8h/killallA/300/run-1`), 3,512 reports gave up, though nodes answered again 3.5 s after restarting. The budget had skipped 21,488 retries, and 772 of those reports never got a retry. At 20,000 a second this allows about 5,800 retries a second in all, so about 25,800 a second, still under the 30,000 measured.
 
 **Kill runs (D261, 2026-11-05).** The person running the lab asked for shorter runs, with kills at random times, starting at 15,000 a second. Each run is 90 s, with 10 s of warm-up. The nodes and times are random in each run, the first kill comes 15 to 30 s in, and the last return leaves at least 25 s to recover. Each run's `fault-times.txt` holds what happened.
+
+### D265 · How the final runs were chosen, and what passes
+
+- **Date:** 2026-11-05 · **Part:** all · **Status:** Implemented, amends D260 · **Decided by:** Noor, who ran the lab session.
+- **Context.** Fixes D261 to D264 changed recovery, so results had to be taken again on `b6221c5`, with the PCs needed elsewhere by 3:30 p.m. The network was much busier than overnight.
+- **Decisions.** (1) Phase 1 is judged against the spec's scenarios 1, 2, 3, 4 and 9. (2) `kill -9` stands in for a power cut, which Noor reports the professor allowed. (3) Give-ups are reported, and are not a failure above what the nodes left can carry. They are a check only at the guide's load of about 300 reports a second. What must hold is 0 unaccounted and 0 digest mismatches. (4) Runs already covered overnight are not repeated: 14,000 a second with planning, more runs at 10,000 and 12,000, and T4's first half, which the 47 elected faults cover. (5) The main results are at 10,000 and 15,000 a second, which the busy network can carry. 20,000 and above are kept, labelled with the conditions. (6) Kill runs have random nodes and times, and an unusual run is kept, labelled as a possible spike.
+- **Why.** The requirement is the scenarios. Repeating what stands cost time the PCs did not have.
+- **Consequences.** Kill cases have 3 runs at 10,000 a second, 2 at 15,000, 1 at 20,000 and 300. Scenarios 1 and 2, and the stall points, stand on `a7ceb34`. The final build has no result on a quiet network at 30,000.
+- **Where.** `scripts/phase1/final-series.sh`, `docs/phase1-report.md` sections 8a, 11 and 13.
 
 ### Notes on older entries
 

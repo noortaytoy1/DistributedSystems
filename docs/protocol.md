@@ -360,3 +360,18 @@ With `consensus = "rounds"`, no node is elected. Peers exchange `PeerBody::Round
 | `Applied` | a returning node | `Applied { index }` | how far this node has applied |
 
 All nodes apply batches in the order (round, node ID), up to the lowest round all members have passed. A node's own stream counts only as far as a peer has saved it.
+
+## Changes for failures of more than one node (D261 to D264)
+
+| What | Change |
+|---|---|
+| `RoundsMsg::CatchUp` | Adds `last: Option<(NodeId, u64)>` |
+| `RoundsReply::Entries` | `starts` is now `Vec<(NodeId, u64, u64)>`, and adds `held: Vec<RoundBatch>` |
+| `RoundsReply::Joining { total, view }` | New: the answer from a node on its way back |
+| `RoundsReply::Diverged` | New: what the asker holds is not a start of this log |
+| `LogRecord` | New: `Batch`, `Applied`, `Reset`, the records of a node's log file |
+| `Consensus::is_alone` | New: nothing can commit here yet. Always false under Raft |
+| `REPLAY_BATCH` | 64 to 2048 |
+| `MAX_IN_FLIGHT_CALLS` | 20,000 to 130,000 |
+| Retry budget, in `client.rs` | 20% of first sends, floor 200 a second, cap 5,000, start 100 |
+| `client_retries_skipped` | New event: retries a client left unsent, as its last log line |

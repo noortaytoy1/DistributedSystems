@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# kills_analyze.py [run folders]: every measure of the kill experiments (D261), one line per run and per step.
-# Writes analysis/results/kills/{runs,steps,phases}.csv. Never run it while a test is running.
-import collections, csv, datetime, glob, gzip, json, os, re, sys
+# kills_analyze.py [run folders]: every measure of the final runs (D261): kills per run, step and stage, and the
+# other runs per run. Writes analysis/results/kills/{runs,steps,phases,others}.csv. Never run it while a test is running.
+import collections, csv, datetime, glob, gzip, json, multiprocessing, os, re, statistics, sys
 
 OUT = "analysis/results/kills"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -52,6 +52,93 @@ def read_out(path):
     return found
 
 
+def commit_of(run):
+    return open(f"{run}/commit.txt").read().strip()[:7] if os.path.exists(f"{run}/commit.txt") else ""
+
+
+def node_measures(run, r, conflicts_by=None):
+    """CPU, memory, network, queues and digests, from every node's log, into r."""
+    checkpoints = collections.defaultdict(lambda: collections.defaultdict(set))
+    reasons = collections.Counter()
+    replied = 0
+    for path in sorted(glob.glob(f"{run}/node-*.jsonl.slim.gz")):
+        node = int(re.search(r"node-(\d+)", path).group(1))
+        spans, queued, running = [], 0, 0
+        for e in lines(path):
+            ev = e.get("ev")
+            if ev == "state_checkpoint":
+                checkpoints[e["log_index"]][node].add(e["digest"])
+            elif ev == "resource_usage":
+                spans.append((e["ts_us"], e["cpu_ticks"], e["net_rx_bytes"], e["net_tx_bytes"], e["rss_kb"], e.get("udp_drops", 0)))
+                queued, running = max(queued, e.get("queued", 0)), max(running, e.get("running", 0))
+            elif ev == "provisional_conflict":
+                reasons[e.get("reason", "?")] += 1
+            elif ev == "provisional_replied":
+                replied += 1
+        busy, bytes_per_s = [], []
+        for a, b in zip(spans, spans[1:]):
+            seconds = (b[0] - a[0]) / 1e6
+            if seconds > 0 and b[1] >= a[1]:
+                busy.append((b[1] - a[1]) / 100 / seconds)
+                bytes_per_s.append((b[2] - a[2] + b[3] - a[3]) / seconds)
+        r[f"cores_mean_{node}"] = round(statistics.mean(busy), 2) if busy else ""
+        r[f"cores_max_{node}"] = round(max(busy), 1) if busy else ""
+        r[f"net_mb_per_s_mean_{node}"] = round(statistics.mean(bytes_per_s) / 1e6, 1) if bytes_per_s else ""
+        r[f"max_rss_mb_{node}"] = max((s[4] for s in spans), default=0) // 1024
+        r[f"queued_max_{node}"] = queued
+        r[f"running_max_{node}"] = running
+        r[f"udp_drops_{node}"] = sum(max(0, b[5] - a[5]) for a, b in zip(spans, spans[1:]))
+    mismatched = [i for i, by in checkpoints.items() if len(set().union(*by.values())) > 1]
+    r.update(checkpoints=len(checkpoints), digest_mismatches=len(mismatched), first_mismatch=min(mismatched) if mismatched else "",
+             provisional_replied_lines=replied, conflicts_total=sum(reasons.values()),
+             conflicts_responder_taken=reasons["responder_taken"], conflicts_lost_first_commit=reasons["lost_first_commit"])
+
+
+def final_status(run):
+    status = open(f"{run}/status-after.txt", errors="replace").read() if os.path.exists(f"{run}/status-after.txt") else ""
+    rows = [line.split() for line in status.splitlines() if re.match(r"\s*[123]\s+peer", line)]
+    return dict(final_digests_differ=len({row[6] for row in rows}) > 1 if rows else "", final_results=rows[0][7] if rows else "",
+                final_applied_differ=max(int(row[5]) for row in rows) - min(int(row[5]) for row in rows) if rows else "")
+
+
+def analyse_other(run):
+    """A run with no kill plan: speed, users, flat out, spike, T1, T2, T4."""
+    parts = run.rstrip("/").split("/")
+    meta = json.load(open(f"{run}/run.json"))
+    r = dict(experiment=parts[-3], cell=parts[-2], run=int(parts[-1].split("-")[1]), commit=commit_of(run), warmup_s=meta["warmup_s"], measured_s=meta["measured_s"], users=meta.get("users", 0))
+    sent, done, gave = set(), set(), set()
+    provisional = retries = first_try = skipped = no_responder = 0
+    lat, started = [], None
+    for path in sorted(glob.glob(f"{run}/client-*.jsonl.gz")):
+        for e in lines(path):
+            ev = e.get("ev")
+            if ev == "client_started":
+                started = min(started or e["ts_us"], e["ts_us"])
+            elif ev == "client_sent":
+                if e["attempt"] == 0:
+                    sent.add(key(e["request"]))
+                else:
+                    retries += 1
+            elif ev == "client_done":
+                done.add(key(e["request"]))
+                lat.append(e["latency_us"])
+                provisional += bool(e.get("provisional"))
+                no_responder += bool(e.get("no_responder"))
+                first_try += e["attempts"] == 1
+            elif ev == "client_gave_up":
+                gave.add(key(e["request"]))
+            elif ev == "client_retries_skipped":
+                skipped += e["skipped"]
+    lat.sort()
+    r.update(sent=len(sent), answered=len(done), provisional=provisional, no_responder=no_responder, gave_up=len(gave), unaccounted=len(sent - done - gave),
+             retries=retries, retries_skipped=skipped, first_try_pct=round(100 * first_try / max(1, len(lat)), 2),
+             answered_per_s=round(len(done) / max(1, meta["measured_s"] + meta["warmup_s"])),
+             mean_ms=round(statistics.mean(lat) / 1000, 1) if lat else "", p50_ms=pct(lat, 0.5), p95_ms=pct(lat, 0.95), p99_ms=pct(lat, 0.99), max_ms=lat[-1] / 1000 if lat else "")
+    node_measures(run, r)
+    r.update(final_status(run))
+    return r
+
+
 def analyse(run):
     parts = run.rstrip("/").split("/")
     case, rate, rep = parts[-3].removeprefix("kill"), int(parts[-2]), int(parts[-1].split("-")[1])
@@ -95,7 +182,7 @@ def analyse(run):
     answers.sort()
     both = len(provisional & committed)
     latencies = sorted(a[1] for a in answers)
-    r = dict(case=case, rate=rate, run=rep, steps=" ".join(f"{(t - t0) // 1000000}:{w}:{','.join(map(str, n))}" for t, w, n in steps))
+    r = dict(case=case, rate=rate, run=rep, commit=commit_of(run), steps=" ".join(f"{(t - t0) // 1000000}:{w}:{','.join(map(str, n))}" for t, w, n in steps))
     r.update(sent=len(sent), answered=len(done), committed=len(committed), provisional=len(provisional),
              both=both, gave_up=len(gave_up), unaccounted=len(sent - done - gave_up),
              retries=retries, first_try_pct=round(100 * attempts_one / max(1, len(answers)), 2),
@@ -117,10 +204,11 @@ def analyse(run):
     r["longest_no_commit_s"], r["longest_no_commit_from_s"] = longest_gap([a[0] for a in answers if not a[2] and a[0] >= t0 + warm * 1000000])
 
     # Nodes.
-    checkpoints = collections.defaultdict(lambda: collections.defaultdict(set))
+    node_measures(run, r)
+    r.update(final_status(run))
+    r["retries_skipped"] = sum(e.get("skipped", 0) for path in glob.glob(f"{run}/client-*.jsonl.gz") for e in lines(path) if e.get("ev") == "client_retries_skipped")
     told, rss, usage, digests = {}, {}, {}, {}
     events = collections.defaultdict(list)
-    conflicts = provisional_replied = 0
     for path in sorted(glob.glob(f"{run}/node-*.jsonl.slim.gz")):
         node = int(re.search(r"node-(\d+)", path).group(1))
         told[node] = read_out(f"{run}/node-{node}.out")
@@ -129,39 +217,15 @@ def analyse(run):
         digests[node] = []
         for e in lines(path):
             ev, ts = e.get("ev"), e.get("ts_us", 0)
-            if ev == "state_checkpoint":
-                checkpoints[e["log_index"]][node].add(e["digest"])
-            elif ev == "resource_usage":
-                rss[node] = max(rss[node], e["rss_kb"])
-                usage[node].append((ts, e["cpu_ticks"], e["net_rx_bytes"], e["net_tx_bytes"], e["udp_drops"]))
-            elif ev == "state_digest":
+            if ev == "state_digest":
                 digests[node].append((ts, e["last_applied"] or 0))
             elif ev in ("restarted", "rejoined", "rejoin_started", "peer_reconnected", "peer_unreachable", "degraded_entered", "degraded_left", "raft_state"):
                 events[node].append((ts, ev, e))
-            elif ev == "provisional_conflict":
-                conflicts += 1
-            elif ev == "provisional_replied":
-                provisional_replied += 1
-    mismatched = [i for i, by in checkpoints.items() if len(set().union(*by.values())) > 1]
-    r.update(checkpoints=len(checkpoints), digest_mismatches=len(mismatched),
-             first_mismatch=min(mismatched) if mismatched else "", provisional_conflicts=conflicts, provisional_replied_lines=provisional_replied)
-    for node in sorted(rss):
-        r[f"max_rss_mb_{node}"] = rss[node] // 1024
-        spans = usage[node]
-        busy = 0
-        for a, b in zip(spans, spans[1:]):
-            if b[1] >= a[1] and b[0] > a[0]:
-                busy = max(busy, (b[1] - a[1]) / 100 / ((b[0] - a[0]) / 1e6))
-        r[f"max_cores_{node}"] = round(busy, 1)
-        r[f"udp_drops_{node}"] = sum(max(0, b[4] - a[4]) for a, b in zip(spans, spans[1:]))
     words = collections.Counter(name for node in told for _, name, _ in told[node])
     for name in TOLD:
         r[f"told_{name}"] = words[name]
 
-    # The final state of each node, as reported after the load, and its file.
-    status = open(f"{run}/status-after.txt", errors="replace").read() if os.path.exists(f"{run}/status-after.txt") else ""
     r["converged"] = converged
-    r["final_status"] = " | ".join(line.strip() for line in status.splitlines() if re.match(r"\s*[123]\s", line))
     for node in sorted(rss):
         path = f"{run}/applied-ids-{node}.txt.gz"
         if not os.path.exists(path):
@@ -201,11 +265,11 @@ def analyse(run):
                 if ts >= t and ev == "rejoined":
                     row[f"serving_again_s_{node}"] = round((ts - t) / 1e6, 2)
                     break
-            for ts, name, _ in told[node]:
+            for ts, name, _ in told.get(node, []):
                 if ts >= t and name == "rebuilt":
                     row[f"rebuilt_s_{node}"] = round((ts - t) / 1e6, 2)
                     break
-            for ts, name, _ in told[node]:
+            for ts, name, _ in told.get(node, []):
                 if ts >= t and name in ("member_again", "went_first"):
                     row[f"member_again_s_{node}"] = round((ts - t) / 1e6, 2)
                     break
@@ -259,25 +323,34 @@ def write(path, rows):
         w.writerows(rows)
 
 
+def one(run):
+    try:
+        return analyse(run) if "/kill" in run else analyse_other(run)
+    except Exception as e:  # A broken run is reported, and never skipped silently.
+        return ("broken", run, repr(e))
+
+
 def main():
-    runs = sys.argv[1:] or sorted(glob.glob("runs/exp8h/kill*/*/run-*"))
+    runs = sys.argv[1:]
+    if not runs:
+        runs = sorted(glob.glob("runs/exp8h/kill*/*/run-*"))
+        for name in ("final0", "final1", "users", "stress", "power", "oneleft", "draw"):
+            runs += sorted(glob.glob(f"runs/exp8h/{name}/*/run-*"))
     os.makedirs(OUT, exist_ok=True)
-    all_runs, all_steps, all_phases = [], [], []
-    for run in runs:
-        try:
-            r, s, p = analyse(run)
-        except Exception as e:  # A broken run is reported, and never skipped silently.
-            print(f"{run}: could not read: {e!r}")
-            continue
-        all_runs.append(r); all_steps += s; all_phases += p
-        print(f"{r['case']:5} {r['rate']:6} run {r['run']}: sent {r['sent']} answered {r['answered']} (provisional {r['provisional']}) gave up {r['gave_up']} "
-              f"unaccounted {r['unaccounted']} mismatches {r['digest_mismatches']} of {r['checkpoints']} p99 {r['p99_ms']} no-answer {r['longest_no_answer_s']}s no-commit {r['longest_no_commit_s']}s | {r['converged']}")
-        for node in (1, 2, 3):
-            if f"answered_committed_not_in_file_{node}" in r:
-                print(f"    node {node}: file has {r[f'file_reports_{node}']} reports, answered and not in it: committed {r[f'answered_committed_not_in_file_{node}']}, provisional {r[f'answered_provisional_not_in_file_{node}']}  {r[f'file_stats_{node}']}")
-        for row in s:
-            print("    step", {k: v for k, v in row.items() if k not in ("case", "rate", "run")})
-    write(f"{OUT}/runs.csv", all_runs); write(f"{OUT}/steps.csv", all_steps); write(f"{OUT}/phases.csv", all_phases)
+    all_runs, all_steps, all_phases, others = [], [], [], []
+    with multiprocessing.Pool(6, maxtasksperchild=1) as pool:
+        for result in pool.imap(one, runs):
+            if isinstance(result, tuple) and result[0] == "broken":
+                print(f"{result[1]}: could not read: {result[2]}")
+            elif isinstance(result, tuple):
+                r, s, p = result
+                all_runs.append(r); all_steps += s; all_phases += p
+                print(f"{r['case']:5} {r['rate']:6} run {r['run']} {r['commit']}: sent {r['sent']} answered {r['answered']} (provisional {r['provisional']}) gave up {r['gave_up']} "
+                      f"unaccounted {r['unaccounted']} mismatches {r['digest_mismatches']} of {r['checkpoints']} p99 {r['p99_ms']} no-answer {r['longest_no_answer_s']}s no-commit {r['longest_no_commit_s']}s")
+            else:
+                others.append(result)
+                print(f"{result['experiment']} {result['cell']} run {result['run']} {result['commit']}: sent {result['sent']} answered {result['answered']} gave up {result['gave_up']} unaccounted {result['unaccounted']} mismatches {result['digest_mismatches']}")
+    write(f"{OUT}/runs.csv", all_runs); write(f"{OUT}/steps.csv", all_steps); write(f"{OUT}/phases.csv", all_phases); write(f"{OUT}/others.csv", others)
 
 
 if __name__ == "__main__":
