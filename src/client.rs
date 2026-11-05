@@ -60,6 +60,59 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// closed port.
 const UDP_CHECK_TRIES: u32 = 3;
 
+/// Of what a client sends first, the share it may also send as retries (D264).
+const RETRY_BUDGET_PERCENT: u64 = 20;
+/// Retries a second it may always send, so a light load keeps all its retries through an outage:
+/// about 33 reports a second from a program at 300 a second in all, 5 retries each. Over nine
+/// programs this is 1,800 a second, well under what the nodes can take.
+const RETRY_BUDGET_FLOOR_PER_S: u64 = 200;
+/// Retries it can save up, for the burst when a node fails: about 10 s of its share at 20,000 a
+/// second over nine programs. Only an outage longer than that reaches the limit.
+const RETRY_BUDGET_CAP: u64 = 5000;
+/// What it starts with.
+const RETRY_BUDGET_START: u64 = 100;
+
+/// What a client may spend on retries, in thousandths of a retry. Without this a long outage is
+/// followed by a flood: at 20,000 a second, clients sent 30,000 retries a second over the air the
+/// nodes needed to catch up, answers fell to nothing, and they stayed there until the load ended.
+#[derive(Debug)]
+struct RetryBudget {
+    thousandths: u64,
+    refilled: Instant,
+}
+
+impl RetryBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            thousandths: RETRY_BUDGET_START * 1000,
+            refilled: now,
+        }
+    }
+
+    fn refill(&mut self, now: Instant) {
+        // A floor of N a second is N thousandths a millisecond.
+        let ms = now.saturating_duration_since(self.refilled).as_millis() as u64;
+        self.thousandths =
+            (self.thousandths + ms * RETRY_BUDGET_FLOOR_PER_S).min(RETRY_BUDGET_CAP * 1000);
+        self.refilled = now;
+    }
+
+    fn first_send(&mut self, now: Instant) {
+        self.refill(now);
+        self.thousandths =
+            (self.thousandths + RETRY_BUDGET_PERCENT * 10).min(RETRY_BUDGET_CAP * 1000);
+    }
+
+    fn may_retry(&mut self, now: Instant) -> bool {
+        self.refill(now);
+        let may = self.thousandths >= 1000;
+        if may {
+            self.thousandths -= 1000;
+        }
+        may
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("no reply after {attempts} attempts")]
@@ -109,6 +162,8 @@ pub struct MeshClient {
     next_seq: AtomicU64,
     nodes: Vec<ClientRpcClient>,
     counters: Arc<UdpCounters>,
+    retry_budget: std::sync::Mutex<RetryBudget>,
+    retries_skipped: AtomicU64,
     /// Each stub's dispatch and the reporter. Dropped with the client, which aborts them.
     _tasks: JoinSet<()>,
 }
@@ -151,6 +206,8 @@ impl MeshClient {
             next_seq: AtomicU64::new(now_us()),
             nodes,
             counters,
+            retry_budget: std::sync::Mutex::new(RetryBudget::new(Instant::now())),
+            retries_skipped: AtomicU64::new(0),
             _tasks: tasks,
         }
     }
@@ -194,11 +251,15 @@ impl MeshClient {
                 age_ms,
                 incident: incident.clone(),
             };
-            self.log.log(Event::ClientSent {
-                request: id,
-                attempt,
-            });
-            calls.extend(self.group_send(deadline, request));
+            // The time for this attempt still passes if it is not sent, so a report gives up when
+            // it always did, and "5 retries, then an error" still holds for a client with few.
+            if self.may_send(attempt) {
+                self.log.log(Event::ClientSent {
+                    request: id,
+                    attempt,
+                });
+                calls.extend(self.group_send(deadline, request));
+            }
             let wait = tokio::time::sleep(jittered(self.wait_before_retry(attempt)));
             tokio::pin!(wait);
             loop {
@@ -220,6 +281,23 @@ impl MeshClient {
             attempts,
         });
         Err(ClientError::GaveUp { attempts })
+    }
+
+    fn may_send(&self, attempt: u32) -> bool {
+        let now = Instant::now();
+        let mut budget = self
+            .retry_budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if attempt == 0 {
+            budget.first_send(now);
+            return true;
+        }
+        let may = budget.may_retry(now);
+        if !may {
+            self.retries_skipped.fetch_add(1, Ordering::Relaxed);
+        }
+        may
     }
 
     /// The group send (D126, D210): the client middleware's send to all of the cloud nodes. The
@@ -284,6 +362,9 @@ impl MeshClient {
 impl Drop for MeshClient {
     /// The last line, so the cancels this client's final submits sent are in the log too.
     fn drop(&mut self) {
+        self.log.log(Event::ClientRetriesSkipped {
+            skipped: self.retries_skipped.load(Ordering::Relaxed),
+        });
         self.log.log(Event::UdpCounters {
             counts: self.counters.snapshot(),
             udp_drops: None,
@@ -426,6 +507,57 @@ pub async fn udp_answers(addr: &str, timeout: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retries_stop_at_a_share_of_what_was_sent_first_and_a_small_floor() {
+        let start = Instant::now();
+        let mut budget = RetryBudget::new(start);
+        budget.thousandths = 0;
+        for _ in 0..1000 {
+            budget.first_send(start);
+        }
+        // 1000 first sends earn 200 retries, and no more.
+        assert_eq!((0..1000).filter(|_| budget.may_retry(start)).count(), 200);
+        // With nothing sent, only the floor comes in.
+        let later = start + Duration::from_secs(2);
+        assert_eq!(
+            (0..1000).filter(|_| budget.may_retry(later)).count() as u64,
+            2 * RETRY_BUDGET_FLOOR_PER_S
+        );
+    }
+
+    /// 300 reports a second over nine programs is about 33 each, with up to 5 retries for each
+    /// report while every node is down. The nodes can take that many times over, so a budget that
+    /// stops it only loses reports: 3,512 gave up at 300 a second with a floor of 10.
+    #[test]
+    fn a_light_load_keeps_every_retry_however_long_the_outage() {
+        let start = Instant::now();
+        let mut budget = RetryBudget::new(start);
+        budget.thousandths = 0;
+        for second in 1..=60u64 {
+            let now = start + Duration::from_secs(second);
+            for _ in 0..33 {
+                budget.first_send(now);
+            }
+            let allowed = (0..33 * 5).filter(|_| budget.may_retry(now)).count();
+            assert_eq!(allowed, 33 * 5, "at second {second}");
+        }
+    }
+
+    #[test]
+    fn a_retry_budget_cannot_save_up_past_its_cap_and_one_report_can_always_retry() {
+        let start = Instant::now();
+        let mut budget = RetryBudget::new(start);
+        assert!(
+            (0..5).all(|_| budget.may_retry(start)),
+            "5 retries, then an error"
+        );
+        let much_later = start + Duration::from_secs(100_000);
+        let spent = (0..RETRY_BUDGET_CAP * 2)
+            .filter(|_| budget.may_retry(much_later))
+            .count() as u64;
+        assert_eq!(spent, RETRY_BUDGET_CAP);
+    }
+
     use super::*;
 
     #[test]

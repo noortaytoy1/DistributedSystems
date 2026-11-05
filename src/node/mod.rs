@@ -19,6 +19,7 @@ pub mod heartbeat;
 pub mod rejoin;
 pub mod release;
 pub mod service;
+pub mod squeeze;
 pub mod step_aside;
 pub mod takeover;
 #[cfg(test)]
@@ -39,7 +40,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::campus;
-use crate::config::{AssignmentPolicy, Config};
+use crate::config::{AssignmentPolicy, Config, ConsensusMode};
 use crate::metrics::{Event, EventLog, UdpCounters, now_ms};
 use crate::proto::{
     ClientRequest, Command, ControlReply, ControlRequest, NodeId, NodeStatus, PeerBody,
@@ -47,6 +48,7 @@ use crate::proto::{
 };
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, RaftNode};
+use crate::rounds::RoundsNode;
 use bids::BidState;
 use degraded::DegradedState;
 use faults::FaultElection;
@@ -202,7 +204,19 @@ pub async fn start_with(
         peer_handler,
     ))];
 
-    let started = RaftNode::start(id, &config, peers.clone(), log.clone()).await;
+    let started: anyhow::Result<(Arc<dyn Consensus>, StateReader, bool)> = match config.consensus {
+        ConsensusMode::Raft => RaftNode::start(id, &config, peers.clone(), log.clone())
+            .await
+            .map(|(raft, state, restarted)| {
+                tasks.push(raft.spawn_watcher());
+                tasks.push(raft.spawn_heartbeat_summary());
+                tasks.push(raft.spawn_io_report());
+                (raft as Arc<dyn Consensus>, state, restarted)
+            }),
+        ConsensusMode::Rounds => RoundsNode::start(id, &config, peers.clone(), log.clone())
+            .await
+            .map(|(rounds, state, restarted)| (rounds as Arc<dyn Consensus>, state, restarted)),
+    };
     let (raft, state, restarted) = match started {
         Ok(ok) => ok,
         Err(e) => {
@@ -212,9 +226,6 @@ pub async fn start_with(
             return Err(e);
         }
     };
-    tasks.push(raft.spawn_watcher());
-    tasks.push(raft.spawn_heartbeat_summary());
-    tasks.push(raft.spawn_io_report());
 
     let group = Arc::new(CloudGroup::new(
         id,
@@ -296,12 +307,22 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
     if let PeerBody::Raft(rpc) = body {
         return ctx.consensus.handle_rpc(from, rpc).await;
     }
+    // Rounds has its own view of who takes part, and must hear from a node that is behind (D249).
+    if let PeerBody::Rounds(message) = body {
+        return ctx.consensus.handle_rounds(from, message).await;
+    }
     let current = ctx.consensus.status().term;
     if term < current {
         return PeerReply::StaleTerm { current };
     }
     match body {
         PeerBody::Propose(cmd) => PeerReply::Proposed(ctx.consensus.propose_local(cmd).await),
+        PeerBody::ProposeMany(commands) => {
+            let answers = commands
+                .into_iter()
+                .map(|cmd| ctx.consensus.propose_local(cmd));
+            PeerReply::ProposedMany(futures::future::join_all(answers).await)
+        }
         PeerBody::ReadIndex => PeerReply::ReadIndex(ctx.consensus.read_index_local().await),
         PeerBody::FaultBid(bid) => {
             faults::on_bid(&ctx, from, bid);
@@ -315,7 +336,11 @@ async fn on_peer_message(ctx: Arc<NodeContext>, env: PeerEnvelope) -> PeerReply 
             bids::on_bid(&ctx, from, &bid);
             PeerReply::Ack
         }
-        PeerBody::Raft(_) => PeerReply::Ack,
+        PeerBody::Bids(batch) => {
+            bids::on_bids(&ctx, from, &batch);
+            PeerReply::Ack
+        }
+        PeerBody::Raft(_) | PeerBody::Rounds(_) => PeerReply::Ack,
     }
 }
 

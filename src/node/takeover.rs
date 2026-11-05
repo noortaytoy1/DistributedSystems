@@ -15,14 +15,18 @@ use crate::bidding::{ScoreVariant, executor};
 use crate::metrics::Event;
 use crate::proto::{ClientRequest, NodeId};
 
-/// The backstop never fires sooner than this, so a slow plan is not duplicated (Phase 1 §6.3).
-const BACKSTOP_MIN: Duration = Duration::from_millis(200);
+/// The backstop never fires sooner than this, so a slow plan or a slow commit is not duplicated. It
+/// stays under the client's first retry, 2 s less 20% of jitter (D235).
+const BACKSTOP_MIN: Duration = Duration::from_millis(1500);
 
 /// The backstop waits this many times the winner's bid when the bid is an expected wait.
 const BACKSTOP_FACTOR: u64 = 3;
 
-/// How often a standing-by node looks again. Suspicion itself changes once per heartbeat.
-const CHECKS_PER_HEARTBEAT: u32 = 5;
+/// How often a standing-by node looks again. Suspicion itself changes once per heartbeat, and every
+/// request in flight runs this loop, so more checks only cost CPU when commits are slow (D239).
+const CHECKS_PER_HEARTBEAT: u32 = 1;
+/// A node stands by for most reports, so this runs once per check for each of them (D253).
+const STAND_BY_CHECK_AT_MOST: Duration = Duration::from_millis(200);
 
 /// Why a node took over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +83,11 @@ pub async fn stand_by(ctx: &NodeContext, req: &ClientRequest) -> bool {
     // silent rarely plan at once.
     let stagger = timers.peer_heartbeat() * (rank as u32 - 1);
 
-    let mut tick = tokio::time::interval(timers.peer_heartbeat() / CHECKS_PER_HEARTBEAT);
+    let mut tick = tokio::time::interval(
+        (timers.peer_heartbeat() / CHECKS_PER_HEARTBEAT).max(STAND_BY_CHECK_AT_MOST),
+    );
+    // A late tick must not be made up in a burst: that would add load when the node is behind.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut due: Option<Instant> = None;
     loop {
         tick.tick().await;
@@ -128,12 +136,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backstop_is_three_bids_but_at_least_200_ms() {
+    fn backstop_is_three_bids_but_at_least_the_minimum() {
         let wait = ScoreVariant::ExpectedWait;
         assert_eq!(backstop(wait, 1_000), BACKSTOP_MIN);
-        assert_eq!(backstop(wait, 100_000), Duration::from_millis(300));
+        assert_eq!(backstop(wait, 500_000), Duration::from_millis(1500));
         let cpu = ScoreVariant::ExpectedWaitCpu { cpu_weight: 10 };
-        assert_eq!(backstop(cpu, 100_000), Duration::from_millis(300));
+        assert_eq!(backstop(cpu, 500_000), Duration::from_millis(1500));
         assert_eq!(backstop(wait, u64::MAX), Duration::from_micros(u64::MAX));
     }
 

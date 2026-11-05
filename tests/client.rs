@@ -16,7 +16,7 @@ use rescuemesh::client::{ClientError, MeshClient, control, udp_answers};
 use rescuemesh::config::{AssignmentPolicy, ClusterConfig, Config, NodeAddr};
 use rescuemesh::metrics::EventLog;
 use rescuemesh::node::datagram::{self, ServerEnd};
-use rescuemesh::node::transport::{datagram_client, framed, run_calls};
+use rescuemesh::node::transport::{datagram_client, run_calls, tcp_transport};
 use rescuemesh::proto::{
     Capability, Category, ClientReply, ClientRequest, ClientRpc, ClientRpcRequest,
     ClientRpcResponse, CommittedResult, ControlReply, ControlRequest, Incident, IncidentQuery,
@@ -173,6 +173,7 @@ fn stub_config(addrs: &[String]) -> Config {
         metrics: Default::default(),
         faults: Default::default(),
         storage: Default::default(),
+        consensus: Default::default(),
     };
     fast_retries(&mut config);
     config
@@ -298,8 +299,9 @@ async fn a_node_that_comes_back_on_the_same_address_just_answers() {
         let client = client.clone();
         tokio::spawn(async move { client.submit(incident()).await })
     };
+    // A datagram that has left, not one still waiting to be combined (D236).
     wait_until(Duration::from_secs(10), "a send into nothing", || {
-        client.udp_counts().tx_requests >= 1
+        client.udp_counts().tx_datagrams >= 1
     })
     .await;
 
@@ -760,10 +762,7 @@ async fn tcp_only_stub() -> String {
         let mut connections = JoinSet::new();
         loop {
             let (stream, _) = listener.accept().await.unwrap();
-            let transport = tarpc::serde_transport::new(
-                framed(stream),
-                tarpc::tokio_serde::formats::Bincode::default(),
-            );
+            let transport = tcp_transport(stream);
             let calls = BaseChannel::with_defaults(transport).execute(Stub::quiet().serve());
             connections.spawn(run_calls(calls));
         }

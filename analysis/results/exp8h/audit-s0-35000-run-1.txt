@@ -1,0 +1,22 @@
+client log files: 9 ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+unique requests sent 2625084, answered 2625084, gave up 0, unaccounted 0, answered twice 0, bad lines 0
+by client PC, sent: {1: 875028, 2: 875028, 3: 875028} answered: {1: 875028, 2: 875028, 3: 875028}
+status: {'assigned': 2625084} no responder 0 provisional 0
+attempts: {1: 2493560, 2: 122995, 3: 8213, 4: 306, 5: 10}
+executor share: {1: 0.23, 2: 0.421, 3: 0.349} | reply from: {1: 0.184, 2: 0.49, 3: 0.326}
+sent per second after warm-up: min 32617 median 35001 max 35024 over 61 s
+answered per second, 60 s after warm-up: min 22294 median 35183 max 47058
+measured window: 2111618 answers, 35193.6/s
+latency from timestamps (done minus first send): p50 402.9 p95 1834.7 p99 2760.4 max 18882.7 ms
+latency field in the log:                        p50 403.9 p95 1835.7 p99 2761.5 ms
+node-1.jsonl.slim.gz | udp rx_requests 2762572 rx_cancels 2275239 tx_replies 856399 rx_bad 0 rx_queue_full 0 | bids seen (sampled) {3: 19323, 2: 16797, 1: 4223} | won {True: 22425, False: 17918} | commits (sampled) {'commit_result/committed': 12112, 'release_responder/applied': 16889, 'commit_result/duplicate': 10190}
+node-2.jsonl.slim.gz | udp rx_requests 2764579 rx_cancels 1473841 tx_replies 1368790 rx_bad 0 rx_queue_full 0 | bids seen (sampled) {3: 10384, 2: 24060, 1: 13532} | won {True: 27329, False: 20647} | commits (sampled) {'commit_result/committed': 22158, 'release_responder/applied': 25930, 'commit_result/duplicate': 5206}
+node-3.jsonl.slim.gz | udp rx_requests 2764902 rx_cancels 1902824 tx_replies 1243082 rx_bad 0 rx_queue_full 0 | bids seen (sampled) {3: 13706, 2: 26631, 1: 6172} | won {True: 26429, False: 20080} | commits (sampled) {'commit_result/committed': 18242, 'release_responder/applied': 22112, 'commit_result/duplicate': 8093}
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer      0      -    21327    21327   a40aa865c68447d5  2625084    true    false    false   1,2,3
+   2       peer      0      -    21327    21327   a40aa865c68447d5  2625084    true    false    false   1,2,3
+   3       peer      0      -    21327    21327   a40aa865c68447d5  2625084    true    false    false   1,2,3
+node 1: udp ok
+node 2: udp ok
+node 3: udp ok
+

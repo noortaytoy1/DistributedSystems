@@ -1,0 +1,25 @@
+Error recovering event: CompetingCoordinator
+FINAL node 0: own done 114 (8/s) errors 0 p50 1325.4 ms p99 2410.1 ms max 2481.9 ms | applied 390 digest 4343a3cf647de1f8 | stats total 114 accepts 18 recovers 26
+t10 node 0: done/s 0 applied/s 21 errors 0 applied 21 digest b5af381c16abd25
+t11 node 0: done/s 4 applied/s 20 errors 0 applied 41 digest 38a08507bedacd2c
+t12 node 0: done/s 10 applied/s 25 errors 0 applied 66 digest 7baa0b466bee1dc1
+t13 node 0: done/s 9 applied/s 24 errors 0 applied 90 digest 8950290489aed42c
+t14 node 0: done/s 2 applied/s 25 errors 0 applied 115 digest 28ca6e4644b3002a
+t15 node 0: done/s 9 applied/s 24 errors 0 applied 139 digest d5c566ed8162e096
+t16 node 0: done/s 10 applied/s 27 errors 0 applied 166 digest f56820209f10f974
+t17 node 0: done/s 9 applied/s 24 errors 0 applied 190 digest b390797a3317a724
+t18 node 0: done/s 6 applied/s 26 errors 0 applied 216 digest d3f9a62115d43cea
+t19 node 0: done/s 5 applied/s 25 errors 0 applied 241 digest 48ef4e8576005d05
+t20 node 0: done/s 10 applied/s 23 errors 0 applied 264 digest 97a3eada154728d9
+t21 node 0: done/s 8 applied/s 26 errors 0 applied 290 digest e75a1c2f5c720a45
+t22 node 0: done/s 5 applied/s 25 errors 0 applied 315 digest 7f170f00d4c9a461
+t23 node 0: done/s 7 applied/s 24 errors 0 applied 339 digest 7b6a75023e31b1b9
+t24 node 0: done/s 10 applied/s 29 errors 0 applied 368 digest 4961300cc03a22c
+t25 node 0: done/s 10 applied/s 22 errors 0 applied 390 digest 4343a3cf647de1f8
+t26 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t27 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t28 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t29 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t30 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t31 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8
+t32 node 0: done/s 0 applied/s 0 errors 0 applied 390 digest 4343a3cf647de1f8

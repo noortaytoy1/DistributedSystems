@@ -9,6 +9,9 @@
 # leads and who wins a tie apart on screen (D165). It only tends to: read ctl status, never assume.
 # The experiment runner builds its own list from experiments/hosts and never reads this file.
 
+# Rotating rounds, with no leader or coordinator (D249). "raft" keeps the elected leader.
+consensus = "rounds"
+
 [[cluster.nodes]]
 id = 3
 peer_addr = "10.0.0.13:7001"

@@ -33,6 +33,18 @@ pub struct Config {
     pub faults: FaultConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    /// How the nodes reach one order: rotating rounds, or Raft with its elected leader (D249).
+    #[serde(default)]
+    pub consensus: ConsensusMode,
+}
+
+/// See [`Config::consensus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsensusMode {
+    #[default]
+    Raft,
+    Rounds,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +87,8 @@ pub struct Timers {
     /// Every peer suspected for this long, and a serving node answers without a commit (D121).
     /// One peer suspected for this long leaves this node's group member list (D153).
     pub degraded_after_ms: u64,
+    /// Rotating rounds only: how often a node starts its next round (D249).
+    pub round_ms: u64,
 }
 
 impl Default for Timers {
@@ -92,6 +106,7 @@ impl Default for Timers {
             propose_timeout_ms: 3000,
             peer_rpc_timeout_ms: 500,
             degraded_after_ms: 2000,
+            round_ms: 5,
         }
     }
 }
@@ -390,6 +405,9 @@ impl Config {
             return invalid(
                 "timers: need election_timeout_min_ms < election_timeout_max_ms".into(),
             );
+        }
+        if t.round_ms == 0 {
+            return invalid("timers: need round_ms > 0".into());
         }
         if t.client_retry_ms > t.client_retry_max_ms {
             return invalid("timers: need client_retry_ms <= client_retry_max_ms".into());

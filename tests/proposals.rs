@@ -13,6 +13,7 @@ use rescuemesh::proto::{
     ResultProposal, UserId,
 };
 use rescuemesh::raft::proposals::GROUP_LIMIT;
+use rescuemesh::raft::store;
 use rescuemesh::raft::{Consensus, Role};
 
 const WAIT: Duration = Duration::from_secs(120);
@@ -237,14 +238,15 @@ async fn a_returning_follower_catches_up_over_full_groups() {
     .await;
 
     let entries_before = consensus(&cluster, leader).status().last_log_index.unwrap();
-    const FULL_GROUPS: u64 = 320;
-    let proposals = FULL_GROUPS * GROUP_LIMIT as u64;
+    // Fixed, not a multiple of GROUP_LIMIT: more commands than several messages carry (D234).
+    let proposals = 16 * store::MAX_COMMANDS_PER_MESSAGE as u64;
     let committed = burst(consensus(&cluster, leader), 1, proposals).await;
     assert_eq!(committed, proposals);
     let entries = consensus(&cluster, leader).status().last_log_index.unwrap() - entries_before;
     eprintln!("{proposals} proposals made {entries} log entries");
+    let full_groups_in_a_message = (store::MAX_COMMANDS_PER_MESSAGE / GROUP_LIMIT) as u64;
     assert!(
-        entries >= 300,
+        entries > full_groups_in_a_message,
         "needs more entries than one message carries: {entries}"
     );
 

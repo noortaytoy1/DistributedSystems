@@ -13,12 +13,12 @@ Each node has two port numbers from the config:
 | Port               | Who uses it        | Pattern                                               |
 |--------------------|--------------------|-------------------------------------------------------|
 | `peer_addr`, TCP   | other nodes        | tarpc remote calls (`proto::PeerRpc`), many in flight (D119) |
-| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), one UDP packet per message (D167, D170) |
+| `client_addr`, UDP | client middleware  | tarpc remote calls (`proto::ClientRpc`), messages to one address combined in one UDP packet within 20 ms and squeezed, with no trace context (D167, D170, D236, D254, D255, D246) |
 | `client_addr`, TCP | `ctl` and the frontend's status polls | the same trait through tarpc, so a lost silence order cannot vanish (D168) |
 
 On TCP, every frame is a 4-byte big-endian length followed by the body (`tokio_util` `LengthDelimitedCodec`), at most 16 MiB
-(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is set on
-every connection.
+(`MAX_FRAME_BYTES`): a tarpc message in tarpc's bincode format. Malformed frames close the connection. `TCP_NODELAY` is on for every
+connection, and small messages are combined in the code (D247, D248, D251), and frames are squeezed (D255).
 
 One UDP packet is one tarpc message, encoded with `proto::encode`: bincode with varint integers and no trailing bytes, at
 most 1,400 bytes (`MAX_DATAGRAM_BYTES`). A bad UDP packet, an ICMP error or a failed send counts as a lost message: no error ever
@@ -98,7 +98,7 @@ Nodes call each other through the tarpc service `proto::PeerRpc` (D119). A conne
 calls at once, and answers may come back in any order. Each method takes `from` and `term`, the
 sender's current Raft term, and has a deadline, which holds even for a call tarpc could not write because the socket is full
 (D150). A leader stepping aside sends nothing new: it reads the bids it already receives, and only stops sending (D218). A connection whose calls have gone unanswered for
-1 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
+5 s is replaced. In the code, `PeerEnvelope { from, term, body }` names a call, and each body below
 maps to one method.
 
 | Body                         | Sent by                    | Reply                              |
@@ -133,7 +133,7 @@ group: it holds the membership, and sends between nodes follow it. It adds no me
 
 | Call | Addressed to | Used by |
 |------|--------------|---------|
-| `send(timeout, body)` | the peers on this node's who's-alive list | bids and fault bids |
+| `send(timeout, body)` | the peers on this node's who's-alive list | bids, combined for 10 ms as `Bids` (D247, D256), and fault bids |
 | `probe(timeout, body)` | every configured peer | peer heartbeats |
 | `send_ordered(command)` | every copy, in one order, through Raft | the incident service, responder release, campus loading, degraded replay |
 
@@ -167,7 +167,7 @@ yields none. Results of one group share a `log_index` (D133).
 | `CommitResult(ResultProposal)`            | the first result per report ID wins and holds its responder               | `Committed`, `Duplicate(winner)` or `Stale` |
 | `ReleaseResponder { responder, request }` | frees the responder if `request` holds it. Proposed by the node that planned after the service time, by other nodes after twice that (D39) | `Applied` |
 
-`Stale` means the plan's responder is held by another report or unknown. Nothing is recorded,
+A plan whose responder is held by another report is chosen again at apply, the same way on every node (D241). `Stale` means the plan's responder is unknown. Nothing is recorded,
 and the winner plans again with fresh state. After 3 stale plans it makes a plan with nobody on it final, which cannot be stale, and
 answers from what becomes final (D220).
 
@@ -221,7 +221,7 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
    `age_ms` has reached its `ttl_ms`, it does not plan: the plan is nobody, cost 0, priority 0, with no worker job (D143). A full
    worker pool refuses the job, logs `overloaded`, and nothing is sent to the client (D48, D138).
 5. The winner proposes `CommitResult`. A follower that knows the leader forwards it straight away with `Propose`. On the leader it
-   goes into the queue in front of Raft: one write in flight, and one write carries a group of up to 200 commands of what waited, in one log line and one save (D133).
+   goes into the queue in front of Raft: one write in flight, and one write carries a group of up to 2000 commands of what waited, in one log line and one save (D133).
 6. After the log line is final and the leader has applied it, the winner answers with the first result to become final: `Expired` if that record was too
    old on arrival, otherwise `Done`. A node that is not serving at that moment stays quiet and the client's retry gets the
    result from a serving node (D136).
@@ -296,7 +296,7 @@ Fixed values in the code, not config keys, because no experiment varies them:
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(200 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110) |
+| takeover backstop (`takeover.rs::BACKSTOP_MIN`, `BACKSTOP_FACTOR`) | max(1500 ms, 3 × the winner's bid) | a node that lost a round plans anyway if nothing is final by then (D42, D110, D235, D250) |
 | `rejoin.rs::NO_LEADER_ELECT_AFTER` | 3 s | a returning node that hears no leader this long may stand itself (D125) |
 | `rejoin.rs::ASK_AGAIN_AFTER` | 1 s | how long a returning node waits on one target before it asks the leader again (D135) |
 | `rejoin.rs::WAIT_WARNING` | 5 s | how often a node still catching up warns |
@@ -310,9 +310,12 @@ Fixed values in the code, not config keys, because no experiment varies them:
 | `transport.rs::STALE_CONNECTION` | 1 s | a peer connection whose calls have gone unanswered this long is replaced (D119) |
 | `datagram.rs::CHANNEL_IDLE` | 60 s | a user program with no traffic for this long loses its channel on the node (D170) |
 | `datagram.rs::RECEIVE_BUFFER_BYTES` | 8 MiB | every UDP socket asks for this; the kernel caps it at `net.core.rmem_max`, then doubles it (D171) |
-| `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message on UDP, so it is never split on an Ethernet path (D170) |
+| `proto::MAX_DATAGRAM_BYTES` | 1,400 bytes | the largest message, and the largest combined datagram, on UDP, so it is never split on an Ethernet path (D170, D236) |
+| `timers.round_ms` | 5 ms | rotating rounds: how often a node starts its next round (D249) |
+| `datagram.rs::COMBINE_WAIT` | 10 ms | how long a message on UDP waits for others to the same address. Full datagrams go at the end of a running wait, or sooner (D236, D246) |
+| `datagram.rs::COMBINED` | first byte `0xFF` | a datagram of several messages, each after a 2-byte big-endian length. A datagram with one message is that message alone (D236) |
 | `transport.rs::MAX_IN_FLIGHT_CALLS`, `CALL_BUFFER` | 20,000, 2,000 | calls in flight and buffered per stub; an open-loop `--rate` above that makes new calls wait (D173) |
-| `proposals.rs::GROUP_LIMIT` | 200 | most commands in one write, so in one log line and one save. On a slow disk this is the log's limit (D133, D228) |
+| `proposals.rs::GROUP_LIMIT` | 2000 | most commands in one write, so in one log line and one save. One full group must be sent, saved and answered within `raft_heartbeat_ms` (D133, D228, D234) |
 | `store.rs::MAX_COMMANDS_PER_MESSAGE` | 4096 | most commands in one AppendEntries, so a catch-up message can finish inside its time limit (D133) |
 
 ## The frontend's local page API
@@ -342,3 +345,33 @@ Constants in `bin/frontend.rs`, not config keys, because no experiment varies th
 
 A program's client ID is the frontend's ID x 10000 + n, from 1. Six digits,
 because five-digit IDs belong to `scripts/start-users.sh` (D184).
+
+## Rotating rounds (D249)
+
+With `consensus = "rounds"`, no node is elected. Peers exchange `PeerBody::Rounds(RoundsMsg)`:
+
+| Message | From | Answer | Meaning |
+|---------|------|--------|---------|
+| `Stream { after, through, batches }` | every member, one call at a time per peer | `Have { have }`, after saving | the sender's batches after round `after`, and that its stream covers `through` |
+| `Drop { view, target, have }` | a member that finds `target` silent | `Granted`, or `Refused` | go on without `target`. A node promises at most one next view |
+| `DropCommit { view, target, cut, batches }` | the same member | `Done` | the stream of `target` ends at `cut`, and these are the batches the receiver lacks |
+| `CatchUp { next }` | a returning node | `Entries` | the applied log from entry `next` |
+| `Join` | a returning node that has caught up | `Done` | add me. A member puts `RoundControl::Add` in its stream, so all members do it at one place in the order |
+| `Applied` | a returning node | `Applied { index }` | how far this node has applied |
+
+All nodes apply batches in the order (round, node ID), up to the lowest round all members have passed. A node's own stream counts only as far as a peer has saved it.
+
+## Changes for failures of more than one node (D261 to D264)
+
+| What | Change |
+|---|---|
+| `RoundsMsg::CatchUp` | Adds `last: Option<(NodeId, u64)>` |
+| `RoundsReply::Entries` | `starts` is now `Vec<(NodeId, u64, u64)>`, and adds `held: Vec<RoundBatch>` |
+| `RoundsReply::Joining { total, view }` | New: the answer from a node on its way back |
+| `RoundsReply::Diverged` | New: what the asker holds is not a start of this log |
+| `LogRecord` | New: `Batch`, `Applied`, `Reset`, the records of a node's log file |
+| `Consensus::is_alone` | New: nothing can commit here yet. Always false under Raft |
+| `REPLAY_BATCH` | 64 to 2048 |
+| `MAX_IN_FLIGHT_CALLS` | 20,000 to 130,000 |
+| Retry budget, in `client.rs` | 20% of first sends, floor 200 a second, cap 5,000, start 100 |
+| `client_retries_skipped` | New event: retries a client left unsent, as its last log line |

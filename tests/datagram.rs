@@ -14,12 +14,14 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use common::wait_until;
-use futures::{Sink, SinkExt, Stream};
+use common::{TestCluster, wait_until};
+use futures::stream::FuturesUnordered;
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use rescuemesh::metrics::UdpCounters;
-use rescuemesh::node::datagram::{self, BincodeDatagram, ClientEnd, ServerEnd};
-use rescuemesh::node::transport::run_calls;
+use rescuemesh::node::datagram::{self, BincodeDatagram, ClientEnd, ServerEnd, WireMessage};
+use rescuemesh::node::transport::{datagram_client, run_calls};
 use rescuemesh::proto;
+use tarpc::client::NewClient;
 use tarpc::server::{BaseChannel, Channel};
 use tarpc::{ClientMessage, Request, Response, context};
 use tokio::net::UdpSocket;
@@ -167,6 +169,11 @@ impl Stream for Naive {
     }
 }
 
+fn wire_message(bytes: &[u8]) -> ClientMessage<EchoRequest> {
+    let wire: WireMessage<EchoRequest> = proto::decode(bytes).unwrap();
+    wire.into_message()
+}
+
 impl Sink<ClientMessage<EchoRequest>> for Naive {
     type Error = io::Error;
 
@@ -175,7 +182,7 @@ impl Sink<ClientMessage<EchoRequest>> for Naive {
     }
 
     fn start_send(self: Pin<&mut Self>, item: ClientMessage<EchoRequest>) -> io::Result<()> {
-        let bytes = proto::encode(&item).unwrap();
+        let bytes = proto::encode(&WireMessage::from_message(item).unwrap()).unwrap();
         // A send error is passed on too, as a thin adapter would.
         self.socket.try_send_to(&bytes, self.peer).map(|_| ())
     }
@@ -307,7 +314,10 @@ impl Raw {
             message,
         });
         self.socket
-            .send_to(&proto::encode(&msg).unwrap(), self.to)
+            .send_to(
+                &proto::encode(&WireMessage::from_message(msg).unwrap()).unwrap(),
+                self.to,
+            )
             .await
             .unwrap();
     }
@@ -318,7 +328,10 @@ impl Raw {
             request_id: id,
         };
         self.socket
-            .send_to(&proto::encode(&msg).unwrap(), self.to)
+            .send_to(
+                &proto::encode(&WireMessage::from_message(msg).unwrap()).unwrap(),
+                self.to,
+            )
             .await
             .unwrap();
     }
@@ -397,8 +410,7 @@ async fn late_and_unknown_responses_are_ignored() {
     assert!(matches!(err, tarpc::client::RpcError::DeadlineExceeded));
     let mut buf = [0u8; 1500];
     let (n, from) = stub.recv_from(&mut buf).await.unwrap();
-    let ClientMessage::Request(req): ClientMessage<EchoRequest> = proto::decode(&buf[..n]).unwrap()
-    else {
+    let ClientMessage::Request(req) = wire_message(&buf[..n]) else {
         panic!("expected a request")
     };
     for id in [req.id, 999_999] {
@@ -414,9 +426,7 @@ async fn late_and_unknown_responses_are_ignored() {
     let second = client.stub.echo(deadline_ctx(PATIENCE), 2);
     let answer = async {
         let (n, from) = stub.recv_from(&mut buf).await.unwrap();
-        let ClientMessage::Request(req): ClientMessage<EchoRequest> =
-            proto::decode(&buf[..n]).unwrap()
-        else {
+        let ClientMessage::Request(req) = wire_message(&buf[..n]) else {
             panic!("expected a request")
         };
         let answer = Response {
@@ -721,4 +731,58 @@ async fn aborting_serve_ends_every_channel_and_call_and_frees_the_port() {
         std::net::UdpSocket::bind(server.addr).is_ok()
     })
     .await;
+}
+
+/// A client program holds up to 20,000 open reports and up to six calls per node for each. If its
+/// stub stops at fewer calls, the client sends nothing at all to any node until old reports give
+/// up, even with healthy nodes: about 18 s of silence after a 20,000 a second outage (D263).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stub_keeps_sending_with_every_call_a_full_client_can_hold_open() {
+    const OPEN_CALLS: u64 = 120_000;
+    let cluster = TestCluster::start(1).await;
+    let node = cluster.node(1);
+    let addr = node.client_addr.to_string();
+    let NewClient { client, dispatch } = datagram_client(&addr, Arc::default(), None).unwrap();
+    let dispatching = tokio::spawn(dispatch);
+    // Silenced, so every call stays open with no answer. Each still counts as it arrives.
+    node.ctx.gate.silence();
+    let calling = tokio::spawn(async move {
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let mut calls = FuturesUnordered::new();
+        for seq in 0..OPEN_CALLS {
+            let request = proto::ClientRequest {
+                id: proto::RequestId { client: 7, seq },
+                attempt: 0,
+                age_ms: 0,
+                incident: proto::Incident {
+                    owner: proto::UserId { client: 7, user: 0 },
+                    category: proto::Category::Flooding,
+                    zone: 0,
+                    location: proto::Point { x: 1, y: 2 },
+                    severity: 3,
+                    needs: proto::Capability::Rescue,
+                    reported_at_ms: 0,
+                    ttl_ms: 60_000,
+                },
+            };
+            calls.push(client.submit(ctx, request));
+            // Let the calls go out as they are added.
+            if seq % 512 == 0 {
+                let _ = tokio::time::timeout(Duration::from_millis(1), calls.next()).await;
+            }
+        }
+        while calls.next().await.is_some() {}
+    });
+    let counters = node.udp_counters.clone();
+    wait_until(
+        Duration::from_secs(60),
+        "every open call to leave the client",
+        || counters.snapshot().rx_gate_dropped >= OPEN_CALLS,
+    )
+    .await;
+    calling.abort();
+    dispatching.abort();
+    node.ctx.gate.restore();
+    cluster.shutdown().await;
 }

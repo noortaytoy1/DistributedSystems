@@ -36,16 +36,15 @@ use crate::proto::{Command, CommandGroup, Outcome, ProposeError};
 
 /// Most commands in one log entry.
 ///
-/// High enough not to limit a run on a healthy disk: a round is two saves and some work, about 14 ms
-/// at 3000 users on one PC, which allows about 14,000 commands per second against about 6000 from
-/// 3000 users (one request each and a release for each, with 3000 responders). On a slow disk it is
-/// the limit: with 25 ms added to each save a round took 62 ms, which allows 3200, so proposals wait
-/// out their deadline there, and by arithmetic about 15 ms a save is where that starts (D228). Low
-/// enough for the wire: even `max_payload_entries` (300) full groups in one AppendEntries would be
-/// at most 7.4 MB (123 bytes per command at the longest), well under `MAX_FRAME_BYTES` (16 MiB). The
-/// test `a_full_catch_up_message_fits_in_a_frame` holds this to the real encoding, and in practice
-/// one message carries far less (`store::MAX_COMMANDS_PER_MESSAGE`).
-pub const GROUP_LIMIT: usize = 200;
+/// High enough not to limit a run on the six PCs. There one write took about 46 ms and one report made
+/// about 2.67 commands, so the old limit of 200 capped the log near 1,630 reports a second. A
+/// target of 10,000 a second needs about 1,230 commands a write at that speed, and 2000 leaves a
+/// margin (D234). Low enough for the wire: one full group is at most about 246 KB (123 bytes per
+/// command at the longest), which must be sent, saved and answered within `raft_heartbeat_ms`, so a
+/// run near this limit needs that timer above its 50 ms default (D234). A message is capped by
+/// `store::MAX_COMMANDS_PER_MESSAGE`, so it is at most 2 full groups, well under `MAX_FRAME_BYTES`
+/// (16 MiB). The test `a_full_catch_up_message_fits_in_a_frame` holds this to the real encoding.
+pub const GROUP_LIMIT: usize = 2000;
 
 /// One proposal waiting for its write.
 struct Waiting {
@@ -266,6 +265,7 @@ mod tests {
         ResultProposal, StaleReason, UserId,
     };
     use crate::raft::TypeConfig;
+    use crate::raft::store::MAX_COMMANDS_PER_MESSAGE;
     use openraft::raft::AppendEntriesRequest;
     use openraft::{CommittedLeaderId, Entry, EntryPayload, LogId, Vote};
     use rand::SeedableRng;
@@ -727,9 +727,10 @@ mod tests {
         )
     }
 
-    /// The message a returning node can be sent: `max_payload_entries` entries of `limit` commands.
+    /// The largest message a returning node can be sent: `limited_get_log_entries` stops before the
+    /// entry that would pass `MAX_COMMANDS_PER_MESSAGE`, so that many full groups, rounded down.
     fn catch_up_message(make: impl Fn(u64) -> Command) -> PeerRpcRequest {
-        let entries = openraft::Config::default().max_payload_entries;
+        let entries = (MAX_COMMANDS_PER_MESSAGE / GROUP_LIMIT).max(1) as u64;
         let last = LogId::new(CommittedLeaderId::new(u64::MAX, u64::MAX), u64::MAX);
         let entries: Vec<Entry<TypeConfig>> = (0..entries)
             .map(|i| Entry {
@@ -771,7 +772,7 @@ mod tests {
         let one_real = proto::encode(&real_command(1)).unwrap().len();
         eprintln!(
             "one command: longest {one_long} bytes, real {one_real} bytes; \
-             a full message of 300 x {GROUP_LIMIT}: longest {longest} bytes, real {real} bytes, \
+             a full message of groups of {GROUP_LIMIT}: longest {longest} bytes, real {real} bytes, \
              frame limit {}",
             proto::MAX_FRAME_BYTES
         );

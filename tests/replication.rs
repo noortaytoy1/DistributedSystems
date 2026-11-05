@@ -9,7 +9,7 @@ use std::time::Duration;
 use common::{TestCluster, wait_until};
 use rescuemesh::proto::{
     Capability, Category, Command, Incident, NodeId, Outcome, Plan, Point, RequestId, Responder,
-    ResponderId, ResultProposal, StaleReason, UserId,
+    ResponderId, ResultProposal, UserId,
 };
 use rescuemesh::raft::{Consensus, Role};
 
@@ -210,15 +210,11 @@ async fn plan_for_a_taken_responder_comes_back_stale() {
         c.propose(proposal(1, 1, 3, Some(1))).await.unwrap(),
         Outcome::Committed(_)
     ));
-    let stale = c.propose(proposal(1, 2, 3, Some(1))).await.unwrap();
-    assert_eq!(
-        stale,
-        Outcome::Stale {
-            request: RequestId { client: 1, seq: 2 },
-            responder: 1,
-            reason: StaleReason::HeldBy(RequestId { client: 1, seq: 1 }),
-        }
-    );
+    // Its responder is taken and nobody else is free, so it commits with nobody sent (D241).
+    let Outcome::Committed(second) = c.propose(proposal(1, 2, 3, Some(1))).await.unwrap() else {
+        panic!("a plan that lost its responder is chosen again, not refused");
+    };
+    assert_eq!(second.plan.responder, None);
     cluster.shutdown().await;
 }
 

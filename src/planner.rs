@@ -83,14 +83,24 @@ pub struct CostKnob {
 /// Choose a responder for `incident` from `free`, and work out how urgent the incident is.
 pub fn plan(incident: &Incident, free: &[Responder], age_ms: u64, knob: CostKnob) -> Plan {
     burn(knob.extra_work);
+    pick(incident, free.iter(), age_ms)
+}
+
+/// The choice itself: no busy work, and no copy of the free list. Also what the state machine uses
+/// when a plan's responder was taken while it travelled through the log (D241).
+pub fn pick<'a>(
+    incident: &Incident,
+    free: impl Iterator<Item = &'a Responder> + Clone,
+    age_ms: u64,
+) -> Plan {
     let matching = nearest(
         incident,
-        free.iter().filter(|r| r.capability == incident.needs),
+        free.clone().filter(|r| r.capability == incident.needs),
     );
     let needed_capability_free = matching.is_some();
     let chosen = matching.or_else(|| {
         if incident.severity >= SEVERE || age_ms >= OLD_AGE_MS {
-            nearest(incident, free.iter())
+            nearest(incident, free.clone())
         } else {
             None
         }
@@ -103,7 +113,7 @@ pub fn plan(incident: &Incident, free: &[Responder], age_ms: u64, knob: CostKnob
         severity: incident.severity,
         age_ms,
         distance_m: responder.map(|_| cost),
-        free_responders: free.len(),
+        free_responders: free.count(),
         needed_capability_free,
     }
     .points();

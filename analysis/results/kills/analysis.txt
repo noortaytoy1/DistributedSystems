@@ -1,0 +1,76 @@
+allA   10000 run 1 b6221c5: sent 899910 answered 777958 (provisional 0) gave up 121952 unaccounted 0 mismatches 0 of 348 p99 26119.986 no-answer 21.36s no-commit 21.36s
+allA   10000 run 2 b6221c5: sent 899910 answered 875271 (provisional 0) gave up 24639 unaccounted 0 mismatches 0 of 406 p99 24932.167 no-answer 8.59s no-commit 8.59s
+allA   10000 run 3 b6221c5: sent 899910 answered 829711 (provisional 0) gave up 70199 unaccounted 0 mismatches 0 of 390 p99 25713.483 no-answer 13.39s no-commit 13.39s
+allA   15000 run 1 b6221c5: sent 1350270 answered 1075504 (provisional 0) gave up 274766 unaccounted 0 mismatches 0 of 309 p99 25979.29 no-answer 18.62s no-commit 18.62s
+allA   15000 run 2 b6221c5: sent 1350270 answered 1287967 (provisional 0) gave up 62303 unaccounted 0 mismatches 0 of 252 p99 24898.276 no-answer 9.01s no-commit 9.01s
+allA   20000 run 1 b6221c5: sent 1799820 answered 1457119 (provisional 0) gave up 342701 unaccounted 0 mismatches 0 of 314 p99 29325.224 no-answer 14.48s no-commit 14.48s
+allA     300 run 1 b6221c5: sent 26730 answered 26708 (provisional 0) gave up 22 unaccounted 0 mismatches 0 of 117 p99 24923.241 no-answer 22.24s no-commit 22.24s
+allB   10000 run 1 b6221c5: sent 899910 answered 749221 (provisional 0) gave up 150689 unaccounted 0 mismatches 0 of 390 p99 25660.102 no-answer 16.26s no-commit 16.26s
+allB   10000 run 2 b6221c5: sent 899910 answered 776279 (provisional 0) gave up 123631 unaccounted 0 mismatches 0 of 352 p99 26186.169 no-answer 19.37s no-commit 19.37s
+allB   10000 run 3 b6221c5: sent 899910 answered 787409 (provisional 17274) gave up 112501 unaccounted 0 mismatches 0 of 340 p99 26085.086 no-answer 11.45s no-commit 11.45s
+allB   15000 run 1 b6221c5: sent 1350270 answered 1262322 (provisional 125992) gave up 87948 unaccounted 0 mismatches 0 of 237 p99 25449.806 no-answer 14.38s no-commit 16.55s
+allB   15000 run 2 b6221c5: sent 1350270 answered 1150869 (provisional 146472) gave up 199401 unaccounted 0 mismatches 0 of 189 p99 25801.495 no-answer 15.96s no-commit 15.96s
+allB   20000 run 1 b6221c5: sent 1799820 answered 1652344 (provisional 94106) gave up 147476 unaccounted 0 mismatches 0 of 180 p99 25431.332 no-answer 8.79s no-commit 8.79s
+allB     300 run 1 b6221c5: sent 26730 answered 26730 (provisional 3491) gave up 0 unaccounted 0 mismatches 0 of 138 p99 16808.016 no-answer 11.98s no-commit 11.98s
+one    10000 run 1 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 437 p99 1120.434 no-answer 0.94s no-commit 0.94s
+one    10000 run 2 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 433 p99 1148.054 no-answer 0.95s no-commit 0.95s
+one    10000 run 3 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 402 p99 7123.552 no-answer 0.98s no-commit 0.98s
+one    15000 run 1 b6221c5: sent 1350270 answered 1350270 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 313 p99 1120.354 no-answer 0.97s no-commit 0.97s
+one    15000 run 2 b6221c5: sent 1350270 answered 1350270 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 310 p99 2006.006 no-answer 1.02s no-commit 1.02s
+one    20000 run 1 b6221c5: sent 1799820 answered 1799820 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 301 p99 1983.126 no-answer 0.84s no-commit 0.84s
+one      300 run 1 b6221c5: sent 26730 answered 26730 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 163 p99 327.97 no-answer 0.98s no-commit 0.98s
+twoA   10000 run 1 b6221c5: sent 899910 answered 870015 (provisional 22796) gave up 29895 unaccounted 0 mismatches 0 of 378 p99 24847.075 no-answer 3.69s no-commit 8.72s
+runs/exp8h/killtwoA/10000/run-2: could not read: KeyError(2)
+twoA   10000 run 3 b6221c5: sent 899910 answered 896676 (provisional 2158) gave up 3234 unaccounted 0 mismatches 0 of 427 p99 21941.077 no-answer 1.02s no-commit 1.63s
+twoA   15000 run 1 b6221c5: sent 1350270 answered 1350270 (provisional 139055) gave up 0 unaccounted 0 mismatches 0 of 259 p99 5603.523 no-answer 1.57s no-commit 8.45s
+twoA   15000 run 2 b6221c5: sent 1350270 answered 1350270 (provisional 127251) gave up 0 unaccounted 0 mismatches 0 of 243 p99 5550.414 no-answer 1.48s no-commit 7.22s
+twoA   20000 run 1 b6221c5: sent 1799820 answered 1799819 (provisional 107664) gave up 1 unaccounted 0 mismatches 0 of 235 p99 15020.921 no-answer 2.8s no-commit 7.11s
+twoA     300 run 1 b6221c5: sent 26730 answered 26730 (provisional 2736) gave up 0 unaccounted 0 mismatches 0 of 145 p99 5561.864 no-answer 1.62s no-commit 6.92s
+twoB   10000 run 1 b6221c5: sent 899910 answered 868691 (provisional 25118) gave up 31219 unaccounted 0 mismatches 0 of 405 p99 24515.071 no-answer 1.9s no-commit 6.97s
+twoB   10000 run 2 b6221c5: sent 899910 answered 899910 (provisional 2332) gave up 0 unaccounted 0 mismatches 0 of 404 p99 11796.539 no-answer 1.44s no-commit 1.44s
+twoB   10000 run 3 b6221c5: sent 899910 answered 871207 (provisional 34802) gave up 28703 unaccounted 0 mismatches 0 of 380 p99 25268.789 no-answer 1.76s no-commit 9.08s
+twoB   15000 run 1 b6221c5: sent 1350270 answered 1350270 (provisional 68562) gave up 0 unaccounted 0 mismatches 0 of 269 p99 5554.503 no-answer 1.5s no-commit 3.32s
+twoB   15000 run 2 b6221c5: sent 1350270 answered 1350270 (provisional 43263) gave up 0 unaccounted 0 mismatches 0 of 255 p99 5588.114 no-answer 1.39s no-commit 2.53s
+twoB   20000 run 1 b6221c5: sent 1799820 answered 1798711 (provisional 167096) gave up 1109 unaccounted 0 mismatches 0 of 243 p99 13620.477 no-answer 0.95s no-commit 4.95s
+twoB     300 run 1 b6221c5: sent 26730 answered 26730 (provisional 2127) gave up 0 unaccounted 0 mismatches 0 of 155 p99 5596.318 no-answer 1.58s no-commit 4.9s
+twoC   10000 run 1 b6221c5: sent 899910 answered 838670 (provisional 36071) gave up 61240 unaccounted 0 mismatches 0 of 332 p99 25144.315 no-answer 1.33s no-commit 8.99s
+twoC   10000 run 2 b6221c5: sent 899910 answered 865054 (provisional 47212) gave up 34856 unaccounted 0 mismatches 0 of 393 p99 25246.773 no-answer 1.31s no-commit 10.89s
+twoC   10000 run 3 b6221c5: sent 899910 answered 875932 (provisional 34382) gave up 23978 unaccounted 0 mismatches 0 of 400 p99 24967.685 no-answer 1.44s no-commit 8.1s
+twoC   15000 run 1 b6221c5: sent 1350270 answered 1350270 (provisional 140291) gave up 0 unaccounted 0 mismatches 0 of 280 p99 5868.445 no-answer 1.26s no-commit 7.96s
+twoC   15000 run 2 b6221c5: sent 1350270 answered 1350270 (provisional 63043) gave up 0 unaccounted 0 mismatches 0 of 289 p99 6046.707 no-answer 1.2s no-commit 3.42s
+twoC   20000 run 1 b6221c5: sent 1799820 answered 1799820 (provisional 176285) gave up 0 unaccounted 0 mismatches 0 of 270 p99 6642.856 no-answer 1.4s no-commit 7.66s
+twoC     300 run 1 b6221c5: sent 26730 answered 26730 (provisional 3914) gave up 0 unaccounted 0 mismatches 0 of 140 p99 5534.779 no-answer 1.58s no-commit 10.9s
+twoD   10000 run 1 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 402 p99 3393.76 no-answer 0.97s no-commit 0.97s
+twoD   10000 run 2 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 405 p99 6108.289 no-answer 1.0s no-commit 1.0s
+twoD   10000 run 3 b6221c5: sent 899910 answered 899910 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 403 p99 2004.317 no-answer 0.99s no-commit 0.99s
+twoD   15000 run 1 b6221c5: sent 1350270 answered 1350270 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 299 p99 2048.62 no-answer 0.96s no-commit 0.96s
+twoD   15000 run 2 b6221c5: sent 1350270 answered 1158291 (provisional 0) gave up 191979 unaccounted 0 mismatches 0 of 309 p99 24995.979 no-answer 3.82s no-commit 3.82s
+twoD   20000 run 1 b6221c5: sent 1799820 answered 1675860 (provisional 0) gave up 123960 unaccounted 0 mismatches 0 of 350 p99 24023.009 no-answer 0.44s no-commit 0.44s
+twoD     300 run 1 b6221c5: sent 26730 answered 26730 (provisional 0) gave up 0 unaccounted 0 mismatches 0 of 147 p99 700.718 no-answer 1.01s no-commit 1.01s
+final0 10000 run 1 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final0 10000 run 2 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final0 10000 run 3 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final0 15000 run 1 b6221c5: sent 1125225 answered 1125225 gave up 0 unaccounted 0 mismatches 0
+final0 15000 run 2 b6221c5: sent 1125225 answered 1125225 gave up 0 unaccounted 0 mismatches 0
+final0 15000 run 3 b6221c5: sent 1125225 answered 1125225 gave up 0 unaccounted 0 mismatches 0
+final0 20000 run 1 b6221c5: sent 1499850 answered 1499850 gave up 0 unaccounted 0 mismatches 0
+final0 20000 run 2 b6221c5: sent 1499850 answered 1499850 gave up 0 unaccounted 0 mismatches 0
+final0 20000 run 3 b6221c5: sent 1499850 answered 1147334 gave up 352516 unaccounted 0 mismatches 0
+final0 30000 run 1 b6221c5: sent 2249775 answered 1898082 gave up 351693 unaccounted 0 mismatches 0
+final0 30000 run 2 b6221c5: sent 2249775 answered 1887022 gave up 362753 unaccounted 0 mismatches 0
+final0 30000 run 3 b6221c5: sent 2249775 answered 1953462 gave up 296313 unaccounted 0 mismatches 0
+final1 10000 run 1 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final1 10000 run 2 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final1 10000 run 3 b6221c5: sent 749925 answered 749925 gave up 0 unaccounted 0 mismatches 0
+final1 12000 run 1 b6221c5: sent 899781 answered 899781 gave up 0 unaccounted 0 mismatches 0
+final1 12000 run 2 b6221c5: sent 899781 answered 899781 gave up 0 unaccounted 0 mismatches 0
+users 1000-run1 run 1 b6221c5: sent 183861 answered 183861 gave up 0 unaccounted 0 mismatches 0
+users 333-run1 run 1 b6221c5: sent 67257 answered 67257 gave up 0 unaccounted 0 mismatches 0
+stress flat-900 run 1 b6221c5: sent 228463 answered 228463 gave up 0 unaccounted 0 mismatches 0
+stress spike-100 run 1 b6221c5: sent 18906 answered 18906 gave up 0 unaccounted 0 mismatches 0
+stress spike-333 run 1 b6221c5: sent 43145 answered 43145 gave up 0 unaccounted 0 mismatches 0
+power leader run 1 b6221c5: sent 81647 answered 81647 gave up 0 unaccounted 0 mismatches 0
+oneleft 300 run 1 b6221c5: sent 80815 answered 80815 gave up 0 unaccounted 0 mismatches 0
+oneleft 300 run 2 b6221c5: sent 47838 answered 47838 gave up 0 unaccounted 0 mismatches 0
+oneleft 300 run 3 b6221c5: sent 47737 answered 47737 gave up 0 unaccounted 0 mismatches 0
+draw off run 1 b6221c5: sent 52290 answered 52290 gave up 0 unaccounted 0 mismatches 0

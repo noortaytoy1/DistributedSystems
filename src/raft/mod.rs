@@ -28,14 +28,14 @@ pub mod wal;
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, RaftError};
 use openraft::{BasicNode, ServerState, SnapshotPolicy, TokioRuntime};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -44,7 +44,7 @@ use crate::metrics::{Event, EventLog};
 use crate::node::transport::PeerSet;
 use crate::proto::{
     Command, CommandGroup, NodeId, Outcome, PeerBody, PeerEnvelope, PeerReply, ProposeError,
-    RaftRpc, Term,
+    RaftRpc, RoundsMsg, Term,
 };
 use network::{HeartbeatStats, Network, PeerBeats};
 use proposals::{GROUP_LIMIT, ProposalQueue};
@@ -77,6 +77,8 @@ pub enum Role {
     Candidate,
     Learner,
     Shutdown,
+    /// Under rotating rounds: nobody is elected (D249).
+    Peer,
 }
 
 impl Role {
@@ -87,6 +89,7 @@ impl Role {
             Role::Candidate => "candidate",
             Role::Learner => "learner",
             Role::Shutdown => "shutdown",
+            Role::Peer => "peer",
         }
     }
 }
@@ -143,6 +146,16 @@ pub trait Consensus: Send + Sync + 'static {
     /// Hand an incoming Raft RPC from peer `from` to the Raft implementation.
     fn handle_rpc(&self, from: NodeId, rpc: RaftRpc) -> BoxFuture<'_, PeerReply>;
 
+    /// Nothing can commit here yet, even with a peer in contact: it answers as a lone node (D262).
+    fn is_alone(&self) -> bool {
+        false
+    }
+
+    /// Hand a rotating-rounds message to the rounds implementation (D249). Raft has none.
+    fn handle_rounds(&self, _from: NodeId, _message: RoundsMsg) -> BoxFuture<'_, PeerReply> {
+        Box::pin(async { PeerReply::Ack })
+    }
+
     fn status(&self) -> ConsensusStatus;
 
     /// Changes on every AppendEntries this node accepts from a current leader, carrying its
@@ -184,6 +197,8 @@ pub struct RaftNode {
     id: NodeId,
     raft: Raft,
     peers: Arc<PeerSet>,
+    /// Commands waiting to go to the leader together (D248).
+    forwarding: Arc<Mutex<Vec<Forwarded>>>,
     timers: Timers,
     log: EventLog,
     heartbeats: Arc<HeartbeatStats>,
@@ -226,7 +241,7 @@ impl RaftNode {
         // openraft's default 500 ms backoff would delay catching up a node that just returned.
         let backoff = Duration::from_millis(2 * t.raft_heartbeat_ms);
         let heartbeats = Arc::new(HeartbeatStats::default());
-        let network = Network::new(id, peers.clone(), backoff, heartbeats.clone());
+        let network = Network::new(id, Arc::new(peers.for_raft()), backoff, heartbeats.clone());
         let raft = Raft::new(id, Arc::new(raft_config), network, log_store, state_machine).await?;
 
         // A restarted node has its membership in its log file, and openraft would refuse to
@@ -256,6 +271,7 @@ impl RaftNode {
             id,
             raft,
             peers,
+            forwarding: Arc::default(),
             timers: t.clone(),
             log,
             heartbeats,
@@ -364,31 +380,39 @@ impl RaftNode {
         })
     }
 
+    /// Sends `cmd` to `leader` with whatever else this node forwards in the next few milliseconds (D248).
     async fn forward(
         &self,
         leader: NodeId,
         cmd: Command,
         timeout: Duration,
     ) -> Result<Outcome, ProposeError> {
-        let Some(peer) = self.peers.get(leader) else {
+        if self.peers.get(leader).is_none() {
             return Err(ProposeError::NotLeader { leader: None });
+        }
+        let (answer, answered) = oneshot::channel();
+        let first = {
+            let mut waiting = self.forwarding.lock().unwrap_or_else(|p| p.into_inner());
+            waiting.push((cmd, answer));
+            waiting.len() == 1
         };
-        let envelope = PeerEnvelope {
-            from: self.id,
-            term: self.status().term,
-            body: PeerBody::Propose(cmd),
-        };
+        if first {
+            // It ends within the proposal timeout, so it needs no owner.
+            tokio::spawn(send_forwards(
+                self.forwarding.clone(),
+                self.peers.clone(),
+                self.id,
+                self.status().term,
+                leader,
+                self.timers.propose_timeout(),
+            ));
+        }
         let mut leader_change = self.leader.subscribe();
-        let reply = tokio::select! {
-            reply = peer.call(envelope, timeout) => reply,
+        tokio::select! {
+            reply = answered => reply.unwrap_or(Err(ProposeError::Timeout)),
             // Long before the deadline: a leader that went silent never answers.
-            _ = leader_change.changed() => return Err(ProposeError::NotLeader { leader: None }),
-        };
-        match reply {
-            Ok(PeerReply::Proposed(result)) => result,
-            // Our term is behind; retry once Raft has caught us up.
-            Ok(_) => Err(ProposeError::NotLeader { leader: None }),
-            Err(_) => Err(ProposeError::Timeout),
+            _ = leader_change.changed() => Err(ProposeError::NotLeader { leader: None }),
+            _ = tokio::time::sleep(timeout) => Err(ProposeError::Timeout),
         }
     }
 
@@ -442,6 +466,56 @@ impl RaftNode {
             }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_millis(100));
+        }
+    }
+}
+
+/// How long a command waits for others to go to the leader with it (D248).
+const FORWARD_COMBINE_WAIT: Duration = Duration::from_millis(5);
+
+/// A command on its way to the leader, and who waits for its answer.
+type Forwarded = (Command, oneshot::Sender<Result<Outcome, ProposeError>>);
+
+/// Waits a moment, then sends all that gathered as one message, and hands out the answers.
+async fn send_forwards(
+    waiting: Arc<Mutex<Vec<Forwarded>>>,
+    peers: Arc<PeerSet>,
+    me: NodeId,
+    term: u64,
+    leader: NodeId,
+    timeout: Duration,
+) {
+    tokio::time::sleep(FORWARD_COMBINE_WAIT).await;
+    let batch = std::mem::take(&mut *waiting.lock().unwrap_or_else(|p| p.into_inner()));
+    let (commands, answers): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+    let expected = commands.len();
+    let reply = match peers.get(leader) {
+        Some(peer) => {
+            let envelope = PeerEnvelope {
+                from: me,
+                term,
+                body: PeerBody::ProposeMany(commands),
+            };
+            peer.call(envelope, timeout).await
+        }
+        None => Ok(PeerReply::Ack),
+    };
+    match reply {
+        Ok(PeerReply::ProposedMany(results)) if results.len() == expected => {
+            for (answer, result) in answers.into_iter().zip(results) {
+                let _ = answer.send(result);
+            }
+        }
+        // Our term is behind; each caller retries once Raft has caught us up.
+        Ok(_) => {
+            for answer in answers {
+                let _ = answer.send(Err(ProposeError::NotLeader { leader: None }));
+            }
+        }
+        Err(_) => {
+            for answer in answers {
+                let _ = answer.send(Err(ProposeError::Timeout));
+            }
         }
     }
 }

@@ -1,0 +1,9 @@
+{"ts_us":1793826839172706,"src":"node-1","ev":"restarted","term":0,"last_log_index":null}
+{"ts_us":1793826840210046,"src":"node-1","ev":"rejoined","leader_commit":23703,"applied":23707,"recovery_us":1037338}
+sent 49326, answered 49326, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 210 ms
+client IDs from 2: longest with no answer to anyone 251 ms
+client IDs from 3: longest with no answer to anyone 194 ms
+stale per committed 0.00, commands per save 3.9, mean disk sync 2.2 ms
+checkpoints 307, digest mismatches 0
+no provisional conflicts

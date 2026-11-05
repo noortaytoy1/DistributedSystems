@@ -1,0 +1,17 @@
+=== Web page check on the final build, local cluster, 2026-11-05 15:06:53
+--- one report
+{"answered_by":1,"attempts":1,"cost_m":239,"expired":false,"latency_us":66438,"log_index":4,"needs":"Medical","ok":true,"planned_by":1,"priority":326,"provisional":false,"request":"11-1793884001532869","responder":1,"responder_capability":"Medical","responder_zone":0,"severity":3,"status":"assigned","term":0,"valid_for_s":60,"who":1,"zone":0}
+
+--- start 100 users, 30 s
+{"error":null,"failed":0,"ok":true,"started":10}
+
+--- load after 12 s
+{"ok":true,"rows":[{"client_id":110001,"exit_code":null,"pattern":"steady","pid":1571490,"state":"running","summary":null,"think_ms":1000,"users":10},{"client_id":110002,"exit_code":null,"pattern":"steady","pid":1571491,"state":"running","summary":null,"think_ms":1000,"users":10},{"client_id":110003,"exit_code":null,"pattern":"steady","pid":1571492,"state":"running","summary":n
+
+--- node status
+[(1, 1131, '26207e31', [1, 2, 3], None, 'peer'), (2, 1131, '26207e31', [1, 2, 3], None, 'peer'), (3, 1131, '26207e31', [1, 2, 3], None, 'peer')]
+--- stop
+{"ok":true,"stopping":10}
+
+{"ok":true,"rows":[{"client_id":110001,"exit_code":0,"pattern":"steady","pid":1571490,"state":"stopped","summary":"client 110001: done 113, gave up 0, retried 0, no responder 66, provisional 0, expire
+

@@ -30,7 +30,7 @@ use crate::proto::{
 use crate::raft::store::StateReader;
 use crate::raft::{Consensus, ConsensusStatus, LogWork, Role};
 
-const THREE_NODES: &str = r#"
+pub(crate) const THREE_NODES: &str = r#"
 [[cluster.nodes]]
 id = 1
 peer_addr = "a:1"

@@ -1,0 +1,7 @@
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer     43      -     5034     5034   335ed772453320f4     8589    true    false    false   1,2,3
+   2       peer     42      -     5034     5034   335ed772453320f4     8589    true    false    false   1,2,3
+   3       peer      0      -     5034     5034   335ed772453320f4     8589   false    false    false   1,2,3
+node 1: udp ok
+node 2: udp ok
+node 3: udp ok

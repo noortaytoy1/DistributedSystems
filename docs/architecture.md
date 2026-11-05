@@ -31,7 +31,7 @@ the only evidence beyond tests is rehearsals on one PC, and those are labelled w
 | report | one incident a user sends | request, `ClientRequest`, `RequestId` |
 | winner, or the node that plans | the node that makes the plan for a report | executor, `executor` |
 | final | saved on 2 of 3 nodes, so it cannot be lost | committed, `Committed`, `CommitResult`, the `commit` event |
-| log line | one numbered place in the Raft log. One log line can carry up to 200 commands | log entry |
+| log line | one numbered place in the Raft log. One log line can carry up to 2000 commands | log entry |
 | save | one write to disk that waits for the disk | flush, sync |
 | copy | one node's copy of the log and the state | replica |
 | silent | a node whose fault gate is closed | silenced, the `silenced` event |
@@ -80,6 +80,26 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
 | Publish-subscribe                                          | Phase 2, by Lecture 9. In the design only, section 13                    | planned | D131, D209 |
+
+### Rotating rounds: no elected node (built, D249)
+
+With `consensus = "rounds"` nobody is elected ([shared-log.md](shared-log.md) has all of it, and [phase1-report.md](phase1-report.md) the results). Each node numbers its own batches by round and sends them to its peers, and every node applies the same order: by round, then by node ID, once all members have passed that round. `src/rounds.rs` sits behind the `Consensus` trait, so nothing above it changes.
+
+```mermaid
+sequenceDiagram
+    participant N1 as "Node 1"
+    participant N2 as "Node 2"
+    participant N3 as "Node 3"
+    N1->>N2: "round 7: my batch"
+    N1->>N3: "round 7: my batch"
+    N2->>N1: "round 7: my batch"
+    N2->>N3: "round 7: my batch"
+    N3->>N1: "round 7: nothing to add"
+    N3->>N2: "round 7: nothing to add"
+    Note over N1,N3: "All passed round 7. Each applies node 1 then node 2, the same order."
+```
+
+The sections below describe Raft, which stays available with `consensus = "raft"`.
 
 ### Who decides what (built, D163)
 
@@ -322,13 +342,13 @@ flowchart TB
 
 | #   | Component                 | Module(s)                                   | Owner | Status   | Responsibility |
 |-----|---------------------------|---------------------------------------------|-------|----------|----------------|
-| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One TCP connection per peer that carries many calls at once (D119), with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` on TCP (D20). `ClientPort`: UDP and TCP on one number (D168). |
-| not numbered | UDP adapter | `node/datagram.rs`                          | C     | built    | tarpc over UDP: one message is one UDP packet of at most 1,400 bytes, no error reaches tarpc, one channel per user program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
+| C1  | Network endpoint          | `node/transport.rs`                         | C     | built    | One TCP connection per peer that carries many calls at once (D119), with a reconnect cooldown after a failed connect (D89–D92), peer and client servers, `TCP_NODELAY` on TCP (D20, D251). `ClientPort`: UDP and TCP on one number (D168). |
+| not numbered | UDP adapter | `node/datagram.rs`                          | C     | built    | tarpc over UDP: messages to one address share one UDP packet of at most 1,400 bytes, within 10 ms (D236, D246), no error reaches tarpc, one channel per user program, large receive buffer, counters (D170, D171, D172). Holds no RPC logic. |
 | C2  | Report intake (application) | `node/service.rs::handle_request`           | A     | built    | Logs the report, checks `serving`, answers a decided report from state (D37), asks who plans, and plans if it is this node. Checks `serving` again just before any answer leaves (D136). |
 | C3  | Load inputs               | `workers.rs::PoolLoad`, `bidding.rs::LoadInputs`, `ServiceTime`, `node/cpu.rs` | E, B | built (D82, D86, D107) | Queue length, running jobs, recent service time, CPU, recent wins: the inputs to the bid. |
 | C4  | Who plans                 | `node/mod.rs::decide_executor`, `node/bids.rs`, `bidding.rs` | B    | built (bidding, the default, D114; leader dispatch, the baseline, set by config, D3, D34) | Chooses the node that plans: the lowest bidder (D2) or the leader (D3). |
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): votes, copying the log, forwarding (D26), Raft events. The elected node orders the log and decides nothing else (D163). |
-| not numbered | Queue in front of Raft | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, and one write carries a group of up to 200 commands of what waited, in one log line and one save. A proposal leaves at 3 s (D133). A leader stepping aside can hold it, and it times each write, which the busy-leader check reads (D218, D228). |
+| not numbered | Queue in front of Raft | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, and one write carries a group of up to 2000 commands of what waited, in one log line and one save. A proposal leaves at 3 s (D133). A leader stepping aside can hold it, and it times each write, which the busy-leader check reads (D218, D228). |
 | not numbered | Busy-leader check | `node/step_aside.rs`                        | A     | built    | Once a second, the leader compares its load with its peers' bids. Its load is its bid, or one write's time if that is slow. Overloaded for 5 s and safe to: it goes quiet, so that followers' timers run out and a normal vote picks a new leader (D218, D228). |
 | C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, if none is free, severe or old reports fall back to any capability, CPU knob (D49, D93, D94, D95, D96, D101); seeded campus (D97, D98). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`, `raft/wal.rs`    | A     | built    | On disk in `node-<id>.wal` when `storage.dir` is set, which every lab run does; in memory for tests. Never purged, no snapshots (D118, which supersedes D24). |
@@ -338,7 +358,7 @@ flowchart TB
 | C11 | Event log                 | `metrics.rs`                                | all   | built    | JSONL events, message counters, per-second reports (D55). |
 | not numbered | Peer heartbeats | `node/heartbeat.rs`                         | C     | built    | Failure detector for takeover: suspect a peer after 3 missed 50 ms heartbeats, logged for E3 (D41, D79). New since Phase 1. |
 | not numbered | Cloud group: who's-alive list and group sends | `node/group.rs`                             | C     | built    | The nodes as one named group: the membership. Keeps this node's who's-alive list. `send` goes to the list, `probe` to everyone, and `send_ordered` through Raft to every copy. A peer leaves after `degraded_after_ms` of unbroken suspicion and returns when heard (D152–D154, D210). |
-| not numbered | Takeover | `node/takeover.rs`                          | C     | built    | A node that lost a round plans the report if the winner is suspected, or nothing is final within max(200 ms, 3 × the winner's bid) (D42, D110). |
+| not numbered | Takeover | `node/takeover.rs`                          | C     | built    | A node that lost a round plans the report if the winner is suspected, or nothing is final within max(1500 ms, 3 × the winner's bid) (D42, D110). |
 | not numbered | Responder release (application) | `node/release.rs` | E | built | Frees a responder after its time on scene, through the log: the node that planned after the service time, any other serving node after twice that (D39, D111). |
 | K1  | Client middleware         | `client.rs::MeshClient`                     | F     | built    | The group send: one tarpc call per node on one UDP stub each, retry with the same ID, the first answer wins, a cancel for the rest. Each user program holds its own copy (D53, D126, D167, D169, D181, D210). |
 | K2  | User                      | `bin/loadgen.rs`, `campus::random_incident` | F, E  | built | A tokio task in a program. Uniform random incidents, seeded or from OS randomness (D99, D102). Waits as the pattern says: steady, random or all-at-once (D182). |
@@ -691,7 +711,7 @@ stateDiagram-v2
 ### 5.6 A report over UDP (built, D167–D174)
 
 Application code makes one call. The client middleware makes one tarpc call per node. tarpc does the call IDs, deadlines and
-matching. The adapter in `node/datagram.rs` only puts one message in one packet. Nothing on this path holds a connection, so there
+matching. The adapter in `node/datagram.rs` only puts messages in packets, combining what goes to one address within 10 ms (D236, D246). Nothing on this path holds a connection, so there
 are no pings and no reconnects, and a node that comes back just answers.
 
 ```mermaid
@@ -1342,7 +1362,7 @@ sequenceDiagram
     participant R as openraft core
     participant D as Disk and followers
     W->>Q: submit(command, deadline), many at once
-    Q->>R: client_write(one group: what waited, up to 200 commands)
+    Q->>R: client_write(one group: what waited, up to 2000 commands)
     R->>D: one save, one round of copies
     Note over Q,R: The next write waits, so the core is free<br/>and heartbeats go out on time
     D-->>R: a majority saved it
@@ -1745,6 +1765,8 @@ would make the client wait out its retries and give up on a report the cloud had
 
 ## 9. Faults, detection and recovery
 
+**More than one node failing (built, D261, D262).** Under rotating rounds each node saves the order it applied before answering, and rebuilds from its own file when it restarts. A member with nobody else left takes a returning node straight back in, with no vote. With no member left, the node with the longest log goes first. A node that cannot commit yet answers provisionally. Clients keep a retry budget (D264). [shared-log.md](shared-log.md) has the details. Where this section describes Raft, it applies only with `consensus = "raft"`.
+
 ### 9.1 Fault model
 
 - **Injected omission.** The fault gate drops every peer call and every report in and out (D13, D22). The
@@ -1762,7 +1784,7 @@ would make the client wait out its retries and give up on a report the cloud had
 | The leader           | Followers       | No `AppendEntries` within a follower's own wait: its range (150–225, 300–375 or 450–525 ms, D115) plus openraft's lease, which is the top of that same range (225, 375 or 525 ms), on a 75 ms tick (D214, D231) | about 0.38 to 0.53 s until the first follower stands, or 0.68 to 0.83 s if the first-listed node was the leader, in the usual case. A vote refused inside a voter's lease, or a candidate behind on the log, adds to that, and can pass 1 s with no bug (D231). The target for a new leader is 1 s (FT-2) | built |
 | A follower           | The leader      | `AppendEntries` calls time out if it is silent. If its PC is off they fail at once, and openraft waits 100 ms before it tries again (D32) | next heartbeat  | built |
 | Any peer             | Every other node | Peer heartbeats: nothing heard for `takeover_missed_heartbeats` × `peer_heartbeat_ms`; logs `peer_suspected` / `peer_trusted` (D79) | 150–200 ms | built |
-| A bidding winner     | Other bidders   | The peer detector above, or the backstop, with nothing final for the report (takeover) | 150 ms; backstop ≥ 200 ms (D42, D110) | built |
+| A bidding winner     | Other bidders   | The peer detector above, or the backstop, with nothing final for the report (takeover) | 150 ms; backstop ≥ 1500 ms (D42, D110, D235, D250) | built |
 | Both peers           | The last node   | The peer detector above, without a break for `degraded_after_ms`; logs `degraded_entered` (D121) | about 2.15 s | built |
 | Any peer, for the group | Every other node | The peer detector above, without a break for `degraded_after_ms`; logs `group_view` (D153). A fault under about 2.2 s never shows here | about 2.15–2.2 s | built |
 | Anyone (operator)    | `ctl status`    | `silenced`, `serving`, `degraded`, `members`, role, term, digest per node | on demand        | built |
@@ -1885,7 +1907,7 @@ final log lines waits for them, and every spawned task is owned by `NodeHandle`,
 cut off a bid or a proposal, and every wait in it is capped (D169, D170).
 
 openraft saves each write inside its core task, so writes piled up in it would hold back the heartbeats. The queue in front of Raft
-(D133) keeps the pile where the core cannot see it: one write in flight per node, and one write carries a group of up to 200 commands of what waited, in one log line and one save. See 6.18.
+(D133) keeps the pile where the core cannot see it: one write in flight per node, and one write carries a group of up to 2000 commands of what waited, in one log line and one save. See 6.18.
 
 ## 10b. Concurrency on a client PC (built, D181 to D185)
 
@@ -2066,7 +2088,7 @@ The report should say what changed between the submitted design and the built sy
 | Table of results trimmed by TTL (D9)                   | Never trimmed during a run. The TTL a report carries now (D143) is another thing: it decides whether the report is planned, and no record is ever deleted | D9, D143, D149 |
 | Recompute once, then tell the client "retry"           | Up to 3 plans in all, then make a plan with nobody on it final and answer | D35, D36, D220 |
 | No separate failure detector                           | Peer heartbeats so followers see each other                   | D41 |
-| Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms), backstop max(200 ms, 3 × bid) | D42, D110 |
+| Takeover after 3 × service time, ≥ 200 ms              | 3 missed peer heartbeats (150 ms), backstop max(1500 ms, 3 × bid) | D42, D110, D235, D250 |
 | Bid window from the first bid seen                     | From the report's arrival; P-2 confirms or overturns it            | D43 |
 | `Claim` message                                        | Local `just_won` count; the burst test confirms or overturns it | D44 |
 | Load score with equal queue and CPU weights            | Expected wait with no CPU part to start; E6 decides           | D45 |
@@ -2083,7 +2105,7 @@ The report should say what changed between the submitted design and the built sy
 | No frontend named in the Phase 1 list                  | A web page on each client PC, as a reading of the demo paragraph | D197 |
 | Client PCs listen on nothing                      | They still do for the cloud; the frontend listens for its own browser | D199, D200 |
 | One program per client PC                              | 10 real programs per client PC, sharing the users        | D181 |
-| One disk save per log line                             | A queue with grouped saves: one write in flight per node, and one write carries a group of up to 200 commands of what waited, in one log line and one save | D133 |
+| One disk save per log line                             | A queue with grouped saves: one write in flight per node, and one write carries a group of up to 2000 commands of what waited, in one log line and one save | D133 |
 | A publish-subscribe to build small, on 2026-11-03      | Phase 2, by Lecture 9                                         | D209 |
 | FT-2: failover within 600 ms                           | Within 1 s, from D115's ranges and openraft's lease           | D214 |
 | ≥ 10 repetitions                                       | `quick`: 3 runs; `full`: 5 runs. The report states the limits | D63 |

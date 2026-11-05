@@ -1,0 +1,25 @@
+{"ts_us":1793799566299004,"src":"node-1","ev":"degraded_entered","held_responders":781}
+{"ts_us":1793799569850098,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":3550,"provisional":4374}
+{"ts_us":1793799589999360,"src":"node-1","ev":"degraded_entered","held_responders":1834}
+{"ts_us":1793799678149575,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":88149,"provisional":107937}
+{"ts_us":1793799563515135,"src":"node-2","ev":"degraded_entered","held_responders":781}
+{"ts_us":1793799572964716,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":9449,"provisional":11632}
+{"ts_us":1793799594314974,"src":"node-2","ev":"degraded_entered","held_responders":1834}
+{"ts_us":1793799677964475,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":83649,"provisional":104823}
+{"ts_us":1793799566152999,"src":"node-3","ev":"degraded_entered","held_responders":781}
+{"ts_us":1793799572604262,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":6450,"provisional":8120}
+{"ts_us":1793799591003546,"src":"node-3","ev":"degraded_entered","held_responders":1834}
+{"ts_us":1793799678103804,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":87100,"provisional":109054}
+sent 600084, answered 201322, gave up 398762, unaccounted 0
+client IDs from 1: longest with no answer to anyone 5298 ms
+client IDs from 2: longest with no answer to anyone 5285 ms
+client IDs from 3: longest with no answer to anyone 5290 ms
+client IDs from 4: longest with no answer to anyone 880 ms
+client IDs from 5: longest with no answer to anyone 779 ms
+client IDs from 6: longest with no answer to anyone 1227 ms
+client IDs from 7: longest with no answer to anyone 634 ms
+client IDs from 8: longest with no answer to anyone 759 ms
+client IDs from 9: longest with no answer to anyone 3556 ms
+stale per committed 2.39, commands per save 156.8, mean disk sync 3.5 ms
+checkpoints 7, digest mismatches 0
+{'conflict lost_first_commit': 506, 'conflict responder_taken': 3038}

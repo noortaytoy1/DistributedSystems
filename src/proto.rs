@@ -607,9 +607,12 @@ pub trait PeerRpc {
         rpc: InstallSnapshotRequest<TypeConfig>,
     ) -> PeerReply;
     async fn propose(from: NodeId, term: Term, command: Command) -> PeerReply;
+    async fn propose_many(from: NodeId, term: Term, commands: Vec<Command>) -> PeerReply;
     async fn read_index(from: NodeId, term: Term) -> PeerReply;
     async fn fault_bid(from: NodeId, term: Term, bid: FaultBid) -> PeerReply;
     async fn bid(from: NodeId, term: Term, bid: Bid) -> PeerReply;
+    async fn bids(from: NodeId, term: Term, bids: Vec<Bid>) -> PeerReply;
+    async fn rounds(from: NodeId, term: Term, message: RoundsMsg) -> PeerReply;
     async fn heartbeat(from: NodeId, term: Term) -> PeerReply;
 }
 
@@ -630,6 +633,8 @@ pub enum PeerBody {
     Raft(RaftRpc),
     /// A follower asks the leader to commit a command on its behalf.
     Propose(Command),
+    /// The commands a follower gathered in the last few milliseconds, as one message (D248).
+    ProposeMany(Vec<Command>),
     /// A returning node asks the leader for its commit index, confirmed by a majority (Raft
     /// ReadIndex, D76). Answered with [`PeerReply::ReadIndex`].
     ReadIndex,
@@ -637,7 +642,123 @@ pub enum PeerBody {
     /// The envelope's term applies the term rule: a dropped bid only stops the round finishing.
     FaultBid(FaultBid),
     Bid(Bid),
+    /// The bids this node made in the last few milliseconds, as one message (D247).
+    Bids(Vec<Bid>),
+    /// Rotating rounds, the leaderless way to one order (D249).
+    Rounds(RoundsMsg),
     Heartbeat,
+}
+
+/// One node's commands for one round (D249).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundBatch {
+    pub node: NodeId,
+    pub round: u64,
+    pub commands: Vec<Command>,
+    pub control: Option<RoundControl>,
+}
+
+/// A change to who takes part, in the one order, so every member makes it at the same place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoundControl {
+    Add {
+        node: NodeId,
+        start_round: u64,
+        /// The view of the member that made this entry: the node is not in it (D257).
+        view: u64,
+    },
+}
+
+/// One record of a node's log file under rotating rounds (D249, D261).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LogRecord {
+    /// A batch saved here, this node's or a peer's.
+    Batch(RoundBatch),
+    /// The batch this node applied next. Saved before the callers of that batch are answered.
+    Applied { node: NodeId, round: u64 },
+    /// What came before this no longer counts: this node held something the others do not.
+    Reset,
+}
+
+/// Messages between nodes under rotating rounds (D249).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RoundsMsg {
+    /// The sender's stream from just after round `after` through round `through`.
+    Stream {
+        after: u64,
+        through: u64,
+        batches: Vec<RoundBatch>,
+    },
+    /// Go on without `target` as view `view`. The sender holds its stream through `have`.
+    Drop {
+        view: u64,
+        target: NodeId,
+        have: u64,
+    },
+    /// The other half of a drop: its stream ends at `cut`, and these are what the receiver lacks.
+    DropCommit {
+        view: u64,
+        target: NodeId,
+        cut: u64,
+        batches: Vec<RoundBatch>,
+    },
+    /// A returning node asks for the applied log, from entry number `next`. `last` names the entry
+    /// before that, so a node that holds something else finds out (D261).
+    CatchUp {
+        next: u64,
+        last: Option<(NodeId, u64)>,
+    },
+    /// A returning node that has caught up asks to be added.
+    Join,
+    /// How far has this node applied?
+    Applied,
+}
+
+/// Answers to [`RoundsMsg`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RoundsReply {
+    /// This node has saved the sender's stream through round `have`.
+    Have {
+        have: u64,
+    },
+    /// The sender is not in this node's view of who takes part, which is `view`.
+    NotMember {
+        view: u64,
+    },
+    /// This node is not ready to answer yet.
+    NotYet,
+    Granted {
+        view: u64,
+        have: u64,
+        batches: Vec<RoundBatch>,
+    },
+    Refused {
+        view: u64,
+    },
+    Done,
+    Entries {
+        batches: Vec<RoundBatch>,
+        total: u64,
+        applied_round: u64,
+        view: u64,
+        members: Vec<NodeId>,
+        /// Members added and not heard from yet: each one's first round, and the round the log has
+        /// reached for it (D252, D261).
+        starts: Vec<(NodeId, u64, u64)>,
+        /// For a node added by a lone member: batches past that point from other streams, which
+        /// it must apply too and cannot get from a stream any more (D261).
+        held: Vec<RoundBatch>,
+    },
+    /// This node is on its way back as well, and holds this many entries of the log (D261).
+    Joining {
+        total: u64,
+        view: u64,
+    },
+    /// What the asker holds is not a start of this node's log: it must start again (D261).
+    Diverged,
+    Applied {
+        index: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -660,6 +781,9 @@ pub enum PeerReply {
         Result<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>>,
     ),
     Proposed(Result<Outcome, ProposeError>),
+    /// One answer per command of a [`PeerBody::ProposeMany`], in order.
+    ProposedMany(Vec<Result<Outcome, ProposeError>>),
+    Rounds(RoundsReply),
     /// The leader's commit index (`None`: nothing committed yet), or `NotLeader` with a hint.
     ReadIndex(Result<Option<u64>, ProposeError>),
 }

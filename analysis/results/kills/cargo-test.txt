@@ -1,0 +1,834 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/rescuemesh-cc889b3f5a93d402)
+
+running 301 tests
+test bidding::tests::a_decided_request_ends_its_open_round_without_a_winner ... ok
+test bidding::tests::a_leading_round_becomes_one_win_when_it_closes ... ok
+test bidding::tests::a_bid_before_the_request_is_kept_and_does_not_start_the_window ... ok
+test bidding::tests::a_lost_round_does_not_count ... ok
+test bidding::tests::a_bid_at_or_after_the_deadline_is_ignored ... ok
+test bidding::tests::a_plan_too_short_to_measure_counts_as_the_minimum ... ok
+test bidding::tests::a_duplicate_bid_keeps_the_first ... ok
+test bidding::tests::a_full_queue_raises_the_score_even_after_very_fast_plans ... ok
+test bidding::tests::a_repeated_request_keeps_the_first_window ... ok
+test bidding::tests::a_request_that_never_arrives_is_forgotten ... ok
+test bidding::tests::a_round_nobody_bid_in_has_no_winner ... ok
+test bidding::tests::a_tie_is_led_by_the_lower_node_id ... ok
+test bidding::tests::a_win_counts_until_the_job_is_queued ... ok
+test bidding::tests::a_win_decided_elsewhere_stops_counting_for_every_attempt ... ok
+test bidding::tests::attempts_of_one_request_never_mix ... ok
+test bidding::tests::bids_seen_counts_a_rounds_bids ... ok
+test bidding::tests::closing_needs_a_running_window_that_has_ended ... ok
+test bidding::tests::closing_reports_the_ranking_and_this_nodes_part ... ok
+test bidding::tests::counting_leading_rounds_raises_each_bid_in_a_burst ... ok
+test bidding::tests::cpu_only_is_the_cpu_reading ... ok
+test bidding::tests::executor_is_the_winner_when_nobody_is_suspected ... ok
+test bidding::tests::executor_skips_suspected_nodes ... ok
+test bidding::tests::expected_wait_ignores_cpu ... ok
+test bidding::tests::expected_wait_cpu_adds_weighted_cpu ... ok
+test bidding::tests::expected_wait_matches_formula ... ok
+test bidding::tests::extreme_samples_do_not_overflow ... ok
+test bidding::tests::first_job_replaces_the_initial_value ... ok
+test bidding::tests::forgetting_a_round_drops_its_win ... ok
+test bidding::tests::forgetting_keeps_rounds_inside_the_grace_period_and_open_rounds ... ok
+test bidding::tests::huge_inputs_saturate_instead_of_panicking ... ok
+test bidding::tests::idle_slow_node_loses_to_idle_fast_node ... ok
+test bidding::tests::input_order_never_changes_the_result ... ok
+test bidding::tests::just_won_raises_the_score_like_queued_work ... ok
+test bidding::tests::later_jobs_move_the_average_one_eighth_of_the_way ... ok
+test bidding::tests::leading_follows_the_bids_seen_so_far ... ok
+test bidding::tests::leading_rounds_count_only_in_won_and_leading_mode ... ok
+test bidding::tests::lowest_score_wins ... ok
+test bidding::tests::nobody_bid_means_no_winner ... ok
+test bidding::tests::off_is_always_zero ... ok
+test bidding::tests::queue_only_counts_jobs ... ok
+test bidding::tests::ranked_bids_are_readable_only_after_closing ... ok
+test bidding::tests::ranking_lists_each_node_once ... ok
+test bidding::tests::ranking_starts_with_the_winner ... ok
+test bidding::tests::ranking_orders_by_score_then_node_id ... ok
+test bidding::tests::round_closes_exactly_one_window_after_the_request ... ok
+test bidding::tests::service_time_converges_to_a_steady_input ... ok
+test bidding::tests::service_time_starts_at_the_initial_value ... ok
+test bidding::tests::settling_twice_never_goes_below_zero_or_loses_another_win ... ok
+test bidding::tests::ties_go_to_lower_node_id ... ok
+test bidding::tests::zero_workers_counts_as_one ... ok
+test campus::tests::different_seeds_give_different_campuses ... ok
+test campus::tests::a_report_carries_its_owner_and_the_configured_ttl ... ok
+test campus::tests::every_responder_is_inside_its_zone ... ok
+test campus::tests::ids_run_from_one_to_n ... ok
+test campus::tests::empty_and_single_zone_campuses_work ... ok
+test campus::tests::six_zones_form_a_three_by_two_grid ... ok
+test campus::tests::the_same_seed_gives_the_same_campus ... ok
+test campus::tests::zones_and_capabilities_are_spread_evenly ... ok
+test campus::tests::every_zone_has_every_capability ... ok
+test client::tests::only_a_real_answer_for_this_request_counts ... ok
+test client::tests::the_call_budget_is_36_s_at_default_timers ... ok
+test client::tests::the_call_budget_stays_within_what_tarpc_can_hold ... ok
+test campus::tests::unseeded_batches_differ ... ok
+test client::tests::retries_stop_at_a_share_of_what_was_sent_first_and_a_small_floor ... ok
+test client::tests::a_light_load_keeps_every_retry_however_long_the_outage ... ok
+test client::tests::a_retry_budget_cannot_save_up_past_its_cap_and_one_report_can_always_retry ... ok
+test campus::tests::the_same_rng_seed_gives_the_same_incidents ... ok
+test config::tests::policy_keys_parse_and_default ... ok
+test config::tests::the_default_ttl_outlasts_every_retry_at_full_jitter ... ok
+test config::tests::faults_can_be_switched_off ... ok
+test config::tests::defaults_fill_missing_sections ... ok
+test metrics::tests::machine_usage_keeps_its_field_names ... ok
+test metrics::tests::machine_cpu_comes_from_the_first_stat_line ... ok
+test config::tests::incident_ttl_defaults_to_sixty_seconds_and_zero_is_rejected ... ok
+test metrics::tests::step_aside_events_keep_their_field_names ... ok
+test config::tests::a_busy_leader_steps_aside_by_default_and_ratio_0_is_off ... ok
+test metrics::tests::udp_counters_log_as_flat_fields ... ok
+test client::tests::jitter_stays_within_twenty_percent ... ok
+test node::cpu::tests::parses_the_total_line_only ... ok
+test node::cpu::tests::permille_is_the_busy_share_between_samples ... ok
+test config::tests::unknown_policy_values_are_rejected ... ok
+test node::cpu::tests::permille_stays_in_range ... ok
+test node::datagram::tests::a_client_message_survives_the_short_form_and_costs_little ... ok
+test metrics::tests::counts_messages_by_kind ... ok
+test node::cpu::tests::rejects_text_without_a_cpu_line ... ok
+test metrics::tests::mem_available_comes_from_meminfo ... ok
+test node::datagram::tests::a_lone_message_never_starts_like_a_combined_datagram ... ok
+test node::datagram::tests::a_combined_datagram_gives_each_of_its_messages_and_counts_as_one ... ok
+test node::datagram::tests::a_lone_message_still_decodes_after_a_combined_datagram ... ok
+test node::datagram::tests::a_bad_message_costs_only_itself_and_a_false_length_ends_the_datagram ... ok
+test node::bids::tests::a_retry_during_execution_is_refused_and_a_later_one_is_not ... ok
+test config::tests::rejects_bad_configs ... ok
+test node::degraded::tests::a_held_responder_is_not_given_twice_until_its_time_is_up ... ok
+test node::degraded::tests::a_hold_stops_counting_when_it_ends_even_before_the_table_is_cleared ... ok
+test node::degraded::tests::a_plan_with_no_responder_holds_nothing ... ok
+test node::degraded::tests::a_retry_gets_the_first_answer ... ok
+test node::degraded::tests::a_stored_answer_keeps_its_age_and_time ... ok
+test metrics::tests::writes_one_json_object_per_line ... ok
+test campus::tests::unseeded_incidents_stay_in_range ... ok
+test node::degraded::tests::degraded_only_after_the_whole_wait_without_a_break ... ok
+test node::degraded::tests::one_trusted_peer_ends_it_and_the_wait_starts_over ... ok
+test node::faults::tests::a_complete_round_closes_even_past_its_deadline ... ok
+test node::datagram::tests::dropping_the_sender_sends_what_waited ... ok
+test node::faults::tests::a_higher_round_replaces_the_open_one_and_hands_it_back ... ok
+test node::faults::tests::a_late_bid_changes_nothing_not_even_the_timer ... ok
+test node::faults::tests::a_node_draws_once_per_round ... ok
+test node::faults::tests::a_round_closes_only_with_every_node_and_after_the_own_send ... ok
+test node::faults::tests::a_silenced_gate_cannot_be_silenced_again_until_restored ... ok
+test node::faults::tests::a_timer_calls_the_round_after_the_last_one_left ... ok
+test node::faults::tests::a_drawn_silence_is_known_until_it_is_over ... ok
+test node::faults::tests::a_timer_is_ignored_while_a_round_is_open ... ok
+test node::faults::tests::a_timer_that_fires_while_not_eligible_rearms ... ok
+test node::faults::tests::an_incomplete_round_is_abandoned_at_its_deadline ... ok
+test node::faults::tests::durations_from_1_ms_to_the_limit_are_accepted ... ok
+test node::faults::tests::the_election_time_runs_from_my_bid_to_the_last_bid ... ok
+test node::faults::tests::the_first_bid_per_node_stands ... ok
+test node::faults::tests::the_highest_ticket_wins_and_ties_go_to_the_lower_id ... ok
+test node::faults::tests::zero_and_over_the_limit_are_rejected ... ok
+test node::group::tests::a_heard_peer_returns_at_once ... ok
+test node::group::tests::a_node_never_removes_itself ... ok
+test node::faults::tests::the_same_seed_round_and_node_give_the_same_numbers ... ok
+test node::group::tests::a_peer_under_the_hold_stays ... ok
+test node::group::tests::two_peers_leaving_in_one_tick_make_one_view ... ok
+test node::group::tests::the_number_rises_only_on_a_change ... ok
+test node::heartbeat::tests::a_suspected_peer_stays_suspected_through_reset ... ok
+test node::heartbeat::tests::an_older_heartbeat_never_moves_the_clock_back ... ok
+test node::heartbeat::tests::an_unknown_peer_is_never_suspected ... ok
+test node::heartbeat::tests::reset_gives_a_peer_nobody_suspects_a_fresh_clock ... ok
+test node::heartbeat::tests::suspected_after_the_missed_intervals_and_trusted_once_heard ... ok
+test node::heartbeat::tests::suspected_for_counts_only_unbroken_suspicion ... ok
+test node::rejoin::tests::current_once_applied_reaches_the_leaders_commit ... ok
+test node::rejoin::tests::nothing_committed_means_current ... ok
+test node::release::tests::a_hold_whose_time_is_up_is_followed_no_more_unless_added_again ... ok
+test node::release::tests::another_node_waits_longer ... ok
+test node::release::tests::it_remembers_how_far_it_has_read ... ok
+test node::release::tests::the_executor_releases_after_the_service_time ... ok
+test node::rejoin::tests::a_leader_with_nothing_committed_needs_no_wait ... ok
+test config::tests::shipped_configs_are_valid ... ok
+test node::step_aside::tests::a_full_queue_with_writes_of_the_usual_length_is_not_a_slow_log ... ok
+test node::squeeze::tests::messages_that_look_alike_get_much_smaller ... ok
+test node::step_aside::tests::a_log_reading_is_of_this_second_only ... ok
+test node::step_aside::tests::a_reading_needs_this_node_and_every_peer ... ok
+test node::step_aside::tests::a_slow_disk_is_not_a_slow_log_and_a_starved_leader_is ... ok
+test node::squeeze::tests::nothing_sent_by_anyone_can_break_it ... ok
+test node::step_aside::tests::a_slow_log_counts_only_over_its_bar_and_only_for_a_score_that_is_a_time ... ok
+test node::step_aside::tests::a_slow_log_is_overloaded_against_idle_peers_but_not_against_busy_ones ... ok
+test node::step_aside::tests::a_status_says_how_a_try_ended ... ok
+test node::step_aside::tests::an_idle_cluster_with_tiny_numbers_never_fires ... ok
+test node::step_aside::tests::at_the_ratio_is_overloaded_and_just_under_is_not ... ok
+test node::step_aside::tests::each_score_kind_has_a_floor_in_its_own_unit ... ok
+test node::step_aside::tests::even_scores_are_not_overloaded ... ok
+test node::step_aside::tests::every_safety_condition_can_stop_it ... ok
+test node::step_aside::tests::huge_scores_saturate_instead_of_overflowing ... ok
+test node::step_aside::tests::it_must_hold_without_a_break_for_the_whole_time ... ok
+test campus::tests::every_category_occurs_and_agrees_with_needs ... ok
+test node::step_aside::tests::ratio_0_is_off_and_no_peers_means_no_comparison ... ok
+test campus::tests::incidents_stay_in_range_and_cover_every_value ... ok
+test node::rejoin::tests::silenced_again_while_waiting_it_stays_not_serving ... ok
+test node::step_aside::tests::the_lowest_peer_is_the_one_compared_with ... ok
+test node::service::tests::a_plan_that_wins_on_its_last_try_keeps_its_responder ... ok
+test node::service::tests::a_commit_done_while_the_node_is_not_serving_gets_no_reply ... ok
+test node::service::tests::a_provisional_answer_also_needs_a_serving_node ... ok
+test node::service::tests::a_refused_planning_job_is_logged ... ok
+test node::step_aside::tests::a_peer_that_stopped_bidding_is_gone_from_the_next_reading ... ok
+test node::takeover::tests::backstop_is_three_bids_but_at_least_the_minimum ... ok
+test node::takeover::tests::scores_that_are_not_times_get_the_minimum ... ok
+test node::transport::tests::a_reply_to_a_call_that_ended_says_so ... ok
+test node::transport::tests::a_reply_goes_back_once ... ok
+test node::transport::tests::a_silenced_node_sends_no_reply ... ok
+test node::service::tests::a_serving_node_replies_once_the_commit_is_done ... ok
+test node::service::tests::an_accepted_planning_job_logs_no_refusal ... ok
+test node::step_aside::tests::off_or_under_leader_dispatch_nothing_is_started ... ok
+test node::transport::tests::silenced_sender_fails_fast ... ok
+test node::usage::tests::cpu_adds_user_and_system_and_survives_a_name_with_spaces ... ok
+test campus::tests::each_capability_stays_about_a_quarter_of_the_load ... ok
+test node::usage::tests::memory_comes_from_vmrss ... ok
+test node::usage::tests::network_sums_every_interface_but_loopback ... ok
+test node::usage::tests::udp_drops_come_from_the_udp_lines_by_name ... ok
+test node::service::tests::three_stale_plans_are_answered_with_nobody_sent ... ok
+test node::workers::tests::a_panicking_job_frees_its_slot_and_panics_in_the_caller ... ok
+test planner::tests::a_farther_responder_raises_priority_and_nobody_sent_counts_as_farthest ... ok
+test planner::tests::a_report_not_planned_has_no_priority_and_anything_planned_has_some ... ok
+test planner::tests::a_severe_incident_still_prefers_a_farther_match ... ok
+test planner::tests::a_tie_goes_to_the_incident_zone_then_the_lowest_id ... ok
+test planner::tests::age_does_not_change_a_plan_with_a_matching_responder ... ok
+test planner::tests::age_raises_priority_up_to_a_cap ... ok
+test planner::tests::an_old_incident_gets_the_any_capability_fallback ... ok
+test planner::tests::cost_is_metres_without_the_penalty ... ok
+test planner::tests::each_step_of_severity_is_worth_the_same ... ok
+test planner::tests::fewer_free_responders_raise_priority ... ok
+test planner::tests::no_free_match_raises_priority ... ok
+test planner::tests::no_free_responders_gives_no_responder_at_any_severity ... ok
+test planner::tests::no_match_for_a_minor_incident_gives_no_responder ... ok
+test planner::tests::no_match_for_a_severe_incident_sends_the_nearest_of_any_capability ... ok
+test planner::tests::only_the_needed_capability_counts ... ok
+test planner::tests::priority_never_changes_who_is_sent ... ok
+test planner::tests::the_capability_points_also_apply_when_a_fallback_is_sent ... ok
+test node::squeeze::tests::it_comes_back_the_same_whatever_went_in ... ok
+test planner::tests::the_knob_adds_work_but_never_changes_the_plan ... ok
+test planner::tests::the_mildest_incident_can_wait_its_way_level_with_a_fresh_worst_one_and_no_further ... ok
+test planner::tests::the_nearest_match_wins_and_cost_is_metres ... ok
+test planner::tests::the_own_zone_wins_unless_another_zone_is_more_than_the_penalty_closer ... ok
+test planner::tests::the_severe_fallback_uses_the_zone_penalty_too ... ok
+test planner::tests::the_same_input_always_gives_the_same_plan_in_any_order ... ok
+test planner::tests::the_worked_example_from_the_module_docs_is_right ... ok
+test planner::tests::with_nobody_free_every_factor_but_age_is_at_its_top ... ok
+test proto::tests::a_report_is_too_old_at_its_ttl_and_not_before ... ok
+test proto::tests::a_zero_ttl_is_too_old_at_once ... ok
+test proto::tests::client_requests_round_trip ... ok
+test proto::tests::commands_round_trip ... ok
+test proto::tests::every_category_maps_to_its_capability ... ok
+test proto::tests::expired_replies_round_trip ... ok
+test proto::tests::hostile_length_prefix_is_rejected ... ok
+test proto::tests::manhattan_distance ... ok
+test proto::tests::incident_queries_and_rows_round_trip ... ok
+test proto::tests::nobody_sent_reads_unassigned_then_expired_at_the_deadline ... ok
+test proto::tests::plans_that_differ_only_in_priority_send_the_same_responder ... ok
+test proto::tests::request_ids_parse_back_from_their_display_form ... ok
+test proto::tests::status_is_assigned_while_held_and_resolved_after ... ok
+test proto::tests::the_deadline_counts_from_the_report_and_saturates ... ok
+test proto::tests::the_planned_end_is_the_time_on_scene_after_the_plan ... ok
+test proto::tests::the_largest_report_and_reply_fit_one_datagram ... ok
+test proto::tests::the_two_category_tables_agree ... ok
+test proto::tests::too_old_on_arrival_reads_expired_at_any_clock ... ok
+test proto::tests::trailing_bytes_are_rejected ... ok
+test raft::network::tests::heartbeat_counts_reset_on_take ... ok
+test raft::proposals::tests::a_failed_write_answers_everyone_in_its_group ... ok
+test node::workers::tests::zero_queue_capacity_runs_only_the_threads ... ok
+test node::workers::tests::limits_hold_and_a_full_pool_sheds_at_once ... ok
+test node::transport::tests::concurrent_calls_get_their_own_replies ... ok
+test raft::proposals::tests::a_held_queue_starts_no_write_until_it_is_released ... ok
+test node::datagram::tests::messages_sent_together_share_one_datagram ... ok
+test node::datagram::tests::a_full_datagram_goes_at_once_and_none_passes_the_limit ... ok
+test raft::proposals::tests::a_short_answer_is_an_error_not_a_hang ... ok
+test node::workers::tests::a_dropped_waiter_leaves_the_queue_but_a_running_job_keeps_its_slot ... ok
+test raft::proposals::tests::a_stopped_queue_answers_with_fatal ... ok
+test node::step_aside::tests::the_same_node_winning_the_vote_is_said_so ... ok
+test node::step_aside::tests::being_silenced_stops_the_try_so_this_node_returns_with_heartbeats_on ... ok
+test raft::proposals::tests::holding_lets_the_write_in_flight_finish ... ok
+test raft::store::tests::a_digest_is_logged_at_every_checkpoint_index_however_entries_are_batched ... ok
+test raft::store::tests::apply_answers_a_group_with_one_outcome_per_command_and_others_with_none ... ok
+test raft::store::tests::one_entry_over_the_cap_still_goes ... ok
+test raft::store::tests::one_message_stops_at_the_command_cap ... ok
+test raft::proposals::tests::a_caller_that_leaves_does_not_let_a_second_write_start ... ok
+test raft::proposals::tests::only_one_write_is_in_flight_and_the_next_carries_all_that_waited ... ok
+test raft::store::tests::snapshot_restores_identical_state ... ok
+test raft::store::tests::small_entries_still_go_in_the_full_range ... ok
+test raft::tests::follower_summary_shows_its_leader_even_when_silent ... ok
+test raft::tests::leader_summary_shows_every_follower_even_silent_ones ... ok
+test raft::proposals::tests::a_held_proposal_still_leaves_at_its_deadline_and_is_never_written ... ok
+test raft::tests::election_ranges_of_two_nodes_are_at_least_a_tick_apart ... ok
+test raft::proposals::tests::a_proposal_past_its_deadline_leaves_with_timeout_and_is_never_written ... ok
+test raft::wal::tests::a_fresh_file_is_not_a_restart ... ok
+test state::tests::a_client_query_never_returns_more_than_the_cap ... ok
+test state::tests::a_command_in_a_group_is_idempotent ... ok
+test state::tests::a_commit_keeps_the_proposals_age_and_time ... ok
+test state::tests::a_group_gives_the_same_state_and_digest_on_two_copies ... ok
+test state::tests::a_group_is_the_same_as_its_commands_one_after_another_at_one_index ... ok
+test state::tests::a_higher_client_id_does_not_hide_a_lower_one ... ok
+test state::tests::a_plan_that_lost_its_responder_commits_nobody_when_none_is_free ... ok
+test state::tests::a_plan_that_lost_its_responder_is_chosen_again_the_same_on_every_copy ... ok
+test state::tests::a_row_shows_the_record_and_its_status ... ok
+test raft::proposals::tests::a_write_that_never_ends_stops_holding_up_the_queue_after_the_cap ... ok
+test state::tests::first_commit_wins ... ok
+test state::tests::plan_for_an_unknown_responder_is_stale ... ok
+test state::tests::plan_naming_nobody_commits_when_every_responder_is_held ... ok
+test state::tests::plan_without_responder_commits_without_holding ... ok
+test state::tests::reading_status_changes_neither_state_nor_digest ... ok
+test state::tests::registering_again_keeps_assignments ... ok
+test state::tests::release_only_frees_the_holder_and_is_idempotent ... ok
+test state::tests::results_of_one_group_share_its_log_index ... ok
+test raft::proposals::tests::a_group_stops_at_the_limit_and_order_is_kept ... ok
+test state::tests::rows_of_one_client_come_newest_first_up_to_the_limit ... ok
+test state::tests::status_at_follows_the_hold_through_release ... ok
+test state::tests::same_log_same_digest_different_log_different_digest ... ok
+test state::tests::the_order_inside_a_group_changes_the_digest ... ok
+test state::tests::survives_serialization ... ok
+test state::tests::a_sample_is_part_of_the_free_list_and_differs_by_salt ... ok
+test tests::every_directive_in_the_default_filter_parses ... ok
+test tests::the_default_filter_drops_tarpcs_call_lines_and_keeps_the_rest ... ok
+test raft::wal::tests::a_damaged_record_ends_the_replay ... ok
+test node::step_aside::tests::a_new_leader_ends_the_quiet_as_soon_as_this_node_steps_down ... ok
+test raft::wal::tests::an_interrupted_last_record_is_dropped_and_writing_continues ... ok
+test raft::proposals::tests::a_full_catch_up_message_fits_in_a_frame ... ok
+test raft::wal::tests::records_replay_in_order ... ok
+test raft::proposals::tests::an_answer_counts_the_time_it_took_from_entering_the_queue ... ok
+test node::faults::tests::every_node_can_win_and_the_silence_stays_in_range ... ok
+test raft::proposals::tests::a_write_counts_its_own_time_and_not_the_time_its_proposals_queued ... ok
+test node::transport::tests::silenced_receiver_times_out_then_recovers ... ok
+test node::step_aside::tests::no_new_leader_in_time_ends_the_quiet_and_this_node_carries_on ... ok
+test node::transport::tests::no_reply_leaves_a_node_whose_gate_closes_mid_call ... ok
+test node::transport::tests::refused_connect_backs_off_then_reconnects ... ok
+test node::transport::tests::a_broadcast_returns_with_one_stuck_peer_and_reports_the_healthy_one ... ok
+test node::rejoin::tests::a_stopped_raft_is_asked_once_per_wait_and_not_in_a_tight_loop ... ok
+test node::rejoin::tests::with_no_leader_to_ask_the_old_target_still_counts ... ok
+test node::rejoin::tests::a_target_that_never_commits_does_not_hold_the_node_back_for_ever ... ok
+test node::rejoin::tests::asking_again_does_not_raise_the_target ... ok
+test node::step_aside::tests::the_loop_steps_aside_on_a_slow_log_too ... ok
+test node::step_aside::tests::the_loop_steps_aside_after_the_time_in_a_row_and_logs_the_scores ... ok
+test node::transport::tests::a_call_to_a_peer_that_never_reads_returns_by_its_deadline ... ok
+test raft::store::tests::passes_openraft_storage_suite ... ok
+
+test result: ok. 301 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.09s
+
+     Running unittests src/bin/ctl.rs (target/debug/deps/ctl-2233c4884cbf0c27)
+
+running 4 tests
+test tests::a_row_prints_every_field ... ok
+test tests::members_print_as_a_list_and_as_a_dash_while_silenced ... ok
+test tests::the_udp_line_names_the_node_and_the_rule_to_add ... ok
+test tests::incidents_take_a_client_or_an_id_but_not_both ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/frontend.rs (target/debug/deps/frontend-2c411b3ec0324d2f)
+
+running 22 tests
+test tests::bad_request_heads_are_refused ... ok
+test tests::digest_is_text_and_survives_above_two_to_the_53 ... ok
+test tests::committed_json_names_everything_and_the_id_is_text ... ok
+test tests::load_limits_are_refused ... ok
+test tests::old_rows_go_first_and_running_rows_stay ... ok
+test tests::nobody_free_and_an_expired_answer_are_told_apart ... ok
+test tests::provisional_json_has_no_index_or_request ... ok
+test tests::the_page_calls_exactly_the_routes_that_exist ... ok
+test tests::users_split_over_at_most_ten_programs ... ok
+test tests::request_parser_handles_split_reads_and_caps ... ok
+test tests::a_drawn_incident_lands_in_the_asked_zone ... ok
+test tests::the_page_has_no_outside_links_and_writes_text_only ... ok
+test tests::a_missing_loadgen_shows_failed_rows_and_no_restart ... ok
+test tests::the_page_and_info_are_served_as_a_browser_needs ... ok
+test tests::shutdown_ends_every_program ... ok
+test tests::a_node_parameter_and_bad_values_are_refused ... ok
+test tests::every_pattern_reaches_the_program ... ok
+test tests::stop_ends_the_programs_and_marks_them_stopped ... ok
+test tests::the_box_starts_ten_real_programs_and_shows_each_summary ... ok
+test tests::with_no_node_left_a_report_ends_in_no_answer_and_rows_say_why ... ok
+test tests::a_typed_report_returns_a_committed_card ... ok
+test tests::a_lone_nodes_answer_is_labelled_provisional_and_silenced_is_not_unreachable ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running unittests src/bin/loadgen.rs (target/debug/deps/loadgen-c4a1c60c0edbfb25)
+
+running 12 tests
+test tests::all_at_once_waits_land_on_the_next_multiple_of_the_think_time ... ok
+test tests::open_loop_owner_survives_zero_users ... ok
+test tests::open_loop_reports_take_turns_among_the_users ... ok
+test tests::percentiles_use_the_nearest_rank ... ok
+test tests::steady_first_waits_are_even_and_zero_for_one_user ... ok
+test tests::the_summary_keeps_the_wording_the_start_script_adds_up ... ok
+test tests::random_waits_leave_the_incident_stream_unchanged ... ok
+test tests::steady_waits_exactly_the_think_time ... ok
+test tests::a_seed_repeats_the_same_incidents_and_users_differ ... ok
+test tests::a_pattern_cannot_be_named_with_an_open_loop ... ok
+test tests::a_pattern_that_needs_a_think_time_refuses_zero ... ok
+test tests::random_waits_stay_within_twice_the_think_time_and_repeat_for_a_seed ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/node.rs (target/debug/deps/node-c7a10a5238975a0c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/roundlog.rs (target/debug/deps/roundlog-a7f268a66b8db057)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bidding.rs (target/debug/deps/bidding-90e9cf72003e1b99)
+
+running 4 tests
+test every_request_gets_one_committed_result ... ok
+test leader_dispatch_is_unchanged ... ok
+test a_node_that_is_not_serving_stays_out ... ok
+test a_busy_node_loses_after_planning_very_fast ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+
+     Running tests/client.rs (target/debug/deps/client-db31c28c2d04fe74)
+
+running 23 tests
+test a_quiet_node_does_not_hold_up_another ... ok
+test a_node_answers_control_over_tcp_with_every_method ... ok
+test an_expired_reply_ends_the_wait_at_once ... ok
+test a_late_answer_from_an_earlier_attempt_counts ... ok
+test ctl_status_says_udp_ok_for_a_silenced_node ... ok
+test more_than_a_thousand_calls_can_wait_on_one_stub ... ok
+test a_dead_node_does_not_end_a_submit ... ok
+test a_retry_keeps_the_request_id_and_increments_the_attempt ... ok
+test each_retry_states_a_larger_age ... ok
+test a_submit_with_no_open_calls_waits_for_its_timer ... ok
+test gives_up_with_an_error_after_the_retry_budget ... ok
+test a_silenced_follower_does_not_disturb_service ... ok
+test many_users_share_one_client ... ok
+test a_submit_returns_the_committed_result_and_logs_its_events ... ok
+test many_users_share_one_client_under_bidding ... ok
+test a_cancel_does_not_stop_the_nodes_work_and_is_counted ... ok
+test a_node_that_comes_back_on_the_same_address_just_answers ... ok
+test a_fresh_report_gets_a_responder_and_reads_assigned ... ok
+test bidding_serves_a_client_with_a_node_silenced ... ok
+test a_node_that_cannot_answer_stays_quiet_until_the_deadline ... ok
+test a_silenced_node_drops_submit_and_answers_control ... ok
+test a_silenced_leader_is_covered_by_a_retry_with_the_same_id ... ok
+test ctl_status_says_when_the_udp_port_does_not_answer ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests/cluster.rs (target/debug/deps/cluster-3053d84992c40dbb)
+
+running 6 tests
+test ctl_silence_is_refused_when_fault_injection_is_disabled ... ok
+test every_node_answers_status ... ok
+test a_request_is_committed_before_the_reply_and_retries_get_the_same_result ... ok
+test a_held_responder_is_released_by_its_executor_after_the_service_time ... ok
+test ctl_silence_closes_the_gate_rejects_overlaps_and_restores_itself ... ok
+test a_silent_executors_responder_is_released_by_a_peer ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.34s
+
+     Running tests/datagram.rs (target/debug/deps/datagram-e7fad40c2c6923d4)
+
+running 14 tests
+test the_decoder_consumes_a_bad_datagram ... ok
+test aborting_serve_ends_every_channel_and_call_and_frees_the_port ... ok
+test a_reused_source_port_can_collide_with_an_old_id ... ok
+test a_huge_deadline_is_a_bad_datagram ... ok
+test a_bad_datagram_kills_a_naive_transport_but_not_the_adapter ... ok
+test late_and_unknown_responses_are_ignored ... ok
+test an_idle_program_loses_its_channel_and_gets_a_new_one ... ok
+test udpframed_sink_never_recovers_from_a_failed_send ... ok
+test a_message_too_large_is_counted_and_the_channel_lives_on ... ok
+test a_lost_request_ends_at_the_deadline_and_the_channel_lives_on ... ok
+test duplicates_and_reordering_do_no_harm ... ok
+test a_cancel_aborts_the_handler_and_a_deadline_needs_no_cancel ... ok
+test a_dead_node_kills_a_connected_naive_client_only ... ok
+test a_stub_keeps_sending_with_every_call_a_full_client_can_hold_open ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests/degraded.rs (target/debug/deps/degraded-d27be9144f95bb76)
+
+running 11 tests
+test the_cluster_recovers_when_the_longer_logs_were_all_silenced ... ok
+test the_last_follower_answers_through_the_client_and_commits_on_return ... ok
+test a_replay_keeps_the_original_stamps ... ok
+test each_answer_takes_a_different_responder_while_they_are_held ... ok
+test a_silenced_node_is_never_degraded_though_it_hears_nobody ... ok
+test a_lone_node_answers_a_too_old_report_provisionally_and_the_record_reads_expired ... ok
+test the_last_leader_answers_too_and_a_retry_gets_the_same_plan ... ok
+test the_same_responder_with_another_priority_is_no_conflict ... ok
+test losing_the_first_commit_logs_a_conflict_and_keeps_the_winner ... ok
+test a_replayed_plan_whose_responder_is_taken_is_recorded_without_it ... ok
+test one_silenced_node_never_makes_the_others_degraded ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s
+
+     Running tests/durable.rs (target/debug/deps/durable-975cce3f7b559a46)
+
+running 4 tests
+test a_restarted_follower_keeps_its_log_and_catches_up_before_serving ... ok
+test the_whole_cluster_restarts_from_disk_with_every_committed_result ... ok
+test a_restarted_node_proposes_no_campus_before_it_serves ... ok
+test a_lone_node_waits_for_a_peer_to_load_the_campus ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.23s
+
+     Running tests/experiment_cells.rs (target/debug/deps/experiment_cells-7f662098fb5843dc)
+
+running 5 tests
+test the_quick_profile_is_fifteen_cells_of_the_full_one ... ok
+test the_top_e1_cells_have_responders_for_their_load ... ok
+test a_busy_leader_steps_aside_in_the_configs_people_run_by_hand ... ok
+test a_busy_leader_stays_leader_in_every_cell_but_the_one_that_tests_it ... ok
+test every_cell_is_a_valid_config_with_a_run_line ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/faults.rs (target/debug/deps/faults-8339f27300e2b2cd)
+
+running 13 tests
+test a_fault_bid_from_an_old_term_is_dropped ... ok
+test the_winner_goes_silent_for_its_own_time ... ok
+test a_winner_that_is_not_serving_refuses ... ok
+test the_schedule_resumes_after_two_nodes_were_out ... ok
+test the_schedule_injects_faults_one_victim_at_a_time ... ok
+test no_two_nodes_name_different_victims ... ok
+test no_scheduled_faults_when_fault_injection_is_disabled ... ok
+test elected_faults_lose_no_request ... ok
+test a_silenced_node_calls_no_round_even_while_still_serving ... ok
+test a_degraded_node_calls_no_round ... ok
+test no_election_finishes_while_a_node_is_silenced ... ok
+test no_election_finishes_with_a_node_down ... ok
+test a_node_that_is_not_serving_does_not_bid ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.79s
+
+     Running tests/frontend.rs (target/debug/deps/frontend-2575a06e24130d58)
+
+running 5 tests
+2026-11-05T13:12:57.108420Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52590" got=16777216
+2026-11-05T13:12:57.108529Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:49266" got=16777216
+2026-11-05T13:12:57.108580Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:47176" got=16777216
+2026-11-05T13:12:57.108646Z  INFO frontend: frontend started addr=127.0.0.1:46813
+2026-11-05T13:12:57.111066Z  INFO frontend: load box started started=10 failed=0 users=12
+2026-11-05T13:12:57.111766Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:41348" got=16777216
+2026-11-05T13:12:57.111842Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:50600" got=16777216
+2026-11-05T13:12:57.111875Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:60516" got=16777216
+2026-11-05T13:12:57.111919Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:54606" got=16777216
+2026-11-05T13:12:57.112041Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:53977" got=16777216
+2026-11-05T13:12:57.112072Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:50432" got=16777216
+2026-11-05T13:12:57.112126Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:37729" got=16777216
+2026-11-05T13:12:57.112133Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:55865" got=16777216
+2026-11-05T13:12:57.112166Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:50930" got=16777216
+2026-11-05T13:12:57.112268Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:59971" got=16777216
+2026-11-05T13:12:57.112328Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:59282" got=16777216
+2026-11-05T13:12:57.112326Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:44241" got=16777216
+2026-11-05T13:12:57.112374Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:45913" got=16777216
+2026-11-05T13:12:57.112389Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:39324" got=16777216
+2026-11-05T13:12:57.112402Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:37396" got=16777216
+2026-11-05T13:12:57.112447Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:44977" got=16777216
+2026-11-05T13:12:57.112451Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:59779" got=16777216
+2026-11-05T13:12:57.112484Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:48766" got=16777216
+2026-11-05T13:12:57.112491Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:45572" got=16777216
+2026-11-05T13:12:57.112547Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:40449" got=16777216
+2026-11-05T13:12:57.112579Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:50946" got=16777216
+2026-11-05T13:12:57.112573Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:59154" got=16777216
+2026-11-05T13:12:57.112582Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:46765" got=16777216
+2026-11-05T13:12:57.112669Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52845" got=16777216
+2026-11-05T13:12:57.112677Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:51824" got=16777216
+2026-11-05T13:12:57.112748Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:55557" got=16777216
+2026-11-05T13:12:57.112757Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:38119" got=16777216
+2026-11-05T13:12:57.112847Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:42567" got=16777216
+2026-11-05T13:12:57.112944Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:58490" got=16777216
+2026-11-05T13:12:57.113021Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:35142" got=16777216
+2026-11-05T13:12:57.115212Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:49243" got=16777216
+2026-11-05T13:12:57.115289Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:37426" got=16777216
+2026-11-05T13:12:57.115324Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:47764" got=16777216
+2026-11-05T13:12:57.115371Z  INFO frontend: frontend started addr=127.0.0.1:41647
+2026-11-05T13:12:57.116122Z  INFO frontend: load box started started=1 failed=0 users=1
+2026-11-05T13:12:57.116501Z  INFO frontend: load box started started=1 failed=0 users=1
+2026-11-05T13:12:57.116880Z  INFO frontend: load box started started=1 failed=0 users=1
+2026-11-05T13:12:57.118509Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:36743" got=16777216
+2026-11-05T13:12:57.118603Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:43527" got=16777216
+2026-11-05T13:12:57.118650Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:33305" got=16777216
+2026-11-05T13:12:57.119944Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:57553" got=16777216
+2026-11-05T13:12:57.120040Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52950" got=16777216
+2026-11-05T13:12:57.120118Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:60242" got=16777216
+2026-11-05T13:12:57.120727Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:47444" got=16777216
+2026-11-05T13:12:57.120820Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:54265" got=16777216
+2026-11-05T13:12:57.120896Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:58418" got=16777216
+2026-11-05T13:12:57.125746Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:48980" got=16777216
+2026-11-05T13:12:57.125828Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:35087" got=16777216
+2026-11-05T13:12:57.125864Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:45682" got=16777216
+2026-11-05T13:12:57.125908Z  INFO frontend: frontend started addr=127.0.0.1:34899
+2026-11-05T13:12:57.126757Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:58388" got=16777216
+2026-11-05T13:12:57.126821Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:33661" got=16777216
+2026-11-05T13:12:57.126857Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:59548" got=16777216
+2026-11-05T13:12:57.126897Z  INFO frontend: frontend started addr=127.0.0.1:43049
+2026-11-05T13:12:57.127797Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:44161" got=16777216
+2026-11-05T13:12:57.127867Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:47706" got=16777216
+2026-11-05T13:12:57.127906Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:35115" got=16777216
+2026-11-05T13:12:57.127955Z  INFO frontend: frontend started addr=127.0.0.1:34765
+2026-11-05T13:12:57.128317Z  INFO frontend: load box started started=10 failed=0 users=10
+2026-11-05T13:12:57.128614Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:48538" got=16777216
+2026-11-05T13:12:57.128722Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52206" got=16777216
+2026-11-05T13:12:57.128777Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:36797" got=16777216
+2026-11-05T13:12:57.128885Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:51460" got=16777216
+2026-11-05T13:12:57.128954Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:47213" got=16777216
+2026-11-05T13:12:57.128969Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:36608" got=16777216
+2026-11-05T13:12:57.129004Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:50182" got=16777216
+2026-11-05T13:12:57.129033Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:57032" got=16777216
+2026-11-05T13:12:57.129041Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:36251" got=16777216
+2026-11-05T13:12:57.129065Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:39973" got=16777216
+2026-11-05T13:12:57.129120Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:45925" got=16777216
+2026-11-05T13:12:57.129146Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:44114" got=16777216
+2026-11-05T13:12:57.129198Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:41922" got=16777216
+2026-11-05T13:12:57.129233Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52718" got=16777216
+2026-11-05T13:12:57.129242Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:51302" got=16777216
+2026-11-05T13:12:57.129243Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:34289" got=16777216
+2026-11-05T13:12:57.129303Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:44818" got=16777216
+2026-11-05T13:12:57.129334Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:40599" got=16777216
+2026-11-05T13:12:57.129419Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:51047" got=16777216
+2026-11-05T13:12:57.129483Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:33342" got=16777216
+2026-11-05T13:12:57.129518Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:34036" got=16777216
+2026-11-05T13:12:57.129624Z  INFO frontend: load box stopping stopping=10
+2026-11-05T13:12:57.129631Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:52253" got=16777216
+2026-11-05T13:12:57.129695Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:35452" got=16777216
+2026-11-05T13:12:57.129739Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:49867" got=16777216
+2026-11-05T13:12:57.129815Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:41464" got=16777216
+2026-11-05T13:12:57.129889Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:53966" got=16777216
+2026-11-05T13:12:57.129942Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:60246" got=16777216
+2026-11-05T13:12:57.130126Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:58118" got=16777216
+2026-11-05T13:12:57.130183Z  INFO rescuemesh::node::datagram: UDP receive buffer local_addr="0.0.0.0:41406" got=16777216
+test a_typed_report_through_the_real_program_returns_a_card_and_the_page_is_served ... ok
+2026-11-05T13:12:57.173311Z  INFO frontend: load box started started=3 failed=0 users=3
+2026-11-05T13:12:57.174144Z  INFO frontend: frontend stopping
+test sigterm_stops_the_children_and_closes_the_log ... ok
+test load_start_runs_real_loadgens_and_stop_ends_them ... ok
+test a_loadgen_that_reaches_its_duration_shows_its_summary ... ok
+test the_real_loadgen_takes_every_pattern_the_page_offers ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.38s
+
+     Running tests/group.rs (target/debug/deps/group-5c7d0b9ecac33cf4)
+
+running 6 tests
+test status_reports_members ... ok
+test a_silenced_member_leaves_after_the_hold_and_returns_when_heard ... ok
+test probe_still_reaches_a_peer_outside_the_view ... ok
+test bids_reach_a_returned_node_again ... ok
+test a_peer_suspected_before_a_silence_stays_out_after_restore ... ok
+test send_reports_who_answered_and_skips_a_member_who_left ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.46s
+
+     Running tests/heartbeat.rs (target/debug/deps/heartbeat-9716d35a83b55072)
+
+running 3 tests
+test a_group_send_reaches_every_peer_and_reports_who_missed_it ... ok
+test a_silenced_node_is_suspected_by_both_others_and_trusted_after ... ok
+test a_healthy_cluster_suspects_nobody ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+     Running tests/incidents.rs (target/debug/deps/incidents-2328252b3eb652d1)
+
+running 12 tests
+test control_rows_say_whether_the_node_is_silenced_or_serving ... ok
+test a_too_old_report_is_refused_under_leader_dispatch_too ... ok
+test a_zero_ttl_is_refused_through_the_client ... ok
+test a_too_old_report_commits_nobody_with_responders_free ... ok
+test a_report_one_millisecond_younger_than_its_ttl_is_planned ... ok
+test rows_for_one_id_match_on_all_three_nodes ... ok
+test a_report_planned_while_young_is_not_refused_by_a_late_retry ... ok
+test a_retry_of_a_refused_report_gets_the_same_body ... ok
+test a_client_query_reads_that_clients_newest_records ... ok
+test a_retry_that_arrives_too_late_is_refused ... ok
+test nobody_free_reads_unassigned_then_expired_with_no_log_entry ... ok
+test a_report_reads_assigned_then_resolved_on_all_three_nodes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+
+     Running tests/kills.rs (target/debug/deps/kills-18de03e63572afa3)
+
+running 7 tests
+test one_killed_the_other_two_commit_and_it_returns ... ok
+test a_second_kill_during_a_return_does_not_stop_them ... ok
+test two_killed_at_once_and_they_return ... ok
+test two_killed_the_last_answers_and_they_return_first_killed_first ... ok
+test two_killed_the_last_answers_and_they_return_last_killed_first ... ok
+test all_three_killed_keep_what_they_answered_and_return_together ... ok
+test all_three_killed_and_brought_back_one_at_a_time ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.34s
+
+     Running tests/layers.rs (target/debug/deps/layers-e6f2372fd9aa9b97)
+
+running 7 tests
+test the_interface_holds_no_code_of_its_own ... ok
+test the_check_is_not_blind ... ok
+test the_group_send_stays_behind_submit ... ok
+test what_the_cloud_application_commits_goes_through_the_group ... ok
+test loadgen_imports_only_through_the_facade ... ok
+test frontend_goes_through_the_interface_too ... ok
+test application_files_stay_above_the_group ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/peers.rs (target/debug/deps/peers-35cef17e233c2c01)
+
+running 4 tests
+test the_log_decides_the_campus_whichever_node_proposes_it ... ok
+test any_node_seeds_the_campus ... ok
+test the_leader_role_moves_and_its_old_holder_is_ordinary ... ok
+test a_busy_leader_loses_and_an_idle_leader_wins ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s
+
+     Running tests/proposals.rs (target/debug/deps/proposals-775e82eeab7fe4fd)
+
+running 4 tests
+test a_burst_shares_log_entries_and_every_proposal_gets_its_own_answer ... ok
+test a_leader_that_cannot_commit_answers_timeout_at_the_deadline ... ok
+test a_follower_forwards_straight_away_into_the_leaders_one_queue ... ok
+test a_returning_follower_catches_up_over_full_groups ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+
+     Running tests/rejoin.rs (target/debug/deps/rejoin-5c24dc11617bcd11)
+
+running 6 tests
+test a_leader_back_from_a_short_silence_serves_again ... ok
+test a_returning_follower_serves_only_after_catching_up ... ok
+test a_returning_node_logs_the_same_digests_at_the_same_indexes ... ok
+test a_replaced_leader_rejoins_as_a_follower ... ok
+test a_returning_follower_causes_no_election ... ok
+test a_node_still_rejoins_when_the_leader_goes_away_as_it_returns ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+
+     Running tests/replication.rs (target/debug/deps/replication-71b3e71ddd2f78c9)
+
+running 5 tests
+test three_nodes_elect_exactly_one_leader ... ok
+test first_commit_wins_when_several_nodes_execute_one_request ... ok
+test proposals_from_every_node_replicate_to_identical_state ... ok
+test plan_for_a_taken_responder_comes_back_stale ... ok
+test cluster_keeps_committing_when_the_leader_goes_silent_and_it_catches_up_after ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests/restart_log.rs (target/debug/deps/restart_log-3929cf67c592ea55)
+
+running 1 test
+test a_restart_logs_no_error ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/rounds.rs (target/debug/deps/rounds-ea442a96adc4e9d4)
+
+running 10 tests
+test the_first_in_the_order_wins_on_every_node ... ok
+test nobody_leads_and_every_node_commits_to_one_order ... ok
+test asking_again_does_not_drop_a_node_on_its_way_back ... ok
+test what_a_silent_node_was_asked_never_reaches_the_others ... ok
+test a_node_added_twice_comes_back_at_the_later_round ... ok
+test the_others_go_on_without_a_silent_node_and_it_catches_up_after ... ok
+test a_promise_given_holds_when_the_asker_goes_quiet ... ok
+test a_node_left_alone_stops_committing_until_a_peer_returns ... ok
+test a_returning_node_starts_past_its_old_stream_on_every_node ... ok
+test digests_stay_equal_through_repeated_drops_under_load ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.37s
+
+     Running tests/runner_over_ssh.rs (target/debug/deps/runner_over_ssh-3856f951bd1a445f)
+
+running 4 tests
+test a_runner_refuses_what_it_did_not_start_and_leaves_it_alone ... ok
+test a_whole_run_works_on_six_machines_with_nothing_shared ... ok
+test a_fault_cell_reaches_a_node_through_ctl_on_a_client_machine ... ok
+test a_machine_lost_in_a_run_stops_the_series_and_costs_only_its_own_logs ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.77s
+
+     Running tests/runner_script.rs (target/debug/deps/runner_script-ab4914b91702872f)
+
+running 16 tests
+test a_machine_that_cannot_be_checked_stops_the_run ... ok
+test a_machine_without_the_repo_folder_cannot_pass_for_a_clean_one ... ok
+test a_silence_that_works_at_once_is_sent_once ... ok
+test a_program_with_the_same_name_elsewhere_is_not_a_leftover ... ok
+test the_check_after_the_load_leaves_the_runs_own_nodes_alone ... ok
+test a_name_that_only_starts_the_same_is_not_a_leftover ... ok
+test nothing_running_passes_so_the_check_does_not_find_its_own_shell ... ok
+test the_check_works_the_same_over_ssh ... ok
+test a_batch_that_stops_halfway_leaves_no_run_for_the_analysis ... ok
+test a_leftover_stops_the_run_until_it_is_gone ... ok
+test already_silenced_counts_as_done ... ok
+test a_program_stopping_within_the_grace_time_is_no_leftover ... ok
+test a_silence_that_times_out_twice_is_tried_a_third_time ... ok
+test a_silence_that_never_gets_through_fails_after_three_tries ... ok
+test a_run_that_never_got_its_fault_is_set_aside ... ok
+test a_whole_cell_runs_over_ssh_and_stops_everything_it_started ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.08s
+
+     Running tests/step_aside.rs (target/debug/deps/step_aside-c48b0625f9ff0efb)
+
+running 10 tests
+test every_node_knows_of_a_drawn_silence_until_it_is_over ... ok
+test a_skewed_follower_moves_nothing ... ok
+test a_leader_silenced_while_quiet_comes_back_with_heartbeats_on ... ok
+test ratio_0_turns_it_off ... ok
+test a_leader_killed_while_quiet_leads_with_heartbeats_on_after_a_restart ... ok
+test a_silenced_peer_stops_it_until_that_peer_is_back ... ok
+test even_load_changes_nothing ... ok
+test a_skewed_leader_steps_aside_and_the_leader_changes_once ... ok
+test the_cooldown_holds_back_a_second_change ... ok
+test a_step_aside_nobody_answers_times_out_and_the_leader_carries_on ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.78s
+
+     Running tests/takeover.rs (target/debug/deps/takeover-c58f807f5209da51)
+
+running 3 tests
+test a_silent_winner_is_taken_over_by_the_runner_up ... ok
+test a_healthy_cluster_never_takes_over ... ok
+test a_busy_winner_is_taken_over_by_the_backstop ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+
+     Running tests/user_processes.rs (target/debug/deps/user_processes-cf1e0cdd118cff75)
+
+running 23 tests
+test help_works_from_any_folder ... ok
+test the_plan_line_says_how_the_users_are_shared ... ok
+test the_number_of_programs_is_a_setting ... ok
+test all_at_once_has_no_start_spread_and_steady_and_random_do ... ok
+test the_default_is_ten_programs_sharing_the_users ... ok
+test the_hosts_file_refuses_numbers_that_would_share_client_ids ... ok
+test the_runner_shares_a_cells_users_exactly ... ok
+test the_id_shows_the_machine_the_batch_and_the_program ... ok
+test dry_run_gives_every_user_its_own_slot ... ok
+test dry_run_refuses_what_would_collide_or_mean_nothing ... ok
+test more_than_a_tenth_failing_exits_with_two ... ok
+test a_stale_pid_file_does_not_block_a_start ... ok
+test term_leaves_no_child_no_pid_file_and_a_summary_from_each_program ... ok
+test a_real_start_gives_one_log_per_program ... ok
+test steady_spreads_the_first_sends_over_the_think_time ... ok
+test a_closing_terminal_still_gets_every_program_stopped_and_flushed ... ok
+test a_program_whose_reader_has_gone_still_flushes_and_exits_well ... ok
+test a_dead_program_counts_as_failed_and_the_rest_keep_going ... ok
+test dry_run_ids_are_unique_and_users_sum_exactly ... ok
+test a_killed_script_leaves_programs_that_a_start_refuses_and_stop_ends ... ok
+test a_second_start_is_refused_while_the_first_lives_and_stop_ends_it ... ok
+test all_at_once_users_send_on_a_multiple_of_the_think_time ... ok
+test every_pattern_gets_answers_from_a_real_cluster ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.49s
+
+   Doc-tests rescuemesh
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

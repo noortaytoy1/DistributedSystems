@@ -1,0 +1,25 @@
+{"ts_us":1793805866937490,"src":"node-1","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805882249499,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":15312,"provisional":36178}
+{"ts_us":1793805884589960,"src":"node-1","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805995343794,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":110749,"provisional":291652}
+{"ts_us":1793805865693431,"src":"node-2","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805994380909,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":128687,"provisional":332177}
+{"ts_us":1793805868074289,"src":"node-3","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805874528458,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":6451,"provisional":29862}
+{"ts_us":1793805878922959,"src":"node-3","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805890276673,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":11353,"provisional":82232}
+{"ts_us":1793805892822330,"src":"node-3","ev":"degraded_entered","held_responders":954}
+{"ts_us":1793805994372456,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":101550,"provisional":481081}
+sent 749925, answered 431559, gave up 318366, unaccounted 0
+client IDs from 1: longest with no answer to anyone 4911 ms
+client IDs from 2: longest with no answer to anyone 4729 ms
+client IDs from 3: longest with no answer to anyone 4729 ms
+client IDs from 4: longest with no answer to anyone 857 ms
+client IDs from 5: longest with no answer to anyone 1630 ms
+client IDs from 6: longest with no answer to anyone 713 ms
+client IDs from 7: longest with no answer to anyone 1237 ms
+client IDs from 8: longest with no answer to anyone 433 ms
+client IDs from 9: longest with no answer to anyone 513 ms
+stale per committed 0.71, commands per save 128.0, mean disk sync 3.8 ms
+checkpoints 2, digest mismatches 0
+{'conflict responder_taken': 675, 'conflict lost_first_commit': 1210}

@@ -1,0 +1,16 @@
+killed node 3 at 22:54:06.603466459
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer      1      -    16204    16204   6ffeb1179d338169   479275    true    false    false   1,2,3
+   2       peer      1      -    16210    16210   0e8a58382ee412a3   479503    true    false    false     1,2
+   3 unreachable: cannot connect to 10.40.0.73:8001: Connection refused (os error 111)
+node 1: udp ok
+node 2: udp ok
+node 3: udp no answer. Reports to it vanish: is it running, and is the port open? sudo ufw allow 8001/udp
+restarted node 3 at 22:54:45.135559417
+node       role   term leader      log  applied             digest  results serving silenced degraded members
+   1       peer      2      -    37729    37729   398af47c514bca3c  1199880    true    false    false   1,2,3
+   2       peer      2      -    37729    37729   398af47c514bca3c  1199880    true    false    false   1,2,3
+   3       peer      2      -    37729    37729   398af47c514bca3c  1199880    true    false    false   1,2,3
+node 1: udp ok
+node 2: udp ok
+node 3: udp ok

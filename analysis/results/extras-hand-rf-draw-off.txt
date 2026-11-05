@@ -1,0 +1,141 @@
+{"ts_us":1793827330679474,"src":"node-1","ev":"rejoined","leader_commit":421,"applied":622,"recovery_us":2614144}
+{"ts_us":1793827341151669,"src":"node-1","ev":"rejoined","leader_commit":1596,"applied":1604,"recovery_us":18204}
+{"ts_us":1793827368113540,"src":"node-1","ev":"rejoined","leader_commit":3522,"applied":3653,"recovery_us":1139073}
+{"ts_us":1793827375601198,"src":"node-1","ev":"rejoined","leader_commit":4270,"applied":4272,"recovery_us":15538}
+{"ts_us":1793827385214640,"src":"node-1","ev":"rejoined","leader_commit":5092,"applied":5096,"recovery_us":51350}
+{"ts_us":1793827326093876,"src":"node-2","ev":"rejoined","leader_commit":109,"applied":109,"recovery_us":33118}
+{"ts_us":1793827332477891,"src":"node-2","ev":"rejoined","leader_commit":714,"applied":934,"recovery_us":294297}
+{"ts_us":1793827348207734,"src":"node-2","ev":"rejoined","leader_commit":2116,"applied":2228,"recovery_us":48869}
+{"ts_us":1793827355849180,"src":"node-2","ev":"rejoined","leader_commit":2796,"applied":2796,"recovery_us":14375}
+{"ts_us":1793827360728756,"src":"node-2","ev":"rejoined","leader_commit":2871,"applied":3171,"recovery_us":3028523}
+{"ts_us":1793827363997691,"src":"node-2","ev":"rejoined","leader_commit":3351,"applied":3351,"recovery_us":22960}
+{"ts_us":1793827366394783,"src":"node-2","ev":"rejoined","leader_commit":3513,"applied":3513,"recovery_us":985759}
+{"ts_us":1793827372269831,"src":"node-2","ev":"rejoined","leader_commit":4073,"applied":4095,"recovery_us":13516}
+{"ts_us":1793827383204921,"src":"node-2","ev":"rejoined","leader_commit":4972,"applied":4972,"recovery_us":29903}
+{"ts_us":1793827333620260,"src":"node-3","ev":"rejoined","leader_commit":1015,"applied":1015,"recovery_us":28418}
+{"ts_us":1793827339748438,"src":"node-3","ev":"rejoined","leader_commit":1518,"applied":1519,"recovery_us":28894}
+{"ts_us":1793827345987172,"src":"node-3","ev":"rejoined","leader_commit":1730,"applied":1831,"recovery_us":1264130}
+{"ts_us":1793827354403240,"src":"node-3","ev":"rejoined","leader_commit":2734,"applied":2734,"recovery_us":26373}
+{"ts_us":1793827362041328,"src":"node-3","ev":"rejoined","leader_commit":3253,"applied":3253,"recovery_us":28865}
+{"ts_us":1793827371488620,"src":"node-3","ev":"rejoined","leader_commit":3890,"applied":3968,"recovery_us":979078}
+{"ts_us":1793827381755727,"src":"node-3","ev":"rejoined","leader_commit":4480,"applied":4823,"recovery_us":4543933}
+{"ts_us":1793827446094884,"src":"node-3","ev":"restarted","term":0,"last_log_index":null}
+sent 7813, answered 6572, gave up 1241, unaccounted 0
+client IDs from 1: longest with no answer to anyone 2980 ms
+client IDs from 2: longest with no answer to anyone 2967 ms
+client IDs from 3: longest with no answer to anyone 3131 ms
+stale per committed 0.00, commands per save 6.4, mean disk sync 2.8 ms
+checkpoints 50, digest mismatches 41
+no provisional conflicts
+round 1: victim {2} for {424} ms, called by node-1, leader then None, took 21.178 ms, lines 3
+round 2: victim {1} for {675} ms, called by node-3, leader then None, took 15.588 ms, lines 3
+round 3: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 4: victim {2} for {924} ms, called by node-1, leader then None, took 7.434 ms, lines 3
+round 5: victim {3} for {256} ms, called by node-2, leader then None, took 6.786 ms, lines 3
+round 6: victim {1} for {320} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 7: victim {2} for {743} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 8: victim {3} for {785} ms, called by node-3, leader then None, took 7.37 ms, lines 3
+round 9: victim {1} for {179} ms, called by node-3, leader then None, took 5.534 ms, lines 3
+round 10: victim {2} for {602} ms, called by node-3, leader then None, took 0.0 ms, lines 3
+round 11: victim {3} for {368} ms, called by node-2, leader then None, took 4.641 ms, lines 3
+round 12: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 13: victim {2} for {127} ms, called by node-3, leader then None, took 8.966 ms, lines 3
+round 14: victim {2} for {523} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 15: victim {2} for {379} ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 16: victim {3} for {842} ms, called by node-3, leader then None, took 13.083 ms, lines 3
+round 17: victim {2} for {289} ms, called by node-3, leader then None, took 6.466 ms, lines 3
+round 18: victim {2} for {812} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 19: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 20: victim {3} for {684} ms, called by node-1, leader then None, took 12.314 ms, lines 3
+round 21: victim {2} for {912} ms, called by node-1, leader then None, took 8.521 ms, lines 3
+round 22: victim {2} for {424} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 23: victim {1} for {546} ms, called by node-2, leader then None, took 10.845 ms, lines 3
+round 24: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 25: victim {3} for {354} ms, called by node-1, leader then None, took 8.701 ms, lines 3
+round 26: victim {2} for {659} ms, called by node-2, leader then None, took 7.171 ms, lines 3
+round 27: victim {3} for {784} ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 28: victim {1} for {195} ms, called by node-2, leader then None, took 8.012 ms, lines 3
+round 29: victim {3} for {557} ms, called by node-2, leader then None, took 7.136 ms, lines 3
+round 30: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 31: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 32: victim {2} for {690} ms, called by node-3, leader then None, took 8.35 ms, lines 3
+round 33: victim {1} for {972} ms, called by node-2, leader then None, took 5.727 ms, lines 3
+round 34: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 35: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 2
+round 36: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 37: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 2
+round 38: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 2
+round 39: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 2
+round 40: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 41: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 42: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 43: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 44: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 45: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 46: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 47: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 48: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 49: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 50: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 51: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 52: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 53: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 54: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 55: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 56: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 57: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 58: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 59: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 60: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 2
+round 61: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 62: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 63: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 64: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 65: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 66: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 67: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 68: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 69: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 70: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 71: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 72: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 73: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 74: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 75: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 76: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 77: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 78: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 79: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 80: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 81: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 82: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 83: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 84: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 85: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 86: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 87: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 88: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 89: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 90: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 91: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 92: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 93: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 94: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 95: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 96: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 97: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 98: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 99: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 100: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 101: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 102: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 103: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 104: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 105: victim none for - ms, called by node-2, leader then None, took 0.0 ms, lines 3
+round 106: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 107: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 108: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 109: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 110: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 111: victim none for - ms, called by node-1, leader then None, took 0.0 ms, lines 3
+round 112: victim none for - ms, caller's line missing, lines 1

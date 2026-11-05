@@ -1,0 +1,341 @@
+{"ts_us":1793798282898807,"src":"node-1","ev":"rejoined","leader_commit":326,"applied":326,"recovery_us":6254}
+{"ts_us":1793798288003138,"src":"node-1","ev":"rejoined","leader_commit":517,"applied":517,"recovery_us":9206}
+{"ts_us":1793798289168302,"src":"node-1","ev":"rejoined","leader_commit":562,"applied":562,"recovery_us":8419}
+{"ts_us":1793798291844771,"src":"node-1","ev":"rejoined","leader_commit":662,"applied":662,"recovery_us":7467}
+{"ts_us":1793798293938090,"src":"node-1","ev":"rejoined","leader_commit":723,"applied":723,"recovery_us":3535}
+{"ts_us":1793798295823740,"src":"node-1","ev":"rejoined","leader_commit":775,"applied":775,"recovery_us":79401}
+{"ts_us":1793798303491917,"src":"node-1","ev":"rejoined","leader_commit":1004,"applied":1005,"recovery_us":97171}
+{"ts_us":1793798307649823,"src":"node-1","ev":"rejoined","leader_commit":1233,"applied":1233,"recovery_us":54754}
+{"ts_us":1793798311227427,"src":"node-1","ev":"rejoined","leader_commit":1455,"applied":1455,"recovery_us":21263}
+{"ts_us":1793798318492565,"src":"node-1","ev":"rejoined","leader_commit":1783,"applied":1783,"recovery_us":64322}
+{"ts_us":1793798333941534,"src":"node-1","ev":"rejoined","leader_commit":2558,"applied":2558,"recovery_us":36307}
+{"ts_us":1793798395445163,"src":"node-1","ev":"rejoined","leader_commit":6883,"applied":6883,"recovery_us":56051}
+{"ts_us":1793798406593741,"src":"node-1","ev":"rejoined","leader_commit":7264,"applied":7265,"recovery_us":184021}
+{"ts_us":1793798408076861,"src":"node-1","ev":"rejoined","leader_commit":7350,"applied":7350,"recovery_us":33717}
+{"ts_us":1793798412177347,"src":"node-1","ev":"rejoined","leader_commit":7417,"applied":7419,"recovery_us":219088}
+{"ts_us":1793798415379604,"src":"node-1","ev":"rejoined","leader_commit":7517,"applied":7517,"recovery_us":63352}
+{"ts_us":1793798420648248,"src":"node-1","ev":"rejoined","leader_commit":7822,"applied":7822,"recovery_us":30212}
+{"ts_us":1793798422212913,"src":"node-1","ev":"rejoined","leader_commit":7923,"applied":7923,"recovery_us":20949}
+{"ts_us":1793798426900467,"src":"node-1","ev":"rejoined","leader_commit":8179,"applied":8179,"recovery_us":71076}
+{"ts_us":1793798433188017,"src":"node-1","ev":"rejoined","leader_commit":8492,"applied":8492,"recovery_us":59818}
+{"ts_us":1793798448262898,"src":"node-1","ev":"rejoined","leader_commit":9132,"applied":9132,"recovery_us":35873}
+{"ts_us":1793798451513961,"src":"node-1","ev":"rejoined","leader_commit":9326,"applied":9326,"recovery_us":42981}
+{"ts_us":1793798452844617,"src":"node-1","ev":"rejoined","leader_commit":9404,"applied":9404,"recovery_us":66266}
+{"ts_us":1793798458086581,"src":"node-1","ev":"rejoined","leader_commit":9709,"applied":9709,"recovery_us":37797}
+{"ts_us":1793798459355893,"src":"node-1","ev":"rejoined","leader_commit":9796,"applied":9796,"recovery_us":23338}
+{"ts_us":1793798487942359,"src":"node-1","ev":"rejoined","leader_commit":11156,"applied":11157,"recovery_us":89110}
+{"ts_us":1793798497642647,"src":"node-1","ev":"rejoined","leader_commit":11552,"applied":11552,"recovery_us":8865}
+{"ts_us":1793798498959780,"src":"node-1","ev":"rejoined","leader_commit":11612,"applied":11612,"recovery_us":19542}
+{"ts_us":1793798508929280,"src":"node-1","ev":"rejoined","leader_commit":12023,"applied":12023,"recovery_us":4733}
+{"ts_us":1793798514284019,"src":"node-1","ev":"rejoined","leader_commit":12245,"applied":12245,"recovery_us":3549}
+{"ts_us":1793798517676263,"src":"node-1","ev":"rejoined","leader_commit":12381,"applied":12381,"recovery_us":6688}
+{"ts_us":1793798532053582,"src":"node-1","ev":"rejoined","leader_commit":12896,"applied":12901,"recovery_us":210116}
+{"ts_us":1793798535545380,"src":"node-1","ev":"rejoined","leader_commit":13084,"applied":13085,"recovery_us":90427}
+{"ts_us":1793798537124845,"src":"node-1","ev":"rejoined","leader_commit":13184,"applied":13184,"recovery_us":50228}
+{"ts_us":1793798540267909,"src":"node-1","ev":"rejoined","leader_commit":13384,"applied":13384,"recovery_us":42124}
+{"ts_us":1793798543411797,"src":"node-1","ev":"rejoined","leader_commit":13467,"applied":13467,"recovery_us":3247}
+{"ts_us":1793798550955344,"src":"node-1","ev":"rejoined","leader_commit":13749,"applied":13753,"recovery_us":207118}
+{"ts_us":1793798561760064,"src":"node-1","ev":"rejoined","leader_commit":14167,"applied":14167,"recovery_us":4893}
+{"ts_us":1793798563257546,"src":"node-1","ev":"rejoined","leader_commit":14229,"applied":14229,"recovery_us":5306}
+{"ts_us":1793798567254978,"src":"node-1","ev":"rejoined","leader_commit":14355,"applied":14360,"recovery_us":238650}
+{"ts_us":1793798576369740,"src":"node-1","ev":"rejoined","leader_commit":14797,"applied":14797,"recovery_us":41197}
+{"ts_us":1793798583107874,"src":"node-1","ev":"rejoined","leader_commit":14798,"applied":14798,"recovery_us":4059}
+{"ts_us":1793798587100104,"src":"node-1","ev":"rejoined","leader_commit":14799,"applied":14799,"recovery_us":23553}
+{"ts_us":1793798591055154,"src":"node-1","ev":"rejoined","leader_commit":14799,"applied":14799,"recovery_us":20185}
+{"ts_us":1793798593188143,"src":"node-1","ev":"rejoined","leader_commit":14799,"applied":14799,"recovery_us":17933}
+{"ts_us":1793798276625646,"src":"node-2","ev":"rejoined","leader_commit":121,"applied":121,"recovery_us":31567}
+{"ts_us":1793798278191974,"src":"node-2","ev":"rejoined","leader_commit":176,"applied":176,"recovery_us":56678}
+{"ts_us":1793798281533888,"src":"node-2","ev":"rejoined","leader_commit":289,"applied":289,"recovery_us":79889}
+{"ts_us":1793798297763205,"src":"node-2","ev":"rejoined","leader_commit":819,"applied":820,"recovery_us":147199}
+{"ts_us":1793798299512908,"src":"node-2","ev":"rejoined","leader_commit":889,"applied":889,"recovery_us":59546}
+{"ts_us":1793798301313254,"src":"node-2","ev":"rejoined","leader_commit":960,"applied":960,"recovery_us":74803}
+{"ts_us":1793798304765164,"src":"node-2","ev":"rejoined","leader_commit":1054,"applied":1054,"recovery_us":2065}
+{"ts_us":1793798314417141,"src":"node-2","ev":"rejoined","leader_commit":1624,"applied":1624,"recovery_us":4611}
+{"ts_us":1793798316262160,"src":"node-2","ev":"rejoined","leader_commit":1690,"applied":1690,"recovery_us":3514}
+{"ts_us":1793798324569297,"src":"node-2","ev":"rejoined","leader_commit":2102,"applied":2102,"recovery_us":10035}
+{"ts_us":1793798326563645,"src":"node-2","ev":"rejoined","leader_commit":2176,"applied":2176,"recovery_us":2858}
+{"ts_us":1793798397571952,"src":"node-2","ev":"rejoined","leader_commit":6945,"applied":6946,"recovery_us":115692}
+{"ts_us":1793798400998056,"src":"node-2","ev":"rejoined","leader_commit":7092,"applied":7092,"recovery_us":41034}
+{"ts_us":1793798402576941,"src":"node-2","ev":"rejoined","leader_commit":7144,"applied":7144,"recovery_us":91384}
+{"ts_us":1793798404431863,"src":"node-2","ev":"rejoined","leader_commit":7218,"applied":7218,"recovery_us":88534}
+{"ts_us":1793798409746644,"src":"node-2","ev":"rejoined","leader_commit":7407,"applied":7407,"recovery_us":7454}
+{"ts_us":1793798413780333,"src":"node-2","ev":"rejoined","leader_commit":7473,"applied":7473,"recovery_us":1478}
+{"ts_us":1793798425488617,"src":"node-2","ev":"rejoined","leader_commit":8098,"applied":8098,"recovery_us":3344}
+{"ts_us":1793798430227721,"src":"node-2","ev":"rejoined","leader_commit":8330,"applied":8330,"recovery_us":5807}
+{"ts_us":1793798434357710,"src":"node-2","ev":"rejoined","leader_commit":8553,"applied":8553,"recovery_us":3606}
+{"ts_us":1793798435736598,"src":"node-2","ev":"rejoined","leader_commit":8614,"applied":8614,"recovery_us":4728}
+{"ts_us":1793798437215859,"src":"node-2","ev":"rejoined","leader_commit":8655,"applied":8655,"recovery_us":4336}
+{"ts_us":1793798441182544,"src":"node-2","ev":"rejoined","leader_commit":8837,"applied":8837,"recovery_us":1924}
+{"ts_us":1793798442832611,"src":"node-2","ev":"rejoined","leader_commit":8905,"applied":8905,"recovery_us":6190}
+{"ts_us":1793798444737723,"src":"node-2","ev":"rejoined","leader_commit":8954,"applied":8954,"recovery_us":3122}
+{"ts_us":1793798462995159,"src":"node-2","ev":"rejoined","leader_commit":9987,"applied":9987,"recovery_us":9228}
+{"ts_us":1793798467795739,"src":"node-2","ev":"rejoined","leader_commit":10218,"applied":10218,"recovery_us":12938}
+{"ts_us":1793798469680081,"src":"node-2","ev":"rejoined","leader_commit":10288,"applied":10288,"recovery_us":3281}
+{"ts_us":1793798471722324,"src":"node-2","ev":"rejoined","leader_commit":10333,"applied":10333,"recovery_us":4770}
+{"ts_us":1793798478534736,"src":"node-2","ev":"rejoined","leader_commit":10683,"applied":10683,"recovery_us":6989}
+{"ts_us":1793798484342395,"src":"node-2","ev":"rejoined","leader_commit":10966,"applied":10966,"recovery_us":7173}
+{"ts_us":1793798485992299,"src":"node-2","ev":"rejoined","leader_commit":11045,"applied":11045,"recovery_us":9493}
+{"ts_us":1793798491727249,"src":"node-2","ev":"rejoined","leader_commit":11317,"applied":11318,"recovery_us":180374}
+{"ts_us":1793798494569426,"src":"node-2","ev":"rejoined","leader_commit":11435,"applied":11435,"recovery_us":66649}
+{"ts_us":1793798504688252,"src":"node-2","ev":"rejoined","leader_commit":11857,"applied":11857,"recovery_us":60285}
+{"ts_us":1793798521050213,"src":"node-2","ev":"rejoined","leader_commit":12522,"applied":12522,"recovery_us":57618}
+{"ts_us":1793798524480980,"src":"node-2","ev":"rejoined","leader_commit":12650,"applied":12650,"recovery_us":66441}
+{"ts_us":1793798526433170,"src":"node-2","ev":"rejoined","leader_commit":12717,"applied":12717,"recovery_us":58951}
+{"ts_us":1793798528206210,"src":"node-2","ev":"rejoined","leader_commit":12784,"applied":12784,"recovery_us":62091}
+{"ts_us":1793798542411964,"src":"node-2","ev":"rejoined","leader_commit":13451,"applied":13452,"recovery_us":652784}
+{"ts_us":1793798553079368,"src":"node-2","ev":"rejoined","leader_commit":13798,"applied":13803,"recovery_us":381477}
+{"ts_us":1793798555649104,"src":"node-2","ev":"rejoined","leader_commit":13914,"applied":13914,"recovery_us":23531}
+{"ts_us":1793798557356580,"src":"node-2","ev":"rejoined","leader_commit":14004,"applied":14004,"recovery_us":70549}
+{"ts_us":1793798564900329,"src":"node-2","ev":"rejoined","leader_commit":14297,"applied":14297,"recovery_us":22468}
+{"ts_us":1793798579958745,"src":"node-2","ev":"rejoined","leader_commit":14798,"applied":14798,"recovery_us":373665}
+{"ts_us":1793798274643501,"src":"node-3","ev":"rejoined","leader_commit":53,"applied":53,"recovery_us":29578}
+{"ts_us":1793798279456163,"src":"node-3","ev":"rejoined","leader_commit":218,"applied":218,"recovery_us":28518}
+{"ts_us":1793798284759305,"src":"node-3","ev":"rejoined","leader_commit":401,"applied":402,"recovery_us":77788}
+{"ts_us":1793798286442558,"src":"node-3","ev":"rejoined","leader_commit":473,"applied":474,"recovery_us":83065}
+{"ts_us":1793798290587867,"src":"node-3","ev":"rejoined","leader_commit":617,"applied":617,"recovery_us":42840}
+{"ts_us":1793798306072664,"src":"node-3","ev":"rejoined","leader_commit":1125,"applied":1126,"recovery_us":42182}
+{"ts_us":1793798309718481,"src":"node-3","ev":"rejoined","leader_commit":1365,"applied":1365,"recovery_us":55779}
+{"ts_us":1793798312886047,"src":"node-3","ev":"rejoined","leader_commit":1555,"applied":1555,"recovery_us":22934}
+{"ts_us":1793798320447759,"src":"node-3","ev":"rejoined","leader_commit":1896,"applied":1896,"recovery_us":77035}
+{"ts_us":1793798322699038,"src":"node-3","ev":"rejoined","leader_commit":2037,"applied":2037,"recovery_us":50998}
+{"ts_us":1793798328631010,"src":"node-3","ev":"rejoined","leader_commit":2266,"applied":2266,"recovery_us":49991}
+{"ts_us":1793798330665613,"src":"node-3","ev":"rejoined","leader_commit":2384,"applied":2384,"recovery_us":77818}
+{"ts_us":1793798332262516,"src":"node-3","ev":"rejoined","leader_commit":2473,"applied":2473,"recovery_us":51941}
+{"ts_us":1793798394215006,"src":"node-3","ev":"restarted","term":10,"last_log_index":2558}
+{"ts_us":1793798394584575,"src":"node-3","ev":"rejoined","leader_commit":6820,"applied":6833,"recovery_us":369566}
+{"ts_us":1793798399387478,"src":"node-3","ev":"rejoined","leader_commit":7016,"applied":7016,"recovery_us":27750}
+{"ts_us":1793798416890806,"src":"node-3","ev":"rejoined","leader_commit":7603,"applied":7603,"recovery_us":68358}
+{"ts_us":1793798418836048,"src":"node-3","ev":"rejoined","leader_commit":7725,"applied":7725,"recovery_us":58551}
+{"ts_us":1793798423992574,"src":"node-3","ev":"rejoined","leader_commit":8031,"applied":8031,"recovery_us":23776}
+{"ts_us":1793798428385971,"src":"node-3","ev":"rejoined","leader_commit":8269,"applied":8269,"recovery_us":22396}
+{"ts_us":1793798431655628,"src":"node-3","ev":"rejoined","leader_commit":8388,"applied":8388,"recovery_us":90894}
+{"ts_us":1793798439166588,"src":"node-3","ev":"rejoined","leader_commit":8760,"applied":8760,"recovery_us":17314}
+{"ts_us":1793798446439712,"src":"node-3","ev":"rejoined","leader_commit":9029,"applied":9029,"recovery_us":33795}
+{"ts_us":1793798450044877,"src":"node-3","ev":"rejoined","leader_commit":9243,"applied":9243,"recovery_us":34909}
+{"ts_us":1793798454713011,"src":"node-3","ev":"rejoined","leader_commit":9520,"applied":9520,"recovery_us":66252}
+{"ts_us":1793798456834865,"src":"node-3","ev":"rejoined","leader_commit":9629,"applied":9629,"recovery_us":120778}
+{"ts_us":1793798461139529,"src":"node-3","ev":"rejoined","leader_commit":9912,"applied":9912,"recovery_us":44730}
+{"ts_us":1793798464808362,"src":"node-3","ev":"rejoined","leader_commit":10081,"applied":10081,"recovery_us":32407}
+{"ts_us":1793798466028993,"src":"node-3","ev":"rejoined","leader_commit":10152,"applied":10152,"recovery_us":41820}
+{"ts_us":1793798473034514,"src":"node-3","ev":"rejoined","leader_commit":10386,"applied":10386,"recovery_us":59772}
+{"ts_us":1793798474979765,"src":"node-3","ev":"rejoined","leader_commit":10523,"applied":10523,"recovery_us":48944}
+{"ts_us":1793798476770776,"src":"node-3","ev":"rejoined","leader_commit":10622,"applied":10622,"recovery_us":23086}
+{"ts_us":1793798479890370,"src":"node-3","ev":"rejoined","leader_commit":10741,"applied":10741,"recovery_us":69807}
+{"ts_us":1793798481656205,"src":"node-3","ev":"rejoined","leader_commit":10832,"applied":10832,"recovery_us":27634}
+{"ts_us":1793798482925616,"src":"node-3","ev":"rejoined","leader_commit":10902,"applied":10902,"recovery_us":30911}
+{"ts_us":1793798489260547,"src":"node-3","ev":"rejoined","leader_commit":11238,"applied":11238,"recovery_us":32760}
+{"ts_us":1793798492855496,"src":"node-3","ev":"rejoined","leader_commit":11358,"applied":11358,"recovery_us":63905}
+{"ts_us":1793798496075208,"src":"node-3","ev":"rejoined","leader_commit":11507,"applied":11507,"recovery_us":73952}
+{"ts_us":1793798500700163,"src":"node-3","ev":"rejoined","leader_commit":11677,"applied":11677,"recovery_us":41017}
+{"ts_us":1793798502629860,"src":"node-3","ev":"rejoined","leader_commit":11765,"applied":11765,"recovery_us":60638}
+{"ts_us":1793798505995483,"src":"node-3","ev":"rejoined","leader_commit":11917,"applied":11917,"recovery_us":59295}
+{"ts_us":1793798507262140,"src":"node-3","ev":"rejoined","leader_commit":11973,"applied":11973,"recovery_us":67657}
+{"ts_us":1793798511235851,"src":"node-3","ev":"rejoined","leader_commit":12136,"applied":12136,"recovery_us":103312}
+{"ts_us":1793798512700265,"src":"node-3","ev":"rejoined","leader_commit":12199,"applied":12199,"recovery_us":45482}
+{"ts_us":1793798516463078,"src":"node-3","ev":"rejoined","leader_commit":12336,"applied":12336,"recovery_us":74566}
+{"ts_us":1793798519507986,"src":"node-3","ev":"rejoined","leader_commit":12455,"applied":12455,"recovery_us":72500}
+{"ts_us":1793798522746334,"src":"node-3","ev":"rejoined","leader_commit":12591,"applied":12591,"recovery_us":42407}
+{"ts_us":1793798529994738,"src":"node-3","ev":"rejoined","leader_commit":12859,"applied":12859,"recovery_us":69356}
+{"ts_us":1793798533523124,"src":"node-3","ev":"rejoined","leader_commit":12976,"applied":12976,"recovery_us":16510}
+{"ts_us":1793798538489471,"src":"node-3","ev":"rejoined","leader_commit":13269,"applied":13269,"recovery_us":40874}
+{"ts_us":1793798545087128,"src":"node-3","ev":"rejoined","leader_commit":13539,"applied":13539,"recovery_us":32863}
+{"ts_us":1793798546999779,"src":"node-3","ev":"rejoined","leader_commit":13625,"applied":13625,"recovery_us":36691}
+{"ts_us":1793798548774458,"src":"node-3","ev":"rejoined","leader_commit":13698,"applied":13698,"recovery_us":35086}
+{"ts_us":1793798554331260,"src":"node-3","ev":"rejoined","leader_commit":13853,"applied":13853,"recovery_us":55077}
+{"ts_us":1793798558571840,"src":"node-3","ev":"rejoined","leader_commit":14060,"applied":14060,"recovery_us":72059}
+{"ts_us":1793798559971463,"src":"node-3","ev":"rejoined","leader_commit":14122,"applied":14122,"recovery_us":64333}
+{"ts_us":1793798568696919,"src":"node-3","ev":"rejoined","leader_commit":14438,"applied":14438,"recovery_us":63784}
+{"ts_us":1793798570480157,"src":"node-3","ev":"rejoined","leader_commit":14541,"applied":14541,"recovery_us":63416}
+{"ts_us":1793798572162234,"src":"node-3","ev":"rejoined","leader_commit":14650,"applied":14650,"recovery_us":53596}
+{"ts_us":1793798574331882,"src":"node-3","ev":"rejoined","leader_commit":14777,"applied":14777,"recovery_us":46268}
+{"ts_us":1793798577661798,"src":"node-3","ev":"rejoined","leader_commit":14797,"applied":14797,"recovery_us":75659}
+{"ts_us":1793798581326284,"src":"node-3","ev":"rejoined","leader_commit":14798,"applied":14798,"recovery_us":34867}
+{"ts_us":1793798585194619,"src":"node-3","ev":"rejoined","leader_commit":14799,"applied":14799,"recovery_us":47694}
+{"ts_us":1793798589379042,"src":"node-3","ev":"rejoined","leader_commit":14799,"applied":14799,"recovery_us":30409}
+sent 71678, answered 71678, gave up 0, unaccounted 0
+client IDs from 1: longest with no answer to anyone 2752 ms
+client IDs from 2: longest with no answer to anyone 2730 ms
+client IDs from 3: longest with no answer to anyone 2747 ms
+stale per committed 0.55, commands per save 15.6, mean disk sync 2.8 ms
+checkpoints 148, digest mismatches 0
+no provisional conflicts
+round 1: victim {3} for {676} ms, called by node-1, leader then 1, took 12.014 ms, lines 3
+round 2: victim {2} for {923} ms, called by node-1, leader then 1, took 7.801 ms, lines 3
+round 3: victim {2} for {318} ms, called by node-1, leader then 1, took 14.026 ms, lines 3
+round 4: victim {3} for {268} ms, called by node-2, leader then 1, took 15.549 ms, lines 3
+round 5: victim {2} for {945} ms, called by node-3, leader then 1, took 17.824 ms, lines 3
+round 6: victim {1} for {366} ms, called by node-1, leader then 1, took 17.891 ms, lines 3
+round 7: victim {3} for {374} ms, called by node-2, leader then 1, took 20.49 ms, lines 3
+round 8: victim {3} for {368} ms, called by node-3, leader then 1, took 9.923 ms, lines 3
+round 9: victim {1} for {511} ms, called by node-3, leader then 1, took 10.471 ms, lines 3
+round 10: victim {1} for {143} ms, called by node-2, leader then 1, took 12.84 ms, lines 3
+round 11: victim {3} for {238} ms, called by node-1, leader then 1, took 25.677 ms, lines 3
+round 12: victim {1} for {226} ms, called by node-1, leader then 1, took 19.534 ms, lines 3
+round 13: victim {1} for {694} ms, called by node-2, leader then 1, took 13.838 ms, lines 3
+round 14: victim {1} for {774} ms, called by node-1, leader then 1, took 14.647 ms, lines 3
+round 15: victim {2} for {797} ms, called by node-1, leader then 2, took 17.511 ms, lines 3
+round 16: victim {2} for {728} ms, called by node-3, leader then 1, took 5.583 ms, lines 3
+round 17: victim {2} for {606} ms, called by node-2, leader then 1, took 4.42 ms, lines 3
+round 18: victim {1} for {997} ms, called by node-2, leader then 1, took 12.721 ms, lines 3
+round 19: victim {2} for {241} ms, called by node-3, leader then 2, took 26.948 ms, lines 3
+round 20: victim {3} for {176} ms, called by node-3, leader then 2, took 15.373 ms, lines 3
+round 21: victim {1} for {425} ms, called by node-2, leader then 2, took 9.924 ms, lines 3
+round 22: victim {3} for {980} ms, called by node-3, leader then 2, took 12.612 ms, lines 3
+round 23: victim {1} for {250} ms, called by node-1, leader then 2, took 13.923 ms, lines 3
+round 24: victim {3} for {610} ms, called by node-3, leader then 2, took 16.726 ms, lines 3
+round 25: victim {2} for {408} ms, called by node-3, leader then 2, took 30.97 ms, lines 3
+round 26: victim {2} for {537} ms, called by node-1, leader then 2, took 17.21 ms, lines 3
+round 27: victim {1} for {982} ms, called by node-1, leader then 2, took 9.144 ms, lines 3
+round 28: victim {3} for {925} ms, called by node-1, leader then 2, took 11.051 ms, lines 3
+round 29: victim {3} for {963} ms, called by node-2, leader then 2, took 17.326 ms, lines 3
+round 30: victim {2} for {885} ms, called by node-2, leader then 2, took 20.094 ms, lines 3
+round 31: victim {2} for {636} ms, called by node-1, leader then 2, took 14.358 ms, lines 3
+round 32: victim {3} for {736} ms, called by node-1, leader then 2, took 13.113 ms, lines 3
+round 33: victim {3} for {820} ms, called by node-2, leader then 2, took 8.689 ms, lines 3
+round 34: victim {3} for {438} ms, called by node-1, leader then 2, took 10.128 ms, lines 3
+round 35: victim {1} for {547} ms, called by node-3, leader then 2, took 13.389 ms, lines 3
+round 36: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 37: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 38: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 39: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 40: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 41: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 42: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 43: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 44: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 45: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 46: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 47: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 48: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 49: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 50: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 51: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 52: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 53: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 54: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 55: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 56: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 57: victim none for - ms, called by node-2, leader then 2, took 0.0 ms, lines 2
+round 58: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 59: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 60: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 61: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 62: victim none for - ms, called by node-1, leader then 2, took 0.0 ms, lines 2
+round 63: victim {1} for {325} ms, called by node-1, leader then 2, took 12.32 ms, lines 3
+round 64: victim {2} for {968} ms, called by node-2, leader then 2, took 20.025 ms, lines 3
+round 65: victim {3} for {875} ms, called by node-3, leader then 1, took 3.606 ms, lines 3
+round 66: victim {2} for {200} ms, called by node-1, leader then 1, took 8.213 ms, lines 3
+round 67: victim {2} for {424} ms, called by node-1, leader then 1, took 11.23 ms, lines 3
+round 68: victim {2} for {788} ms, called by node-1, leader then 1, took 20.36 ms, lines 3
+round 69: victim {1} for {831} ms, called by node-1, leader then 1, took 15.516 ms, lines 3
+round 70: victim {1} for {491} ms, called by node-1, leader then 2, took 18.174 ms, lines 3
+round 71: victim {2} for {613} ms, called by node-1, leader then 2, took 18.553 ms, lines 3
+round 72: victim {1} for {996} ms, called by node-2, leader then 1, took 78.711 ms, lines 3
+round 73: victim {2} for {716} ms, called by node-1, leader then 2, took 25.47 ms, lines 3
+round 74: victim {1} for {481} ms, called by node-2, leader then 2, took 22.666 ms, lines 3
+round 75: victim {3} for {437} ms, called by node-2, leader then 2, took 14.747 ms, lines 3
+round 76: victim {3} for {862} ms, called by node-1, leader then 2, took 8.043 ms, lines 3
+round 77: victim {1} for {764} ms, called by node-2, leader then 2, took 6.906 ms, lines 3
+round 78: victim {1} for {247} ms, called by node-3, leader then 2, took 4.943 ms, lines 3
+round 79: victim {3} for {362} ms, called by node-1, leader then 2, took 16.379 ms, lines 3
+round 80: victim {2} for {417} ms, called by node-1, leader then 2, took 41.184 ms, lines 3
+round 81: victim {1} for {318} ms, called by node-3, leader then 2, took 5.091 ms, lines 3
+round 82: victim {3} for {414} ms, called by node-3, leader then 2, took 14.854 ms, lines 3
+round 83: victim {2} for {806} ms, called by node-3, leader then 2, took 12.117 ms, lines 3
+round 84: victim {3} for {181} ms, called by node-1, leader then 2, took 24.422 ms, lines 3
+round 85: victim {1} for {270} ms, called by node-2, leader then 2, took 21.153 ms, lines 3
+round 86: victim {2} for {152} ms, called by node-2, leader then 2, took 12.084 ms, lines 3
+round 87: victim {2} for {316} ms, called by node-1, leader then 2, took 5.295 ms, lines 3
+round 88: victim {2} for {415} ms, called by node-1, leader then 2, took 5.73 ms, lines 3
+round 89: victim {3} for {864} ms, called by node-1, leader then 2, took 14.347 ms, lines 3
+round 90: victim {2} for {749} ms, called by node-2, leader then 2, took 7.492 ms, lines 3
+round 91: victim {2} for {430} ms, called by node-3, leader then 2, took 23.044 ms, lines 3
+round 92: victim {2} for {738} ms, called by node-3, leader then 2, took 9.972 ms, lines 3
+round 93: victim {3} for {610} ms, called by node-1, leader then 2, took 16.308 ms, lines 3
+round 94: victim {1} for {704} ms, called by node-2, leader then 2, took 11.607 ms, lines 3
+round 95: victim {3} for {699} ms, called by node-3, leader then 2, took 15.459 ms, lines 3
+round 96: victim {1} for {394} ms, called by node-2, leader then 2, took 12.223 ms, lines 3
+round 97: victim {1} for {216} ms, called by node-3, leader then 2, took 16.982 ms, lines 3
+round 98: victim {3} for {481} ms, called by node-2, leader then 2, took 15.062 ms, lines 3
+round 99: victim {3} for {982} ms, called by node-3, leader then 2, took 44.499 ms, lines 3
+round 100: victim {1} for {146} ms, called by node-1, leader then 2, took 13.111 ms, lines 3
+round 101: victim {1} for {209} ms, called by node-3, leader then 2, took 13.718 ms, lines 3
+round 102: victim {3} for {537} ms, called by node-2, leader then 2, took 10.599 ms, lines 3
+round 103: victim {2} for {615} ms, called by node-2, leader then 2, took 12.693 ms, lines 3
+round 104: victim {3} for {499} ms, called by node-1, leader then 2, took 11.815 ms, lines 3
+round 105: victim {3} for {118} ms, called by node-3, leader then 2, took 12.995 ms, lines 3
+round 106: victim {2} for {652} ms, called by node-2, leader then 2, took 14.155 ms, lines 3
+round 107: victim {2} for {719} ms, called by node-1, leader then 2, took 28.821 ms, lines 3
+round 108: victim {2} for {873} ms, called by node-1, leader then 2, took 37.799 ms, lines 3
+round 109: victim {3} for {219} ms, called by node-1, leader then 2, took 8.099 ms, lines 3
+round 110: victim {3} for {850} ms, called by node-2, leader then 2, took 11.02 ms, lines 3
+round 111: victim {3} for {702} ms, called by node-2, leader then 2, took 28.002 ms, lines 3
+round 112: victim {2} for {707} ms, called by node-3, leader then 2, took 11.494 ms, lines 3
+round 113: victim {3} for {134} ms, called by node-1, leader then 2, took 14.969 ms, lines 3
+round 114: victim {3} for {762} ms, called by node-1, leader then 2, took 25.596 ms, lines 3
+round 115: victim {3} for {203} ms, called by node-3, leader then 2, took 12.562 ms, lines 3
+round 116: victim {2} for {377} ms, called by node-2, leader then 2, took 9.503 ms, lines 3
+round 117: victim {2} for {250} ms, called by node-2, leader then 2, took 16.882 ms, lines 3
+round 118: victim {1} for {731} ms, called by node-2, leader then 2, took 29.103 ms, lines 3
+round 119: victim {3} for {340} ms, called by node-2, leader then 2, took 18.346 ms, lines 3
+round 120: victim {2} for {996} ms, called by node-1, leader then 2, took 12.574 ms, lines 3
+round 121: victim {3} for {226} ms, called by node-1, leader then 1, took 9.819 ms, lines 3
+round 122: victim {2} for {384} ms, called by node-3, leader then 1, took 19.668 ms, lines 3
+round 123: victim {3} for {381} ms, called by node-3, leader then 1, took 16.714 ms, lines 3
+round 124: victim {1} for {537} ms, called by node-3, leader then 1, took 13.004 ms, lines 3
+round 125: victim {1} for {116} ms, called by node-1, leader then 1, took 13.974 ms, lines 3
+round 126: victim {3} for {646} ms, called by node-1, leader then 1, took 8.927 ms, lines 3
+round 127: victim {3} for {851} ms, called by node-2, leader then 1, took 14.535 ms, lines 3
+round 128: victim {2} for {805} ms, called by node-1, leader then 1, took 26.854 ms, lines 3
+round 129: victim {3} for {272} ms, called by node-3, leader then 1, took 14.201 ms, lines 3
+round 130: victim {3} for {118} ms, called by node-1, leader then 1, took 101.434 ms, lines 3
+round 131: victim {1} for {664} ms, called by node-2, leader then 1, took 61.019 ms, lines 3
+round 132: victim {3} for {840} ms, called by node-1, leader then 1, took 22.101 ms, lines 3
+round 133: victim {3} for {397} ms, called by node-2, leader then 1, took 5.403 ms, lines 3
+round 134: victim {1} for {533} ms, called by node-2, leader then 1, took 7.467 ms, lines 3
+round 135: victim {3} for {719} ms, called by node-1, leader then 1, took 7.637 ms, lines 3
+round 136: victim {1} for {168} ms, called by node-3, leader then 1, took 12.392 ms, lines 3
+round 137: victim {3} for {731} ms, called by node-2, leader then 1, took 5.86 ms, lines 3
+round 138: victim {2} for {340} ms, called by node-2, leader then 1, took 10.943 ms, lines 3
+round 139: victim {3} for {606} ms, called by node-2, leader then 1, took 12.907 ms, lines 3
+round 140: victim {2} for {622} ms, called by node-3, leader then 1, took 10.515 ms, lines 3
+round 141: victim {2} for {934} ms, called by node-3, leader then 1, took 9.408 ms, lines 3
+round 142: victim {2} for {718} ms, called by node-3, leader then 1, took 11.848 ms, lines 3
+round 143: victim {3} for {520} ms, called by node-2, leader then 1, took 18.466 ms, lines 3
+round 144: victim {1} for {877} ms, called by node-3, leader then 1, took 11.23 ms, lines 3
+round 145: victim {3} for {619} ms, called by node-3, leader then 2, took 18.92 ms, lines 3
+round 146: victim {1} for {889} ms, called by node-2, leader then 2, took 6.681 ms, lines 3
+round 147: victim {1} for {520} ms, called by node-2, leader then 2, took 14.042 ms, lines 3
+round 148: victim {3} for {235} ms, called by node-2, leader then 2, took 8.182 ms, lines 3
+round 149: victim {1} for {556} ms, called by node-1, leader then 2, took 15.946 ms, lines 3
+round 150: victim {2} for {472} ms, called by node-2, leader then 2, took 5.873 ms, lines 3
+round 151: victim {1} for {574} ms, called by node-2, leader then 1, took 6.349 ms, lines 3
+round 152: victim {3} for {615} ms, called by node-1, leader then 1, took 9.845 ms, lines 3
+round 153: victim {3} for {759} ms, called by node-1, leader then 1, took 12.97 ms, lines 3
+round 154: victim {3} for {525} ms, called by node-3, leader then 1, took 44.172 ms, lines 3
+round 155: victim {1} for {906} ms, called by node-1, leader then 1, took 10.347 ms, lines 3
+round 156: victim {2} for {916} ms, called by node-3, leader then 2, took 12.918 ms, lines 3
+round 157: victim {3} for {231} ms, called by node-3, leader then 1, took 13.019 ms, lines 3
+round 158: victim {2} for {150} ms, called by node-1, leader then 1, took 11.484 ms, lines 3
+round 159: victim {2} for {314} ms, called by node-3, leader then 1, took 4.669 ms, lines 3
+round 160: victim {3} for {206} ms, called by node-3, leader then 1, took 8.802 ms, lines 3
+round 161: victim {3} for {137} ms, called by node-2, leader then 1, took 9.883 ms, lines 3
+round 162: victim {1} for {709} ms, called by node-3, leader then 1, took 30.193 ms, lines 3
+round 163: victim {1} for {388} ms, called by node-1, leader then 1, took 14.206 ms, lines 3
+round 164: victim {2} for {294} ms, called by node-1, leader then 1, took 27.655 ms, lines 3
+round 165: victim {1} for {859} ms, called by node-2, leader then 1, took 15.568 ms, lines 3
+round 166: victim {3} for {528} ms, called by node-2, leader then 2, took 4.528 ms, lines 3
+round 167: victim {3} for {510} ms, called by node-1, leader then 2, took 8.941 ms, lines 3
+round 168: victim {3} for {420} ms, called by node-3, leader then 2, took 16.593 ms, lines 3
+round 169: victim {3} for {991} ms, called by node-1, leader then 2, took 15.799 ms, lines 3
+round 170: victim {1} for {933} ms, called by node-3, leader then 2, took 3.949 ms, lines 3
+round 171: victim {3} for {176} ms, called by node-1, leader then 2, took 8.759 ms, lines 3
+round 172: victim {2} for {900} ms, called by node-3, leader then 2, took 6.622 ms, lines 3
+round 173: victim {3} for {585} ms, called by node-3, leader then 1, took 5.529 ms, lines 3
+round 174: victim {1} for {801} ms, called by node-3, leader then 1, took 5.001 ms, lines 3
+round 175: victim {3} for {975} ms, called by node-3, leader then 2, took 6.359 ms, lines 3
+round 176: victim {1} for {837} ms, called by node-2, leader then 2, took 9.09 ms, lines 3
+round 177: victim {3} for {940} ms, called by node-2, leader then 2, took 4.573 ms, lines 3
+round 178: victim {1} for {670} ms, called by node-3, leader then 2, took 4.459 ms, lines 3
+round 179: victim {1} for {994} ms, called by node-2, leader then 2, took 5.959 ms, lines 3
+round 180: victim {2} for {999} ms, called by node-2, leader then 2, took 6.5 ms, lines 3

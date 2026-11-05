@@ -5,7 +5,7 @@
 //! - Peer port: remote invocation of [`PeerRpc`] through tarpc (D119), which matches replies to
 //!   requests, so many calls can be in flight at once. [`PeerClient`] keeps one connection per
 //!   peer. After a failed connect it fails calls to that peer fast for a short cooldown instead of
-//!   reconnecting on every call (D89–D92). A connection whose calls have gone unanswered for
+//!   reconnecting on every call (D89–D92, D252). A connection whose calls have gone unanswered for
 //!   [`STALE_CONNECTION`] is replaced, because a machine that lost power sends no close. Every
 //!   call ends by its own deadline, even one tarpc has not managed to write yet (D150).
 //! - Client port: remote invocation of [`ClientRpc`], also through tarpc (D167), on one port number
@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::{Buf, Bytes, BytesMut};
 use futures::future::BoxFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use tarpc::client::{NewClient, RpcError};
@@ -38,11 +39,13 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tokio::time::error::Elapsed;
+use tokio_util::codec::{Decoder, Encoder, Framed, LengthDelimitedCodec};
 
 use super::datagram::{self, ClientEnd, ServerEnd};
 use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog, MessageCounters, MsgKind, UdpCounters};
+use crate::node::squeeze::{expand, squeeze};
 use crate::proto::{
     self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
     ClientRpcResponse, Command, ControlReply, ControlRequest, FaultBid, IncidentQuery, NodeId,
@@ -125,12 +128,80 @@ pub enum TransportError {
     Wire(#[from] proto::WireError),
 }
 
-pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
-    // Small messages dominate; Nagle would add up to 40 ms to each one.
+/// Length-prefixed frames, each squeezed when that makes it smaller (D255). The first byte of a frame
+/// says which: tarpc's own frames could start with anything.
+#[derive(Debug)]
+pub struct SqueezedFrames {
+    frames: LengthDelimitedCodec,
+}
+
+const FRAME_AS_IT_IS: u8 = 0;
+const FRAME_SQUEEZED: u8 = 1;
+/// Smaller frames have too little in them to repeat.
+const SQUEEZE_FROM_BYTES: usize = 48;
+
+impl Decoder for SqueezedFrames {
+    type Item = BytesMut;
+    type Error = std::io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> std::io::Result<Option<BytesMut>> {
+        let Some(mut frame) = self.frames.decode(src)? else {
+            return Ok(None);
+        };
+        let bad = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+        match frame.first() {
+            Some(&FRAME_AS_IT_IS) => {
+                frame.advance(1);
+                Ok(Some(frame))
+            }
+            Some(&FRAME_SQUEEZED) => {
+                let expanded = expand(&frame[1..], proto::MAX_FRAME_BYTES).ok_or_else(bad)?;
+                Ok(Some(BytesMut::from(&expanded[..])))
+            }
+            _ => Err(bad()),
+        }
+    }
+}
+
+impl Encoder<Bytes> for SqueezedFrames {
+    type Error = std::io::Error;
+
+    fn encode(&mut self, frame: Bytes, dst: &mut BytesMut) -> std::io::Result<()> {
+        let squeezed = (frame.len() >= SQUEEZE_FROM_BYTES)
+            .then(|| squeeze(&frame))
+            .filter(|squeezed| squeezed.len() < frame.len());
+        let (mark, body): (u8, &[u8]) = match &squeezed {
+            Some(squeezed) => (FRAME_SQUEEZED, squeezed),
+            None => (FRAME_AS_IT_IS, &frame),
+        };
+        let mut marked = BytesMut::with_capacity(body.len() + 1);
+        marked.extend_from_slice(&[mark]);
+        marked.extend_from_slice(body);
+        self.frames.encode(marked.freeze(), dst)
+    }
+}
+
+/// The frames of one TCP connection.
+pub fn framed(stream: TcpStream) -> Framed<TcpStream, SqueezedFrames> {
+    // Bids and forwards are combined in the code now (D247, D248), so Nagle only adds a wait of at
+    // least a round trip to each message, against a bid window of tens of milliseconds (D251).
     let _ = stream.set_nodelay(true);
-    LengthDelimitedCodec::builder()
-        .max_frame_length(proto::MAX_FRAME_BYTES)
-        .new_framed(stream)
+    let frames = LengthDelimitedCodec::builder()
+        .max_frame_length(proto::MAX_FRAME_BYTES + 1)
+        .new_codec();
+    Framed::new(stream, SqueezedFrames { frames })
+}
+
+/// The transport tarpc runs over on one TCP connection.
+pub fn tcp_transport<Item, SinkItem>(
+    stream: TcpStream,
+) -> tarpc::tokio_serde::Framed<
+    Framed<TcpStream, SqueezedFrames>,
+    Item,
+    SinkItem,
+    Bincode<Item, SinkItem>,
+> {
+    tarpc::tokio_serde::Framed::new(framed(stream), Bincode::default())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -138,12 +209,19 @@ pub fn framed(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
 // ---------------------------------------------------------------------------------------------
 
 /// Calls unanswered this long mean the connection is replaced. A silenced peer loses nothing by
-/// it: its listener stays up, so the connect succeeds (D119).
-const STALE_CONNECTION: Duration = Duration::from_secs(1);
+/// it: its listener stays up, so the connect succeeds (D119). Replacing one throws away everything
+/// queued on it, so a slow moment on a shared network must not count (D252).
+const STALE_CONNECTION: Duration = Duration::from_secs(5);
+
+/// How long one connect may take. Longer than a small call's deadline, or on a slow network no
+/// connect could ever finish, and a lost first packet is resent after a second (D252).
+const CONNECT_TIME: Duration = Duration::from_secs(3);
 
 /// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users, and
-/// for a client program whose users all wait on one node at once (D173).
-const MAX_IN_FLIGHT_CALLS: usize = 20_000;
+/// for a client program whose users all wait on one node at once (D173). A program holds up to
+/// 20,000 open reports, each with up to six calls open per node. At this limit a stub sends nothing
+/// more, so a lower one silences a client for as long as its old reports take to give up (D263).
+const MAX_IN_FLIGHT_CALLS: usize = 130_000;
 const CALL_BUFFER: usize = 2_000;
 
 fn stub_settings() -> tarpc::client::Config {
@@ -157,6 +235,8 @@ struct Conn {
     client: PeerRpcClient,
     closed: AtomicBool,
 }
+
+type ConnectAttempt = tokio::task::JoinHandle<Result<std::io::Result<TcpStream>, Elapsed>>;
 
 /// A peer whose last connect failed. Cleared by the next successful connect.
 #[derive(Debug, Clone, Copy)]
@@ -177,6 +257,8 @@ pub struct PeerClient {
     outage: Mutex<Option<Outage>>,
     /// When a call on the current connection last got an answer, or the connection opened.
     last_answer: Mutex<Instant>,
+    /// A connect still going after the call that started it gave up, for the next call to take over.
+    connecting: Mutex<Option<ConnectAttempt>>,
 }
 
 impl std::fmt::Debug for PeerClient {
@@ -205,6 +287,23 @@ impl PeerClient {
             conn: tokio::sync::Mutex::new(None),
             outage: Mutex::new(None),
             last_answer: Mutex::new(Instant::now()),
+            connecting: Mutex::new(None),
+        }
+    }
+
+    /// A client for the same peer on its own connection, for Raft, so that bids and forwards cannot
+    /// hold up a write or the leader's heartbeats (D242).
+    fn for_raft(&self) -> Self {
+        Self {
+            peer: self.peer,
+            addr: self.addr.clone(),
+            gate: self.gate.clone(),
+            log: self.log.clone(),
+            reconnect_backoff: self.reconnect_backoff,
+            conn: tokio::sync::Mutex::new(None),
+            outage: Mutex::new(None),
+            last_answer: Mutex::new(Instant::now()),
+            connecting: Mutex::new(None),
         }
     }
 
@@ -272,18 +371,27 @@ impl PeerClient {
         }
         // Calls that queued behind a connect that just failed fail fast too.
         self.check_backoff()?;
-        let stream = match tokio::time::timeout_at(deadline, TcpStream::connect(&self.addr)).await {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(source)) => {
+        let pending = lock(&self.connecting).take();
+        let mut attempt = pending.unwrap_or_else(|| {
+            let addr = self.addr.clone();
+            tokio::spawn(tokio::time::timeout(CONNECT_TIME, TcpStream::connect(addr)))
+        });
+        // A call still ends at its deadline. The connect goes on without it (D252).
+        let Ok(finished) = tokio::time::timeout_at(deadline, &mut attempt).await else {
+            *lock(&self.connecting) = Some(attempt);
+            return Err(TransportError::Timeout(timeout));
+        };
+        let stream = match finished {
+            Ok(Ok(Ok(stream))) => stream,
+            Ok(Ok(Err(source))) => {
                 self.connect_failed(&source.to_string());
                 return Err(TransportError::Connect {
                     addr: self.addr.clone(),
                     source,
                 });
             }
-            // A connect that outlives the call (cable pulled on a real network) counts as a
-            // failed connect too (D89).
-            Err(_) => {
+            // Out of time (cable pulled on a real network) counts as a failed connect too (D89).
+            Ok(Err(_)) | Err(_) => {
                 self.connect_failed("connect timed out");
                 return Err(TransportError::Timeout(timeout));
             }
@@ -344,7 +452,7 @@ impl PeerClient {
 }
 
 fn open_conn(stream: TcpStream) -> Conn {
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     Conn {
         client: PeerRpcClient::new(stub_settings(), transport).spawn(),
         closed: AtomicBool::new(false),
@@ -369,9 +477,12 @@ async fn invoke(
             client.install_snapshot(ctx, from, term, rpc).await
         }
         PeerBody::Propose(command) => client.propose(ctx, from, term, command).await,
+        PeerBody::ProposeMany(commands) => client.propose_many(ctx, from, term, commands).await,
         PeerBody::ReadIndex => client.read_index(ctx, from, term).await,
         PeerBody::FaultBid(bid) => client.fault_bid(ctx, from, term, bid).await,
         PeerBody::Bid(bid) => client.bid(ctx, from, term, bid).await,
+        PeerBody::Bids(bids) => client.bids(ctx, from, term, bids).await,
+        PeerBody::Rounds(message) => client.rounds(ctx, from, term, message).await,
         PeerBody::Heartbeat => client.heartbeat(ctx, from, term).await,
     }
 }
@@ -407,6 +518,16 @@ impl PeerSet {
             })
             .collect();
         Self { me, peers }
+    }
+
+    /// The same peers on connections of their own, for Raft (D242).
+    pub fn for_raft(&self) -> Self {
+        let peers = self
+            .peers
+            .iter()
+            .map(|(&id, client)| (id, Arc::new(client.for_raft())))
+            .collect();
+        Self { me: self.me, peers }
     }
 
     pub fn me(&self) -> NodeId {
@@ -494,7 +615,7 @@ pub async fn serve_peers(
 }
 
 async fn peer_connection(stream: TcpStream, server: PeerServer) {
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     BaseChannel::with_defaults(transport)
         .execute(server.serve())
         .for_each(|call| async {
@@ -579,6 +700,17 @@ impl PeerRpc for PeerServer {
         self.deliver(from, term, PeerBody::Propose(command)).await
     }
 
+    async fn propose_many(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        commands: Vec<Command>,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::ProposeMany(commands))
+            .await
+    }
+
     async fn read_index(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {
         self.deliver(from, term, PeerBody::ReadIndex).await
     }
@@ -601,6 +733,26 @@ impl PeerRpc for PeerServer {
         bid: Bid,
     ) -> PeerReply {
         self.deliver(from, term, PeerBody::Bid(bid)).await
+    }
+
+    async fn bids(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        bids: Vec<Bid>,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Bids(bids)).await
+    }
+
+    async fn rounds(
+        self,
+        _: tarpc::context::Context,
+        from: NodeId,
+        term: Term,
+        message: crate::proto::RoundsMsg,
+    ) -> PeerReply {
+        self.deliver(from, term, PeerBody::Rounds(message)).await
     }
 
     async fn heartbeat(self, _: tarpc::context::Context, from: NodeId, term: Term) -> PeerReply {
@@ -776,7 +928,7 @@ async fn serve_control(listener: TcpListener, server: ClientServer) {
         match listener.accept().await {
             Ok((stream, _)) => {
                 while connections.try_join_next().is_some() {}
-                let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+                let transport = tcp_transport(stream);
                 let calls = BaseChannel::with_defaults(transport).execute(server.clone().serve());
                 connections.spawn(run_calls(calls));
             }
@@ -844,7 +996,7 @@ pub async fn connect_client(
     addr: &str,
 ) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
     let stream = TcpStream::connect(addr).await?;
-    let transport = tarpc::serde_transport::new(framed(stream), Bincode::default());
+    let transport = tcp_transport(stream);
     let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), transport);
     Ok(NewClient {
         client,

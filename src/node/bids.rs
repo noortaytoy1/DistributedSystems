@@ -4,10 +4,10 @@
 //!
 //! Owner: B (bidding election).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
@@ -16,7 +16,10 @@ use super::{NodeContext, cpu, lock};
 use crate::bidding::{BidRounds, BidStatus, LoadInputs, ServiceTime, load_score};
 use crate::config::{AssignmentPolicy, Config};
 use crate::metrics::Event;
-use crate::proto::{Bid, ClientRequest, NodeId, PeerBody};
+use crate::proto::{Bid, ClientRequest, NodeId, PeerBody, RequestId};
+
+/// How long a bid waits for others to go out with it (D247). It uses part of the bid window.
+const BID_COMBINE_WAIT: Duration = Duration::from_millis(10);
 
 /// How often closed rounds past their grace period are dropped.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
@@ -28,6 +31,39 @@ pub struct BidState {
     cpu_permille: AtomicU32,
     /// Each node's bids since the last reading, this node's included: their sum and count (D218).
     seen: Mutex<BTreeMap<NodeId, (u64, u64)>>,
+    /// Requests this node is planning and committing now. A retry joins them, not repeats them (D243).
+    executing: Mutex<BTreeSet<RequestId>>,
+    /// Bids waiting to go to the group together (D247).
+    outgoing: Arc<Mutex<Vec<Bid>>>,
+    in_progress: AtomicU32,
+    refused: AtomicU64,
+}
+
+/// Reports one node works on at once (D250). At 10,000 a second with about 200 ms each, a node holds
+/// about 2,000 when healthy.
+pub(super) const MAX_IN_PROGRESS: u32 = 16_000;
+
+/// Held while a report is being worked on here.
+pub(super) struct InProgress<'a> {
+    state: &'a BidState,
+}
+
+impl Drop for InProgress<'_> {
+    fn drop(&mut self) {
+        self.state.in_progress.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Held while this node works on one request. Dropping it ends that.
+pub(super) struct Executing<'a> {
+    state: &'a BidState,
+    request: RequestId,
+}
+
+impl Drop for Executing<'_> {
+    fn drop(&mut self) {
+        lock(&self.state.executing).remove(&self.request);
+    }
 }
 
 impl BidState {
@@ -37,7 +73,43 @@ impl BidState {
             service: Mutex::new(ServiceTime::new(config.policy.initial_service_us)),
             cpu_permille: AtomicU32::new(0),
             seen: Mutex::new(BTreeMap::new()),
+            executing: Mutex::new(BTreeSet::new()),
+            outgoing: Arc::default(),
+            in_progress: AtomicU32::new(0),
+            refused: AtomicU64::new(0),
         }
+    }
+
+    /// Counts a report being worked on here, or `None` if there are already [`MAX_IN_PROGRESS`], so
+    /// an overloaded node stops adding bids, plans and log commands to what it cannot finish. A
+    /// report refused here gets no answer, and the client's retry covers it, as for a full worker
+    /// pool (D48, D250).
+    pub(super) fn admit(&self) -> Option<InProgress<'_>> {
+        let before = self.in_progress.fetch_add(1, Ordering::Relaxed);
+        if before >= MAX_IN_PROGRESS {
+            self.in_progress.fetch_sub(1, Ordering::Relaxed);
+            self.refused.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(InProgress { state: self })
+    }
+
+    /// Reports refused at the door so far.
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
+    }
+
+    /// `None` if this node is already working on this request: the first attempt's call is still open,
+    /// and its answer serves the client.
+    pub(super) fn begin_executing(&self, request: RequestId) -> Option<Executing<'_>> {
+        // The lock ends first. Dropping an `Executing` takes it again, so one must never be made and
+        // dropped while it is held.
+        let first = lock(&self.executing).insert(request);
+        // `then`, not `then_some`: a refused guard must never exist, as dropping it would end the work's mark.
+        first.then(|| Executing {
+            state: self,
+            request,
+        })
     }
 
     /// Adds one job's planning time to the recent average.
@@ -155,15 +227,41 @@ pub fn on_bid(ctx: &NodeContext, from: NodeId, bid: &Bid) {
     lock(&ctx.bids.rounds).add_bid((bid.request, bid.attempt), from, bid.score, Instant::now());
 }
 
+/// Bids a peer sent together: one lock for all of them (D247).
+pub fn on_bids(ctx: &NodeContext, from: NodeId, bids: &[Bid]) {
+    for bid in bids {
+        ctx.bids.saw_bid(from, bid.score);
+    }
+    let now = Instant::now();
+    let mut rounds = lock(&ctx.bids.rounds);
+    for bid in bids {
+        rounds.add_bid((bid.request, bid.attempt), from, bid.score, now);
+    }
+}
+
 /// Sends the bid to the group without waiting: the window runs by the clock, so a slow peer must
 /// not hold it up. A lost bid can only cause a split decision, which the first commit settles, and
 /// a peer this node has listed as gone gets no copy at all (D154). The task ends within the peer
 /// RPC timeout, so it needs no owner.
+///
+/// The first bid to wait starts the task, and bids made meanwhile go with it, so an idle node runs no
+/// timer and a busy one sends one message per peer per [`BID_COMBINE_WAIT`] (D247).
 fn send_bid(ctx: &NodeContext, bid: Bid) {
+    let first = {
+        let mut waiting = lock(&ctx.bids.outgoing);
+        waiting.push(bid);
+        waiting.len() == 1
+    };
+    if !first {
+        return;
+    }
     let timeout = ctx.config.timers.peer_rpc_timeout();
     let group = ctx.group.clone();
+    let outgoing = ctx.bids.outgoing.clone();
     tokio::spawn(async move {
-        let sent = group.send(timeout, || PeerBody::Bid(bid.clone()));
+        tokio::time::sleep(BID_COMBINE_WAIT).await;
+        let batch = std::mem::take(&mut *lock(&outgoing));
+        let sent = group.send(timeout, || PeerBody::Bids(batch.clone()));
         for (peer, outcome) in sent.await {
             if let Err(e) = outcome {
                 tracing::debug!(peer, "bid not delivered: {e}");
@@ -190,4 +288,26 @@ fn spawn_cleanup(ctx: Arc<NodeContext>) -> JoinHandle<()> {
             lock(&ctx.bids.rounds).forget_older_than(Instant::now(), grace);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_during_execution_is_refused_and_a_later_one_is_not() {
+        let state = BidState::new(
+            1,
+            &crate::config::Config::from_toml(crate::node::testing::THREE_NODES).unwrap(),
+        );
+        let request = RequestId { client: 1, seq: 1 };
+        let first = state.begin_executing(request);
+        assert!(first.is_some());
+        // This must return. Making and dropping a refused guard under the lock would hang here.
+        assert!(state.begin_executing(request).is_none());
+        // And being refused must not end the first attempt's mark.
+        assert!(state.begin_executing(request).is_none());
+        drop(first);
+        assert!(state.begin_executing(request).is_some());
+    }
 }

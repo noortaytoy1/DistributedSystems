@@ -1,5 +1,7 @@
 # Demo script
 
+> **The system has no leader now (D249).** Wherever this guide says "leader", "Raft" or "term", read it this way: all nodes are peers, the `role` column reads `peer`, and the `leader` column reads `-`. For a failure, pick any node. Scene 2b, a busy leader stepping aside, no longer applies: a busy node loses the bidding instead, as in scene 2. With two nodes down, the last one answers `provisional`, and each returns by itself when restarted (D261, D262).
+
 Phase 1 demo on the six machines. It covers the first four rows and the last row of the spec's Required
 Demonstration Scenarios table, as Dr Amr asked in class on Oct 28, then his own failure cases. You lead the demo. The
 team should rehearse it on the lab machines: **none of this has been run there yet.**

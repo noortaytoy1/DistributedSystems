@@ -39,6 +39,7 @@ pub mod node;
 pub mod planner;
 pub mod proto;
 pub mod raft;
+pub mod rounds;
 pub mod state;
 
 /// The log filter when `RUST_LOG` is not set (D134). tarpc writes several `info` lines for every

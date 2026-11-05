@@ -1,0 +1,33 @@
+{"ts_us":1793804075288599,"src":"node-1","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804199538583,"src":"node-1","ev":"degraded_left","reason":"peer_trusted","degraded_ms":124249,"provisional":455501}
+{"ts_us":1793804076315199,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804102745406,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":26430,"provisional":110096}
+{"ts_us":1793804105065953,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804121922007,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":16854,"provisional":174378}
+{"ts_us":1793804124265545,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804172175478,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":47905,"provisional":347545}
+{"ts_us":1793804174565473,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804177570279,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":3001,"provisional":357740}
+{"ts_us":1793804181915692,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804182066769,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":149,"provisional":358337}
+{"ts_us":1793804184367066,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804192120382,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":7750,"provisional":384616}
+{"ts_us":1793804194465570,"src":"node-2","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804199425333,"src":"node-2","ev":"degraded_left","reason":"peer_trusted","degraded_ms":4954,"provisional":401716}
+{"ts_us":1793804078361796,"src":"node-3","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804088464014,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":10099,"provisional":43944}
+{"ts_us":1793804093158549,"src":"node-3","ev":"degraded_entered","held_responders":635}
+{"ts_us":1793804199461254,"src":"node-3","ev":"degraded_left","reason":"peer_trusted","degraded_ms":106302,"provisional":430534}
+sent 749925, answered 490813, gave up 259112, unaccounted 0
+client IDs from 1: longest with no answer to anyone 4486 ms
+client IDs from 2: longest with no answer to anyone 4487 ms
+client IDs from 3: longest with no answer to anyone 4486 ms
+client IDs from 4: longest with no answer to anyone 523 ms
+client IDs from 5: longest with no answer to anyone 457 ms
+client IDs from 6: longest with no answer to anyone 528 ms
+client IDs from 7: longest with no answer to anyone 1420 ms
+client IDs from 8: longest with no answer to anyone 917 ms
+client IDs from 9: longest with no answer to anyone 414 ms
+stale per committed 1.72, commands per save 138.2, mean disk sync 3.8 ms
+checkpoints 4, digest mismatches 0
+{'conflict lost_first_commit': 1067, 'conflict responder_taken': 436}
