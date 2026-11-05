@@ -192,7 +192,8 @@ def analyse(run):
         row["first_commit_s"] = round((first_commit[0] - t) / 1e6, 2) if first_commit else None
         window = [a for a in after if a[0] < t + 5000000]
         row["answers_per_s_next_5s"] = round(len(window) / 5)
-        row["dead_answering"] = sum(1 for a in after if a[3] in down and (at + 1 == len(steps) or a[0] < steps[at + 1][0]))
+        # From 1 s on: the time is noted just before the kill goes over SSH, and answers already on their way still land.
+        row["dead_answering"] = sum(1 for a in after if a[3] in down and a[0] >= t + 1000000 and (at + 1 == len(steps) or a[0] < steps[at + 1][0]))
         for node in who:
             if what != "back":
                 continue

@@ -853,6 +853,8 @@ case "${1:-}" in
   t2check) setup_note; for rep in 1 2 3; do export T2_REP=$rep; t2; done; t2_both_killed twokill-silent-order 1 1 0; t2_both_killed twokill-other-order 1 0 1; stop_all ;;
   long) setup_note; make_cell "${LONG_PW:-0}" expected-wait; mapfile -t L < <(even_load "${LONG_RATE:-20000}" "${LONG_S:-7215}" 3); fixed_run "long${LONG_PW:-0}-${LONG_RATE:-20000}" "${LONG_REP:-1}" 15 "${LONG_S:-7215}" "" "${L[@]}"; stop_all ;;
   kills) setup_note; export KILL_AUDIT=1; for rep in ${4:-1}; do for rate in ${2:-20000}; do kill_suite "$rate" "${3:-0}" "$rep" "${5:-one twoA twoB twoC twoD allA allB}"; done; done; stop_all ;;
+  plain) setup_note; for rep in ${2:-1 2 3 4 5}; do make_cell 0 expected-wait; for r in 10000 20000 30000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final0-$r" "$rep" 15 75 "" "${L[@]}" || true; done; make_cell 1000 expected-wait; for r in 10000 12000; do mapfile -t L < <(even_load "$r" 75 3); fixed_run "final1-$r" "$rep" 15 75 "" "${L[@]}" || true; done; done; stop_all ;;
+  guide) setup_note; t5; t1; for rep in 1 2 3; do export T2_REP=$rep; t2; done; stop_all ;;
   series) setup_note; for rep in ${2:-1 2 3}; do say "=== PASS $rep"; pass "$rep"; [[ "$rep" == 1 ]] && holds; say "=== PASS $rep DONE"; done; stop_all ;;
   all) t5; t1; t2; t4; t3; stop_all; finish ;;
   finish) finish ;;

@@ -218,8 +218,10 @@ const STALE_CONNECTION: Duration = Duration::from_secs(5);
 const CONNECT_TIME: Duration = Duration::from_secs(3);
 
 /// tarpc's defaults (1000 in flight, 100 buffered) are too low for bids at thousands of users, and
-/// for a client program whose users all wait on one node at once (D173).
-const MAX_IN_FLIGHT_CALLS: usize = 20_000;
+/// for a client program whose users all wait on one node at once (D173). A program holds up to
+/// 20,000 open reports, each with up to six calls open per node. At this limit a stub sends nothing
+/// more, so a lower one silences a client for as long as its old reports take to give up (D263).
+const MAX_IN_FLIGHT_CALLS: usize = 130_000;
 const CALL_BUFFER: usize = 2_000;
 
 fn stub_settings() -> tarpc::client::Config {

@@ -322,6 +322,7 @@ table below in sync.
 | D260 | The Phase 1 experiments: five passes over the night, on the spec's scenarios | all | Implemented |
 | D261 | Nodes keep working and come back by themselves when two or all three are killed | A, C, D | Implemented, amends D249, D252 |
 | D262 | A lone node answers fast, and goes on until it can commit | C | Implemented, amends D121, D122 |
+| D263 | A client's stub holds every call a full client can have open | C, F | Implemented, amends D173 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8177,6 +8178,17 @@ them on the six PCs.
 - **Consequences.** More provisional answers to replay when a peer returns, each of which can turn out to differ (D122), and replay competes with new reports for a time.
 - **Where.** `src/node/degraded.rs`, `src/node/service.rs`, `src/state.rs`, `src/raft/mod.rs`, `src/rounds.rs`.
 - **How we check it.** Provisional answers a second while alone, and the longest time with no answer, in `analysis/results/kills/`, against the figures above.
+
+### D263 · A client's stub holds every call a full client can have open
+
+- **Date:** 2026-11-05 · **Part:** C, F · **Status:** Implemented, amends D173 · **Decided by:** the person running the lab session, who said a node must not hang, on the agent's recommendation.
+- **Context.** With a second node killed 2 s after the first returned, at 20,000 a second (`runs/exp8h/killtwoD/20000/run-1`), nodes 1 and 3 received no datagrams at all from about 58 s to 76 s, though they were up and connected. Each load program's stub stopped at `MAX_IN_FLIGHT_CALLS` = 20,000. One program had 23,370 calls open per node at 58 s. All of its stubs hit that limit together, as each report has a call on each, so it sent nothing to any node until old reports gave up, 24 s after they were sent.
+- **Options.** (1) Close a report's earlier call at each retry: fewer open calls, but a late answer to the earlier call would be lost, and every retry sends a cancel. (2) Raise the limit past what a full client can hold: chosen, as it changes nothing else.
+- **Decision.** `MAX_IN_FLIGHT_CALLS` = 130,000: `OPEN_LOOP_MAX_IN_FLIGHT` of 20,000 reports, times 6 attempts, and some margin.
+- **Why.** The limit was a guard against a runaway, and it had become a limit on normal behaviour during any outage over about 6 s at this load.
+- **Consequences.** Clients keep sending retries through an outage, so more traffic reaches the air as a node returns. The kill experiments measure it.
+- **Where.** `src/node/transport.rs`, `tests/datagram.rs`.
+- **How we check it.** `a_stub_keeps_sending_with_every_call_a_full_client_can_hold_open` failed at the old limit, with sends stopped. The longest time with no answer in the kill experiments.
 
 ### Notes on older entries
 
