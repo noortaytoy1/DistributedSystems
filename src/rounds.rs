@@ -1506,6 +1506,11 @@ impl RoundsNode {
 }
 
 impl Consensus for RoundsNode {
+    fn is_alone(&self) -> bool {
+        let core = lock(&self.inner.core);
+        self.inner.alone.load(Ordering::Relaxed) || (!core.joining && core.members.len() == 1)
+    }
+
     fn propose(&self, cmd: Command) -> BoxFuture<'_, Result<Outcome, ProposeError>> {
         Box::pin(async move {
             let started = Instant::now();

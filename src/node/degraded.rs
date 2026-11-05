@@ -7,8 +7,8 @@
 //! partition two sides can answer differently.
 //!
 //! - **Entering (D121).** Every peer suspected without a break for `timers.degraded_after_ms`, this
-//!   node serving and not silenced. It leaves as soon as any peer is trusted again, or when it is
-//!   silenced.
+//!   node serving and not silenced. It leaves as soon as any peer is trusted again and it can commit
+//!   with one (D262), or when it is silenced.
 //! - **Holds (D124).** Releases need a quorum, so the replicated holds cannot change here. On
 //!   entering, a local table takes them over, and each one is freed after its service time, as is
 //!   each responder a provisional plan takes.
@@ -29,7 +29,9 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::service::{MAX_PLAN_ATTEMPTS, plan_on_workers};
+use super::service::{
+    MAX_PLAN_ATTEMPTS, PLAN_LOOKS_AT, SAMPLE_FROM_RESPONDERS, plan_on_workers, plan_salt,
+};
 use super::workers::Overloaded;
 use super::{NodeContext, lock};
 use crate::metrics::{Event, now_ms};
@@ -40,8 +42,11 @@ use crate::proto::{
 
 /// How often stored results are tried when there are some to replay.
 const REPLAY_INTERVAL: Duration = Duration::from_millis(100);
-/// Results proposed at once. Raft batches concurrent proposals, so a long outage replays quickly.
-const REPLAY_BATCH: usize = 64;
+/// Results proposed at once, and each set waits for the one before. A lone node can answer thousands
+/// a second, so 64 at a time would still be replaying long after a 20 s outage (D262).
+const REPLAY_BATCH: usize = 2048;
+/// How often the table of holds is cleared of those that ended.
+const PURGE_HOLDS_EVERY: Duration = Duration::from_secs(1);
 
 /// One answer given without a commit. It keeps its stamps, so the replay records when the client
 /// was told, not when a quorum came back (D144).
@@ -68,6 +73,7 @@ struct Table {
     pending: BTreeMap<RequestId, Provisional>,
     /// When each locally held responder is free again.
     holds: BTreeMap<ResponderId, Instant>,
+    next_purge: Option<Instant>,
 }
 
 impl Table {
@@ -94,9 +100,13 @@ impl Table {
 
     /// `all` without the responders still held at `now`.
     fn free(&mut self, all: Vec<Responder>, now: Instant) -> Vec<Responder> {
-        self.holds.retain(|_, until| *until > now);
+        // Not for every report: at thousands a second this table holds thousands of responders.
+        if self.next_purge.is_none_or(|at| now >= at) {
+            self.holds.retain(|_, until| *until > now);
+            self.next_purge = Some(now + PURGE_HOLDS_EVERY);
+        }
         all.into_iter()
-            .filter(|r| !self.holds.contains_key(&r.id))
+            .filter(|r| self.holds.get(&r.id).is_none_or(|until| *until <= now))
             .collect()
     }
 }
@@ -158,9 +168,8 @@ pub enum PlanError {
 
 /// Plan `req` from this node's own view and store the answer.
 pub async fn plan(ctx: &NodeContext, req: &ClientRequest) -> Result<Plan, PlanError> {
-    for _ in 0..MAX_PLAN_ATTEMPTS {
-        let all = ctx.state.with(|s| s.responders());
-        let free = lock(&ctx.degraded.table).free(all, Instant::now());
+    for attempt in 0..MAX_PLAN_ATTEMPTS {
+        let free = free_for_plan(ctx, req, attempt);
         let plan = plan_on_workers(ctx, req, free).await?;
         let hold = service_time(ctx, &req.incident);
         let answer = Provisional {
@@ -175,6 +184,25 @@ pub async fn plan(ctx: &NodeContext, req: &ClientRequest) -> Result<Plan, PlanEr
         }
     }
     Err(PlanError::StillTaken)
+}
+
+/// What a lone node chooses from: a part of the table, as for any plan (D238, D253), unless nobody
+/// free in it has the skill. Copying the whole table for each report held a lone node to about 2,700
+/// answers a second with 60,000 responders (D262).
+fn free_for_plan(ctx: &NodeContext, req: &ClientRequest, attempt: u32) -> Vec<Responder> {
+    let now = Instant::now();
+    let part = ctx.state.with(|s| {
+        (s.responder_count() >= SAMPLE_FROM_RESPONDERS)
+            .then(|| s.responders_part(plan_salt(req, attempt), PLAN_LOOKS_AT))
+    });
+    if let Some(part) = part {
+        let free = lock(&ctx.degraded.table).free(part, now);
+        if free.iter().any(|r| r.capability == req.incident.needs) {
+            return free;
+        }
+    }
+    let all = ctx.state.with(|s| s.responders());
+    lock(&ctx.degraded.table).free(all, now)
 }
 
 /// Start watching for the node being left alone, and replaying what it answered.
@@ -197,7 +225,10 @@ async fn watch(ctx: Arc<NodeContext>) {
         let silenced = ctx.gate.is_silenced();
         let serving = ctx.serving.load(Ordering::SeqCst);
         let suspected = lock(&ctx.suspicion).suspected().len();
-        let cut_off = peers > 0 && suspected == peers && serving && !silenced;
+        // A peer that can be heard may still be catching up. Until it can commit with this node,
+        // this node goes on answering, or clients would hear nothing for that time (D262).
+        let alone = ctx.consensus.is_alone();
+        let cut_off = peers > 0 && (suspected == peers || alone) && serving && !silenced;
 
         let now = Instant::now();
         let active = trigger.observe(cut_off, wait, now);
@@ -407,6 +438,24 @@ mod tests {
             age_ms: 0,
             assigned_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn a_hold_stops_counting_when_it_ends_even_before_the_table_is_cleared() {
+        let mut table = Table::default();
+        let now = Instant::now();
+        let hold = Duration::from_millis(100);
+        table.free(Vec::new(), now);
+        assert!(matches!(
+            table.store(rid(1), answer(plan_with(Some(7))), hold, now),
+            Stored::Answer(_)
+        ));
+        assert!(table.free(vec![responder(7)], now).is_empty());
+        let later = now + Duration::from_millis(200);
+        assert_eq!(table.free(vec![responder(7)], later).len(), 1);
+        assert_eq!(table.holds.len(), 1, "cleared at most once a second");
+        table.free(Vec::new(), now + PURGE_HOLDS_EVERY);
+        assert!(table.holds.is_empty());
     }
 
     #[test]

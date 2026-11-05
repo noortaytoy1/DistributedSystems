@@ -146,6 +146,11 @@ pub trait Consensus: Send + Sync + 'static {
     /// Hand an incoming Raft RPC from peer `from` to the Raft implementation.
     fn handle_rpc(&self, from: NodeId, rpc: RaftRpc) -> BoxFuture<'_, PeerReply>;
 
+    /// Nothing can commit here yet, even with a peer in contact: it answers as a lone node (D262).
+    fn is_alone(&self) -> bool {
+        false
+    }
+
     /// Hand a rotating-rounds message to the rounds implementation (D249). Raft has none.
     fn handle_rounds(&self, _from: NodeId, _message: RoundsMsg) -> BoxFuture<'_, PeerReply> {
         Box::pin(async { PeerReply::Ack })

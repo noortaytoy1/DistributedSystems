@@ -318,6 +318,21 @@ impl CloudState {
             .collect()
     }
 
+    /// The same part of the table, held or not: for a lone node, whose own table takes over the
+    /// holds (D124, D262).
+    pub fn responders_part(&self, salt: u64, looks_at: usize) -> Vec<Responder> {
+        let Some((top, _)) = self.responders.last_key_value() else {
+            return Vec::new();
+        };
+        let start = ResponderId::try_from(salt % (u64::from(*top) + 1)).unwrap_or(0);
+        self.responders
+            .range(start..)
+            .chain(self.responders.range(..start))
+            .take(looks_at)
+            .map(|(_, slot)| slot.responder.clone())
+            .collect()
+    }
+
     /// Every held responder with its holder's committed result, in responder ID order.
     pub fn holds(&self) -> Vec<(ResponderId, &CommittedResult)> {
         self.responders

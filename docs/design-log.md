@@ -320,6 +320,8 @@ table below in sync.
 | D258 | A load program writes its PC's name and address in its log | F | Implemented |
 | D259 | We looked for a shared-log library with no leader, and kept our own | A, all | Implemented |
 | D260 | The Phase 1 experiments: five passes over the night, on the spec's scenarios | all | Implemented |
+| D261 | Nodes keep working and come back by themselves when two or all three are killed | A, C, D | Implemented, amends D249, D252 |
+| D262 | A lone node answers fast, and goes on until it can commit | C | Implemented, amends D121, D122 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8152,6 +8154,29 @@ them on the six PCs.
 - **What ran.** 157 runs and 199,481,205 requests. The 5 passes took 6 h 37 min and the rerun about 37 min, so about 7.2 hours of the 8 asked for. The person running the lab accepted this and did not want a sixth pass.
 - **A run "held"** if it answered at least 99% of the offered rate, nobody gave up, and p99 stayed under 3 s. p99 under 3 s allows for answers that needed the client's 2 s retry, which the person running the lab accepts as normal for a real system.
 - **Where.** `scripts/phase1/`, `analysis/phase1/`, `docs/phase1-report.md`, `analysis/results/exp8h/`.
+
+
+### D261 · Nodes keep working and come back by themselves when two or all three are killed
+
+- **Date:** 2026-11-05 · **Part:** A, C, D · **Status:** Implemented, amends D249, D252 · **Decided by:** the person running the lab session, who said a node must not hang when others fail, and that nodes must recover by themselves when they return. The way of doing it is the agent's recommendation.
+- **Context.** One kill never hung: 10 kills on the final code, 0 gave up. A second kill did. In a two-member view, a survivor refused a restarted member, as its detector only drops with three members, and it could not take the third back because the order needs both members. With all three killed, each waited for the others, and nothing read a node's own file. `tests/kills.rs` shows this: 6 of its 7 tests failed at `d4e25c3`, and only the one-kill test passed.
+- **Options.** (1) A quorum protocol such as Raft: rejected, as the class rules out a leader. (2) Wait for a person to restart all three from nothing: loses the record. (3) Use each node's file and let a lone member take a returning node back in: chosen.
+- **Decision.** (1) **Own file.** `node-<id>.rounds` now holds `LogRecord`s: `Batch`, `Applied { node, round }` and `Reset`. A node saves the order it applied before answering, so what a client was told can be rebuilt. On restart it applies its file in that order. (2) **Taking a node back alone.** A member whose other members are all silent, or are the node asking, drops them and adds the node asking, with no vote: `add_alone`. The returning node starts past every round seen. Until then it applies the batches the member still holds, sent as `held`. (3) **All gone.** A node with no member to ask waits 3 s for others. Then the one with the longest log, lowest ID on a tie, goes first, and the others come back to it. (4) **Nobody reachable.** After 3 s a returning node serves what it has, so degraded mode can answer. (5) **Check.** `CatchUp` carries the last entry held. A node whose log is not a start of the member's gets `Diverged`, writes `Reset` and takes the log again.
+- **Why safe.** In a two-member view nothing commits without both, so the member left holds all that was applied. A node's own batch is applied only once a peer has it, so with one survivor nothing answered is lost.
+- **Limits.** If two nodes are killed within the same few milliseconds, a batch applied and answered by them that the third never received is lost if it holds no copy, and they reset to the third's log on return. The file audit measures this in the kill experiments. A lone node's provisional answers are in memory until replayed (D122), so killing it loses them. A real power cut is not tested, only `kill -9`. Answers now wait for one more disk write, so throughput was measured again.
+- **Where.** `src/rounds.rs`, `src/proto.rs`, `src/raft/store.rs`, `src/node/release.rs`, `src/bin/roundlog.rs`, `tests/kills.rs`, `scripts/phase1/run-experiments.sh` (`kills`), `scripts/phase1/watch-tcp.sh`, `analysis/phase1/kills_analyze.py`.
+- **How we check it.** `cargo test --test kills`. On the six PCs, `run-experiments.sh kills`: every order of kills under load, with the digest check, and `roundlog` listing what each node's file applied, to compare with each answer a client got.
+- **For the report.** The professor's requirement is fault tolerance with no leader. This is the part that keeps the promise when more than one node fails.
+
+### D262 · A lone node answers fast, and goes on until it can commit
+
+- **Date:** 2026-11-05 · **Part:** C · **Status:** Implemented, amends D121, D122 · **Decided by:** the person running the lab session, who asked that the last node keeps working, on the agent's recommendation.
+- **Context.** With two nodes killed at 20,000 a second on the six PCs (`runs/exp8h/killtwoA/20000/run-1`), the lone node gave 61,926 provisional answers, about 2,700 a second. For each report it copied all 60,000 responders, and cleared its table of holds. D253 had removed such scans everywhere but here. It also left degraded mode as soon as a peer's heartbeat returned, about 14 s before that peer had caught up and commits could start, and clients heard nothing for that time. Replay took 64 answers at a time.
+- **Decision.** (1) A lone plan looks at a part of the table, as any plan does (`responders_part`), and at all of it only if nobody free in that part has the skill. (2) Ended holds are cleared at most once a second, and a hold counts only until its time. (3) A node stays degraded while `Consensus::is_alone()`: a lone member, or a returning node with nobody reachable. Under Raft it is always false. (4) `REPLAY_BATCH` goes from 64 to 2048.
+- **Why.** The lone node has about a third of the cluster's capacity, so it should answer about that much. Silence while a peer catches up is a hang as a client sees it.
+- **Consequences.** More provisional answers to replay when a peer returns, each of which can turn out to differ (D122), and replay competes with new reports for a time.
+- **Where.** `src/node/degraded.rs`, `src/node/service.rs`, `src/state.rs`, `src/raft/mod.rs`, `src/rounds.rs`.
+- **How we check it.** Provisional answers a second while alone, and the longest time with no answer, in `analysis/results/kills/`, against the figures above.
 
 ### Notes on older entries
 
