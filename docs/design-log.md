@@ -8202,6 +8202,8 @@ them on the six PCs.
 - **Where.** `src/client.rs`, `src/metrics.rs`.
 - **How we check it.** Unit tests in `client.rs`, and the kill experiments at 20,000 a second against the figures above.
 
+**Kill runs (D261, 2026-11-05).** The person running the lab asked for shorter runs, with kills at random times, starting at 15,000 a second. Each run is 90 s, with 10 s of warm-up. The nodes and times are random in each run, the first kill comes 15 to 30 s in, and the last return leaves at least 25 s to recover. Each run's `fault-times.txt` holds what happened.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.

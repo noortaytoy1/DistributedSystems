@@ -795,23 +795,25 @@ holds() {
 }
 
 # T2 with the second failure a killed process, not a silence: both nodes lose their memory.
-# Every order of killing nodes, under load, and each coming back by itself (D261).
+# Every order of killing nodes, under load, and each coming back by itself (D261). The nodes and the
+# times are random in each run, and the times used are in its fault-times.txt.
 kill_suite() { # rate plan_work rep [cases]
-  local rate=$1 pw=$2 rep=$3 cases=${4:-"one twoA twoB twoC twoD allA allB"} x y z steps kc
-  x=$(( (rep - 1) % 3 + 1 )); y=$(( x % 3 + 1 )); z=$(( y % 3 + 1 ))
+  local rate=$1 pw=$2 rep=$3 cases=${4:-"one twoA twoB twoC twoD allA allB"} x y z steps kc t1 t2 t3 t4
   make_cell "$pw" expected-wait
-  mapfile -t L < <(even_load "$rate" 150 3)
+  mapfile -t L < <(even_load "$rate" "${KILL_S:-90}" 3)
   for kc in $cases; do
+    read -r x y z < <(shuf -e 1 2 3 | tr '\n' ' ')
+    t1=$((15 + RANDOM % 16))
     case "$kc" in
-      one)  steps="40:kill:$x 60:back:$x" ;;
-      twoA) steps="30:kill:$x 50:kill:$y 70:back:$x 90:back:$y" ;;
-      twoB) steps="30:kill:$x 50:kill:$y 70:back:$y 90:back:$x" ;;
-      twoC) steps="30:kill:$x,$y 50:back:$x 70:back:$y" ;;
-      twoD) steps="30:kill:$x 50:back:$x 52:kill:$y 72:back:$y" ;;
-      allA) steps="40:kill:1,2,3 60:back:1,2,3" ;;
-      allB) steps="30:kill:1,2,3 50:back:$y 70:back:$z 90:back:$x" ;;
+      one)  t2=$((t1 + 5 + RANDOM % 16)); steps="$t1:kill:$x $t2:back:$x" ;;
+      twoA) t2=$((t1 + 2 + RANDOM % 9)); t3=$((t2 + 3 + RANDOM % 8)); t4=$((t3 + 3 + RANDOM % 8)); steps="$t1:kill:$x $t2:kill:$y $t3:back:$x $t4:back:$y" ;;
+      twoB) t2=$((t1 + 2 + RANDOM % 9)); t3=$((t2 + 3 + RANDOM % 8)); t4=$((t3 + 3 + RANDOM % 8)); steps="$t1:kill:$x $t2:kill:$y $t3:back:$y $t4:back:$x" ;;
+      twoC) t2=$((t1 + 5 + RANDOM % 11)); t3=$((t2 + 3 + RANDOM % 8)); steps="$t1:kill:$x,$y $t2:back:$x $t3:back:$y" ;;
+      twoD) t2=$((t1 + 5 + RANDOM % 11)); t3=$((t2 + 1 + RANDOM % 5)); t4=$((t3 + 5 + RANDOM % 11)); steps="$t1:kill:$x $t2:back:$x $t3:kill:$y $t4:back:$y" ;;
+      allA) t2=$((t1 + 5 + RANDOM % 16)); steps="$t1:kill:1,2,3 $t2:back:1,2,3" ;;
+      allB) t2=$((t1 + 5 + RANDOM % 11)); t3=$((t2 + 3 + RANDOM % 8)); t4=$((t3 + 3 + RANDOM % 8)); steps="$t1:kill:1,2,3 $t2:back:$y $t3:back:$z $t4:back:$x" ;;
     esac
-    fixed_run "kill$kc-$rate" "$rep" 15 150 "killplan $steps" "${L[@]}" || true
+    fixed_run "kill$kc-$rate" "$rep" 10 "${KILL_S:-90}" "killplan $steps" "${L[@]}" || true
   done
 }
 
