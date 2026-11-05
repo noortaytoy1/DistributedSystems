@@ -6,6 +6,19 @@ Phase 1 demo on the six machines. It covers the first four rows and the last row
 Demonstration Scenarios table, as Dr Amr asked in class on Oct 28, then his own failure cases. You lead the demo. The
 team should rehearse it on the lab machines: **none of this has been run there yet.**
 
+## Adjusting the load, tried on `b6221c5`
+
+Each was tried on one PC (`analysis/results/kills/demo-controls-check.txt`). Use `config/lab.toml` on the six PCs.
+
+| To change | Use |
+|---|---|
+| A rate you choose, up to 30,000 a second in all | `target/release/loadgen --config config/lab.toml --client-id 21 --rate 800 --duration-s 60 --warmup-s 0`, one per program |
+| Users, pause and pattern, from the page, at most 1,000 users and 1,500 reports a second per page | `http://127.0.0.1:9001`, or `/api/load/start?users=60&think_ms=500&duration_s=60&pattern=all-at-once` |
+| Users, from a command | `bash scripts/start-users.sh --config config/lab.toml --machine 1 --users 100 --duration-s 60` |
+| Slow one node | `target/release/ctl --config config/lab.toml skew --node 2 --work 5000`. Put it back to the `plan_work` in the config, not to 0 |
+| Silence one node | `target/release/ctl --config config/lab.toml silence --node 3 --ms 20000` |
+| See the nodes | `target/release/ctl --config config/lab.toml status` |
+
 ## Before you start
 
 Set up the machines with [runbook.md](runbook.md). `config/lab.example.toml` ships the fault election's timers set never to fire, so only you cause faults, and E1's settings: `plan_work = 1000` and `responders = 300` (D165, D205). To turn

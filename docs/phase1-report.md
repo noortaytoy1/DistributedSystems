@@ -115,6 +115,8 @@ Client PC 1's address is the one it reaches the cloud from, its cable.
 
 **After planning.** The winner proposes `CommitResult`, and the first commit per report wins. If the responder was taken meanwhile, one is chosen again at apply, the same way on every node (D241).
 
+**Controlling the load in a demo.** The web page on each client PC, on `127.0.0.1`, sets users, pause and pattern, up to 1,000 users and 1,500 reports a second per page. `loadgen --rate` sets any fixed rate, and `ctl` slows or silences a node. `docs/demo.md` lists the commands. All were tried on the final build on one PC with `curl` and commands, not in a browser or on the six PCs (`analysis/results/kills/demo-controls-check.txt`).
+
 ## 3. Protocols and message formats
 
 Full tables: [protocol.md](protocol.md) and [shared-log.md](shared-log.md).
