@@ -391,6 +391,34 @@ pub enum Event {
     ClientRetriesSkipped {
         skipped: u64,
     },
+    /// The client went offline: its sockets send and hear nothing until `client_online` (D402).
+    ClientOffline,
+    /// The client is back after `offline_ms` on its own clock, with `queued` reports in its outbox.
+    ClientOnline {
+        offline_ms: u64,
+        queued: usize,
+    },
+    /// A report made while offline went into the outbox instead of to the cloud (D400).
+    OutboxQueued {
+        request: RequestId,
+    },
+    /// A queued report was sent after reconnecting (D404). `outcome` is `answered`, `expired` (the
+    /// cloud refused it as too old, D143) or `failed` (no answer; it stays queued). `waited_ms` runs
+    /// from queueing to this answer, on the client's clock.
+    OutboxSent {
+        request: RequestId,
+        outcome: &'static str,
+        waited_ms: u64,
+    },
+    /// One flush of the outbox ended. `reconcile_us` is the offline reconciliation delay: from the
+    /// start of the flush to its last answer (D406).
+    OutboxFlushed {
+        sent: usize,
+        answered: usize,
+        expired: usize,
+        failed: usize,
+        reconcile_us: u64,
+    },
     /// A client connection to `node` was opened (D112). Nothing logs this since reports moved to
     /// UDP, which has no connection (D167). Kept because the analysis reads the name in old runs.
     ClientLinkUp {

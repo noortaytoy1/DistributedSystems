@@ -36,6 +36,7 @@ pub mod config;
 pub mod metrics;
 pub mod middleware;
 pub mod node;
+pub mod offline;
 pub mod planner;
 pub mod proto;
 pub mod raft;

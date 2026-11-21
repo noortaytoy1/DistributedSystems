@@ -243,6 +243,8 @@ So severity 4, 1 s old, with a matching responder 300 m away and 9 free, scores 
 | `TransportError::UnknownPeer`, `Wire` | a node ID not in the config, or a body that does not encode | a bug or a mixed build |
 | `Overloaded` | the worker pool, when `threads` are busy and `queue_capacity` jobs wait | logs `overloaded`, no answer, the client's retry takes over (D48, D138) |
 | `Outcome::Stale` | the state machine: the plan's responder is held or unknown | the winner plans again, up to 3 plans in all, then makes a plan with nobody on it final and answers (D35, D220) |
+| `ClientError::Offline` | `MeshClient`, while offline (D400) | `submit` fails at once; `submit_or_queue` queues instead |
+| `ClientError::Outbox(Full)` | `submit_or_queue`, past 10,000 queued reports (D405) | the report is refused; the outbox keeps the rest |
 | `ClientError::GaveUp { attempts }` | `MeshClient`, when its retries run out | `submit` returns the error and `client_gave_up` is logged |
 | `ClientError::Connect`, `Timeout`, `Closed` | `client::control`, for `ctl` and the frontend's polls | the tool says that node is unreachable |
 | A malformed TCP frame | the receiver | the connection closes (D16) |
@@ -375,3 +377,17 @@ All nodes apply batches in the order (round, node ID), up to the lowest round al
 | `MAX_IN_FLIGHT_CALLS` | 20,000 to 130,000 |
 | Retry budget, in `client.rs` | 20% of first sends, floor 200 a second, cap 5,000, start 100 |
 | `client_retries_skipped` | New event: retries a client left unsent, as its last log line |
+
+## Offline clients (Phase 2, Part K, D400–D406)
+
+No message changes: a queued report is an ordinary `ClientRequest`, sent later with the ID it was given when it was made.
+
+| Item | What it is |
+|------|------------|
+| `MeshClient::go_offline` / `go_online` | Close and open the gate inside the client's sockets; nothing is sent or heard while closed (D402) |
+| `submit_or_queue` | Online: `submit`. Offline: `Delivery::Queued(id)`, kept in `<metrics.dir>/outbox-client-<id>.jsonl` (D400, D401) |
+| Flush | On `go_online`: oldest first, 16 in flight, original IDs; answered and expired reports leave the outbox (D403, D404) |
+| Cap | 10,000 queued reports per client (D405) |
+| `client_offline`, `client_online` | The outage, with `offline_ms` and the reports `queued` |
+| `outbox_queued`, `outbox_sent`, `outbox_flushed` | Each report queued, each sent with `outcome` and `waited_ms`, and each flush with `reconcile_us` (D406) |
+| loadgen `--offline-at-s N --offline-for-s M` | Takes the program offline once, N s into the run, for M s |

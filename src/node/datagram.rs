@@ -55,6 +55,7 @@ use tokio_util::udp::UdpFramed;
 
 use crate::metrics::{Event, EventLog, UdpCounters};
 use crate::node::squeeze::{expand, squeeze};
+use crate::node::transport::FaultGate;
 use crate::proto;
 
 /// A client program with no traffic for this long loses its channel on the node. Longer than any
@@ -460,11 +461,24 @@ pub struct ClientEnd<Req, Resp> {
     node: SocketAddr,
     counters: Arc<UdpCounters>,
     sender: Sender,
+    /// Closed while the client is offline (D402): nothing is written and everything read is
+    /// dropped, as the node's fault gate does on its side.
+    gate: FaultGate,
     _requests: PhantomData<fn(Req)>,
 }
 
 impl<Req, Resp> ClientEnd<Req, Resp> {
     pub fn new(socket: UdpSocket, node: SocketAddr, counters: Arc<UdpCounters>) -> Self {
+        Self::with_gate(socket, node, counters, FaultGate::default())
+    }
+
+    /// As [`new`](Self::new), sharing the client's offline gate (D402).
+    pub fn with_gate(
+        socket: UdpSocket,
+        node: SocketAddr,
+        counters: Arc<UdpCounters>,
+        gate: FaultGate,
+    ) -> Self {
         let socket = Arc::new(socket);
         Self {
             frames: UdpFramed::new(socket.clone(), BincodeDatagram::new(counters.clone())),
@@ -472,6 +486,7 @@ impl<Req, Resp> ClientEnd<Req, Resp> {
             socket,
             node,
             counters,
+            gate,
             _requests: PhantomData,
         }
     }
@@ -484,6 +499,8 @@ impl<Req, Resp: DeserializeOwned> Stream for ClientEnd<Req, Resp> {
         let this = self.get_mut();
         loop {
             match ready!(Pin::new(&mut this.frames).poll_next(cx)) {
+                // Offline: the answer is lost, as it would be on a cut cable (D402).
+                Some(Ok(_)) if this.gate.is_silenced() => {}
                 // An unconnected socket takes anyone's packets. Call IDs are small numbers, so a
                 // stray one must not be matched to a call.
                 Some(Ok((message, from))) if from == this.node => {
@@ -514,6 +531,10 @@ impl<Req: Serialize, Resp> Sink<ClientMessage<Req>> for ClientEnd<Req, Resp> {
     }
 
     fn start_send(self: Pin<&mut Self>, item: ClientMessage<Req>) -> io::Result<()> {
+        // Offline: dropped before it is counted, so the counters show only what left (D402).
+        if self.gate.is_silenced() {
+            return Ok(());
+        }
         match &item {
             ClientMessage::Request(_) => self.counters.tx_requests.fetch_add(1, Relaxed),
             ClientMessage::Cancel { .. } => self.counters.tx_cancels.fetch_add(1, Relaxed),
