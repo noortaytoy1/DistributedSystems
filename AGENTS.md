@@ -98,9 +98,19 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 | D    | Rejoin and recovery      | `node/rejoin.rs`                                                     | E4                    |       |
 | E    | Planner and concurrency  | `planner.rs`, `campus.rs`, `node/workers.rs`, `node/release.rs`      | E2, CPU and queues    |       |
 | F    | Client and scale         | `client.rs`, `bin/loadgen.rs`, `bin/frontend.rs`, `scripts/start-users.sh` | E1 scaling sweep, E7  |       |
+| G    | Discovery directory (Phase 2) | `discovery.rs` (new); directory commands in `state.rs`, with A | discovery query latency, presence convergence | Omar |
+| H    | Client presence and P2P link (Phase 2) | presence agent and peer endpoint in `client.rs`, with F; peer plumbing in `node/transport.rs`, with C | P2P delivery latency | Wahiba |
+| I    | Zone publish-subscribe (Phase 2) | `gossip.rs` (new); Phase 2 inputs to `planner.rs`, with E | duplicate rate, forwarding overhead | Yahia |
+| J    | Offers, leases and conflicts (Phase 2) | `claims.rs` (new) | conflicts, claim latency | Ahmed |
+| K    | Offline operation (Phase 2) | `offline.rs` (new) | reconciliation delay, pending updates | Aabed |
+| L    | Phase 2 workload, demo and experiments | Phase 2 parts of `bin/loadgen.rs` and `bin/frontend.rs`, with F; `experiments/`, `analysis/`, `docs/report/` | Phase 2 scale sweep | Noor |
 | all  | Shared                   | `proto.rs`, `metrics.rs`, `lib.rs`, `middleware.rs`, `bin/node.rs`, `node/usage.rs`, `node/testing.rs` (test doubles for unit tests in `node/`), `tests/`, `docs/` | —                     |       |
 
 Review pairs: A↔D, B↔E, C↔F.
+
+Phase 2 parts G to L, their work and their timeline are in [docs/phase2-plan.md](docs/phase2-plan.md) (D267). Review
+pairs: G↔H, I↔K, J↔L. Each Phase 2 owner numbers design-log entries from their own ID block, listed at the top of
+[docs/design-log.md](docs/design-log.md).
 
 `raft/` includes `raft/proposals.rs`, the proposal queue (D133).
 
