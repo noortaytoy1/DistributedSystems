@@ -16,12 +16,17 @@
 //! whatever the replies do, and latency counts from the intended time, so overload cannot hide in
 //! the generator (D54). Reports then take turns among `--users` owners (D146).
 //!
+//! Phase 2 (D430): with `workload.lifecycle = true` in the config, each user also has a role and
+//! registers, subscribes, discovers, talks to peers, offers, claims, moves zone and goes offline.
+//! Actions whose part is not merged yet are stubs, counted as `stub` (D433).
+//!
 //! Every address comes from `--config`, so the same command works on all three client machines.
 //! Prints throughput and percentiles; raw events go to `metrics.dir` from the config. TERM or
 //! Ctrl-C ends the run early and still prints the summary and flushes the log (D183).
 //!
-//! Owner: F (client and scale).
+//! Owner: F (client and scale); the Phase 2 lifecycle: L.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -32,10 +37,10 @@ use clap::{Parser, ValueEnum};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
-use rescuemesh::config::{CampusConfig, Config};
+use rescuemesh::config::{CampusConfig, Config, WorkloadConfig};
 use rescuemesh::metrics::{self, Event, EventLog, now_ms};
 use rescuemesh::middleware::{ClientError, Delivery, MeshClient, Reconciled};
-use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
+use rescuemesh::proto::{ClientId, IncidentStatus, UserId, ZoneId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -119,6 +124,31 @@ impl Args {
         );
         Ok(())
     }
+
+    /// What the Phase 2 lifecycle needs from the flags (D430, D432).
+    fn check_workload(&self, w: &WorkloadConfig) -> anyhow::Result<()> {
+        if !w.lifecycle {
+            anyhow::ensure!(
+                w.offline_chance_per_min_percent == 0,
+                "workload.offline_chance_per_min_percent needs workload.lifecycle = true"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.rate.is_none(),
+            "workload.lifecycle runs users in a closed loop: leave out --rate"
+        );
+        // Most actions are stubs that return at once, so with no think time a user would spin.
+        anyhow::ensure!(
+            self.think_ms > 0,
+            "workload.lifecycle needs --think-ms above 0"
+        );
+        anyhow::ensure!(
+            w.offline_chance_per_min_percent == 0 || self.offline_at_s.is_none(),
+            "use either --offline-at-s or workload.offline_chance_per_min_percent, not both"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -131,6 +161,8 @@ struct Stats {
     expired: u64,
     /// Reports made while offline, which went into the outbox (D400).
     queued: u64,
+    /// Phase 2 lifecycle actions, keyed `action:outcome` (D433). Empty when it is off.
+    actions: BTreeMap<String, u64>,
 }
 
 impl Stats {
@@ -300,6 +332,363 @@ async fn open_loop(
     while requests.join_next().await.is_some() {}
 }
 
+// ---------------------------------------------------------------------------------------------
+// The Phase 2 lifecycle (Part L, D430 to D433). Off unless `workload.lifecycle` is true.
+// ---------------------------------------------------------------------------------------------
+
+/// What a simulated user is in Phase 2 (D431).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// Reports incidents, looks up who is around, talks to peers.
+    Ordinary,
+    /// A volunteer responder: claims response tasks.
+    Responder,
+    /// Offers resources for others to claim.
+    Provider,
+}
+
+/// One thing a user does (D430).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    /// Join the directory (Part G, through Part H's presence agent). Once, at the start.
+    Register,
+    /// Subscribe to the home zone (Part I). Once, at the start.
+    Subscribe,
+    /// Report an incident to the cloud: the Phase 1 path, with Part K's outbox while offline.
+    Report,
+    /// Ask the directory who is in a zone or offers a capability (Part G).
+    Discover,
+    /// Send an update straight to a discovered peer (Part H).
+    PeerSend,
+    /// Offer or renew a resource (Part J).
+    Offer,
+    /// Claim a resource or a response task (Part J).
+    Claim,
+    /// Move to another zone (Part G's zone change, Part I's subscription).
+    MoveZone,
+}
+
+impl Action {
+    fn name(self) -> &'static str {
+        match self {
+            Action::Register => "register",
+            Action::Subscribe => "subscribe",
+            Action::Report => "report",
+            Action::Discover => "discover",
+            Action::PeerSend => "peer_send",
+            Action::Offer => "offer",
+            Action::Claim => "claim",
+            Action::MoveZone => "move_zone",
+        }
+    }
+}
+
+/// After registering and subscribing, what each role does per think time, in percent (D431). Each
+/// row adds up to 100. Ordinary users still report most, so the cloud keeps its Phase 1 load.
+const ORDINARY_ACTIONS: [(Action, u8); 4] = [
+    (Action::Report, 60),
+    (Action::Discover, 20),
+    (Action::PeerSend, 15),
+    (Action::MoveZone, 5),
+];
+const RESPONDER_ACTIONS: [(Action, u8); 4] = [
+    (Action::Claim, 40),
+    (Action::Discover, 30),
+    (Action::PeerSend, 25),
+    (Action::MoveZone, 5),
+];
+const PROVIDER_ACTIONS: [(Action, u8); 4] = [
+    (Action::Offer, 40),
+    (Action::PeerSend, 30),
+    (Action::Discover, 25),
+    (Action::MoveZone, 5),
+];
+
+/// Kept apart from the incident and pacing streams, so turning the lifecycle on never changes
+/// which incidents a seed draws.
+const LIFE_STREAM: u64 = 0x4C49_4645;
+const OUTAGE_STREAM: u64 = 0x4F55_5447;
+
+/// The role of user `user` of `users` (D431). Each user owns an equal slice of 0..100, and the role
+/// whose share holds the slice's middle gets it. A program's roles then match the shares as closely
+/// as its user count allows, with no draw: 100 users give exactly 80, 15 and 5, and 10 users 8, 1 and 1.
+fn role_of(user: u32, users: u32, w: &WorkloadConfig) -> Role {
+    let middle = (2 * u64::from(user) + 1) * 100 / (2 * u64::from(users.max(1)));
+    let ordinary = u64::from(w.ordinary_percent);
+    if middle < ordinary {
+        Role::Ordinary
+    } else if middle < ordinary + u64::from(w.responder_percent) {
+        Role::Responder
+    } else {
+        Role::Provider
+    }
+}
+
+/// How many users of `users` get each role: (ordinary, responders, providers).
+fn role_counts(users: u32, w: &WorkloadConfig) -> (u32, u32, u32) {
+    (0..users).fold((0, 0, 0), |(o, r, p), user| match role_of(user, users, w) {
+        Role::Ordinary => (o + 1, r, p),
+        Role::Responder => (o, r + 1, p),
+        Role::Provider => (o, r, p + 1),
+    })
+}
+
+/// One user's Phase 2 life: its role, its zone and its own generator (D430).
+struct Life {
+    role: Role,
+    zone: ZoneId,
+    rng: StdRng,
+}
+
+impl Life {
+    fn new(
+        seed: u64,
+        client: ClientId,
+        user: u32,
+        users: u32,
+        w: &WorkloadConfig,
+        zones: u16,
+    ) -> Self {
+        let stream = seed.wrapping_mul(1_000_003).wrapping_add(u64::from(user))
+            ^ client.rotate_left(32)
+            ^ LIFE_STREAM;
+        let mut rng = StdRng::seed_from_u64(stream);
+        let zone = rng.gen_range(0..zones.max(1));
+        Self {
+            role: role_of(user, users, w),
+            zone,
+            rng,
+        }
+    }
+
+    /// The next action, drawn from this role's row.
+    fn next_action(&mut self) -> Action {
+        let row = match self.role {
+            Role::Ordinary => &ORDINARY_ACTIONS,
+            Role::Responder => &RESPONDER_ACTIONS,
+            Role::Provider => &PROVIDER_ACTIONS,
+        };
+        let mut draw = self.rng.gen_range(0..100u8);
+        for &(action, percent) in row {
+            if draw < percent {
+                return action;
+            }
+            draw -= percent;
+        }
+        row[0].0
+    }
+
+    /// Moves to another zone, if the campus has more than one.
+    fn move_zone(&mut self, zones: u16) {
+        if zones > 1 {
+            self.zone = (self.zone + self.rng.gen_range(1..zones)) % zones;
+        }
+    }
+}
+
+/// A Phase 2 call other than a report. Until the part behind it merges, it is a stub: it sends
+/// nothing and counts as `stub`, so no number in the analysis can come from it (D433).
+async fn phase2_call(action: Action, life: &mut Life, zones: u16) -> &'static str {
+    match action {
+        // TODO(L): MeshClient's register, through Part H's presence agent, when G and H merge.
+        Action::Register => "stub",
+        // TODO(L): subscribe to `life.zone` when Part I merges.
+        Action::Subscribe => "stub",
+        // TODO(L): discover by zone or capability when G and H merge.
+        Action::Discover => "stub",
+        // TODO(L): send to a discovered peer when Part H merges.
+        Action::PeerSend => "stub",
+        // TODO(L): offer and claim when Part J merges.
+        Action::Offer | Action::Claim => "stub",
+        Action::MoveZone => {
+            // The user moves even now, so its zone is right when the directory call arrives.
+            // TODO(L): tell the directory (G) and move the subscription (I) when they merge.
+            life.move_zone(zones);
+            "stub"
+        }
+        // Reports go through `lifecycle_user`, never here.
+        Action::Report => "not_a_phase2_call",
+    }
+}
+
+/// One user's Phase 2 loop: register, subscribe, then one action per think time as its role says,
+/// until the run ends. Reports are real and counted as in Phase 1.
+#[allow(clippy::too_many_arguments)]
+async fn lifecycle_user(
+    client: Arc<MeshClient>,
+    campus: CampusConfig,
+    mut life: Life,
+    mut rng: StdRng,
+    mut pacer: Pacer,
+    owner: UserId,
+    users: u32,
+    measure_from: Instant,
+    stop_at: Instant,
+    stats: Arc<Mutex<Stats>>,
+) {
+    let count = |stats: &Arc<Mutex<Stats>>, started: Instant, action: Action, outcome: &str| {
+        if started >= measure_from {
+            *lock(stats)
+                .actions
+                .entry(format!("{}:{outcome}", action.name()))
+                .or_default() += 1;
+        }
+    };
+    for action in [Action::Register, Action::Subscribe] {
+        let started = Instant::now();
+        let outcome = phase2_call(action, &mut life, campus.zones).await;
+        count(&stats, started, action, outcome);
+    }
+    pause(pacer.first_wait(owner.user, users, now_ms()), stop_at).await;
+    while Instant::now() < stop_at {
+        let started = Instant::now();
+        let action = life.next_action();
+        if action == Action::Report {
+            let outcome = client
+                .submit_or_queue(incident(&mut rng, &campus, owner))
+                .await;
+            let shown = match &outcome {
+                Ok(Delivery::Answered(_)) => "answered",
+                Ok(Delivery::Queued(_)) => "queued",
+                Err(ClientError::GaveUp { .. }) => "gave_up",
+                Err(_) => "failed",
+            };
+            count(&stats, started, action, shown);
+            if started >= measure_from {
+                lock(&stats).record(outcome);
+            }
+        } else {
+            let outcome = phase2_call(action, &mut life, campus.zones).await;
+            count(&stats, started, action, outcome);
+        }
+        pause(pacer.next_wait(now_ms()), stop_at).await;
+    }
+}
+
+/// The closed loop with the Phase 2 lifecycle: every user lives its role (D430).
+async fn lifecycle_loop(
+    args: &Args,
+    workload: WorkloadConfig,
+    client: Arc<MeshClient>,
+    campus: CampusConfig,
+    measure_from: Instant,
+    stop_at: Instant,
+    stats: Arc<Mutex<Stats>>,
+) {
+    let total = args.users;
+    let mut users = JoinSet::new();
+    for user in 0..total {
+        let life = Life::new(
+            args.seed,
+            args.client_id,
+            user,
+            total,
+            &workload,
+            campus.zones,
+        );
+        let owner = UserId {
+            client: args.client_id,
+            user,
+        };
+        users.spawn(lifecycle_user(
+            client.clone(),
+            campus,
+            life,
+            user_rng(args.seed, u64::from(user)),
+            Pacer::new(args.pattern, args.think_ms, args.seed, u64::from(user)),
+            owner,
+            total,
+            measure_from,
+            stop_at,
+            stats.clone(),
+        ));
+    }
+    while users.join_next().await.is_some() {}
+}
+
+/// When this program's random outages start, as offsets from the run's start (D432). Each whole
+/// minute of the run draws once: with `chance` percent the program goes offline at a random moment
+/// of that minute, early enough to be back before the minute ends. Seeded, so a run repeats.
+fn outage_starts(
+    seed: u64,
+    client: ClientId,
+    run: Duration,
+    chance: u8,
+    length: Duration,
+) -> Vec<Duration> {
+    let mut rng = StdRng::seed_from_u64(seed ^ client.rotate_left(32) ^ OUTAGE_STREAM);
+    let minute = Duration::from_secs(60);
+    let latest = minute.saturating_sub(length).as_millis() as u64;
+    (0..run.as_secs() / 60)
+        .filter_map(|m| {
+            let hit = rng.gen_range(0..100u8) < chance;
+            let at = minute * m as u32 + Duration::from_millis(rng.gen_range(0..=latest));
+            (hit && at + length <= run).then_some(at)
+        })
+        .collect()
+}
+
+/// What this program's random outages added up to (D432).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Outages {
+    count: u32,
+    sent: usize,
+    answered: usize,
+    expired: usize,
+    failed: usize,
+    longest_reconcile: Duration,
+}
+
+/// Runs the outages `outage_starts` drew, one after another, and adds up each reconnection.
+async fn random_outages(
+    client: Arc<MeshClient>,
+    start: Instant,
+    starts: Vec<Duration>,
+    length: Duration,
+    total: Arc<Mutex<Outages>>,
+) {
+    for at in starts {
+        let flushed = go_offline_once(client.clone(), start + at, length).await;
+        let mut t = lock(&total);
+        t.count += 1;
+        if let Some(done) = flushed {
+            t.sent += done.sent;
+            t.answered += done.answered;
+            t.expired += done.expired;
+            t.failed += done.failed;
+            t.longest_reconcile = t.longest_reconcile.max(done.took);
+        }
+    }
+}
+
+/// One more line after the summary for a lifecycle run. Not on the first line, which
+/// `scripts/start-users.sh` adds up.
+fn lifecycle_summary(
+    roles: (u32, u32, u32),
+    actions: &BTreeMap<String, u64>,
+    outages: &Outages,
+) -> String {
+    let listed = actions
+        .iter()
+        .map(|(key, n)| format!("{key} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "phase2: users ordinary {}, responders {}, providers {}; actions {}; outages {}, sent {}, \
+         answered {}, expired {}, failed {}, longest reconcile {:.1} ms\n",
+        roles.0,
+        roles.1,
+        roles.2,
+        if listed.is_empty() { "none" } else { &listed },
+        outages.count,
+        outages.sent,
+        outages.answered,
+        outages.expired,
+        outages.failed,
+        outages.longest_reconcile.as_secs_f64() * 1000.0,
+    )
+}
+
 /// Takes the client offline at `at` for `length`, then brings it back and sends its outbox (D406).
 /// `None` if the run ends first or the flush fails, which is logged.
 async fn go_offline_once(
@@ -393,6 +782,8 @@ async fn main() -> anyhow::Result<()> {
     let config =
         Config::load(&args.config).with_context(|| format!("loading {}", args.config.display()))?;
     args.check()?;
+    let workload = config.workload;
+    args.check_workload(&workload)?;
     let log = EventLog::open(
         config.metrics.dir.as_deref(),
         &format!("client-{}", args.client_id),
@@ -429,8 +820,49 @@ async fn main() -> anyhow::Result<()> {
                 Duration::from_secs(length),
             ))
         });
+    let roles = role_counts(args.users, &workload);
+    let outages = Arc::new(Mutex::new(Outages::default()));
+    let mut outage_task = None;
+    if workload.lifecycle {
+        log.log(Event::WorkloadStarted {
+            ordinary: roles.0,
+            responders: roles.1,
+            providers: roles.2,
+            offline_chance_per_min_percent: workload.offline_chance_per_min_percent,
+            offline_for_ms: workload.offline_for_ms,
+        });
+        let length = Duration::from_millis(workload.offline_for_ms);
+        let starts = outage_starts(
+            args.seed,
+            args.client_id,
+            Duration::from_secs(args.duration_s),
+            workload.offline_chance_per_min_percent,
+            length,
+        );
+        if !starts.is_empty() {
+            outage_task = Some(tokio::spawn(random_outages(
+                client.clone(),
+                start,
+                starts,
+                length,
+                outages.clone(),
+            )));
+        }
+    }
     let run = async {
         match args.rate {
+            None if workload.lifecycle => {
+                lifecycle_loop(
+                    &args,
+                    workload,
+                    client.clone(),
+                    campus,
+                    measure_from,
+                    stop_at,
+                    shared,
+                )
+                .await;
+            }
             Some(rate) => {
                 open_loop(
                     &args,
@@ -475,6 +907,21 @@ async fn main() -> anyhow::Result<()> {
         let queued = lock(&stats).queued;
         let still_queued = client.queued().await;
         text.push_str(&offline_summary(queued, flushed, still_queued));
+    }
+    if workload.lifecycle {
+        // An outage still on at the end stays as it is, as with `--offline-at-s`: its outbox
+        // waits on disk for the next start with this client ID.
+        if let Some(task) = outage_task {
+            task.abort();
+            let _ = task.await;
+        }
+        let outages = lock(&outages).clone();
+        let actions = std::mem::take(&mut lock(&stats).actions);
+        text.push_str(&lifecycle_summary(roles, &actions, &outages));
+        log.log(Event::WorkloadDone {
+            actions,
+            outages: outages.count,
+        });
     }
     drop(client);
     let closed = tokio::task::spawn_blocking(move || log.close()).await;
@@ -640,6 +1087,7 @@ mod tests {
             provisional: 6,
             expired: 7,
             queued: 8,
+            actions: BTreeMap::new(),
         };
         let text = summary(10_000, &mut stats, Duration::from_secs(2), false);
         assert_eq!(
@@ -653,6 +1101,193 @@ mod tests {
         assert!(!text.contains("stopped"), "{text}");
         let early = summary(10_000, &mut stats, Duration::from_secs(2), true);
         assert!(early.contains("stopped by a signal"), "{early}");
+    }
+
+    fn workload(lifecycle: bool, chance: u8) -> WorkloadConfig {
+        WorkloadConfig {
+            lifecycle,
+            offline_chance_per_min_percent: chance,
+            ..WorkloadConfig::default()
+        }
+    }
+
+    #[test]
+    fn roles_match_the_shares_as_closely_as_the_user_count_allows() {
+        let w = WorkloadConfig::default();
+        assert_eq!(role_counts(100, &w), (80, 15, 5));
+        assert_eq!(role_counts(1000, &w), (800, 150, 50));
+        assert_eq!(role_counts(10, &w), (8, 1, 1));
+        assert_eq!(role_counts(1, &w), (1, 0, 0));
+        assert_eq!(role_counts(0, &w), (0, 0, 0));
+        let all_providers = WorkloadConfig {
+            ordinary_percent: 0,
+            responder_percent: 0,
+            provider_percent: 100,
+            ..w
+        };
+        assert_eq!(role_counts(7, &all_providers), (0, 0, 7));
+    }
+
+    #[test]
+    fn every_role_row_adds_up_to_100() {
+        for row in [ORDINARY_ACTIONS, RESPONDER_ACTIONS, PROVIDER_ACTIONS] {
+            assert_eq!(row.iter().map(|&(_, p)| u32::from(p)).sum::<u32>(), 100);
+        }
+    }
+
+    fn life(role_user: u32, users: u32, seed: u64, client: ClientId) -> Life {
+        Life::new(
+            seed,
+            client,
+            role_user,
+            users,
+            &WorkloadConfig::default(),
+            6,
+        )
+    }
+
+    #[test]
+    fn each_role_does_what_its_row_says() {
+        let tally = |mut l: Life| {
+            let mut n = BTreeMap::new();
+            for _ in 0..10_000 {
+                *n.entry(l.next_action().name()).or_insert(0u32) += 1;
+            }
+            n
+        };
+        // Of 100 users, 0 is ordinary, 85 a responder and 97 a provider.
+        let ordinary = tally(life(0, 100, 5, 1));
+        let responder = tally(life(85, 100, 5, 1));
+        let provider = tally(life(97, 100, 5, 1));
+        assert!((5_700..6_300).contains(&ordinary["report"]), "{ordinary:?}");
+        assert!(!ordinary.contains_key("claim") && !ordinary.contains_key("offer"));
+        assert!(!responder.contains_key("report") && !responder.contains_key("offer"));
+        assert!(
+            (3_700..4_300).contains(&responder["claim"]),
+            "{responder:?}"
+        );
+        assert!(!provider.contains_key("report") && !provider.contains_key("claim"));
+        assert!((3_700..4_300).contains(&provider["offer"]), "{provider:?}");
+    }
+
+    #[test]
+    fn a_life_repeats_for_a_seed_and_differs_between_programs() {
+        let actions = |mut l: Life| (l.zone, (0..50).map(|_| l.next_action()).collect::<Vec<_>>());
+        assert_eq!(actions(life(3, 10, 5, 1)), actions(life(3, 10, 5, 1)));
+        assert_ne!(actions(life(3, 10, 5, 1)), actions(life(3, 10, 5, 2)));
+        assert_ne!(actions(life(3, 10, 5, 1)), actions(life(3, 10, 6, 1)));
+    }
+
+    #[test]
+    fn moving_always_lands_in_another_zone_of_the_campus() {
+        let mut l = life(0, 1, 5, 1);
+        for _ in 0..200 {
+            let before = l.zone;
+            l.move_zone(6);
+            assert_ne!(l.zone, before);
+            assert!(l.zone < 6);
+        }
+        l.zone = 0;
+        l.move_zone(1);
+        assert_eq!(l.zone, 0, "one zone: nowhere to go");
+    }
+
+    #[tokio::test]
+    async fn every_call_but_a_report_is_a_stub_until_its_part_merges() {
+        let mut l = life(0, 1, 5, 1);
+        for action in [
+            Action::Register,
+            Action::Subscribe,
+            Action::Discover,
+            Action::PeerSend,
+            Action::Offer,
+            Action::Claim,
+            Action::MoveZone,
+        ] {
+            assert_eq!(phase2_call(action, &mut l, 6).await, "stub", "{action:?}");
+        }
+    }
+
+    #[test]
+    fn outages_repeat_for_a_seed_and_end_inside_their_minute_and_the_run() {
+        let length = Duration::from_secs(20);
+        let run = Duration::from_secs(600);
+        assert!(outage_starts(5, 1, run, 0, length).is_empty());
+        let every = outage_starts(5, 1, run, 100, length);
+        assert_eq!(every.len(), 10, "one per whole minute at 100%");
+        for (m, at) in every.iter().enumerate() {
+            let minute = Duration::from_secs(60 * m as u64);
+            assert!(
+                *at >= minute && *at + length <= minute + Duration::from_secs(60),
+                "{at:?}"
+            );
+        }
+        assert_eq!(
+            outage_starts(5, 1, run, 30, length),
+            outage_starts(5, 1, run, 30, length)
+        );
+        assert_ne!(
+            outage_starts(5, 1, run, 30, length),
+            outage_starts(5, 2, run, 30, length)
+        );
+        // A run shorter than a minute has no whole minute to draw in.
+        assert!(outage_starts(5, 1, Duration::from_secs(59), 100, length).is_empty());
+    }
+
+    #[test]
+    fn the_lifecycle_refuses_flags_it_cannot_run_with() {
+        let closed = parsed(&["--think-ms", "1000"]);
+        assert!(closed.check_workload(&workload(true, 10)).is_ok());
+        assert!(closed.check_workload(&workload(false, 0)).is_ok());
+        assert!(
+            closed.check_workload(&workload(false, 10)).is_err(),
+            "outages need the lifecycle"
+        );
+        assert!(
+            parsed(&[]).check_workload(&workload(true, 0)).is_err(),
+            "no think time"
+        );
+        let open = parsed(&["--rate", "100", "--think-ms", "1000"]);
+        assert!(open.check_workload(&workload(true, 0)).is_err());
+        assert!(
+            open.check_workload(&workload(false, 0)).is_ok(),
+            "Phase 1 open loop is unchanged"
+        );
+        let both = [
+            "--think-ms",
+            "1000",
+            "--offline-at-s",
+            "5",
+            "--offline-for-s",
+            "5",
+        ];
+        assert!(parsed(&both).check_workload(&workload(true, 10)).is_err());
+        assert!(parsed(&both).check_workload(&workload(true, 0)).is_ok());
+    }
+
+    #[test]
+    fn the_lifecycle_line_lists_roles_actions_and_outages() {
+        let mut actions = BTreeMap::new();
+        actions.insert("discover:stub".to_string(), 3);
+        actions.insert("report:answered".to_string(), 7);
+        let outages = Outages {
+            count: 2,
+            sent: 4,
+            answered: 3,
+            expired: 1,
+            failed: 0,
+            longest_reconcile: Duration::from_millis(12),
+        };
+        assert_eq!(
+            lifecycle_summary((8, 1, 1), &actions, &outages),
+            "phase2: users ordinary 8, responders 1, providers 1; actions discover:stub 3, \
+             report:answered 7; outages 2, sent 4, answered 3, expired 1, failed 0, longest \
+             reconcile 12.0 ms\n"
+        );
+        assert!(
+            lifecycle_summary((0, 0, 0), &BTreeMap::new(), &Outages::default())
+                .contains("actions none")
+        );
     }
 
     #[test]

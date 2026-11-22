@@ -117,3 +117,16 @@ lease_ms = 10000
 grace_ms = 5000
 # How often the directory's log clock is moved when no client is sending (D281).
 tick_ms = 1000
+
+[workload]
+# The Phase 2 user lifecycle in loadgen (D430). false: every user only reports, as in Phase 1.
+# true needs the closed loop with --think-ms above 0. Actions whose part is not merged yet are
+# stubs that send nothing and count as "stub" (D433).
+lifecycle = false
+# Share of users per role, adding up to 100 (D431).
+ordinary_percent = 80
+responder_percent = 15
+provider_percent = 5
+# Each whole minute, the chance a program goes offline, for offline_for_ms (under 60000) (D432).
+offline_chance_per_min_percent = 0
+offline_for_ms = 20000

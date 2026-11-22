@@ -564,3 +564,19 @@ not Aabed's incident outbox) and resends it with `speculative: true` on `go_onli
 Demo scenario 8 (`tests/claims.rs`): an online claimant takes a one-capacity resource; a second claimant goes offline,
 queues its claim, and reconnects, surfacing a reconciliation entry instead of a silent refusal; the resource's owner
 resolves it for the challenger.
+
+## The Phase 2 workload (Part L, D430–D433)
+
+No message changes. `loadgen` reads `[workload]` from the config; nodes ignore it.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `workload.lifecycle` | false | true: each user registers, subscribes to its home zone, then does one action per think time as its role says: report, discover, send to a peer, offer, claim or move zone. Needs the closed loop and `--think-ms` above 0 (D430) |
+| `workload.ordinary_percent`, `responder_percent`, `provider_percent` | 80, 15, 5 | Users per role; they must add up to 100. Fixed by position, so 100 users are exactly 80, 15 and 5 (D431) |
+| `workload.offline_chance_per_min_percent` | 0 | Each whole minute, the chance a program goes offline through Part K's switch (D432). Not with `--offline-at-s` |
+| `workload.offline_for_ms` | 20000 | How long each outage lasts; under 60000, so it ends inside its minute |
+
+| Event | When |
+|-------|------|
+| `workload_started` | At the start: users per role and the outage settings |
+| `workload_done` | At the end: `actions`, keyed `action:outcome`, and `outages`. `stub` means the part behind the action is not merged and nothing was sent (D433) |

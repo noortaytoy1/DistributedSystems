@@ -440,6 +440,12 @@ table below in sync.
 | D367 | `gossip_published` is logged even with no targets | I, with L | Implemented |
 | D368 | Tests against stub nodes, and an explicit list of what changes later | I | Implemented, amended by D369 |
 | D369 | PR 2's leftovers: the directory makes one marker obsolete, a real-cloud test, one marker kept | I, with G and K | Implemented, amends D368 |
+| D430 | The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default | L | Implemented |
+| D431 | Three roles by fixed share (80, 15, 5) and a per-role action mix | L | Implemented |
+| D432 | Random outages per program, drawn once a minute, through Part K's switch | L | Implemented |
+| D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented |
+| D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Accepted |
+| D435 | P2P traffic runs between the client PCs only, and the cloud's bytes prove it | L | Accepted |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10736,6 +10742,101 @@ them on the six PCs.
 - **How we check it.** `gossip::tests::subjects_keep_kinds_apart` (two Fire offers of one provider are both new, a repeat is
   obsolete, a newer version is new); `offline::tests::offers_are_subjects_by_their_id`, which fails with the old key.
 - **Report notes.** One identity per resource across the log, gossip and held updates.
+
+### D430 · The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** Phase 2 is measured on "tens of thousands of operations" and demonstrated end to end. The users that make the load have to do what Phase 2 users do: register, subscribe to a zone, report, discover, talk to peers, offer and claim, move and go offline. Parts G, H, I and J, which provide most of those calls, are not merged yet. Phase 1's scenarios 1 to 4 and 9 must also re-run unchanged on the final build (`docs/phase2-plan.md` section 8).
+- **Options considered.**
+  1. *A switch in the config, `workload.lifecycle`, off by default; when on, each closed-loop user runs the lifecycle (chosen).*
+  2. *A loadgen flag.* Same code, but an experiment cell could not set it: cells in `experiments/` are config overlays, and the runner passes the same flags to every cell.
+  3. *A new program beside loadgen.* Keeps loadgen untouched, but `scripts/start-users.sh`, the runner and the analysis would all need a second path.
+- **Decision.** Option 1. With `lifecycle = true` a user registers, subscribes to its home zone, waits its first slot, then does one action per think time, drawn from its role's row (D431), until the run ends. Reports go through `submit_or_queue` exactly as before, so they are real and counted in the first summary line. It needs the closed loop and `--think-ms` above 0; `--rate` with the lifecycle is refused.
+- **Why.** Off by default means every Phase 1 cell, script and summary line repeats unchanged. A config key lets the experiment cells sweep it. The closed loop is how a user lives: one action, then a think time. Open loop measures the cloud's capacity, which Phase 1 already did.
+- **Consequences.** A lifecycle program prints a `phase2:` line after the summary; the first line, which `start-users.sh` adds up, is unchanged. With no think time stubs would spin, hence the refusal.
+- **Where.** `config.rs::WorkloadConfig`, `bin/loadgen.rs::{lifecycle_loop, lifecycle_user, Args::check_workload}`, `config/local.toml` `[workload]`.
+- **How we check it.** `loadgen` tests (`the_lifecycle_refuses_flags_it_cannot_run_with`), `config::tests::the_workload_is_phase_1_by_default_and_its_shares_must_add_up`. By hand on three local nodes: 20 users for 75 s with outages on gave 1,126 answered reports, the right roles and one outage whose 169 queued reports were all answered; the same users with the switch off printed the Phase 1 summary only.
+- **Report notes.** Methodology section: what one simulated user does, and that Phase 1 runs are unaffected.
+
+### D431 · Three roles by fixed share (80, 15, 5) and a per-role action mix
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** The spec names ordinary clients, volunteer responders and resource providers. The plan recommends 80%, 15% and 5%.
+- **Options considered.**
+  1. *Roles by position: each user owns an equal slice of 0 to 100, and the role whose share holds the slice's middle gets it (chosen).*
+  2. *A seeded draw per user.* The shares hold only on average, so a program of 10 users often has no provider at all.
+- **Decision.** Shares from `workload.*_percent`, default 80, 15 and 5, checked to add up to 100. 100 users give exactly 80, 15 and 5; 10 users give 8, 1 and 1. After registering and subscribing, each role draws one action per think time, in percent:
+
+  | Role | Actions |
+  |------|---------|
+  | Ordinary | report 60, discover 20, peer send 15, move zone 5 |
+  | Responder | claim 40, discover 30, peer send 25, move zone 5 |
+  | Provider | offer 40, peer send 30, discover 25, move zone 5 |
+
+  Each user has its own generator, seeded from the run's seed, the client ID and the user, apart from the incident and pacing streams.
+- **Why.** Exact shares at every program size, with no draw to explain. Ordinary users still report most, so the cloud keeps a Phase 1-like load while the Phase 2 traffic grows beside it. Moving zone is the spec's "user moving between zones" case. Separate streams mean turning the lifecycle on never changes which incidents a seed draws.
+- **Consequences.** The action mix is in code, not the config: one less thing to copy to six PCs. A cell that needs another mix changes the code and says so.
+- **Where.** `bin/loadgen.rs::{role_of, role_counts, Life, ORDINARY_ACTIONS, RESPONDER_ACTIONS, PROVIDER_ACTIONS}`.
+- **How we check it.** `roles_match_the_shares_as_closely_as_the_user_count_allows`, `every_role_row_adds_up_to_100`, `each_role_does_what_its_row_says`, `a_life_repeats_for_a_seed_and_differs_between_programs`, `moving_always_lands_in_another_zone_of_the_campus`.
+- **Report notes.** The table above goes in the methodology section.
+
+### D432 · Random outages per program, drawn once a minute, through Part K's switch
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** The plan recommends "an offline chance per user per minute". Part K's offline switch is a gate inside one `MeshClient` (D402), which every user of a program shares.
+- **Options considered.**
+  1. *A chance per program per minute (chosen).* Each whole minute of the run draws once; on a hit the program goes offline at a random moment of that minute for `workload.offline_for_ms`, early enough to be back before the minute ends.
+  2. *Per user, as the plan says.* Needs one `MeshClient` per user, three sockets each: 15,000 sockets for 5,000 users on a PC.
+  3. *Only `--offline-at-s`.* One outage per program, at a fixed time, so a sweep of the offline share cannot be made.
+- **Decision.** Option 1. `workload.offline_chance_per_min_percent`, default 0, and `workload.offline_for_ms`, default 20,000 and under 60,000. Seeded by the run's seed and the client ID, so a run repeats. Not together with `--offline-at-s`. An outage still on at the end is left on, as with `--offline-at-s`: its outbox waits on disk.
+- **Why.** A real disconnection takes the whole device offline, which is the whole program here, and the program is the unit Part K built. 20 s matches Phase 1's longest fault. The offline share of the plan's cells is then about chance × length ÷ 60 s, which the analysis computes from `client_offline` and `client_online`.
+- **Consequences.** The plan's "per user" is read as per program; the report says so. Each program logs Part K's events for every outage.
+- **Where.** `bin/loadgen.rs::{outage_starts, random_outages, Outages}`, `config.rs::WorkloadConfig`.
+- **How we check it.** `outages_repeat_for_a_seed_and_end_inside_their_minute_and_the_run`; the local run in D430.
+- **Report notes.** Offline share per cell = measured offline time ÷ run time, per program.
+
+### D433 · Actions of parts not merged yet are stubs that send nothing and count as `stub`
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** The plan starts Part L's workload "from stubs where other parts are not merged yet". A stub must not produce a number that looks measured.
+- **Options considered.**
+  1. *A stub returns at once, sends nothing, and is counted as `action:stub` (chosen).*
+  2. *A stub that sleeps a made-up latency.* Looks more real, but a made-up latency could end up in a plot.
+  3. *Leave the actions out until their parts merge.* The lifecycle and its counting could not be tested now.
+- **Decision.** `phase2_call` returns `stub` for register, subscribe, discover, peer send, offer, claim and move zone, each with a `TODO(L)` naming the part to wire in. Move zone still changes the user's zone. Each measured action is counted by `action:outcome` (reports: `answered`, `queued`, `gave_up`, `failed`). Events: `workload_started` (roles and outage settings) and `workload_done` (the counts and `outages`).
+- **Why.** Anything counted as `stub` is visibly not measured, so the analysis can drop it. When a part merges only its arm of `phase2_call` changes.
+- **Consequences.** Until G, H, I and J merge, a lifecycle run's only real traffic is reports and outages.
+- **Where.** `bin/loadgen.rs::phase2_call`, `metrics.rs::Event::{WorkloadStarted, WorkloadDone}`, `docs/protocol.md` (Phase 2 workload).
+- **How we check it.** `every_call_but_a_report_is_a_stub_until_its_part_merges`, `the_lifecycle_line_lists_roles_actions_and_outages`. `grep -n "TODO(L)" src` lists what is left.
+- **Report notes.** Only actions with a real outcome go in the results.
+
+### D434 · Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Accepted · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** The spec asks for measurements as concurrent clients grow, for offline reconciliation and for conflicts. Phase 1's runner reads cells as config overlays (D63).
+- **Options considered.**
+  1. *Three sweeps (chosen):* users per PC 100, 1,000 and 5,000 with the lifecycle on; offline share 0%, 10% and 30% through D432; an injected delay for the conflict rate. `quick` for tuning, `full` for the report.
+  2. *One big cell.* Cheap, but no curve to analyse.
+- **Decision.** Option 1, built in `part-l-experiments` once the parts it measures have merged.
+- **Why.** Each sweep answers one of the spec's questions, and the profiles are the ones Phase 1 used.
+- **Consequences.** 5,000 users per PC needs the lab PCs' memory checked first (Phase 1 saw out-of-memory kills at heavy load).
+- **Where.** `experiments/` (to come).
+- **How we check it.** Each cell runs through the runner on the six PCs, and `analysis/` reads it.
+- **Report notes.** The cell table goes in the methodology section.
+
+### D435 · P2P traffic runs between the client PCs only, and the cloud's bytes prove it
+
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Accepted · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** The spec's point for Phase 2 is that peers talk directly after discovery, with the cloud out of the data path.
+- **Options considered.**
+  1. *Peers on the client PCs only; the analysis compares the cloud's client-port byte counters during a P2P exchange (chosen).*
+  2. *Also run peers on the node PCs.* More peers, but cloud and peer traffic would share machines and the proof would blur.
+- **Decision.** Option 1.
+- **Why.** It is what the spec asks to show, and a counter that stays flat is the simplest proof.
+- **Consequences.** Needs Part H's byte counter on the cloud's client port.
+- **Where.** `experiments/`, `analysis/` (to come).
+- **How we check it.** The scenario 6 cell shows no growth in the cloud's bytes during the exchange.
+- **Report notes.** One plot: cloud bytes against P2P messages over time.
 
 ### Notes on older entries
 

@@ -33,6 +33,9 @@ pub struct Config {
     pub faults: FaultConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    /// The Phase 2 user lifecycle in `loadgen` (Part L, D430). Off by default, so Phase 1's runs repeat.
+    #[serde(default)]
+    pub workload: WorkloadConfig,
     /// How the nodes reach one order: rotating rounds, or Raft with its elected leader (D249).
     #[serde(default)]
     pub consensus: ConsensusMode,
@@ -313,6 +316,37 @@ impl Default for P2pConfig {
     }
 }
 
+/// The Phase 2 workload: what `loadgen`'s simulated users do (Part L, D430 to D433). Read only by
+/// `loadgen`; nodes ignore it. A cell in `experiments/` overrides it to sweep the mix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkloadConfig {
+    /// Run the Phase 2 lifecycle (register, subscribe, report, discover, P2P, offer, claim, move,
+    /// go offline). False: every user only reports, exactly as in Phase 1.
+    pub lifecycle: bool,
+    /// Share of users in each role, in percent; the three add up to 100 (D431).
+    pub ordinary_percent: u8,
+    pub responder_percent: u8,
+    pub provider_percent: u8,
+    /// Each minute, the chance in percent that a program goes offline (D432). 0: never.
+    pub offline_chance_per_min_percent: u8,
+    /// How long a program stays offline each time (D432).
+    pub offline_for_ms: u64,
+}
+
+impl Default for WorkloadConfig {
+    fn default() -> Self {
+        Self {
+            lifecycle: false,
+            ordinary_percent: 80,
+            responder_percent: 15,
+            provider_percent: 5,
+            offline_chance_per_min_percent: 0,
+            offline_for_ms: 20_000,
+        }
+    }
+}
+
 impl P2pConfig {
     pub fn try_timeout(&self) -> Duration {
         Duration::from_millis(self.try_ms)
@@ -587,6 +621,23 @@ impl Config {
         if f.interval_min_ms < f.silence_max_ms {
             return invalid("faults: need interval_min_ms >= silence_max_ms".into());
         }
+        let w = &self.workload;
+        let roles = u16::from(w.ordinary_percent)
+            + u16::from(w.responder_percent)
+            + u16::from(w.provider_percent);
+        if roles != 100 {
+            return invalid(format!(
+                "workload: ordinary_percent + responder_percent + provider_percent must be 100, \
+                 not {roles}"
+            ));
+        }
+        if w.offline_chance_per_min_percent > 100 {
+            return invalid("workload: offline_chance_per_min_percent must be 0 to 100".into());
+        }
+        // Back within the same minute, so one outage ends before the next draw can start another.
+        if w.offline_chance_per_min_percent > 0 && !(1..60_000).contains(&w.offline_for_ms) {
+            return invalid("workload: need 0 < offline_for_ms < 60000".into());
+        }
         Ok(())
     }
 
@@ -776,6 +827,30 @@ grace_ms = 0",
         assert!(Config::from_toml(&zero).is_err());
         let short = format!("{node}[campus]\nincident_ttl_ms = 1\n");
         assert_eq!(Config::from_toml(&short).unwrap().campus.incident_ttl_ms, 1);
+    }
+
+    #[test]
+    fn the_workload_is_phase_1_by_default_and_its_shares_must_add_up() {
+        let node = "[[cluster.nodes]]\nid = 1\npeer_addr = \"127.0.0.1:7001\"\nclient_addr = \"127.0.0.1:8001\"\n";
+        let w = Config::from_toml(node).unwrap().workload;
+        assert!(!w.lifecycle, "Phase 1 runs must repeat unchanged");
+        assert_eq!(
+            (w.ordinary_percent, w.responder_percent, w.provider_percent),
+            (80, 15, 5)
+        );
+        assert_eq!(w.offline_chance_per_min_percent, 0);
+        let with = |lines: &str| Config::from_toml(&format!("{node}[workload]\n{lines}\n"));
+        assert!(with("lifecycle = true\nordinary_percent = 70\nresponder_percent = 20\nprovider_percent = 10").is_ok());
+        assert!(
+            with("ordinary_percent = 90").is_err(),
+            "90 + 15 + 5 is not 100"
+        );
+        assert!(with("offline_chance_per_min_percent = 101").is_err());
+        assert!(with("offline_chance_per_min_percent = 10\noffline_for_ms = 0").is_err());
+        assert!(with("offline_chance_per_min_percent = 10\noffline_for_ms = 60000").is_err());
+        assert!(with("offline_chance_per_min_percent = 10\noffline_for_ms = 59999").is_ok());
+        // With no outages the length is never used, so any value is fine.
+        assert!(with("offline_for_ms = 0").is_ok());
     }
 
     #[test]
