@@ -28,7 +28,7 @@ something. When in doubt, log it. Small entries are fine; missing entries are no
 **IDs.** `D1`–`D13` are the decisions of the Phase 1 architecture document (27 Oct 2026), kept
 with their original numbers so the report can cite them. `D14` onwards are decisions taken in the
 code or since. IDs are never reused: a changed decision gets a new entry, and the old one is marked
-`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 was kept free for a leader step-aside, and now holds it.
+`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 was kept free for a leader step-aside, and now holds it. Phase 2 IDs come in blocks, one per owner (D267): D267–D279 shared, D280–D309 Omar (G), D310–D339 Wahiba (H), D340–D369 Yahia (I), D370–D399 Ahmed (J), D400–D429 Aabed (K), D430–D459 Noor (L). Take the next free ID in your own block.
 
 **Status values.**
 
@@ -326,6 +326,7 @@ table below in sync.
 | D264 | A client spends at most a fifth of its sends on retries | F | Implemented, amends D126 |
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 | D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
+| D267 | Phase 2 parts G to L, their owners, review pairs and design-log ID blocks | all | Decided |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8228,6 +8229,44 @@ them on the six PCs.
 - **Where.** `docs/report/`.
 - **How we check it.** It compiles with no undefined references; every number in it traces to a result file in the repository.
 - **Notes for the report.** On Omar Leithy's request the report is written as a stand-alone, third-person document: it states requirements without citing course material, and describes the design in its own words, naming no source files, functions, commits or design-log IDs. It cites the repository once as a whole. UML diagrams keep the type and operation names, since that is what a UML class diagram shows.
+
+### D267 · Phase 2 parts G to L, their owners, review pairs and design-log ID blocks
+
+- **Date:** 2026-11-21 · **Part:** all · **Status:** Decided · **Decided by:** Aabed Elghadban, on the agent's
+  recommendation; the team confirms or changes it at the Phase 2 kickoff, and merging this entry is that confirmation.
+- **Context.** Phase 2 (due 2026-12-05) adds the Discovery/Presence Service, direct P2P exchange, dissemination with
+  duplicate suppression and bounded forwarding, offline operation, and leases with conflict handling, integrated with
+  the Phase 1 cloud. The spec wants one integrated system and a contribution section per member. In Phase 1 two
+  members used the same design-log IDs twice (D79 to D92 and D74 to D81), and each time one side had to renumber.
+- **Options considered.**
+  1. *One part per member, continuing the Phase 1 roles, with equal-sized mechanisms (chosen).* Each owns a mechanism
+     with its tests, measurement, demo scenario and report section.
+  2. *Split by layer (cloud side, client side, measurement).* Fewer parts, but the client-side owner would carry most of
+     Phase 2, and the contribution section would be uneven.
+  3. *No fixed owners; take work as it comes.* Fast to start, but nobody answers for a mechanism at the demo.
+- **Decision.** Option 1, with parts lettered after Phase 1's A to F:
+  - G, discovery directory: Omar Leithy;
+  - H, client presence and the P2P link: Wahiba Elhimer;
+  - I, zone publish-subscribe and the planner's Phase 2 inputs: Yahia Kilany;
+  - J, resource offers, leases, claims and conflicts: Ahmed Abdeen;
+  - K, offline operation and reconciliation: Aabed Elghadban;
+  - L, Phase 2 workload, demo page, experiments and report assembly: Noor Emam.
+
+  Review pairs are G↔H, I↔K and J↔L. Design-log ID blocks: D267–D279 shared, D280–D309 G, D310–D339 H, D340–D369 I,
+  D370–D399 J, D400–D429 K, D430–D459 L. Branches stay `part-<letter>-<topic>` and `shared-<topic>`. The work per
+  part, the decisions each owner settles first (with recommendations), and the timeline are in `docs/phase2-plan.md`.
+- **Why.** Continuing Phase 1's roles means nobody starts from zero: discovery is a second state machine on the shared
+  log (D69), claims were part of the original bid manager component, and offline clients are the fault and rejoin
+  problem one layer out. Review pairs join parts that depend on each other, so each reviewer can explain the other's
+  part at the demo. ID blocks remove the renumbering of Phase 1.
+- **Consequences.** Three contract PRs (G's directory messages and lease clock, H's peer envelope, J's claim commands)
+  must land first, by 2026-11-25. A block that runs out takes the next free block after D459, named in its PR. The
+  owner column of A to F is left as it was.
+- **Where.** `AGENTS.md` (parts table, review pairs), `docs/phase2-plan.md`, the note on IDs at the top of this file,
+  `docs/architecture.md` section 13.
+- **How we check it.** Every Phase 2 PR names its part and cites IDs from its owner's block; a search for duplicate
+  `### D` headings finds none.
+- **Report notes.** The Phase 2 contribution section follows these parts.
 
 ### Notes on older entries
 

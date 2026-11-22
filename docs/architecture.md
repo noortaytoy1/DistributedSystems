@@ -2123,6 +2123,8 @@ The report should say what changed between the submitted design and the built sy
 
 ## 13. Phase 2 hooks
 
+Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase2-plan.md): parts G to L (D267).
+
 - **Discovery service** as a second state machine on the same Raft log: registrations and lease
   renewals become `Command` variants, so the directory is consistent on all three nodes with no new
   protocol for copying the log (D69).
