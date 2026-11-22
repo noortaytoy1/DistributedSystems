@@ -25,11 +25,16 @@
 //! - **Loss.** A copy lost on the way to one node costs nothing if another node answers. All three
 //!   lost, or the one reply lost, costs one wait of about 2 s. `udp_counters` events count what these
 //!   sockets did, and the report must explain those waits in its top cells (D172).
+//! - **Offline (Phase 2, D400–D405).** `go_offline` closes a gate inside every socket, so the client
+//!   hears and sends nothing. `submit` then fails at once with `Offline`, and `submit_or_queue` keeps
+//!   the report in the outbox (`offline.rs`) under the ID it was given. `go_online` opens the gate and
+//!   sends the outbox with those IDs, so a report the cloud already has is answered from its record.
 //!
 //! `ctl`'s commands are the other half of this file: tarpc over TCP, one call, then done (D168).
 //!
 //! Owner: F (client and scale).
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,8 +50,9 @@ use tokio::time::Instant;
 use crate::config::{Config, Timers};
 use crate::metrics::{Event, EventLog, UdpCounters, UdpCounts, now_ms, now_us};
 use crate::node::datagram::MAX_CALL_DEADLINE;
-use crate::node::transport::{connect_client, datagram_client};
+use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
 use crate::node::usage;
+use crate::offline::{Delivery, FLUSH_IN_FLIGHT, Outbox, OutboxError, Queued, Reconciled};
 use crate::proto::{
     ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult, ControlReply,
     ControlRequest, Incident, IncidentStatus, NodeId, Plan, ReplyBody, RequestId,
@@ -126,6 +132,11 @@ pub enum ClientError {
     Timeout,
     #[error("connection closed")]
     Closed,
+    /// The client is offline: nothing was sent (D400). `submit_or_queue` queues instead.
+    #[error("the client is offline")]
+    Offline,
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
 }
 
 /// A request that got a reply.
@@ -164,6 +175,12 @@ pub struct MeshClient {
     counters: Arc<UdpCounters>,
     retry_budget: std::sync::Mutex<RetryBudget>,
     retries_skipped: AtomicU64,
+    /// Closed while offline; every socket holds a copy (D402).
+    gate: FaultGate,
+    /// Reports made while offline (D401).
+    outbox: Outbox,
+    /// When this client last went offline, while it is.
+    offline_since: std::sync::Mutex<Option<Instant>>,
     /// Each stub's dispatch and the reporter. Dropped with the client, which aborts them.
     _tasks: JoinSet<()>,
 }
@@ -176,10 +193,16 @@ impl MeshClient {
     /// none left `submit` gives up.
     pub fn new(id: ClientId, config: &Config, log: EventLog) -> Self {
         let counters = Arc::new(UdpCounters::default());
+        let gate = FaultGate::default();
         let mut nodes = Vec::new();
         let mut tasks = JoinSet::new();
         for node in &config.cluster.nodes {
-            match datagram_client(&node.client_addr, counters.clone(), Some(&log)) {
+            match gated_datagram_client(
+                &node.client_addr,
+                counters.clone(),
+                Some(&log),
+                gate.clone(),
+            ) {
                 Ok(NewClient { client, dispatch }) => {
                     tasks.spawn(dispatch);
                     nodes.push(client);
@@ -208,8 +231,141 @@ impl MeshClient {
             counters,
             retry_budget: std::sync::Mutex::new(RetryBudget::new(Instant::now())),
             retries_skipped: AtomicU64::new(0),
+            gate,
+            outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
+            offline_since: std::sync::Mutex::new(None),
             _tasks: tasks,
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Offline operation (Phase 2, Part K)
+    // -----------------------------------------------------------------------------------------
+
+    pub fn is_offline(&self) -> bool {
+        self.gate.is_silenced()
+    }
+
+    /// Cut this client off: its sockets send and hear nothing until [`go_online`](Self::go_online)
+    /// (D402). Going offline twice is the same as once.
+    pub fn go_offline(&self) {
+        if self.gate.try_silence() {
+            *self
+                .offline_since
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+            self.log.log(Event::ClientOffline);
+        }
+    }
+
+    /// Reconnect, then send everything queued while offline and wait for the answers (D403).
+    pub async fn go_online(&self) -> Result<Reconciled, ClientError> {
+        let since = self
+            .offline_since
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.gate.restore();
+        if let Some(since) = since {
+            self.log.log(Event::ClientOnline {
+                offline_ms: since.elapsed().as_millis() as u64,
+                queued: self.outbox.len().await,
+            });
+        }
+        self.flush_outbox().await
+    }
+
+    /// Reports waiting in the outbox.
+    pub async fn queued(&self) -> usize {
+        self.outbox.len().await
+    }
+
+    /// Send every queued report with its own ID, oldest first and [`FLUSH_IN_FLIGHT`] at a time
+    /// (D404). An answered report leaves the outbox, and so does one the cloud refused as too old,
+    /// because that refusal is on record too (D143). One with no answer stays for next time.
+    pub async fn flush_outbox(&self) -> Result<Reconciled, ClientError> {
+        let entries = self.outbox.entries().await;
+        if entries.is_empty() {
+            return Ok(Reconciled::default());
+        }
+        let started = Instant::now();
+        let mut done = Reconciled::default();
+        let mut delivered = BTreeSet::new();
+        let mut sends = futures::stream::iter(entries)
+            .map(|queued| async move {
+                let outcome = self
+                    .send_report(queued.id, queued.incident.clone(), Instant::now())
+                    .await;
+                (queued, outcome)
+            })
+            .buffer_unordered(FLUSH_IN_FLIGHT);
+        while let Some((queued, outcome)) = sends.next().await {
+            done.sent += 1;
+            let outcome = match outcome {
+                Ok(answer) if answer.status == IncidentStatus::Expired => {
+                    done.expired += 1;
+                    delivered.insert(queued.id);
+                    "expired"
+                }
+                Ok(_) => {
+                    done.answered += 1;
+                    delivered.insert(queued.id);
+                    "answered"
+                }
+                Err(_) => {
+                    done.failed += 1;
+                    "failed"
+                }
+            };
+            self.log.log(Event::OutboxSent {
+                request: queued.id,
+                outcome,
+                waited_ms: now_ms().saturating_sub(queued.queued_at_ms),
+            });
+        }
+        drop(sends);
+        done.took = started.elapsed();
+        self.outbox.remove(&delivered).await?;
+        self.log.log(Event::OutboxFlushed {
+            sent: done.sent,
+            answered: done.answered,
+            expired: done.expired,
+            failed: done.failed,
+            reconcile_us: done.took.as_micros() as u64,
+        });
+        Ok(done)
+    }
+
+    /// As [`submit`](Self::submit), but while offline the report waits in the outbox instead of
+    /// failing (D400). A report cut off while it was out is queued too, under the same ID, so a
+    /// copy that got through before the cut is harmless.
+    pub async fn submit_or_queue(&self, incident: Incident) -> Result<Delivery, ClientError> {
+        self.submit_or_queue_from(incident, Instant::now()).await
+    }
+
+    /// As [`submit_or_queue`](Self::submit_or_queue), with latency counted from `started` (D54).
+    pub async fn submit_or_queue_from(
+        &self,
+        incident: Incident,
+        started: Instant,
+    ) -> Result<Delivery, ClientError> {
+        let id = self.next_id();
+        if !self.is_offline() {
+            match self.send_report(id, incident.clone(), started).await {
+                Ok(done) => return Ok(Delivery::Answered(done)),
+                Err(ClientError::Offline) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.outbox
+            .push(Queued {
+                id,
+                incident,
+                queued_at_ms: now_ms(),
+            })
+            .await?;
+        self.log.log(Event::OutboxQueued { request: id });
+        Ok(Delivery::Queued(id))
     }
 
     /// What this client's sockets have done so far.
@@ -230,10 +386,27 @@ impl MeshClient {
         incident: Incident,
         started: Instant,
     ) -> Result<Submitted, ClientError> {
-        let id = RequestId {
+        self.send_report(self.next_id(), incident, started).await
+    }
+
+    fn next_id(&self) -> RequestId {
+        RequestId {
             client: self.id,
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-        };
+        }
+    }
+
+    /// One report under `id`, with its copies and retries. Ends with `Offline` as soon as the client
+    /// is found offline before an attempt, as nothing it sends could arrive.
+    async fn send_report(
+        &self,
+        id: RequestId,
+        incident: Incident,
+        started: Instant,
+    ) -> Result<Submitted, ClientError> {
+        if self.is_offline() {
+            return Err(ClientError::Offline);
+        }
         // One wall-clock difference now, then a monotonic clock, so a clock step during the retries
         // cannot fake an age (D143). Against the clock that stamped the report, this starts near 0.
         let age_at_submit_ms = now_ms().saturating_sub(incident.reported_at_ms);
@@ -244,6 +417,9 @@ impl MeshClient {
         // Dropping this, by returning, is what sends the cancels.
         let mut calls = FuturesUnordered::new();
         for attempt in 0..attempts {
+            if self.is_offline() {
+                return Err(ClientError::Offline);
+            }
             let age_ms = age_at_submit_ms.saturating_add(submitted.elapsed().as_millis() as u64);
             let request = ClientRequest {
                 id,

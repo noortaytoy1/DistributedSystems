@@ -323,7 +323,9 @@ fn loadgen_imports_only_through_the_facade() {
     let sockets = reach_past(&code, "rescuemesh", &CLIENT_MAY_NAME, &[&SOCKETS]);
     assert!(sockets.is_empty(), "{sockets:#?}");
     assert!(code.contains("rescuemesh::middleware::"));
-    assert!(code.contains("client.submit("));
+    // The one call is `submit`, or `submit_or_queue`, which is `submit` while online and keeps the
+    // report in the outbox while offline (D400).
+    assert!(code.contains("client.submit(") || code.contains(".submit_or_queue("));
 }
 
 /// The page may hold sockets for its browser (D200), and only that: a connection it opened itself

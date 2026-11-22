@@ -1013,6 +1013,17 @@ pub fn datagram_client(
     counters: Arc<UdpCounters>,
     report_to: Option<&EventLog>,
 ) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
+    gated_datagram_client(addr, counters, report_to, FaultGate::default())
+}
+
+/// As [`datagram_client`], with the client's offline gate inside the socket (D402): while it is
+/// closed, nothing is sent and every answer is dropped.
+pub fn gated_datagram_client(
+    addr: &str,
+    counters: Arc<UdpCounters>,
+    report_to: Option<&EventLog>,
+    gate: FaultGate,
+) -> std::io::Result<NewClient<ClientRpcClient, impl Future<Output = ()> + Send + use<>>> {
     let node = addr
         .to_socket_addrs()?
         .next()
@@ -1022,7 +1033,7 @@ pub fn datagram_client(
         datagram::report_buffer(&socket, log);
     }
     let end: ClientEnd<ClientRpcRequest, ClientRpcResponse> =
-        ClientEnd::new(socket, node, counters);
+        ClientEnd::with_gate(socket, node, counters, gate);
     let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), end);
     Ok(NewClient {
         client,

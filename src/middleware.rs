@@ -43,6 +43,8 @@
 
 // The client side: what user code calls.
 pub use crate::client::{ClientError, MeshClient, Submitted, control};
+// Offline operation (Phase 2, Part K): what a report handed over while offline becomes.
+pub use crate::offline::{Delivery, Reconciled};
 
 // The cloud side: what the incident service calls.
 pub use crate::node::group::{CloudGroup, View};

@@ -327,6 +327,13 @@ table below in sync.
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 | D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
 | D267 | Phase 2 parts G to L, their owners, review pairs and design-log ID blocks | all | Decided |
+| D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
+| D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
+| D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
+| D403 | On reconnect every queued report is sent, and the cloud decides if one is too old | K | Implemented |
+| D404 | The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer | K | Implemented |
+| D405 | At most 10,000 queued reports; past that a new one is refused | K | Implemented |
+| D406 | Offline events, and loadgen's `--offline-at-s` and `--offline-for-s` | K | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8267,6 +8274,106 @@ them on the six PCs.
 - **How we check it.** Every Phase 2 PR names its part and cites IDs from its owner's block; a search for duplicate
   `### D` headings finds none.
 - **Report notes.** The Phase 2 contribution section follows these parts.
+
+### D400 · A report made offline: `submit_or_queue`, and `submit` fails at once
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec lets clients go offline and asks for selected updates to be logged locally and reconciled on reconnection. `MeshClient::submit` is the one call every user program and the web page make; it waits up to about 36 s for an answer.
+- **Options considered.**
+  1. *A new call, `submit_or_queue`, that answers `Delivery::Answered` or `Delivery::Queued(id)`; `submit` unchanged except that it fails at once with `ClientError::Offline` (chosen).*
+  2. *Change `submit` itself to queue.* Every caller (loadgen, the page, the tests) would have to handle a new result shape.
+- **Decision.** `MeshClient::submit_or_queue` and `submit_or_queue_from`. Online they are `submit`. Offline, or cut off before an attempt, the report goes into the outbox under the ID it was given and the call returns `Queued(id)`. `submit` checks before each attempt and returns `ClientError::Offline`.
+- **Why.** Nothing in Phase 1 changes shape, and the application still makes one call and names no node (D211). Keeping the ID makes a report that was already out when the cut came harmless: first commit wins (D27).
+- **Consequences.** loadgen now calls `submit_or_queue`, which is `submit` while online. The web page keeps `submit` until Part L adds its offline toggle.
+- **Where.** `client.rs::{submit_or_queue, send_report}`, `offline.rs::Delivery`, `middleware.rs` re-exports.
+- **How we check it.** `tests/offline.rs`: `submit` while offline fails within 100 ms; queued reports reach every node with their IDs.
+- **Report notes.** The offline policy in the report starts here: which calls are allowed offline and what they return.
+
+### D401 · The outbox: one JSON line per report next to the event logs, memory if there is no directory
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec says updates made offline are logged locally. A client program can also be restarted while offline.
+- **Options considered.**
+  1. *A file plus memory: `<metrics.dir>/outbox-client-<id>.jsonl`, read on first use, appended per report, rewritten after a flush (chosen).*
+  2. *Memory only.* Simpler, but a restart loses what was queued.
+  3. *A new config key for the directory.* One more key to copy to six PCs, for no case the metrics directory does not cover.
+- **Decision.** `offline::Outbox`. Each entry is `Queued { id, incident, queued_at_ms }`. Appends go through `tokio::fs`; a flush rewrites the file through a temporary file and a rename. A damaged line is skipped with a warning. With no `metrics.dir` the outbox lives in memory only.
+- **Why.** Logged locally, as the spec says, with no new config key, and no blocking I/O on the runtime.
+- **Consequences.** A program that starts with the same client ID finds the old outbox and can send it with `flush_outbox`. `*.jsonl` is already ignored by git.
+- **Where.** `offline.rs::Outbox`, `client.rs::MeshClient::new`.
+- **How we check it.** `offline::tests` (restart, rewrite, damaged line, path); `tests/offline.rs::the_outbox_outlives_the_program`.
+- **Report notes.** Retention for a client's own reports is bounded by D405; retention for updates held for other peers is the next Part K PR.
+
+### D402 · Offline is a gate inside the client's sockets, like the node's fault gate
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** A real disconnected client hears nothing: not even an answer that was already on its way.
+- **Options considered.**
+  1. *A `FaultGate` inside every `ClientEnd`, dropping everything sent and received while closed (chosen).*
+  2. *Only stop new sends.* Answers to earlier sends would still arrive, which no real disconnection allows.
+- **Decision.** `MeshClient` owns one `FaultGate`, shared by each node's `ClientEnd` through `transport::gated_datagram_client`. While it is closed `start_send` drops the message before counting it and `poll_next` drops every packet. `go_offline` closes it, `go_online` opens it. `datagram_client` and `ClientEnd::new` keep their old signatures with an open gate.
+- **Why.** The same mechanism as Phase 1's node faults (D13, D74), one layer out, so a lost answer is tested, not assumed away.
+- **Consequences.** UDP counters show only what left the client. Part H's peer endpoint should sit behind the same gate.
+- **Where.** `node/datagram.rs::ClientEnd`, `node/transport.rs::gated_datagram_client`, `client.rs::{go_offline, go_online}`.
+- **How we check it.** `tests/offline.rs::an_answer_on_its_way_is_lost_while_offline`: the cloud commits while the client is away, the answer is dropped, the report is queued under its ID, and the resend is answered from the record. Removing the drop in `poll_next` fails that test.
+- **Report notes.** Demo scenario 7 uses this switch.
+
+### D403 · On reconnect every queued report is sent, and the cloud decides if one is too old
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** A report queued for long may be past its TTL (D143) when the client is back.
+- **Options considered.**
+  1. *Send all; a node refuses one too old and commits the refusal (chosen).*
+  2. *Drop them on the client by its own clock.* Saves messages, but the refusal is never on record.
+- **Decision.** `go_online` opens the gate and calls `flush_outbox`. An answer with `IncidentStatus::Expired` counts as delivered and leaves the outbox like any answer.
+- **Why.** One rule for age, applied by the cloud and on record on every node, as in Phase 1.
+- **Consequences.** A long outage sends some reports that are refused at once; they are counted as `expired`.
+- **Where.** `client.rs::flush_outbox`.
+- **How we check it.** `tests/offline.rs::a_report_too_old_by_reconnect_is_refused_on_record`.
+- **Report notes.** The number of reports that expire while offline is one of the offline results.
+
+### D404 · The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** A backlog can be large after a long outage, and the cloud may be busy.
+- **Options considered.**
+  1. *16 in flight (chosen).*
+  2. *One at a time.* Strict order, but slow for hundreds.
+  3. *All at once.* A burst that can hit the overload refusal.
+- **Decision.** `FLUSH_IN_FLIGHT = 16`, through `buffer_unordered`. Each report goes through the normal path with its own ID, retries and budget. An answered or expired report leaves the outbox; one with no answer stays for the next reconnect.
+- **Why.** Drains a backlog quickly without becoming a flood, and the ID makes every resend idempotent.
+- **Consequences.** Order of commit among the 16 in flight is not the order of queueing. Nothing depends on it: each report is independent and first commit wins per ID.
+- **Where.** `offline.rs::FLUSH_IN_FLIGHT`, `client.rs::flush_outbox`.
+- **How we check it.** `tests/offline.rs` (5 queued, 5 answered). A mutant that resends under a new ID fails 3 tests.
+- **Report notes.** A sweep of this number is cheap if the reconciliation delay looks high.
+
+### D405 · At most 10,000 queued reports; past that a new one is refused
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** An outage under load could otherwise grow the outbox without bound.
+- **Options considered.**
+  1. *Cap at 10,000, refusing with `OutboxError::Full` (chosen).*
+  2. *No limit.*
+- **Decision.** `OUTBOX_CAP = 10_000`. `submit_or_queue` returns `ClientError::Outbox(Full)` past it; the queued reports are kept.
+- **Why.** A bound the report can state. At the lab's 300 reports a second per program it covers about 33 s of full-rate offline load, and far longer at a user's pace.
+- **Consequences.** A refused report is not lost silently: the caller gets the error.
+- **Where.** `offline.rs::OUTBOX_CAP`.
+- **How we check it.** `offline::tests::a_full_outbox_refuses_and_keeps_what_it_has`.
+- **Report notes.** Part of the retention limits the spec asks for.
+
+### D406 · Offline events, and loadgen's `--offline-at-s` and `--offline-for-s`
+
+- **Date:** 2026-11-21 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec asks for the offline reconciliation delay, and experiments need a way to cut a program off on schedule.
+- **Options considered.**
+  1. *Five events and two loadgen flags (chosen).*
+  2. *The API only.* Nothing could trigger an outage in a real run until Part L.
+- **Decision.** Events `client_offline`, `client_online { offline_ms, queued }`, `outbox_queued { request }`, `outbox_sent { request, outcome, waited_ms }` and `outbox_flushed { sent, answered, expired, failed, reconcile_us }`. `reconcile_us` is the reconciliation delay: from the start of the flush to its last answer. loadgen takes both flags together, goes offline once, and adds an `offline:` line after its summary; the first line, which the start script adds up, is unchanged.
+- **Why.** Every number the report gives on offline operation comes from these events, on the client's own clock.
+- **Consequences.** An outage still running when the run ends leaves its outbox on disk. Part L adds the page toggle and the experiment cells.
+- **Where.** `metrics.rs` (client events), `bin/loadgen.rs::{go_offline_once, offline_summary}`.
+- **How we check it.** `loadgen` tests (the line, both flags required).
+- **Report notes.** Offline reconciliation delay = `outbox_flushed.reconcile_us`.
 
 ### Notes on older entries
 

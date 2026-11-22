@@ -2139,6 +2139,30 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
 - **Speculative actions and conflicts** for offline clients can build on degraded mode's labelled answers
   and on the rule that the first plan to become final wins (D120, D122).
 
+### 13.1 An offline client and its outbox (built, Part K, D400–D406)
+
+`MeshClient::go_offline` closes a gate inside the client's sockets: nothing leaves and nothing arrives. A report
+made meanwhile through `submit_or_queue` gets its ID at once and waits in the outbox, a JSON Lines file next to the
+event logs. `go_online` opens the gate and sends the outbox, 16 at a time, each with its own ID, so a report the
+cloud already recorded is answered from the record. A report too old by then is refused by the cloud, on record.
+Store-and-forward for other peers and reconnection with discovery are the next Part K PRs.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant M as MeshClient + outbox
+    participant C as Cloud, nodes 1-3
+    Note over M: go_offline: the socket gate closes
+    U->>M: submit_or_queue(report)
+    M->>M: give it ID k1-42, append to outbox-client-1.jsonl
+    M-->>U: Queued(k1-42)
+    Note over M: go_online: the gate opens
+    M->>C: k1-42 (same ID), up to 16 at a time
+    C-->>M: Done, or Expired if too old (both on record)
+    M->>M: remove answered reports, rewrite the file
+    Note over M: outbox_flushed: reconcile_us
+```
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid

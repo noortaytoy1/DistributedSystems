@@ -34,7 +34,7 @@ use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{self, Event, EventLog, now_ms};
-use rescuemesh::middleware::{ClientError, MeshClient, Submitted};
+use rescuemesh::middleware::{ClientError, Delivery, MeshClient, Reconciled};
 use rescuemesh::proto::{ClientId, IncidentStatus, UserId};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -96,6 +96,13 @@ struct Args {
     /// (0 refuses every report at once); the experiment runner never passes it.
     #[arg(long)]
     ttl_ms: Option<u64>,
+    /// Take this program offline this many seconds into the run (Phase 2, D406). Reports made
+    /// while offline wait in its outbox and are sent when it is back.
+    #[arg(long, requires = "offline_for_s")]
+    offline_at_s: Option<u64>,
+    /// How long it stays offline.
+    #[arg(long, requires = "offline_at_s")]
+    offline_for_s: Option<u64>,
 }
 
 impl Args {
@@ -122,12 +129,15 @@ struct Stats {
     retried: u64,
     provisional: u64,
     expired: u64,
+    /// Reports made while offline, which went into the outbox (D400).
+    queued: u64,
 }
 
 impl Stats {
-    fn record(&mut self, outcome: Result<Submitted, ClientError>) {
+    fn record(&mut self, outcome: Result<Delivery, ClientError>) {
         match outcome {
-            Ok(done) => {
+            Ok(Delivery::Queued(_)) => self.queued += 1,
+            Ok(Delivery::Answered(done)) => {
                 self.latencies_us.push(done.latency.as_micros() as u64);
                 self.no_responder += u64::from(done.plan.responder.is_none());
                 self.provisional += u64::from(done.provisional);
@@ -237,7 +247,9 @@ async fn closed_loop(
             pause(pacer.first_wait(user, total, now_ms()), stop_at).await;
             while Instant::now() < stop_at {
                 let started = Instant::now();
-                let outcome = client.submit(incident(&mut rng, &campus, owner)).await;
+                let outcome = client
+                    .submit_or_queue(incident(&mut rng, &campus, owner))
+                    .await;
                 if started >= measure_from {
                     lock(&stats).record(outcome);
                 }
@@ -277,7 +289,7 @@ async fn open_loop(
         let owner = open_loop_owner(args.client_id, sent, args.users);
         let report = incident(&mut rng, &campus, owner);
         requests.spawn(async move {
-            let outcome = client.submit_from(report, intended).await;
+            let outcome = client.submit_or_queue_from(report, intended).await;
             if intended >= measure_from {
                 lock(&stats).record(outcome);
             }
@@ -286,6 +298,25 @@ async fn open_loop(
         sent += 1;
     }
     while requests.join_next().await.is_some() {}
+}
+
+/// Takes the client offline at `at` for `length`, then brings it back and sends its outbox (D406).
+/// `None` if the run ends first or the flush fails, which is logged.
+async fn go_offline_once(
+    client: Arc<MeshClient>,
+    at: Instant,
+    length: Duration,
+) -> Option<Reconciled> {
+    tokio::time::sleep_until(at).await;
+    client.go_offline();
+    tokio::time::sleep(length).await;
+    match client.go_online().await {
+        Ok(done) => Some(done),
+        Err(e) => {
+            tracing::warn!("sending the outbox failed: {e}");
+            None
+        }
+    }
 }
 
 /// Once a second until aborted. The reads are blocking file reads, so they go off the runtime.
@@ -335,6 +366,26 @@ fn summary(client_id: u64, stats: &mut Stats, measured: Duration, stopped_early:
     )
 }
 
+/// One more line after the summary, only for a run with an outage. Not on the first line, which
+/// `scripts/start-users.sh` adds up.
+fn offline_summary(queued: u64, flushed: Option<Reconciled>, still_queued: usize) -> String {
+    match flushed {
+        Some(done) => format!(
+            "offline: queued {queued}, sent {}, answered {}, expired {}, failed {}, \
+             reconciled in {:.1} ms, still queued {still_queued}\n",
+            done.sent,
+            done.answered,
+            done.expired,
+            done.failed,
+            done.took.as_secs_f64() * 1000.0,
+        ),
+        None => format!(
+            "offline: queued {queued}, not reconciled before the run ended, still queued \
+             {still_queued}\n"
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     rescuemesh::init_tracing();
@@ -368,6 +419,16 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ttl_ms) = args.ttl_ms {
         campus.incident_ttl_ms = ttl_ms;
     }
+    let outage = args
+        .offline_at_s
+        .zip(args.offline_for_s)
+        .map(|(at, length)| {
+            tokio::spawn(go_offline_once(
+                client.clone(),
+                start + Duration::from_secs(at),
+                Duration::from_secs(length),
+            ))
+        });
     let run = async {
         match args.rate {
             Some(rate) => {
@@ -401,7 +462,20 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Duration::from_secs(args.duration_s - args.warmup_s)
     };
-    let text = summary(args.client_id, &mut lock(&stats), measured, stopped_early);
+    let mut text = summary(args.client_id, &mut lock(&stats), measured, stopped_early);
+    if let Some(outage) = outage {
+        // An outage still running at the end is left there: its outbox stays on disk for the next
+        // start with this client ID.
+        let flushed = if outage.is_finished() {
+            outage.await.ok().flatten()
+        } else {
+            outage.abort();
+            None
+        };
+        let queued = lock(&stats).queued;
+        let still_queued = client.queued().await;
+        text.push_str(&offline_summary(queued, flushed, still_queued));
+    }
     drop(client);
     let closed = tokio::task::spawn_blocking(move || log.close()).await;
     // After the log, and no panic if it fails: `print!` panics when the reader has gone or the disk is
@@ -565,6 +639,7 @@ mod tests {
             no_responder: 5,
             provisional: 6,
             expired: 7,
+            queued: 8,
         };
         let text = summary(10_000, &mut stats, Duration::from_secs(2), false);
         assert_eq!(
@@ -578,5 +653,24 @@ mod tests {
         assert!(!text.contains("stopped"), "{text}");
         let early = summary(10_000, &mut stats, Duration::from_secs(2), true);
         assert!(early.contains("stopped by a signal"), "{early}");
+    }
+
+    #[test]
+    fn an_outage_adds_a_line_and_needs_both_flags() {
+        let done = Reconciled {
+            sent: 5,
+            answered: 4,
+            expired: 1,
+            failed: 0,
+            took: Duration::from_millis(12),
+        };
+        assert_eq!(
+            offline_summary(5, Some(done), 0),
+            "offline: queued 5, sent 5, answered 4, expired 1, failed 0, reconciled in 12.0 ms, \
+             still queued 0\n"
+        );
+        assert!(offline_summary(3, None, 3).contains("not reconciled"));
+        let one = ["loadgen", "--client-id", "1", "--offline-at-s", "2"];
+        assert!(Args::try_parse_from(one).is_err());
     }
 }
