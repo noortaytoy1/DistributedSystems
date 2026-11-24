@@ -378,7 +378,7 @@ All nodes apply batches in the order (round, node ID), up to the lowest round al
 | Retry budget, in `client.rs` | 20% of first sends, floor 200 a second, cap 5,000, start 100 |
 | `client_retries_skipped` | New event: retries a client left unsent, as its last log line |
 
-## Offline clients (Phase 2, Part K, D400–D406)
+## Offline clients (Phase 2, Part K, D400–D411)
 
 No message changes: a queued report is an ordinary `ClientRequest`, sent later with the ID it was given when it was made.
 
@@ -391,6 +391,10 @@ No message changes: a queued report is an ordinary `ClientRequest`, sent later w
 | `client_offline`, `client_online` | The outage, with `offline_ms` and the reports `queued` |
 | `outbox_queued`, `outbox_sent`, `outbox_flushed` | Each report queued, each sent with `outcome` and `waited_ms`, and each flush with `reconcile_us` (D406) |
 | loadgen `--offline-at-s N --offline-for-s M` | Takes the program offline once, N s into the run, for M s |
+| `send_peer_or_hold` | `send_peer`, but `Offline`, `GaveUp` or a `busy` ack holds the update: `PeerSend::Held` (D407) |
+| Held updates | 100 per peer, 10,000 in all, 300 s from `created_at_ms`; a newer `version` of the same subject replaces an older one (D408, D409) |
+| Redelivery | Every `client_retry_ms` while online, and on `go_online`; same update ID, so a resend is at most `Duplicate` (D410) |
+| `peer_update_held`, `peer_update_forwarded`, `peer_update_dropped` | Each held update, delivered with `since_made_ms`, or let go with `reason` (D411) |
 
 ## Presence and the P2P link (Phase 2, Part H, D310–D325)
 

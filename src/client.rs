@@ -52,13 +52,15 @@ use crate::metrics::{Event, EventLog, UdpCounters, UdpCounts, now_ms, now_us};
 use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
 use crate::node::usage;
-use crate::offline::{Delivery, FLUSH_IN_FLIGHT, Outbox, OutboxError, Queued, Reconciled};
+use crate::offline::{
+    self, Delivery, FLUSH_IN_FLIGHT, Forwarder, Outbox, OutboxError, PeerSend, Queued, Reconciled,
+};
 use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::presence::{self, Discovered, Presence, PresenceError};
 use crate::proto::{
     Capability, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
-    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, P2pBody,
-    P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
+    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, P2pAck,
+    P2pBody, P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
 };
 
 /// Each wait varies by up to this share, in percent, so retries do not arrive together.
@@ -181,7 +183,10 @@ pub struct MeshClient {
     /// The presence agent (Part H): joins, renewals and discovery (D326).
     presence: Presence,
     /// The P2P link (Part H): this program's peer endpoint and its way to other programs (D336).
-    peer: PeerLink,
+    /// Shared with the redelivery task (Part K, D410).
+    peer: Arc<PeerLink>,
+    /// Peer updates held until their peer can take them (Part K, D407).
+    forwarder: Arc<Forwarder>,
     /// Closed while offline; every socket holds a copy (D402).
     gate: FaultGate,
     /// Reports made while offline (D401).
@@ -241,7 +246,15 @@ impl MeshClient {
             // The program's start time, every user's incarnation (D323).
             now_ms(),
         );
-        let peer = PeerLink::new(id, config, gate.clone(), log.clone());
+        let peer = Arc::new(PeerLink::new(id, config, gate.clone(), log.clone()));
+        let forwarder = Arc::new(Forwarder::default());
+        tasks.spawn(offline::redeliver_every(
+            peer.clone(),
+            forwarder.clone(),
+            gate.clone(),
+            log.clone(),
+            config.timers.client_retry(),
+        ));
         Self {
             id,
             retry: config.timers.client_retry(),
@@ -258,6 +271,7 @@ impl MeshClient {
             retries_skipped,
             presence,
             peer,
+            forwarder,
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
@@ -368,6 +382,38 @@ impl MeshClient {
         self.peer.send_peer(peer_addr, envelope).await
     }
 
+    /// As [`send_peer`](Self::send_peer), but an update that cannot get through now, because this
+    /// program is offline, the peer does not answer, or its inbox is full, is held and tried again
+    /// every `client_retry_ms` and at once on [`go_online`](Self::go_online) (Part K, D407, D410).
+    pub async fn send_peer_or_hold(
+        &self,
+        peer_addr: &str,
+        envelope: P2pEnvelope,
+    ) -> Result<PeerSend, PeerError> {
+        match self.peer.send_peer(peer_addr, envelope.clone()).await {
+            Ok(sent) if sent.ack == P2pAck::Refused("busy".into()) => {
+                self.forwarder.hold(peer_addr, envelope, &self.log);
+                Ok(PeerSend::Held)
+            }
+            Ok(sent) => Ok(PeerSend::Delivered(sent)),
+            Err(PeerError::Offline | PeerError::GaveUp { .. }) => {
+                self.forwarder.hold(peer_addr, envelope, &self.log);
+                Ok(PeerSend::Held)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Peer updates held now (D407).
+    pub fn held_updates(&self) -> usize {
+        offline::lock(&self.forwarder.held).len()
+    }
+
+    /// Try every held update now, instead of waiting for the timer. Returns how many got through.
+    pub async fn redeliver_held(&self) -> usize {
+        offline::redeliver(&self.peer, &self.forwarder, &self.log).await
+    }
+
     /// What this program's peer sockets did, sent and received.
     pub fn p2p_counts(&self) -> UdpCounts {
         self.peer.counters().snapshot()
@@ -408,7 +454,10 @@ impl MeshClient {
                 queued: self.outbox.len().await,
             });
         }
-        self.flush_outbox().await
+        let reports = self.flush_outbox().await;
+        // Then the updates held for peers (D410); those still away wait for the timer.
+        self.redeliver_held().await;
+        reports
     }
 
     /// Reports waiting in the outbox.

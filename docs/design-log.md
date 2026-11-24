@@ -334,6 +334,11 @@ table below in sync.
 | D404 | The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer | K | Implemented |
 | D405 | At most 10,000 queued reports; past that a new one is refused | K | Implemented |
 | D406 | Offline events, and loadgen's `--offline-at-s` and `--offline-for-s` | K | Implemented |
+| D407 | The sender holds a peer update that cannot get through: `send_peer_or_hold` | K | Implemented |
+| D408 | Retention: 100 per peer, 10,000 in all, oldest first, and 300 s from when the update was made | K | Implemented |
+| D409 | Obsolete: a newer version of the same subject replaces an older one; a run-out offer is dropped | K | Implemented |
+| D410 | Redelivery every `client_retry_ms`, and at once on `go_online`; one failure per peer per round | K | Implemented |
+| D411 | Events `peer_update_held`, `peer_update_forwarded` and `peer_update_dropped` | K | Implemented |
 | D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
 | D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
 | D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
@@ -9055,6 +9060,79 @@ them on the six PCs.
 - **Where.** `tests/p2p.rs`.
 - **How we check it.** 10 runs in a row green.
 - **Report notes.** The evidence for "the cloud carries no peer payload".
+
+### D407 · The sender holds a peer update that cannot get through: `send_peer_or_hold`
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec: if one peer is offline, another may retain a best-effort pending update for later delivery. Part H's `send_peer` (D339) ends with `Offline` when this program is cut off and `GaveUp` when the peer never acks.
+- **Options considered.**
+  1. *The sender holds it (chosen).* No discovery needed, and the update is with the one program sure to have it.
+  2. *The sender plus one zone peer chosen deterministically* (the plan's recommendation). Survives the sender going away too, but needs Part G's directory to name zone peers, which is not built.
+  3. *The cloud holds it.* Puts the cloud back in the data path, which the spec rules out while peers are reachable.
+- **Decision.** `MeshClient::send_peer_or_hold`: on `Offline`, `GaveUp`, or an ack `Refused("busy")` (the peer's inbox is full), the update goes into the program's `HeldUpdates` and the call returns `PeerSend::Held`. Any other error is returned as is. `send_peer` is unchanged for callers that want to handle it themselves.
+- **Why.** It works today with Part H alone, keeps the cloud out of the data path, and the update ID makes every resend at most a `Duplicate` (D315).
+- **Consequences.** If the sender goes away for good, its held updates go with it. A second holder can be added once Part G's directory names zone peers; this entry is amended then.
+- **Where.** `offline.rs::{HeldUpdates, Forwarder, PeerSend}`, `client.rs::send_peer_or_hold`.
+- **How we check it.** `tests/store_forward.rs`: sender offline, and peer offline. A mutant that holds only on `Offline` fails.
+- **Report notes.** Who retains pending updates, and why the sender: part of the offline policy section.
+
+### D408 · Retention: 100 per peer, 10,000 in all, oldest first, and 300 s from when the update was made
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec asks for retention limits and what happens when an update becomes obsolete.
+- **Options considered.**
+  1. *100 per peer, 10,000 in all, 300 s (chosen).*
+  2. *No count limit, only age.* A busy program could hold without bound.
+  3. *A longer age, for example 10 min.* A resend after receivers forget the ID (`SEEN_FOR`, 300 s, D461) could be taken twice.
+- **Decision.** `HOLD_PER_PEER = 100`, `HOLD_TOTAL = 10_000`, `HOLD_FOR_MS = 300_000`. Past a count limit the oldest is dropped (by `created_at_ms`, ties to the lower peer address). Age is counted from `created_at_ms`, the origin's stamp (D318). Every drop logs `peer_update_dropped` with its reason.
+- **Why.** The age matches the receivers' duplicate memory, so a held update can never be taken twice; the counts match the outbox's cap (D405) and bound memory.
+- **Consequences.** A peer away longer than 5 minutes misses what was held for it; on its return it rejoins presence and gets newer updates (D329, Part I).
+- **Where.** `offline.rs::{HOLD_PER_PEER, HOLD_TOTAL, HOLD_FOR_MS, HeldUpdates::expire}`.
+- **How we check it.** `offline::tests` (per peer, total, age).
+- **Report notes.** The retention limits the spec asks for, with the reason for each number.
+
+### D409 · Obsolete: a newer version of the same subject replaces an older one; a run-out offer is dropped
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** D318 gives every update a `version` that counts changes to one subject.
+- **Options considered.**
+  1. *Replace by subject and kind (chosen).* The subject is the incident for a summary or an assignment, and the provider and capability for an offer; the recipient must match too.
+  2. *Keep every version and send them in order.* The peer gets stale states it must then throw away.
+- **Decision.** Holding an update for a peer that already holds the same kind about the same subject keeps the higher version only: an older one already held is dropped as `obsolete`, and an arriving one that is not newer is dropped as `obsolete`. A `ResourceOffer` whose `available_until_ms` has passed is not held, and is let go if it runs out while held.
+- **Why.** Only the latest state of each subject is worth delivering late, and it halves what a long outage leaves to send.
+- **Consequences.** An assignment never replaces a summary of its incident: they are different kinds. Part J may add subjects for claims.
+- **Where.** `offline.rs::{subject, same_subject, expired_offer}`.
+- **How we check it.** `offline::tests`; `tests/store_forward.rs::only_the_newest_version_of_a_held_update_arrives`. A mutant that never replaces fails it.
+- **Report notes.** The obsolescence rule the spec asks for.
+
+### D410 · Redelivery every `client_retry_ms`, and at once on `go_online`; one failure per peer per round
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** Held updates have to be tried again, and a program cannot know when a peer is back until Part G's directory exists.
+- **Options considered.**
+  1. *A timer every `client_retry_ms` (2 s) while online, plus a round at the end of `go_online` (chosen).*
+  2. *Only on `go_online`.* An update held for a peer that was away would never move.
+  3. *When the directory shows the peer again.* Needs Part G.
+- **Decision.** Each `MeshClient` runs one redelivery task. A round lets go of what has expired, then goes peer by peer, oldest first: `accepted` or `duplicate` removes the update and logs `peer_update_forwarded`; `busy` or no ack leaves the rest for that peer to the next round; a refusal for good or an unusable address drops it as `refused`; going offline ends the round. A lock keeps the timer's round and `go_online`'s apart.
+- **Why.** No new config key, the client's own retry pace, and a peer that is away costs one update's tries per round, not one per held update.
+- **Consequences.** Up to `client_retry_ms` between a peer's return and its held updates. When Part G lands, a directory change can trigger a round too.
+- **Where.** `offline.rs::{redeliver, redeliver_every}`, `client.rs::{redeliver_held, go_online}`.
+- **How we check it.** `tests/store_forward.rs::an_update_for_an_offline_peer_waits_and_arrives_when_it_returns` (no call from the test: the timer delivers it). A mutant that disables the timer fails it.
+- **Report notes.** Delivery delay after a return is bounded by `client_retry_ms` plus one round.
+
+### D411 · Events `peer_update_held`, `peer_update_forwarded` and `peer_update_dropped`
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec asks for offline reconciliation delay and what was kept and dropped.
+- **Options considered.**
+  1. *Three events, each with the update ID and the peer address (chosen).*
+  2. *Counters only.*
+- **Decision.** `peer_update_held { update, to_addr, held }`, `peer_update_forwarded { update, to_addr, ack, since_made_ms }` and `peer_update_dropped { update, to_addr, reason }`, with `reason` one of `age`, `limit`, `obsolete`, `refused`.
+- **Why.** Every number on store-and-forward in the report comes from these, and each update can be followed from held to delivered or dropped.
+- **Consequences.** `since_made_ms` subtracts the origin's stamp from this program's clock; for an update this program made, both are its own clock.
+- **Where.** `metrics.rs`.
+- **How we check it.** Logged in the tests' code paths; the analysis reads them in Part L's cells.
+- **Report notes.** Pending updates kept, delivered and dropped by reason; delivery delay after a return.
 
 ### Notes on older entries
 

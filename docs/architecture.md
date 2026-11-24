@@ -2145,7 +2145,27 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
 made meanwhile through `submit_or_queue` gets its ID at once and waits in the outbox, a JSON Lines file next to the
 event logs. `go_online` opens the gate and sends the outbox, 16 at a time, each with its own ID, so a report the
 cloud already recorded is answered from the record. A report too old by then is refused by the cloud, on record.
-Store-and-forward for other peers and reconnection with discovery are the next Part K PRs.
+Reconnection with discovery is the next Part K PR, once Part G's directory is built.
+
+**Store-and-forward for peers (built, D407–D411).** `send_peer_or_hold` holds a peer update that cannot get
+through, because this program or the peer is offline, or the peer's inbox is full. The sender keeps it, at most
+100 per peer, 10,000 in all, for 300 s from when it was made; a newer version of the same subject replaces an
+older one, and an offer that has run out is dropped. A timer tries again every `client_retry_ms`, and `go_online`
+tries at once.
+
+```mermaid
+sequenceDiagram
+    participant A as Program A (sender)
+    participant B as Program B (peer)
+    Note over B: offline
+    A-xB: deliver(u7-1, v1), no ack after the tries
+    A->>A: hold u7-1 for B (peer_update_held)
+    A->>A: v2 of the same incident replaces v1 (peer_update_dropped: obsolete)
+    Note over B: back online
+    A->>B: deliver(v2), next timer round
+    B-->>A: Accepted
+    A->>A: let it go (peer_update_forwarded)
+```
 
 ```mermaid
 sequenceDiagram
