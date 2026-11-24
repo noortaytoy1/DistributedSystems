@@ -53,9 +53,11 @@ use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
 use crate::node::usage;
 use crate::offline::{Delivery, FLUSH_IN_FLIGHT, Outbox, OutboxError, Queued, Reconciled};
+use crate::presence::{self, Discovered, Presence, PresenceError};
 use crate::proto::{
-    ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult, ControlReply,
-    ControlRequest, Incident, IncidentStatus, NodeId, Plan, ReplyBody, RequestId,
+    Capability, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
+    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, Plan,
+    PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
 };
 
 /// Each wait varies by up to this share, in percent, so retries do not arrive together.
@@ -82,7 +84,7 @@ const RETRY_BUDGET_START: u64 = 100;
 /// followed by a flood: at 20,000 a second, clients sent 30,000 retries a second over the air the
 /// nodes needed to catch up, answers fell to nothing, and they stayed there until the load ended.
 #[derive(Debug)]
-struct RetryBudget {
+pub(crate) struct RetryBudget {
     thousandths: u64,
     refilled: Instant,
 }
@@ -103,13 +105,13 @@ impl RetryBudget {
         self.refilled = now;
     }
 
-    fn first_send(&mut self, now: Instant) {
+    pub(crate) fn first_send(&mut self, now: Instant) {
         self.refill(now);
         self.thousandths =
             (self.thousandths + RETRY_BUDGET_PERCENT * 10).min(RETRY_BUDGET_CAP * 1000);
     }
 
-    fn may_retry(&mut self, now: Instant) -> bool {
+    pub(crate) fn may_retry(&mut self, now: Instant) -> bool {
         self.refill(now);
         let may = self.thousandths >= 1000;
         if may {
@@ -173,8 +175,10 @@ pub struct MeshClient {
     next_seq: AtomicU64,
     nodes: Vec<ClientRpcClient>,
     counters: Arc<UdpCounters>,
-    retry_budget: std::sync::Mutex<RetryBudget>,
-    retries_skipped: AtomicU64,
+    retry_budget: Arc<std::sync::Mutex<RetryBudget>>,
+    retries_skipped: Arc<AtomicU64>,
+    /// The presence agent (Part H): joins, renewals and discovery (D326).
+    presence: Presence,
     /// Closed while offline; every socket holds a copy (D402).
     gate: FaultGate,
     /// Reports made while offline (D401).
@@ -217,6 +221,23 @@ impl MeshClient {
         if log.is_enabled() {
             tasks.spawn(report_counters(counters.clone(), log.clone()));
         }
+        let retry_budget = Arc::new(std::sync::Mutex::new(RetryBudget::new(Instant::now())));
+        let retries_skipped = Arc::new(AtomicU64::new(0));
+        let presence = Presence::new(
+            presence::Sender {
+                nodes: nodes.clone(),
+                gate: gate.clone(),
+                retry: config.timers.client_retry(),
+                retry_max: config.timers.client_retry_max(),
+                max_retries: config.timers.client_max_retries,
+                call_budget: call_budget(&config.timers),
+                budget: retry_budget.clone(),
+                retries_skipped: retries_skipped.clone(),
+                log: log.clone(),
+            },
+            // The program's start time, every user's incarnation (D323).
+            now_ms(),
+        );
         Self {
             id,
             retry: config.timers.client_retry(),
@@ -229,13 +250,72 @@ impl MeshClient {
             next_seq: AtomicU64::new(now_us()),
             nodes,
             counters,
-            retry_budget: std::sync::Mutex::new(RetryBudget::new(Instant::now())),
-            retries_skipped: AtomicU64::new(0),
+            retry_budget,
+            retries_skipped,
+            presence,
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
             _tasks: tasks,
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Presence (Phase 2, Part H): see `presence.rs`
+    // -----------------------------------------------------------------------------------------
+
+    /// Put a user in the presence directory and keep it there: the agent renews its lease until
+    /// [`leave`](Self::leave) (D326). Returns the lease the directory gave. `peer_addr` is where
+    /// the program serves peers; from `part-h-p2p` the client fills it in itself (D330).
+    pub async fn join(
+        &self,
+        user: UserId,
+        role: PresenceRole,
+        zone: ZoneId,
+        capabilities: Vec<Capability>,
+        peer_addr: String,
+    ) -> Result<Duration, PresenceError> {
+        self.presence
+            .join(user, role, zone, capabilities, peer_addr)
+            .await
+    }
+
+    /// Stop renewing a user and take it out of the directory.
+    pub async fn leave(&self, user: UserId) -> Result<(), PresenceError> {
+        self.presence.leave(user).await
+    }
+
+    /// Move a joined user to another zone: a new registration with the new zone (D323).
+    pub async fn move_zone(&self, user: UserId, zone: ZoneId) -> Result<Duration, PresenceError> {
+        self.presence.move_zone(user, zone).await
+    }
+
+    /// Who is online, by zone and capability (D321). Asked of every node; the first answer wins.
+    pub async fn discover(&self, query: PresenceQuery) -> Result<Discovered, PresenceError> {
+        self.presence.discover(query).await
+    }
+
+    /// Who is online in a zone.
+    pub async fn discover_zone(&self, zone: ZoneId) -> Result<Discovered, PresenceError> {
+        self.discover(PresenceQuery {
+            zone: Some(zone),
+            capability: None,
+            limit: MAX_DISCOVER_RECORDS,
+        })
+        .await
+    }
+
+    /// Who is online with a capability.
+    pub async fn discover_capability(
+        &self,
+        capability: Capability,
+    ) -> Result<Discovered, PresenceError> {
+        self.discover(PresenceQuery {
+            zone: None,
+            capability: Some(capability),
+            limit: MAX_DISCOVER_RECORDS,
+        })
+        .await
     }
 
     // -----------------------------------------------------------------------------------------
@@ -266,6 +346,7 @@ impl MeshClient {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         self.gate.restore();
+        self.presence.back_online();
         if let Some(since) = since {
             self.log.log(Event::ClientOnline {
                 offline_ms: since.elapsed().as_millis() as u64,
@@ -549,7 +630,7 @@ impl Drop for MeshClient {
 }
 
 /// Doubles from `retry` up to `retry_max`.
-fn wait_before_retry(retry: Duration, retry_max: Duration, attempt: u32) -> Duration {
+pub(crate) fn wait_before_retry(retry: Duration, retry_max: Duration, attempt: u32) -> Duration {
     retry
         .saturating_mul(2u32.saturating_pow(attempt))
         .min(retry_max)
@@ -584,7 +665,7 @@ fn answer_to(id: RequestId, result: Result<ClientReply, RpcError>) -> Option<Cli
     }
 }
 
-fn jittered(wait: Duration) -> Duration {
+pub(crate) fn jittered(wait: Duration) -> Duration {
     let percent = rand::thread_rng().gen_range(100 - JITTER_PERCENT..=100 + JITTER_PERCENT);
     wait.saturating_mul(percent as u32) / 100
 }

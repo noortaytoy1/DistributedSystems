@@ -45,6 +45,8 @@
 pub use crate::client::{ClientError, MeshClient, Submitted, control};
 // Offline operation (Phase 2, Part K): what a report handed over while offline becomes.
 pub use crate::offline::{Delivery, Reconciled};
+// Presence (Phase 2, Part H): what join and discover give back (D326).
+pub use crate::presence::{Discovered, PresenceError};
 
 // The cloud side: what the incident service calls.
 pub use crate::node::group::{CloudGroup, View};

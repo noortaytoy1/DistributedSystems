@@ -66,7 +66,7 @@ pub type IncidentId = RequestId;
 
 /// A simulated campus user. Needs no coordination: client IDs are unique across machines (D113),
 /// and each client numbers its own users.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId {
     pub client: ClientId,
     pub user: u32,

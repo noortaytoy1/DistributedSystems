@@ -350,6 +350,16 @@ table below in sync.
 | D323 | The presence record's fields, and the program's start time as its incarnation | H, with G | Implemented (contract) |
 | D324 | Presence calls are client traffic: the fault gate drops them | H, with C | Implemented |
 | D325 | Until Part G's directory exists, every node answers presence calls with `Rejected` | H, with G | Implemented, to be replaced by G |
+| D326 | The presence agent lives in a new file, `src/presence.rs`, held by `MeshClient` | H, with F | Implemented |
+| D327 | Presence calls go to all three nodes, with the report's retries, and end at once if every node refuses | H | Implemented |
+| D328 | One renewal loop per program, renewing due users together, with ±10% jitter | H | Implemented |
+| D329 | A lost lease is registered again with the same incarnation; offline pauses renewals | H, with K | Implemented |
+| D330 | Until the peer endpoint exists, the caller passes `peer_addr` to `join` | H | Implemented, to be amended by `part-h-p2p` |
+| D331 | The application's presence calls: `join`, `leave`, `move_zone` and `discover` | H | Implemented |
+| D332 | PR 2 does not wire presence into the load programs | H, with L | Decided |
+| D333 | `UserId` is ordered | H, with G | Implemented |
+| D334 | Five presence events: registered, renewed, lost, left and discovered | H | Implemented |
+| D335 | The presence tests run against stub nodes until Part G exists | H | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8690,6 +8700,181 @@ them on the six PCs.
 - **Where.** `node/transport.rs::ClientServer::no_directory_yet`.
 - **How we check it.** The workspace builds and the client tests pass with the new methods.
 - **Report notes.** None.
+
+### D326 · The presence agent lives in a new file, `src/presence.rs`, held by `MeshClient`
+
+- **Date:** 2026-11-24 · **Part:** H, with F · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The plan puts the presence agent "in the client middleware (`MeshClient`)". `client.rs` is Part F's file,
+  already about 700 lines, and holds Part K's offline code too.
+- **Options considered.**
+  1. *A new file, `src/presence.rs`, owned by H, which `MeshClient` holds; `client.rs` only gets the public methods that
+     hand over to it (chosen).* Like Aabed's `offline.rs` for Part K.
+  2. *Everything inside `client.rs`.* Fewer files, but three parts' code mixed in one file and more review conflicts.
+- **Decision.** Option 1. `presence::Presence` holds the joined users and the renewal loop; `presence::Sender` holds what
+  it needs from the client (its stubs, gate, retry timers and budget). `MeshClient` builds both in `new` and offers
+  `join`, `leave`, `move_zone`, `discover`, `discover_zone` and `discover_capability`.
+- **Why.** One file Part H answers for at the demo, and the middleware line stays where it was: the application still
+  calls `MeshClient`, which it gets from `src/middleware.rs`.
+- **Consequences.** `client.rs` shares its retry budget with the agent, so `RetryBudget`, `jittered` and
+  `wait_before_retry` become `pub(crate)` and the budget and skipped counter move into `Arc`s. Part F reviews that.
+- **Where.** `src/presence.rs`, `src/client.rs`, `src/lib.rs`, `src/middleware.rs`.
+- **How we check it.** `tests/presence.rs`; `tests/layers.rs` still holds the line.
+- **Report notes.** The presence agent's place in the client middleware.
+
+### D327 · Presence calls go to all three nodes, with the report's retries, and end at once if every node refuses
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** `register`, `renew`, `deregister` and `discover` must reach the cloud as reliably as a report, and the client
+  never names a node (D211).
+- **Options considered.**
+  1. *Like `submit`: every node, first good answer wins, the same retry schedule and retry budget (chosen).*
+  2. *One node at a time, the next on failure.* Fewer messages, but a dead node costs a full timeout and the nodes are
+     treated differently.
+- **Decision.** Option 1, in `presence::Sender::call_all`. Waits are the report's (`client_retry_ms` doubling to
+  `client_retry_max_ms`, ±20% jitter) and retries spend the same budget (D264). A node that answers `Rejected` is not
+  asked again, and once every node has refused, the call returns `PresenceError::Rejected` with the first reason, instead
+  of waiting out the retries.
+- **Why.** The same delivery the report path proved on the lab PCs; a failed node costs nothing while another answers.
+  Ending at once on "every node refuses" matters now, because until Part G every node refuses (D325).
+- **Consequences.** Three copies of every presence call, as for reports.
+- **Where.** `presence.rs::Sender::call_all`.
+- **How we check it.** `one_dead_node_does_not_stop_a_join`, `every_node_refusing_ends_the_call_at_once`.
+- **Report notes.** Presence uses the same request-reply over UDP as reports.
+
+### D328 · One renewal loop per program, renewing due users together, with ±10% jitter
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** A load program can hold thousands of users, and each lease must be renewed at a third (D320).
+- **Options considered.**
+  1. *One task per program that keeps when each user is due and renews the due ones, each in a task of its own (chosen).*
+  2. *One task per user.* Simplest, but thousands of tasks and timers in a big program.
+- **Decision.** Option 1: `presence::renew_loop`. It sleeps until the earliest due user, or until woken by a join, a
+  return from offline or a renewal ending, and renews every due user in a `JoinSet` task. Each next renewal comes at a
+  third of the lease, moved by up to 10% either way (`RENEW_JITTER_PERCENT`).
+- **Why.** One timer whatever the number of users; the jitter spreads users who joined together so they do not all renew
+  in the same millisecond.
+- **Consequences.** A slow renewal does not hold up others. The loop ends when its `MeshClient` is dropped.
+- **Where.** `presence.rs::{renew_loop, renew_one, renew_after}`.
+- **How we check it.** `presence::tests::a_renewal_comes_near_a_third_of_the_lease`;
+  `joining_registers_on_every_node_and_keeps_renewing`.
+- **Report notes.** Renewal load: users ÷ (lease ÷ 3) calls a second per program, times three nodes.
+
+### D329 · A lost lease is registered again with the same incarnation; offline pauses renewals
+
+- **Date:** 2026-11-24 · **Part:** H, with K · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The directory may drop a user whose renewals were lost (G's expiry), and a client can be offline for a while
+  (Part K, D402).
+- **Options considered.**
+  1. *Register again with the same incarnation (chosen).* The program did not restart, so its incarnation (D323) still
+     names it.
+  2. *Register with a new incarnation each time.* Clearly newest, but the incarnation would no longer mean "program start".
+- **Decision.** A renewal answered `Unknown`, or no renewal that worked for a whole lease, makes the agent log
+  `presence_lost` and register the user again. A renewal with no answer is tried again after a third of the lease, at most
+  2 s (`RETRY_RENEW_AFTER`). While the client is offline nothing is sent and the loop waits; `go_online` makes every
+  joined user register again at once.
+- **Why.** A user who lost its lease comes back without the application noticing; and an offline client's leases have
+  usually run out by the time it returns, so renewing them first would only get `Unknown` back.
+- **Consequences.** After an outage every user registers again at once; with many users that is a burst, spread only by
+  the retry budget.
+- **Where.** `presence.rs::{renew_one, Presence::back_online}`; `client.rs::go_online`.
+- **How we check it.** `an_unknown_renewal_registers_the_user_again`, `offline_pauses_renewals_and_online_registers_again`.
+- **Report notes.** How presence survives an outage, with Part K's offline gate.
+
+### D330 · Until the peer endpoint exists, the caller passes `peer_addr` to `join`
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented, to be amended by `part-h-p2p` · **Decided by:** Wahiba
+  Elhimer, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** A presence record carries the program's peer address (D323), but the peer endpoint is PR 3.
+- **Options considered.** The caller passes it (chosen); or send an empty address until PR 3.
+- **Decision.** `join(user, role, zone, capabilities, peer_addr)`. `part-h-p2p` fills it in from the endpoint it binds and
+  removes the parameter.
+- **Why.** Nothing fake hidden in the code, and records are usable as soon as a caller has an address.
+- **Consequences.** One signature change in PR 3.
+- **Where.** `client.rs::MeshClient::join`.
+- **How we check it.** `joining_registers_on_every_node_and_keeps_renewing` checks the address reaches the node.
+- **Report notes.** None.
+
+### D331 · The application's presence calls: `join`, `leave`, `move_zone` and `discover`
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The plan asks for `discover(zone)` and `discover(capability)` through `middleware.rs`, with the application
+  still never naming a node.
+- **Options considered.** `join`, `leave`, `move_zone` and `discover` with zone and capability helpers (chosen); or only
+  `join` and `discover`, leaving to lease expiry and moving by leave + join.
+- **Decision.** On `MeshClient`: `join` (registers and keeps renewing, returns the lease), `leave` (stops and deregisters),
+  `move_zone` (registers again with the new zone), `discover(PresenceQuery)`, `discover_zone(z)` and
+  `discover_capability(c)`. A limit above `MAX_DISCOVER_RECORDS` is lowered to it. Errors are `PresenceError`
+  (`Rejected`, `GaveUp`, `Offline`, `NotJoined`); answers are `Discovered { records, log_index, latency }`.
+  `middleware.rs` re-exports `Discovered` and `PresenceError`.
+- **Why.** Leaving cleans up at once instead of after a lease, and a move is one call, as G's zone-move case needs.
+- **Consequences.** None beyond the API.
+- **Where.** `client.rs`, `presence.rs`, `middleware.rs`.
+- **How we check it.** `tests/presence.rs`.
+- **Report notes.** The client's presence API.
+
+### D332 · PR 2 does not wire presence into the load programs
+
+- **Date:** 2026-11-24 · **Part:** H, with L · **Status:** Decided · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** For experiments, simulated users must actually join; `loadgen` is Part F's file and Part L (Noor) owns its
+  Phase 2 lifecycle.
+- **Options considered.** Not in PR 2: Part L wires `join`/`leave` into loadgen, or Part H adds a flag in PR 3 (chosen);
+  or a `--presence` flag in loadgen now.
+- **Decision.** PR 2 is the agent, the API and its tests only.
+- **Why.** A small PR, and no edit to Noor's part before she plans its lifecycle.
+- **Consequences.** Until then only tests and the web page can make users join.
+- **Where.** None yet.
+- **How we check it.** None yet.
+- **Report notes.** None.
+
+### D333 · `UserId` is ordered
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The agent keeps joined users in a `BTreeMap` keyed by `UserId`, and G's directory will key its records the
+  same way (the deterministic core uses `BTreeMap`, AGENTS.md).
+- **Options considered.** Derive `PartialOrd` and `Ord` on `UserId` (chosen); or key by `(client, user)` tuples.
+- **Decision.** Derive them: order by client, then user. No wire change.
+- **Why.** One small change that both parts need.
+- **Consequences.** A `proto.rs` change, so Omar reviews it.
+- **Where.** `proto.rs::UserId`.
+- **How we check it.** It builds.
+- **Report notes.** None.
+
+### D334 · Five presence events: registered, renewed, lost, left and discovered
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The plan measures discovery query latency (with G) and the report needs evidence of renewals and lost leases.
+- **Options considered.** Five events (chosen); or only the discovery one.
+- **Decision.** `presence_registered { user, lease_ms, latency_us, again }`, `presence_renewed { user, latency_us }`,
+  `presence_lost { user, reason }`, `presence_left { user }` and `discovered { zone, capability, records, log_index,
+  latency_us }`. Latencies run from the first send to the answer, on the client's clock.
+- **Why.** The client's side of discovery latency, and how often leases are lost, for the report.
+- **Consequences.** Field names are fixed once Noor's analysis reads them.
+- **Where.** `metrics.rs::Event`, `presence.rs`.
+- **How we check it.** The events are written by the code the tests run.
+- **Report notes.** Discovery query latency (client side) = `discovered.latency_us`.
+
+### D335 · The presence tests run against stub nodes until Part G exists
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** Real nodes refuse presence calls until the directory is built (D325).
+- **Options considered.** Stub nodes over the real UDP path, as `tests/client.rs` does (chosen); or wait for Part G.
+- **Decision.** `tests/presence.rs` starts stub `ClientRpc` servers that count presence calls and answer as each test says
+  (answer, refuse, or `Unknown` once), with a 300 ms lease so renewals come fast. Two tests check that nothing is sent for a
+  while (offline, after leaving), which needs a short wait; every other check polls with `wait_until`.
+- **Why.** The client side can be proved now; the end-to-end test with real nodes follows G's PR.
+- **Consequences.** A test against real nodes is still owed once G lands.
+- **Where.** `tests/presence.rs`.
+- **How we check it.** 8 tests, 10 runs in a row green.
+- **Report notes.** Test plan for Part H.
 
 ### Notes on older entries
 
