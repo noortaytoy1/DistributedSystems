@@ -217,9 +217,10 @@ These hold everywhere. A change that breaks one is a bug, even if the tests pass
 - **Deterministic core.** `state.rs`, `bidding.rs` and `planner.rs` never touch the network,
   the clock or randomness. Pass time and inputs in as arguments. In `state.rs`, never iterate a
   `HashMap`: use `BTreeMap`/`BTreeSet`. Every node must reach exactly the same state.
-- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets, with one named exception:
-  `bin/frontend.rs`, which only listens for the browser on its own PC (D200). `client.rs` goes through
-  `transport::connect_client` and `transport::datagram_client` (D175).
+- **Sockets live in two places.** Only `node/` and `raft/network.rs` open sockets, with two named exceptions:
+  `bin/frontend.rs`, which only listens for the browser on its own PC (D200), and the client program's peer endpoint for
+  P2P (Phase 2), whose socket code lives in `node/transport.rs` and is called from `client.rs` (D311). `client.rs` goes
+  through `transport::connect_client` and `transport::datagram_client` (D175).
 - **Middleware and application stay apart, on both sides.** On the client side the application makes one `submit` call and
   `MeshClient` does the rest. On the cloud side the incident service uses the group and Raft through their interfaces. It is
   asked about repeatedly, so keep it visible (D211, `docs/architecture.md` section 4.3).

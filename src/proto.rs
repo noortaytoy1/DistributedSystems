@@ -522,8 +522,8 @@ pub enum ReplyBody {
 /// `submit` is called on every node. A node that cannot answer never returns, so the caller's call
 /// stays open until it cancels or its deadline passes: a node says nothing to mean "not me" (D36).
 ///
-/// The fault gate drops `submit`. All the other methods are control and pass the gate (D23), so a
-/// method added here must decide which it is.
+/// The fault gate drops `submit` and the four presence calls, which are client traffic (D324). The
+/// other methods are control and pass the gate (D23), so a method added here must decide which it is.
 #[tarpc::service]
 pub trait ClientRpc {
     async fn submit(request: ClientRequest) -> ClientReply;
@@ -534,6 +534,184 @@ pub trait ClientRpc {
     async fn skew_load(extra_work: u32) -> ControlReply;
     /// Read committed incident records from this node's copy of the state (D145).
     async fn incidents(query: IncidentQuery) -> ControlReply;
+    /// Put a user in the presence directory, or update its record: a zone move is a new
+    /// registration with the new zone (D310, D323). Sent to every node, like `submit`.
+    async fn register(record: PresenceRecord) -> PresenceReply;
+    /// Extend a registration's lease. [`PresenceReply::Unknown`] tells the client to register again
+    /// (D320).
+    async fn renew(user: UserId, incarnation: u64) -> PresenceReply;
+    /// Take a user out of the directory, for example when its program ends.
+    async fn deregister(user: UserId, incarnation: u64) -> PresenceReply;
+    /// Who is online, filtered by zone and capability, read from this node's applied state (D321).
+    async fn discover(query: PresenceQuery) -> DiscoverReply;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Presence (client <-> cloud, Part H with Part G)
+// ---------------------------------------------------------------------------------------------
+
+/// What a registered user is for (Part G's record, D323).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PresenceRole {
+    Ordinary,
+    VolunteerResponder,
+    ResourceProvider,
+}
+
+/// One user in the presence directory: what `register` sends and what `discover` returns (D319,
+/// D323). The lease's expiry is not here: the directory keeps it by its own lease clock (Part G),
+/// and a client only learns the lease length, from [`PresenceReply::Registered`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceRecord {
+    /// One record per user, not per program (D319). Many users of one program share its endpoint.
+    pub user: UserId,
+    pub role: PresenceRole,
+    pub zone: ZoneId,
+    /// The program's peer endpoint, `ip:port`, where it serves [`P2pRpc`] over UDP (D312, D313).
+    pub peer_addr: String,
+    /// What this user can do; empty for an ordinary user.
+    pub capabilities: Vec<Capability>,
+    /// The program's start time in unix milliseconds. A record with a higher incarnation replaces a
+    /// lower one for the same user, so a restarted program wins over its old record (D323).
+    pub incarnation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PresenceReply {
+    /// The registration or renewal is committed. The client renews at a third of `lease_ms` (D320).
+    Registered { lease_ms: u64, log_index: u64 },
+    /// No record for this user and incarnation, for example after its lease expired: register again.
+    Unknown,
+    /// The node will not handle it, with the reason. Until Part G's directory is built, every node
+    /// answers this (D325).
+    Rejected(String),
+}
+
+/// The most records one `discover` answer carries, so that it fits one datagram (D321).
+pub const MAX_DISCOVER_RECORDS: u16 = 16;
+
+/// A discovery query. A filter left `None` matches everyone (D321).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceQuery {
+    pub zone: Option<ZoneId>,
+    pub capability: Option<Capability>,
+    /// At most [`MAX_DISCOVER_RECORDS`]; a node lowers a larger value to that.
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscoverReply {
+    /// The matching records, read at `log_index` of this node's applied state. Another node can be a
+    /// few entries ahead or behind (D321).
+    Found {
+        records: Vec<PresenceRecord>,
+        log_index: u64,
+    },
+    /// The node will not answer, with the reason (D325).
+    Rejected(String),
+}
+
+// ---------------------------------------------------------------------------------------------
+// Client <-> client (P2P, Part H)
+// ---------------------------------------------------------------------------------------------
+
+/// Names one peer update, for duplicate suppression: the program that made it and its own counter,
+/// like [`RequestId`]. Unique with no coordination, because client IDs are (D113, D315).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct UpdateId {
+    pub origin: ClientId,
+    pub seq: u64,
+}
+
+impl fmt::Display for UpdateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "u{}-{}", self.origin, self.seq)
+    }
+}
+
+/// Every message one client program sends another directly. The cloud never carries one (D310).
+///
+/// Unlike [`PeerEnvelope`] it has no Raft term: clients are not in the cloud's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct P2pEnvelope {
+    /// Receivers keep the IDs they have seen and answer [`P2pAck::Duplicate`] (D315).
+    pub id: UpdateId,
+    /// The user it comes from. `from.client` is `id.origin`.
+    pub from: UserId,
+    /// One user, or `None` for everyone in `zone`: Part I's zone publish-subscribe (D322).
+    pub to: Option<UserId>,
+    /// The zone this update is about, which is what zone forwarding goes by.
+    pub zone: ZoneId,
+    /// Counts changes to the same subject, for example one incident: a higher version replaces a
+    /// lower one, and an older one is obsolete (D318).
+    pub version: u64,
+    /// When the origin made it, unix milliseconds on the origin's clock, for retention by age (D318).
+    pub created_at_ms: u64,
+    /// Forwards so far: 0 when the origin sends it, plus one at each forward (D316).
+    pub hops: u8,
+    /// Set by the origin. A peer forwards only while `hops < max_hops` (D316).
+    pub max_hops: u8,
+    pub body: P2pBody,
+}
+
+/// What a peer update says, one variant per kind (D317). Ahmed's (J) and Yahia's (I) parts extend
+/// their variants' fields in their own PRs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum P2pBody {
+    IncidentSummary(IncidentSummary),
+    ResourceOffer(ResourceOffer),
+    AssignmentUpdate(AssignmentUpdate),
+}
+
+/// An incident as peers pass it on: what happened, where, and how bad.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentSummary {
+    pub incident: IncidentId,
+    pub category: Category,
+    pub severity: u8,
+    pub zone: ZoneId,
+    pub location: Point,
+    pub needs: Capability,
+    pub reported_at_ms: u64,
+}
+
+/// A user offers a resource. Part J (Ahmed) owns leases and claims, and adds to this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceOffer {
+    pub provider: UserId,
+    pub capability: Capability,
+    pub zone: ZoneId,
+    pub location: Point,
+    /// Unix milliseconds on the provider's clock.
+    pub available_until_ms: u64,
+}
+
+/// Who was sent to an incident, as the cloud committed it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentUpdate {
+    pub incident: IncidentId,
+    pub responder: Option<ResponderId>,
+    pub priority: u32,
+    pub assigned_at_ms: u64,
+}
+
+/// A peer's answer to [`P2pRpc::deliver`]. The ack is the call's reply, so the sender times delivery
+/// as a round trip on its own clock (D314).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum P2pAck {
+    /// New to this peer, and taken.
+    Accepted,
+    /// This peer had already seen this update ID; nothing changed.
+    Duplicate,
+    /// Not taken, with the reason (for example not addressed to a user of this program).
+    Refused(String),
+}
+
+/// The remote interface every client program offers other client programs, through tarpc over UDP
+/// (D312), on its peer endpoint (D313).
+#[tarpc::service]
+pub trait P2pRpc {
+    async fn deliver(envelope: P2pEnvelope) -> P2pAck;
 }
 
 /// What `ctl` can ask for, one for each control method of [`ClientRpc`].
@@ -1162,6 +1340,115 @@ mod tests {
         ];
         for size in sizes {
             assert!(size <= MAX_DATAGRAM_BYTES, "{sizes:?}");
+        }
+    }
+
+    /// Peer messages and presence answers travel over UDP too, so the largest of each must also fit
+    /// one datagram with tarpc's wrapping (D312, D321).
+    #[test]
+    fn the_largest_peer_update_and_discover_answer_fit_one_datagram() {
+        use std::time::{Duration, Instant};
+        use tarpc::{ClientMessage, Request, Response, context, trace};
+
+        let user = UserId {
+            client: u64::MAX,
+            user: u32::MAX,
+        };
+        let far = Point {
+            x: i32::MIN,
+            y: i32::MIN,
+        };
+        let id = RequestId {
+            client: u64::MAX,
+            seq: u64::MAX,
+        };
+        let bodies = [
+            P2pBody::IncidentSummary(IncidentSummary {
+                incident: id,
+                category: Category::MedicalAssistance,
+                severity: u8::MAX,
+                zone: ZoneId::MAX,
+                location: far,
+                needs: Capability::Rescue,
+                reported_at_ms: u64::MAX,
+            }),
+            P2pBody::ResourceOffer(ResourceOffer {
+                provider: user,
+                capability: Capability::Rescue,
+                zone: ZoneId::MAX,
+                location: far,
+                available_until_ms: u64::MAX,
+            }),
+            P2pBody::AssignmentUpdate(AssignmentUpdate {
+                incident: id,
+                responder: Some(ResponderId::MAX),
+                priority: u32::MAX,
+                assigned_at_ms: u64::MAX,
+            }),
+        ];
+        let mut ctx = context::current();
+        ctx.deadline = Instant::now() + Duration::from_secs(36);
+        ctx.trace_context = trace::Context {
+            trace_id: trace::TraceId::from(u128::MAX),
+            span_id: trace::SpanId::from(u64::MAX),
+            sampling_decision: trace::SamplingDecision::Sampled,
+        };
+        let mut sizes = Vec::new();
+        for body in bodies {
+            let update: ClientMessage<P2pRpcRequest> = ClientMessage::Request(Request {
+                context: ctx,
+                id: u64::MAX,
+                message: P2pRpcRequest::Deliver {
+                    envelope: P2pEnvelope {
+                        id: UpdateId {
+                            origin: u64::MAX,
+                            seq: u64::MAX,
+                        },
+                        from: user,
+                        to: Some(user),
+                        zone: ZoneId::MAX,
+                        version: u64::MAX,
+                        created_at_ms: u64::MAX,
+                        hops: u8::MAX,
+                        max_hops: u8::MAX,
+                        body,
+                    },
+                },
+            });
+            sizes.push(encode(&update).unwrap().len());
+        }
+        let ack: Response<P2pRpcResponse> = Response {
+            request_id: u64::MAX,
+            message: Ok(P2pRpcResponse::Deliver(P2pAck::Refused("x".repeat(100)))),
+        };
+        sizes.push(encode(&ack).unwrap().len());
+
+        let record = PresenceRecord {
+            user,
+            role: PresenceRole::ResourceProvider,
+            zone: ZoneId::MAX,
+            peer_addr: "255.255.255.255:65535".into(),
+            capabilities: Capability::ALL.to_vec(),
+            incarnation: u64::MAX,
+        };
+        let register: ClientMessage<ClientRpcRequest> = ClientMessage::Request(Request {
+            context: ctx,
+            id: u64::MAX,
+            message: ClientRpcRequest::Register {
+                record: record.clone(),
+            },
+        });
+        sizes.push(encode(&register).unwrap().len());
+        let found: Response<ClientRpcResponse> = Response {
+            request_id: u64::MAX,
+            message: Ok(ClientRpcResponse::Discover(DiscoverReply::Found {
+                records: vec![record; usize::from(MAX_DISCOVER_RECORDS)],
+                log_index: u64::MAX,
+            })),
+        };
+        sizes.push(encode(&found).unwrap().len());
+        for size in &sizes {
+            assert!(*size <= MAX_DATAGRAM_BYTES, "{sizes:?}");
         }
     }
 

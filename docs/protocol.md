@@ -391,3 +391,41 @@ No message changes: a queued report is an ordinary `ClientRequest`, sent later w
 | `client_offline`, `client_online` | The outage, with `offline_ms` and the reports `queued` |
 | `outbox_queued`, `outbox_sent`, `outbox_flushed` | Each report queued, each sent with `outcome` and `waited_ms`, and each flush with `reconcile_us` (D406) |
 | loadgen `--offline-at-s N --offline-for-s M` | Takes the program offline once, N s into the run, for M s |
+
+## Presence and the P2P link (Phase 2, Part H, D310–D325)
+
+The contract only, from `part-h-peer-envelope`. Until Part G's directory exists, every node answers the presence calls with
+`Rejected` (D325). The peer endpoint and its config keys come with `part-h-p2p` (D311–D313).
+
+**Presence calls**, four new `ClientRpc` methods sent to every node like `submit`. They are client traffic: a silenced node
+drops them (D324).
+
+| Method | Reply | What it is |
+|--------|-------|------------|
+| `register(PresenceRecord)` | `PresenceReply` | Put a user in the directory, or update it; a zone move is a new registration (D323) |
+| `renew(user, incarnation)` | `PresenceReply` | Extend the lease; `Unknown` means register again (D320) |
+| `deregister(user, incarnation)` | `PresenceReply` | Take the user out |
+| `discover(PresenceQuery)` | `DiscoverReply` | Who is online, by zone and capability, read from one node's applied state (D321) |
+
+| Type | Fields |
+|------|--------|
+| `PresenceRecord` | `user`, `role` (`Ordinary`, `VolunteerResponder`, `ResourceProvider`), `zone`, `peer_addr` (`ip:port`), `capabilities`, `incarnation` (program start, unix ms) (D319, D323) |
+| `PresenceReply` | `Registered { lease_ms, log_index }`: renew at a third of `lease_ms`; `Unknown`; `Rejected(reason)` (D320) |
+| `PresenceQuery` | `zone: Option`, `capability: Option`, `limit` (at most `MAX_DISCOVER_RECORDS` = 16) (D321) |
+| `DiscoverReply` | `Found { records, log_index }`; `Rejected(reason)` |
+
+**Client to client**, the tarpc service `P2pRpc` over UDP on each program's peer endpoint (D312, D313). The cloud carries none
+of it.
+
+| Item | What it is |
+|------|------------|
+| `deliver(P2pEnvelope) -> P2pAck` | One update to one program. The ack is the reply: `Accepted`, `Duplicate` or `Refused(reason)`; the sender times the round trip (D314) |
+| `P2pEnvelope.id` | `UpdateId { origin: ClientId, seq }`, unique with no coordination; receivers drop IDs they have seen (D315) |
+| `from`, `to` | The sending user; one user, or `None` for everyone in `zone` (D322) |
+| `zone` | The zone the update is about, used for zone forwarding (Part I) |
+| `version`, `created_at_ms` | A higher version replaces a lower one for the same subject; the time is for retention by age only (D318) |
+| `hops`, `max_hops` | Forwards so far, and the origin's bound: forward only while `hops < max_hops` (D316) |
+| `body: P2pBody` | `IncidentSummary`, `ResourceOffer` or `AssignmentUpdate`; Parts I and J extend their variants (D317) |
+
+Every peer message and the largest `discover` answer fit one 1,400-byte datagram with tarpc's wrapping
+(`proto::tests::the_largest_peer_update_and_discover_answer_fit_one_datagram`).

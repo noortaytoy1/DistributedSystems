@@ -334,6 +334,22 @@ table below in sync.
 | D404 | The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer | K | Implemented |
 | D405 | At most 10,000 queued reports; past that a new one is refused | K | Implemented |
 | D406 | Offline events, and loadgen's `--offline-at-s` and `--offline-for-s` | K | Implemented |
+| D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
+| D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
+| D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
+| D313 | A program's peer port is the first free one in a configured range, advertised in its presence record | H | Decided, built in `part-h-p2p` |
+| D314 | The ack is `deliver`'s reply, `P2pAck`, not an envelope kind | H | Implemented (contract) |
+| D315 | A peer update is named by `UpdateId { origin, seq }`, like `RequestId` | H | Implemented (contract) |
+| D316 | Bounded forwarding is carried as `hops` and `max_hops` | H, with I | Implemented (contract) |
+| D317 | The payload is a typed enum, `P2pBody`, one variant per kind | H, with I and J | Implemented (contract) |
+| D318 | `version` and `created_at_ms` let a receiver drop obsolete updates | H, with K | Implemented (contract) |
+| D319 | Each user registers, not each program | H, with G | Implemented (contract) |
+| D320 | The directory sets the lease length; the client renews at a third of it | H, with G | Implemented (contract) |
+| D321 | One `discover` call with optional zone and capability filters, at most 16 records, labelled with the log index | H, with G | Implemented (contract) |
+| D322 | `to: Option<UserId>`: one user, or everyone in the zone | H, with I | Implemented (contract) |
+| D323 | The presence record's fields, and the program's start time as its incarnation | H, with G | Implemented (contract) |
+| D324 | Presence calls are client traffic: the fault gate drops them | H, with C | Implemented |
+| D325 | Until Part G's directory exists, every node answers presence calls with `Rejected` | H, with G | Implemented, to be replaced by G |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8374,6 +8390,306 @@ them on the six PCs.
 - **Where.** `metrics.rs` (client events), `bin/loadgen.rs::{go_offline_once, offline_summary}`.
 - **How we check it.** `loadgen` tests (the line, both flags required).
 - **Report notes.** Offline reconciliation delay = `outbox_flushed.reconcile_us`.
+
+### D310 · Part H's first PR is the contract: the peer envelope and the client's presence calls
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** The plan (D267, `docs/phase2-plan.md` section 4) asks Part H for three PRs, the first being the peer
+  envelope and the presence calls in `proto.rs`, by 2026-11-25, because Yahia (I) and Aabed (K) build on the envelope.
+  Omar's directory contract (G), which holds the presence record and the lease clock, had not started on 2026-11-24.
+  The presence record sits between the two parts: H's client sends it, G's directory stores it.
+- **Options considered.**
+  1. *Envelope and presence calls in one contract PR, with a minimal presence record that Omar reviews and may extend
+     (chosen).* Unblocks I, K and G by the deadline; the client↔directory messages are agreed in one place.
+  2. *Envelope only.* Smaller, but leaves the presence messages open past the deadline, and G and H would each guess.
+  3. *Wait and write it with Omar.* Best agreement, but misses the 25 November date the plan sets for contract PRs.
+- **Decision.** Option 1. This PR adds to `proto.rs`: four `ClientRpc` methods (`register`, `renew`, `deregister`,
+  `discover`), the presence types (`PresenceRole`, `PresenceRecord`, `PresenceReply`, `PresenceQuery`,
+  `DiscoverReply`, `MAX_DISCOVER_RECORDS`), and the client-to-client contract (`UpdateId`, `P2pEnvelope`, `P2pBody`
+  with `IncidentSummary`, `ResourceOffer` and `AssignmentUpdate`, `P2pAck`, and the tarpc service `P2pRpc`). The
+  node answers the presence calls with `Rejected` until G builds the directory (D325). No socket, timer or config
+  key is added here; those come with `part-h-presence` and `part-h-p2p`.
+- **Why.** A contract first is how Phase 1 worked (D119, D167) and what the plan asks; the types are small and every
+  owner can read them in one sitting. Putting the record in this PR rather than waiting fixes the one place G and H
+  meet before both start building.
+- **Consequences.** Omar reviews the presence types and may add fields (for example resources) in his PR; renaming
+  them needs both of us. `proto.rs` is shared, so Yahia, Aabed and Ahmed review the peer types they use.
+- **Where.** `src/proto.rs` (sections "Presence" and "Client <-> client"), `src/node/transport.rs`
+  (`impl ClientRpc for ClientServer`, `serve_datagrams`), `tests/client.rs` (the stub server).
+- **How we check it.** `proto::tests::the_largest_peer_update_and_discover_answer_fit_one_datagram`; the existing
+  client tests still pass with the larger `ClientRpc`.
+- **Report notes.** The "Peer protocol and message formats" section starts from this contract.
+
+### D311 · The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule
+
+- **Date:** 2026-11-24 · **Part:** H, with C · **Status:** Decided, built in `part-h-p2p` · **Decided by:** Wahiba
+  Elhimer, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** AGENTS.md: "Only `node/` and `raft/network.rs` open sockets", with one named exception for the web page
+  (D200). In Phase 2 every client program must also *listen*, for messages from other clients.
+- **Options considered.**
+  1. *The socket code lives in `node/transport.rs`, next to `datagram_client`, and `client.rs` calls it; AGENTS.md
+     names it as an exception (chosen).*
+  2. *A new file `node/peer.rs`.* Keeps the rule without an exception, but adds a file for Part C to own.
+- **Decision.** Option 1, as the plan recommends. AGENTS.md's sockets rule now names the client's peer endpoint.
+- **Why.** All socket code, its fault gate and its counters stay in one file that Part C already owns and reviews,
+  exactly as `datagram_client` was done for the client's cloud sockets (D175). The peer endpoint should also sit behind
+  Aabed's offline gate (D402), which lives there.
+- **Consequences.** Aabed (C's owner of `node/transport.rs`) reviews `part-h-p2p`.
+- **Where.** AGENTS.md, "Architecture rules"; `node/transport.rs` (in `part-h-p2p`).
+- **How we check it.** Review; `tests/layers.rs` still keeps application code away from sockets.
+- **Report notes.** One sentence in the implementation section.
+
+### D312 · Peers talk UDP with tarpc, like clients and the cloud
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Decided, built in `part-h-p2p` · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** Client programs must exchange incident and resource updates directly, with the cloud out of the data
+  path. Phase 1 already sends client-to-cloud traffic as tarpc over UDP (D167), and Phase 1 measured it on the lab PCs.
+- **Options considered.**
+  1. *UDP with tarpc (chosen).* Reuses the datagram adapter, its batching and compression, its counters and Aabed's
+     offline gate. Loss is covered by the ack (D314) and by Aabed's retention and resend.
+  2. *TCP with tarpc.* Reliable and ordered with no size limit, but one connection per pair of programs to open, keep
+     and repair, and not behind the offline gate on the UDP sockets.
+- **Decision.** Option 1. `P2pRpc` is served over UDP on the program's peer endpoint (D313). Every peer message must
+  fit one datagram of `MAX_DATAGRAM_BYTES` (1,400) with tarpc's wrapping.
+- **Why.** The same path as Phase 1, measured on the same Wi-Fi; no connection state between dozens of programs; and a
+  silenced or offline program simply stops hearing, as with the cloud.
+- **Consequences.** Message size is bounded, which the contract test checks. A lost message is only noticed by a
+  missing ack.
+- **Where.** `proto.rs::P2pRpc`; `node/transport.rs` and `client.rs` in `part-h-p2p`.
+- **How we check it.** The size test now; the delivery test in `tests/p2p.rs` with `part-h-p2p`.
+- **Report notes.** Why UDP between peers, with the Phase 1 measurement as the reason.
+
+### D313 · A program's peer port is the first free one in a configured range, advertised in its presence record
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Decided, built in `part-h-p2p` · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** Each client program needs its own peer port. The plan suggested "a base port plus the client ID", but
+  client IDs from `scripts/start-users.sh` reach 99,999 (machine × 10000 + batch × 1000 + k, D184) and ports stop at
+  65,535; the web page's programs (frontend ID × 10000 + n) can also share a PC with them.
+- **Options considered.**
+  1. *A range in the one config file; each program binds the first free port in it and advertises the real address in
+     its presence record (chosen).*
+  2. *Port 0: the operating system picks, the program advertises it.* No config, but the firewall must open the whole
+     ephemeral range (32768–60999) on every client PC.
+  3. *Base + (client ID mod 10000).* A fixed formula, but the web page's programs can collide with the start script's
+     on one PC.
+- **Decision.** Option 1. Two config keys (names and default range, about 1,000 ports, settled in `part-h-p2p`), one
+  `ufw` rule for that range on the client PCs in `docs/runbook.md`.
+- **Why.** Discovery exists so that peers learn each other's addresses; a formula is not needed when the directory
+  says where to send. The range keeps the firewall rule small and readable.
+- **Consequences.** A program learns its port only at startup, so it registers after binding. More programs on one PC
+  than ports in the range fail to start with a clear error.
+- **Where.** `config.rs`, `config/*.toml`, `node/transport.rs`, `docs/runbook.md` in `part-h-p2p`;
+  `PresenceRecord::peer_addr` here.
+- **How we check it.** A test that two programs on one host get different ports; the lab try on the six PCs.
+- **Report notes.** The correction to the plan's formula, with the reason.
+
+### D314 · The ack is `deliver`'s reply, `P2pAck`, not an envelope kind
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** The plan lists "ack" among the envelope kinds. A delivery must be acknowledged so the sender knows it
+  arrived and can measure P2P delivery latency.
+- **Options considered.**
+  1. *The RPC reply: `deliver(envelope) -> P2pAck` (chosen).* tarpc matches the reply to its call.
+  2. *An envelope kind sent back as its own message.* Works across forwarding hops, but needs our own matching of acks
+     to updates and a second message each time.
+- **Decision.** Option 1. `P2pAck` is `Accepted`, `Duplicate` (the update ID was already seen) or `Refused(reason)`.
+- **Why.** Request-reply is the mechanism the course asked for and the one tarpc provides; it gives the latency as a
+  round trip on the sender's own clock, with no clock comparison between PCs (AGENTS.md, "Measuring").
+- **Consequences.** An ack covers one hop only. If Part I needs end-to-end acks across forwards, it adds them in its
+  own PR.
+- **Where.** `proto.rs::{P2pAck, P2pRpc}`.
+- **How we check it.** The size test includes the largest ack.
+- **Report notes.** P2P delivery latency = `deliver` round trip on the sender's clock.
+
+### D315 · A peer update is named by `UpdateId { origin, seq }`, like `RequestId`
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** Receivers must drop duplicates (the spec's duplicate suppression, Part I), which needs a unique name per
+  update.
+- **Options considered.**
+  1. *`UpdateId { origin: ClientId, seq: u64 }`, a counter per program (chosen).*
+  2. *A random 128-bit ID.* No counter, but unreadable in logs and silent about who sent it.
+- **Decision.** Option 1. `from.client` equals `id.origin`. A receiver keeps the IDs it has seen and answers
+  `Duplicate` for one it has.
+- **Why.** Unique with no coordination, because client IDs are unique (D113); the same shape as `RequestId`, which the
+  team already reads in every log.
+- **Consequences.** A restarted program must not reuse low sequence numbers; starting the counter from the program's
+  start time, as `RequestId` does (D113), avoids it.
+- **Where.** `proto.rs::UpdateId`.
+- **How we check it.** Duplicate tests in `part-h-p2p` and Part I.
+- **Report notes.** The duplicate-message rate (Part I) counts `Duplicate` acks.
+
+### D316 · Bounded forwarding is carried as `hops` and `max_hops`
+
+- **Date:** 2026-11-24 · **Part:** H, with I · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** The spec asks for bounded forwarding; Part I floods updates within a zone.
+- **Options considered.**
+  1. *`hops` (forwards so far, starting at 0) and `max_hops` (set by the origin) (chosen).*
+  2. *A single TTL counter decremented at each forward.* One byte, but the receiver cannot tell how far it travelled.
+- **Decision.** Option 1, both `u8`. A peer forwards only while `hops < max_hops` and adds one when it does.
+- **Why.** The bound is checked the same way, and the receiver can measure forwarding overhead from `hops` directly.
+- **Consequences.** Part I picks the default `max_hops`.
+- **Where.** `proto.rs::P2pEnvelope`.
+- **How we check it.** Part I's forwarding tests.
+- **Report notes.** Forwarding overhead read from `hops`.
+
+### D317 · The payload is a typed enum, `P2pBody`, one variant per kind
+
+- **Date:** 2026-11-24 · **Part:** H, with I and J · **Status:** Implemented (contract) · **Decided by:** Wahiba
+  Elhimer, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** The plan names the kinds: incident summary, resource offer, assignment update (and ack, D314).
+- **Options considered.**
+  1. *A typed enum with one small struct per kind (chosen).*
+  2. *A kind tag plus opaque bytes each part encodes.* No contract change when a part adds fields, but nothing checks the
+     shape and each part writes its own encoding.
+- **Decision.** Option 1: `IncidentSummary { incident, category, severity, zone, location, needs, reported_at_ms }`,
+  `ResourceOffer { provider, capability, zone, location, available_until_ms }`, `AssignmentUpdate { incident,
+  responder, priority, assigned_at_ms }`. Ahmed (J) and Yahia (I) extend their variants in their own PRs.
+- **Why.** The compiler checks every message, tests read naturally, and it matches how every other message in
+  `proto.rs` is written.
+- **Consequences.** Adding a field is a contract change with a design-log entry, as for any message.
+- **Where.** `proto.rs::{P2pBody, IncidentSummary, ResourceOffer, AssignmentUpdate}`.
+- **How we check it.** The size test encodes the largest of each.
+- **Report notes.** The message-format table.
+
+### D318 · `version` and `created_at_ms` let a receiver drop obsolete updates
+
+- **Date:** 2026-11-24 · **Part:** H, with K · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** Part K keeps pending updates for offline peers with retention limits and obsolescence; Part I needs to
+  order updates about the same subject.
+- **Options considered.**
+  1. *`version: u64` per subject plus `created_at_ms` on the origin's clock (chosen).*
+  2. *`version` only.* Smaller, but no way to expire an update by age.
+- **Decision.** Option 1. A higher version replaces a lower one for the same subject; an older version is obsolete.
+  `created_at_ms` is for retention by age only, never to order updates from different PCs.
+- **Why.** Both integers, as the rules require; ordering never compares two machines' clocks.
+- **Consequences.** What counts as "the same subject" is each kind's key (for example the incident ID); Parts I and K
+  use it.
+- **Where.** `proto.rs::P2pEnvelope`.
+- **How we check it.** Part K's retention tests.
+- **Report notes.** The obsolescence rule in the offline policy.
+
+### D319 · Each user registers, not each program
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** A program holds many simulated users but has one peer endpoint.
+- **Options considered.**
+  1. *One presence record per user, carrying its program's peer address (chosen).*
+  2. *One record per program.* Far fewer records, but discovery could only find programs, not users or their roles.
+- **Decision.** Option 1, as the plan's directory design (G) and the spec's model, where users discover users.
+- **Why.** The spec's discovery is by user, role, zone and capability; a program-level record cannot answer those.
+- **Consequences.** Under load the directory holds many records, and renewals scale with users. The presence agent may
+  later renew a program's users together; that is `part-h-presence`.
+- **Where.** `proto.rs::PresenceRecord`.
+- **How we check it.** G's directory tests; the presence agent's tests.
+- **Report notes.** The presence model.
+
+### D320 · The directory sets the lease length; the client renews at a third of it
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** Registrations are leases that must be renewed; Omar's directory owns the lease clock (plan, G's first
+  decision).
+- **Options considered.**
+  1. *`PresenceReply::Registered { lease_ms, log_index }`; the client renews at a third of `lease_ms` and registers again
+     after `Unknown` (chosen).*
+  2. *A fixed renewal period in the client's config.* Simpler, but it can disagree with the directory's lease.
+- **Decision.** Option 1.
+- **Why.** One owner for the lease length; a third survives two lost renewals before the lease runs out.
+- **Consequences.** The client's timer follows whatever G decides, with no config key on the client side.
+- **Where.** `proto.rs::PresenceReply`; the presence agent in `part-h-presence`.
+- **How we check it.** The presence agent's tests.
+- **Report notes.** Lease and renewal timing.
+
+### D321 · One `discover` call with optional zone and capability filters, at most 16 records, labelled with the log index
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** The application needs discovery by zone and by capability, through `middleware.rs`.
+- **Options considered.**
+  1. *One method, `discover(PresenceQuery { zone, capability, limit })`, with `middleware.rs` helpers on top (chosen).*
+  2. *Two methods, one per filter.* Easy to read, but two messages and no way to ask for both at once.
+- **Decision.** Option 1. Any node answers from its applied state, labelled with the log index it read at
+  (`DiscoverReply::Found`). `limit` is at most `MAX_DISCOVER_RECORDS` (16).
+- **Why.** Local reads labelled with the index are Phase 1's rule for status reads, and the spec asks only for
+  "sufficiently consistent". Sixteen records with the largest fields fit one 1,400-byte datagram with tarpc's
+  wrapping; the contract test checks it.
+- **Consequences.** A caller wanting more than 16 asks again with narrower filters.
+- **Where.** `proto.rs::{PresenceQuery, DiscoverReply, MAX_DISCOVER_RECORDS}`.
+- **How we check it.** The size test with 16 records.
+- **Report notes.** Read consistency for presence.
+
+### D322 · `to: Option<UserId>`: one user, or everyone in the zone
+
+- **Date:** 2026-11-24 · **Part:** H, with I · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** Some peer messages are for one user (a direct exchange), others for a zone (Part I's publish-subscribe).
+- **Options considered.** One field `to: Option<UserId>` (chosen); or separate envelope types for direct and zone
+  messages.
+- **Decision.** `Some(user)` addresses one user; `None` means everyone in `zone`.
+- **Why.** One envelope for every peer message, as the plan asks, with the addressing visible in one field.
+- **Consequences.** A program receiving a message for a user it does not hold answers `Refused`.
+- **Where.** `proto.rs::P2pEnvelope`.
+- **How we check it.** `part-h-p2p` tests.
+- **Report notes.** The message-format table.
+
+### D323 · The presence record's fields, and the program's start time as its incarnation
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented (contract) · **Decided by:** Wahiba Elhimer, on
+  the agent's recommendation (grill, 2026-11-24)
+- **Context.** G's plan lists the record: user, role, zone, peer endpoint, capabilities and resources, lease expiry,
+  incarnation. Duplicate registrations are settled by the higher incarnation.
+- **Options considered.** Put the lease expiry in the record, or keep it inside the directory; take the incarnation
+  from a counter on disk, or from the program's start time.
+- **Decision.** `PresenceRecord { user, role, zone, peer_addr, capabilities, incarnation }`. The lease expiry stays
+  inside G's directory, which decides its clock. The incarnation is the program's start time in unix milliseconds. A
+  zone move is a new `register` with the new zone. Resources are left for Ahmed's offers (J) or Omar's PR.
+- **Why.** The client should not need to know how the directory counts time; a start time always grows after a
+  restart, with no file to keep.
+- **Consequences.** Two programs started in the same millisecond with the same user would tie, which cannot happen
+  because user IDs include the unique client ID.
+- **Where.** `proto.rs::{PresenceRole, PresenceRecord}`.
+- **How we check it.** G's duplicate-registration test.
+- **Report notes.** The presence record table.
+
+### D324 · Presence calls are client traffic: the fault gate drops them
+
+- **Date:** 2026-11-24 · **Part:** H, with C · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** Every method added to `ClientRpc` must say whether it is client traffic or control (D23, AGENTS.md).
+- **Options considered.** Client traffic, dropped while the node is silenced (chosen); or control, which passes the
+  gate.
+- **Decision.** `register`, `renew`, `deregister` and `discover` are client traffic. `serve_datagrams` drops them while
+  the gate is closed, and the handlers stay quiet if the gate closed after the reader let one in, as `submit` does.
+- **Why.** A silenced node must look failed to clients, for presence as for reports; only the operator's control
+  calls pass.
+- **Consequences.** During a fault a client's presence calls are answered by the other two nodes, exactly like
+  reports.
+- **Where.** `node/transport.rs::{serve_datagrams, impl ClientRpc for ClientServer}`.
+- **How we check it.** Review; a silenced-node test comes with `part-h-presence`.
+- **Report notes.** None beyond the fault model.
+
+### D325 · Until Part G's directory exists, every node answers presence calls with `Rejected`
+
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented, to be replaced by G · **Decided by:** Wahiba
+  Elhimer, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** Adding methods to `ClientRpc` means every server must implement them now, before the directory exists.
+- **Options considered.** Answer `Rejected("no presence directory on this node yet (Part G)")` (chosen); stay quiet
+  like a busy node, so the caller times out.
+- **Decision.** Answer `Rejected` at once, with a `TODO(G)` where G hands the calls to the directory.
+- **Why.** A clear answer is easier to test and debug than a silent timeout, and nothing calls these methods yet.
+- **Consequences.** Omar replaces the bodies in `part-g-directory`.
+- **Where.** `node/transport.rs::ClientServer::no_directory_yet`.
+- **How we check it.** The workspace builds and the client tests pass with the new methods.
+- **Report notes.** None.
 
 ### Notes on older entries
 
