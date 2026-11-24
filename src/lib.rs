@@ -33,6 +33,7 @@ pub mod bidding;
 pub mod campus;
 pub mod client;
 pub mod config;
+pub mod gossip;
 pub mod metrics;
 pub mod middleware;
 pub mod node;
