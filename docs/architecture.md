@@ -2163,6 +2163,29 @@ sequenceDiagram
     Note over M: outbox_flushed: reconcile_us
 ```
 
+### 13.2 Presence and the P2P link (contract only, Part H, D310–D325)
+
+The messages are in `proto.rs`; the presence agent (`part-h-presence`) and the peer endpoint (`part-h-p2p`) are not built
+yet, and until Part G's directory exists every node answers the presence calls with `Rejected` (D325). Each user
+registers with its program's peer address (D319); a program listens on the first free port in a configured range
+(D313); peers then talk to each other directly over UDP with tarpc (D312), and the cloud carries none of it.
+
+```mermaid
+sequenceDiagram
+    participant A as Program A,<br/>user a
+    participant C as Cloud, nodes 1-3,<br/>the directory (Part G)
+    participant B as Program B,<br/>user b
+    A->>C: register(record: a, zone 2, peer_addr of A), to every node
+    B->>C: register(record: b, zone 2, peer_addr of B), to every node
+    C-->>A: Registered(lease_ms, log_index)
+    C-->>B: Registered(lease_ms, log_index)
+    Note over A,B: renew at a third of lease_ms (D320)
+    A->>C: discover(zone 2)
+    C-->>A: Found(records incl. b, log_index)
+    A->>B: deliver(P2pEnvelope id u-A-1, to b, IncidentSummary), UDP, no cloud
+    B-->>A: P2pAck Accepted, the round trip is the delivery latency
+```
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid

@@ -19,8 +19,9 @@ use rescuemesh::node::datagram::{self, ServerEnd};
 use rescuemesh::node::transport::{datagram_client, run_calls, tcp_transport};
 use rescuemesh::proto::{
     Capability, Category, ClientReply, ClientRequest, ClientRpc, ClientRpcRequest,
-    ClientRpcResponse, CommittedResult, ControlReply, ControlRequest, Incident, IncidentQuery,
-    IncidentStatus, Plan, Point, ReplyBody, RequestId, UserId,
+    ClientRpcResponse, CommittedResult, ControlReply, ControlRequest, DiscoverReply, Incident,
+    IncidentQuery, IncidentStatus, Plan, Point, PresenceQuery, PresenceRecord, PresenceReply,
+    ReplyBody, RequestId, UserId,
 };
 use tarpc::client::{NewClient, RpcError};
 use tarpc::server::{BaseChannel, Channel};
@@ -225,6 +226,22 @@ impl ClientRpc for Stub {
 
     async fn incidents(self, _: tarpc::context::Context, _: IncidentQuery) -> ControlReply {
         ControlReply::Done
+    }
+
+    async fn register(self, _: tarpc::context::Context, _: PresenceRecord) -> PresenceReply {
+        PresenceReply::Rejected("stub".into())
+    }
+
+    async fn renew(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
+        PresenceReply::Rejected("stub".into())
+    }
+
+    async fn deregister(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
+        PresenceReply::Rejected("stub".into())
+    }
+
+    async fn discover(self, _: tarpc::context::Context, _: PresenceQuery) -> DiscoverReply {
+        DiscoverReply::Rejected("stub".into())
     }
 }
 

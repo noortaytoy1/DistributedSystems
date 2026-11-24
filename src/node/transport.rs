@@ -48,8 +48,9 @@ use crate::metrics::{Event, EventLog, MessageCounters, MsgKind, UdpCounters};
 use crate::node::squeeze::{expand, squeeze};
 use crate::proto::{
     self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
-    ClientRpcResponse, Command, ControlReply, ControlRequest, FaultBid, IncidentQuery, NodeId,
-    PeerBody, PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient, RaftRpc, Term,
+    ClientRpcResponse, Command, ControlReply, ControlRequest, DiscoverReply, FaultBid,
+    IncidentQuery, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient,
+    PresenceQuery, PresenceRecord, PresenceReply, RaftRpc, Term, UserId,
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
@@ -872,6 +873,41 @@ impl ClientRpc for ClientServer {
     async fn incidents(self, _: tarpc::context::Context, query: IncidentQuery) -> ControlReply {
         (self.on_control)(ControlRequest::Incidents(query))
     }
+
+    // Presence is client traffic: a silenced node stays quiet, as for `submit` (D324). Until the
+    // directory exists every node refuses, so a client learns that at once instead of timing out (D325).
+    // TODO(G): hand these to the directory once Part G builds it.
+
+    async fn register(self, _: tarpc::context::Context, _: PresenceRecord) -> PresenceReply {
+        self.no_directory_yet().await
+    }
+
+    async fn renew(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
+        self.no_directory_yet().await
+    }
+
+    async fn deregister(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
+        self.no_directory_yet().await
+    }
+
+    async fn discover(self, _: tarpc::context::Context, _: PresenceQuery) -> DiscoverReply {
+        if self.gate.is_silenced() {
+            return std::future::pending().await;
+        }
+        DiscoverReply::Rejected(NO_DIRECTORY.into())
+    }
+}
+
+/// Why every node refuses presence calls until Part G's directory is built (D325).
+const NO_DIRECTORY: &str = "no presence directory on this node yet (Part G)";
+
+impl ClientServer {
+    async fn no_directory_yet(&self) -> PresenceReply {
+        if self.gate.is_silenced() {
+            return std::future::pending().await;
+        }
+        PresenceReply::Rejected(NO_DIRECTORY.into())
+    }
 }
 
 /// A node's client port: one port number, TCP and UDP (D168).
@@ -941,16 +977,21 @@ async fn serve_control(listener: TcpListener, server: ClientServer) {
 }
 
 /// The UDP side: clients. The fault gate is checked here, before tarpc tracks the call: a silenced
-/// node never answers one, and would hold it until its deadline. Everything else passes. Control must
-/// (D23), so that `ctl status` can check this port on a silenced node. A cancel changes nothing that
-/// can be seen from outside, and dropping it would only park a call that is already open.
+/// node never answers a report or a presence call (D324), and would hold it until its deadline.
+/// Everything else passes. Control must (D23), so that `ctl status` can check this port on a silenced
+/// node. A cancel changes nothing that can be seen from outside, and dropping it would only park a
+/// call that is already open.
 async fn serve_datagrams(socket: UdpSocket, server: ClientServer, counters: Arc<UdpCounters>) {
     let gate = server.gate.clone();
     let keep = move |message: &ClientMessage<ClientRpcRequest>| {
         !matches!(
             message,
             ClientMessage::Request(Request {
-                message: ClientRpcRequest::Submit { .. },
+                message: ClientRpcRequest::Submit { .. }
+                    | ClientRpcRequest::Register { .. }
+                    | ClientRpcRequest::Renew { .. }
+                    | ClientRpcRequest::Deregister { .. }
+                    | ClientRpcRequest::Discover { .. },
                 ..
             })
         ) || !gate.is_silenced()
