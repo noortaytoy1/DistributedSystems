@@ -1,4 +1,5 @@
-//! Replicated state machine: incidents, responders, results and duplicate detection.
+//! Replicated state machine: incidents, responders, results and duplicate detection, and the presence
+//! directory, which lives in `discovery.rs` and is applied from here (D289).
 //!
 //! Every node applies the same committed commands in the same order, so this code must be
 //! deterministic: no clock, no randomness, no network, no `HashMap` iteration.
@@ -22,6 +23,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::discovery::Directory;
 use crate::planner;
 use crate::proto::{
     Command, CommandGroup, CommittedResult, IncidentQuery, IncidentStatus, IncidentView,
@@ -69,6 +71,8 @@ pub struct CloudState {
     /// Every hold made, oldest first. Not in the digest: the commands already decide it.
     hold_log: Vec<HoldMade>,
     counters: Counters,
+    /// The presence directory, Part G's state machine on the same log (D69, D289).
+    directory: Directory,
     /// Log index of the last command applied (internal Raft entries are not counted).
     last_index: u64,
     digest: u64,
@@ -110,12 +114,25 @@ impl CloudState {
                 }
                 Outcome::Applied
             }
-            // TODO(G): the directory applies these in `part-g-directory` (D280). Nothing proposes
-            // them before then.
-            Command::PresenceRegister { .. }
-            | Command::PresenceRenew { .. }
-            | Command::PresenceDeregister { .. }
-            | Command::PresenceTick { .. } => Outcome::Applied,
+            Command::PresenceRegister { record, lease } => {
+                Outcome::Presence(self.directory.register(index, record, lease))
+            }
+            Command::PresenceRenew {
+                user,
+                incarnation,
+                lease,
+            } => Outcome::Presence(self.directory.renew(index, *user, *incarnation, lease)),
+            Command::PresenceDeregister {
+                user,
+                incarnation,
+                at_ms,
+            } => Outcome::Presence(
+                self.directory
+                    .deregister(index, *user, *incarnation, *at_ms),
+            ),
+            Command::PresenceTick { at_ms } => {
+                Outcome::Presence(self.directory.tick(index, *at_ms))
+            }
         };
         self.last_index = index;
         self.digest = chain(self.digest, index, cmd, &outcome);
@@ -352,6 +369,11 @@ impl CloudState {
 
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    /// The presence directory (Part G, D289).
+    pub fn directory(&self) -> &Directory {
+        &self.directory
     }
 
     /// Log index of the last applied command, 0 before the first.

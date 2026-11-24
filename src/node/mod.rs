@@ -1,7 +1,7 @@
 //! Wires a node together: listeners, transport, Raft, assignment, workers and the fault gate.
 //!
 //! A client request comes in here and goes up to the application layer, `service::handle_request`
-//! (D156). This file keeps what sits below it: who plans a request (`decide_executor`), peer
+//! (D156), and a presence call goes up to the presence service, `directory::handle` (D290). This file keeps what sits below it: who plans a request (`decide_executor`), peer
 //! messages, control frames and the background tasks.
 //!
 //! Each part's entry point (`heartbeat::spawn`, `faults::spawn_schedule`, `rejoin::spawn`, ...)
@@ -13,6 +13,7 @@ pub mod bids;
 pub mod cpu;
 pub mod datagram;
 pub mod degraded;
+pub mod directory;
 pub mod faults;
 pub mod group;
 pub mod heartbeat;
@@ -55,7 +56,8 @@ use faults::FaultElection;
 use group::CloudGroup;
 use heartbeat::Suspicion;
 use transport::{
-    ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet, RequestHandler,
+    ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet, PresenceHandler,
+    RequestHandler,
 };
 use workers::WorkerPool;
 
@@ -273,9 +275,20 @@ pub async fn start_with(
         let ctx = ctx.clone();
         Arc::new(move |cmd| on_control(&ctx, cmd))
     };
+    // The presence service (Part G, D290). The server runs each call in a task of its own.
+    let on_presence: PresenceHandler = {
+        let ctx = ctx.clone();
+        Arc::new(move |call| directory::handle(ctx.clone(), call).boxed())
+    };
     tasks.push(tokio::spawn(transport::serve_clients(
         client_port,
-        ClientServer::new(gate, log.msgs().clone(), on_request, on_control),
+        ClientServer::new(
+            gate,
+            log.msgs().clone(),
+            on_request,
+            on_control,
+            on_presence,
+        ),
         udp_counters.clone(),
     )));
     tasks.push(spawn_campus_seeding(ctx.clone()));
@@ -287,6 +300,7 @@ pub async fn start_with(
     tasks.push(release::spawn(&ctx));
     tasks.extend(degraded::spawn(&ctx));
     tasks.extend(step_aside::spawn(&ctx));
+    tasks.push(directory::spawn_ticks(&ctx));
 
     Ok(NodeHandle {
         ctx,

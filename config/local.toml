@@ -108,3 +108,12 @@ seen_max_age_ms = 300000
 refresh_ms = 10000
 # Gossip sends in flight at once per program; past it the gossip task waits (D363).
 max_in_flight = 256
+
+[presence]
+# The presence directory (Phase 2, Part G, D284, D291). Every key is optional. A user registered or
+# renewed is discoverable for lease_ms; clients renew at a third of it (D320).
+lease_ms = 10000
+# After its lease a record is kept grace_ms more, hidden but renewable, then removed (D285).
+grace_ms = 5000
+# How often the directory's log clock is moved when no client is sending (D281).
+tick_ms = 1000

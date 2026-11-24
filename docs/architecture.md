@@ -79,7 +79,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Clients send to the cloud over UDP                         | `submit` through tarpc on a small UDP adapter; `ctl` on tarpc over TCP. Noor's decision, reverses D17 | built; **only on loopback so far: real switches and network cards are untested, and no run has had the buffer raised** | D167, D168, D170, D171 |
 | A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
-| Publish-subscribe                                          | Phase 2, by Lecture 9. Zone gossip is built in `src/gossip.rs` and runs in every client program; the zone lists wait on Part G's directory, section 13.3 | built against stub nodes; directory planned (G) | D131, D209, D340–D368 |
+| Publish-subscribe                                          | Phase 2, by Lecture 9. Zone gossip is built in `src/gossip.rs` and runs in every client program; the zone lists come from Part G's directory (sections 13.3, 13.4) | built; directory built (G) | D131, D209, D340–D368, D288 |
 
 ### Rotating rounds: no elected node (built, D249)
 
@@ -2127,9 +2127,8 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
 
 - **Discovery service** as a second state machine on the same Raft log: registrations and lease
   renewals become `Command` variants, so the directory is consistent on all three nodes with no new
-  protocol for copying the log (D69). The log contract is in (Part G, D280 to D288): four presence commands, a lease clock
-  carried in the commands rather than read at apply (D281), and a live, late and gone record (D285). The directory itself
-  is planned, in `part-g-directory`.
+  protocol for copying the log (D69). Built (Part G, section 13.4, D280 to D292): four presence commands, a lease clock
+  carried in the commands rather than read at apply (D281), and a live, late and gone record (D285).
 - **Leases with fencing tokens** for the node that plans: the token is the result's log position, so a stale holder's late write is rejected. The leader issues nothing new, because a new
   leader duty would go against the table in section 2 (D69, D163).
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
@@ -2195,8 +2194,8 @@ The messages are in `proto.rs`. The presence agent is built (`src/presence.rs`, 
 user on every node and one loop per program renews it at a third of the lease, registering it again after a lost lease or a
 return from offline; `discover` asks every node. The P2P link is built too (`src/p2p.rs`, D336–D339, D460–D465): every program listens on the
 first free port of `[p2p]`'s range, behind its offline gate; `send_peer` delivers an update with up to three tries, a repeated
-update ID is answered `Duplicate`, and a test with a real cloud shows its client ports carry none of a P2P exchange. Until Part
-G's directory exists every node answers the presence calls with `Rejected` (D325), so discovery works end to end only then. Each user
+update ID is answered `Duplicate`, and a test with a real cloud shows its client ports carry none of a P2P exchange. The nodes
+answer the presence calls from Part G's directory (section 13.4, D289 to D292), so discovery works end to end. Each user
 registers with its program's peer address (D319); a program listens on the first free port in a configured range
 (D313); peers then talk to each other directly over UDP with tarpc (D312), and the cloud carries none of it.
 
@@ -2316,6 +2315,56 @@ sequenceDiagram
 
 **Keep the meanings of TTL apart** wherever the word appears: `Incident.ttl_ms` (D143), the table trim D9 dropped, the hop
 limit the spec describes for Phase 2 dissemination, and `option.hard_ttl()`, a deadline on one RPC in `raft/network.rs`.
+
+### 13.4 The presence directory (built, Part G, D280–D292)
+
+The directory is a second state machine on the same log (D69): `src/discovery.rs` holds a pure `Directory`, and `CloudState`
+applies the four presence commands to it, so every node holds the same directory and the state digest covers it (D289). Nothing in
+it reads a clock. Every presence command carries the time its proposing node stamped, and the directory keeps the highest one
+applied as its **log clock**, so every node expires the same records at the same log position, under Raft and under rotating
+rounds alike (D281). On a node, `node/directory.rs` is the presence service, an application beside the incident service (D290):
+one node per user proposes its writes, chosen by hashing the user over the view (D287), and every serving node answers
+`discover` from its own applied state, labelled with the index it read at (D288).
+
+```mermaid
+sequenceDiagram
+    participant P as Program (presence agent)
+    participant N1 as Node 1
+    participant N2 as Node 2, the user's proposer
+    participant N3 as Node 3
+    P->>N1: register(record), to every node (D327)
+    P->>N2: register(record)
+    P->>N3: register(record)
+    Note over N1,N3: hash(user) over the view picks node 2. Nodes 1 and 3 stay quiet (D36, D287)
+    N2->>N2: PresenceRegister with lease at_ms, lease_ms, grace_ms (D281, D284)
+    N2->>N3: through the shared log, applied on all three
+    N2-->>P: Registered(lease_ms, log_index), after the commit
+    Note over P: renew at a third of lease_ms (D320)
+    P->>N3: discover(zone 2)
+    N3-->>P: Found(records, log_index), read from its own applied directory (D288)
+    Note over N1: no client traffic: the lowest member of the view proposes PresenceTick every tick_ms
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Live: "PresenceRegister (a higher or equal incarnation)"
+    Live --> Live: "PresenceRenew, or register again (a zone move)"
+    Live --> Late: "log clock reaches at_ms + lease_ms"
+    Late --> Live: "PresenceRenew within the grace (a delayed heartbeat)"
+    Late --> Gone: "log clock reaches the lease end + grace_ms"
+    Live --> Gone: "PresenceDeregister (same incarnation)"
+    Late --> Gone: "PresenceDeregister (same incarnation)"
+    Gone --> Live: "PresenceRegister again (renew answers Unknown first)"
+    Gone --> [*]
+```
+
+| Spec case | What the directory does | Test |
+|-----------|-------------------------|------|
+| Delayed heartbeats | a renewal late by up to `grace_ms` revives the record with no new registration (D285) | `a_late_renewal_inside_the_grace_revives_the_record` |
+| Expired registrations | removed when the log clock passes lease plus grace, at the same log position on every node (D281) | `a_record_nobody_renews_expires_the_same_way_on_every_node` |
+| Duplicate registrations | the higher incarnation wins in either order; a lower one gets `Superseded` (D286) | `the_higher_incarnation_wins_in_either_order`, `a_restarted_program_wins_over_its_old_registration` |
+| Server failure and reconstruction | a silenced node catches up from the log and holds the same directory; another node takes its users meanwhile (D287) | `a_node_back_from_silence_rebuilds_the_directory_from_the_log` |
+| Zone moves | a register with the new zone; found only there (D282) | `a_zone_move_is_a_registration_with_the_new_zone`, `a_user_that_moves_zone_is_found_in_the_new_zone_only` |
 
 ## 14. What remains
 

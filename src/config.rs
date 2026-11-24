@@ -42,6 +42,9 @@ pub struct Config {
     /// Zone publish-subscribe among client programs (Phase 2, Part I).
     #[serde(default)]
     pub gossip: GossipSettings,
+    /// The presence directory's leases (Phase 2, Part G, D291).
+    #[serde(default)]
+    pub presence: PresenceSettings,
 }
 
 /// See [`Config::consensus`].
@@ -363,6 +366,36 @@ impl GossipSettings {
     }
 }
 
+/// The presence directory's lease timing (Phase 2, Part G, D284, D291). Every key is optional. The
+/// node that proposes a registration or renewal copies `lease_ms` and `grace_ms` into the command, so
+/// the log decides a lease, not each node's file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PresenceSettings {
+    /// How long a registration or renewal keeps a user discoverable. Clients renew at a third (D320).
+    pub lease_ms: u64,
+    /// How long after its lease a record is kept, hidden but renewable, before it goes (D285).
+    pub grace_ms: u64,
+    /// How often the lowest member of a node's view moves the directory's log clock (D281).
+    pub tick_ms: u64,
+}
+
+impl Default for PresenceSettings {
+    fn default() -> Self {
+        Self {
+            lease_ms: 10_000,
+            grace_ms: 5_000,
+            tick_ms: 1_000,
+        }
+    }
+}
+
+impl PresenceSettings {
+    pub fn tick(&self) -> Duration {
+        Duration::from_millis(self.tick_ms)
+    }
+}
+
 /// Fault injection (faults.rs). `bin/node.rs --faults on|off` overrides `enabled` for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -531,6 +564,10 @@ impl Config {
         if g.refresh_ms == 0 || g.max_in_flight == 0 {
             return invalid("gossip: refresh_ms and max_in_flight must be > 0".into());
         }
+        let p = &self.presence;
+        if p.lease_ms == 0 || p.tick_ms == 0 || p.tick_ms > p.lease_ms {
+            return invalid("presence: need lease_ms > 0 and 0 < tick_ms <= lease_ms".into());
+        }
         let f = &self.faults;
         if f.interval_min_ms == 0 || f.interval_min_ms > f.interval_max_ms {
             return invalid("faults: need 0 < interval_min_ms <= interval_max_ms".into());
@@ -590,6 +627,40 @@ mod tests {
             "max_in_flight = 0",
             "fan_out = 3",
         ] {
+            assert!(with(bad).is_err(), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn presence_keys_are_optional_and_validated() {
+        let node = "[[cluster.nodes]]
+id = 1
+peer_addr = \"a:1\"
+client_addr = \"a:2\"
+";
+        let config = Config::from_toml(node).unwrap();
+        assert_eq!(config.presence, PresenceSettings::default());
+        assert_eq!(config.presence.lease_ms, 10_000);
+        assert_eq!(config.presence.tick(), Duration::from_secs(1));
+
+        let with = |lines: &str| {
+            Config::from_toml(&format!(
+                "{node}[presence]
+{lines}
+"
+            ))
+        };
+        let set = with(
+            "lease_ms = 2000
+grace_ms = 0",
+        )
+        .unwrap();
+        assert_eq!((set.presence.lease_ms, set.presence.grace_ms), (2_000, 0));
+        assert_eq!(
+            set.presence.tick_ms, 1_000,
+            "keys left out keep their default"
+        );
+        for bad in ["lease_ms = 0", "tick_ms = 0", "lease_ms = 500", "lease = 3"] {
             assert!(with(bad).is_err(), "{bad} must be refused");
         }
     }

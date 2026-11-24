@@ -18,8 +18,10 @@
 use std::path::PathBuf;
 
 /// Application files on the cloud side (D156, D211).
-const CLOUD_FILES: [&str; 5] = [
+const CLOUD_FILES: [&str; 7] = [
     "src/node/service.rs",
+    "src/node/directory.rs",
+    "src/discovery.rs",
     "src/node/release.rs",
     "src/planner.rs",
     "src/campus.rs",
@@ -27,9 +29,10 @@ const CLOUD_FILES: [&str; 5] = [
 ];
 /// What in this crate they may name. Only `middleware` is from below; the rest is the application's
 /// own, or the contract and the tools both layers share.
-const CLOUD_MAY_NAME: [&str; 7] = [
+const CLOUD_MAY_NAME: [&str; 8] = [
     "campus",
     "config",
+    "discovery",
     "metrics",
     "middleware",
     "planner",

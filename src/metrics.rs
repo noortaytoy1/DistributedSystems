@@ -501,6 +501,27 @@ pub enum Event {
         ok: bool,
         latency_us: u64,
     },
+    // --- the presence directory (Phase 2, Part G, D292)
+    /// A node answered a discovery query from its applied state, with `records` records read at
+    /// `log_index`. `latency_us` is the node's share of the discovery query latency.
+    DirectoryQuery {
+        zone: Option<ZoneId>,
+        capability: Option<Capability>,
+        records: usize,
+        log_index: u64,
+        latency_us: u64,
+    },
+    /// A presence write this node proposed was committed. `kind` is `register`, `renew` or
+    /// `deregister`; `outcome` is the `PresenceOutcome`'s kind. `latency_us` runs from the call
+    /// arriving to the commit, on this node's clock.
+    DirectoryWrite {
+        user: UserId,
+        kind: &'static str,
+        outcome: &'static str,
+        log_index: u64,
+        latency_us: u64,
+    },
+
     // --- presence (Phase 2, Part H, D334)
     /// The directory took `user`'s registration and gave a lease of `lease_ms`. `again` is true for a
     /// re-registration: a zone move, a lost lease, or a return from offline (D329). `latency_us`
