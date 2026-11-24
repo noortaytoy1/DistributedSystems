@@ -340,6 +340,9 @@ table below in sync.
 | D290 | The node's presence handler is `node/directory.rs`, reached through a handler on the client port | G, with A and C | Implemented, supersedes D325 |
 | D291 | An optional `[presence]` config section: `lease_ms`, `grace_ms`, `tick_ms` | G, with A | Implemented |
 | D292 | Node events `directory_query` and `directory_write`; the hard cases tested on real nodes | G, with L | Implemented |
+| D293 | Presence-table convergence: each node's own wait from the call to the change showing, the slowest of three | G, with L | Implemented |
+| D294 | A `directory_state` report each second, with the directory's own digest | G, with L | Implemented |
+| D295 | `ctl discover` asks every node side by side; the analysis gains the discovery metrics | G, with C and L | Implemented |
 | D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
 | D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
 | D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
@@ -429,7 +432,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts, and D368 lists what Part I still changes later. D280 to D292 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts, and D368 lists what Part I still changes later. D280 to D295 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
 
 ---
 
@@ -8655,6 +8658,65 @@ them on the six PCs.
 - **Where.** `metrics.rs`, `node/directory.rs`, `tests/discovery.rs`.
 - **How we check it.** 10 runs in a row of `cargo test --test discovery`.
 - **Report notes.** Node-side against client-side discovery latency.
+
+### D293 · Presence-table convergence is each node's own wait from the call to the change showing, and the slowest of the three
+
+- **Date:** 2026-11-24 · **Part:** G, with L · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** The plan's measure: "time until all three nodes' checkpoints match after a register or expiry, and after a
+  rejoin". `state_checkpoint` (D138) shows the nodes match at the same index, which the log guarantees, but says nothing about
+  time; subtracting timestamps from different machines is not allowed for a figure the report leans on (AGENTS.md, D233).
+- **Options considered.**
+  1. *Each node watches its own directory for a register or deregister it was sent, and logs how long the change took to
+     show from the call arriving, on its own clock (chosen).* The client sends to all three at the same instant (D327), so the
+     arrivals are aligned to within the network's jitter, and the slowest node's wait is the convergence.
+  2. *Commit time at the proposer against apply time at each node.* Two machines' clocks.
+  3. *Once-a-second digests.* One-second resolution against a few milliseconds of real convergence.
+- **Decision.** Option 1: `directory_seen { user, kind, proposer, log_index, wait_us }`, polled every 2 ms for at most 10 s. A
+  change already showing when the call arrives (a re-registration with the same record) is not watched. Renewals are not
+  watched: the lease end they set is the proposer's to choose. Expiry needs no measure of its own: it happens at the same log
+  position on every node by construction (D281), so its convergence is the log's.
+- **Why.** One clock per figure, and it measures what a client sees: when every node would give the new answer.
+- **Consequences.** A 2 ms floor on the resolution; one short-lived task per registration per node. The analysis groups a
+  write's events by user and kind within one second, the only place it reads timestamps from different machines.
+- **Where.** `node/directory.rs::{Change, watch}`, `metrics.rs`, `analysis/analyze.py::presence_metrics`.
+- **How we check it.** `every_node_logs_when_a_registration_shows_and_its_directory_each_second`;
+  `test_analyze.py::Presence`.
+- **Report notes.** The convergence figure and why it compares no clocks.
+
+### D294 · A `directory_state` report each second, with the directory's own digest
+
+- **Date:** 2026-11-24 · **Part:** G, with L · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** The plots need the directory's size over time, and a rejoin's directory should be shown equal to the others'.
+- **Options considered.** (1) *A once-a-second event from the presence service's own task (chosen).* (2) Add fields to
+  `state_digest` in `node/mod.rs`: A's reporter, and the state digest already covers the directory.
+- **Decision.** `directory_state { last_applied, digest, records, live, clock_ms, expired, superseded, revived }`, where `digest`
+  is `Directory::content_digest`. The analysis compares digests at equal `last_applied` (`directory_digest_mismatches`, must be 0).
+- **Why.** Cheap, in G's file, and a direct check of "same directory on all three".
+- **Consequences.** Equal `last_applied` across nodes in the same second is luck under load, so the comparison covers few
+  indexes then; the state checkpoints (D138) remain the full check.
+- **Where.** `node/directory.rs::spawn_report`.
+- **How we check it.** The same multi-node test.
+- **Report notes.** Directory size and expiries over a run.
+
+### D295 · `ctl discover` asks every node side by side, and the analysis gains the discovery metrics
+
+- **Date:** 2026-11-24 · **Part:** G, with C and L · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** Demo scenario 5 must "query by zone and capability on each node, and show that all three directories match".
+  The page's directory view is Part L's; the measures must appear in Part L's analysis.
+- **Options considered.** (1) *A `ctl discover` subcommand over TCP to each node, ending with one line on agreement, and
+  `presence_metrics` in `analysis/analyze.py` (chosen).* (2) Leave both to Part L: the demo could not run until the page does.
+- **Decision.** Option 1. `ctl discover [--zone] [--capability] [--limit]`. The last line is `same answer from N nodes`,
+  `answers differ, read at different log indexes: ask again`, or `DIFFERENT answers at the same log index: a bug`. The analysis
+  writes `discover_client_*`, `discover_node_*`, `presence_*` and `directory_*` (analysis/README.md).
+- **Why.** The scenario runs from a terminal today, and the numbers come out of the same `summary.csv` as everything else.
+- **Consequences.** `bin/ctl.rs` is C's file and `analysis/` is L's: both review. A node silenced or catching up shows as no
+  answer, as it should.
+- **Where.** `src/bin/ctl.rs`, `analysis/analyze.py`, `analysis/test_analyze.py`, `analysis/README.md`, `docs/demo.md`.
+- **How we check it.** `ctl`'s unit test; `test_analyze.py::Presence`; a run against `scripts/run-local.sh`.
+- **Report notes.** The demo transcript for scenario 5.
 
 ### D400 · A report made offline: `submit_or_queue`, and `submit` fails at once
 

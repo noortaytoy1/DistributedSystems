@@ -427,7 +427,11 @@ commits, then replies from the outcome: `Registered`/`Renewed` → `Registered {
 records, the lowest member of each node's view proposes `PresenceTick` every `presence.tick_ms` (D281). Node events (D292):
 `directory_query { zone, capability, records, log_index, latency_us }` for each `discover` answered, and
 `directory_write { user, kind, outcome, log_index, latency_us }` for each write this node proposed and committed, `latency_us`
-from the call arriving to the commit.
+from the call arriving to the commit. Every node that gets a `register` or `deregister` also logs
+`directory_seen { user, kind, proposer, log_index, wait_us }` when the change shows in its own directory, `wait_us` from the call
+arriving, polled every 2 ms for at most 10 s (D293). Once a second each node logs `directory_state { last_applied, digest,
+records, live, clock_ms, expired, superseded, revived }`, `digest` being the directory's own (D294). `ctl discover [--zone z]
+[--capability c] [--limit n]` asks every node over TCP and says whether the answers agree (D295).
 
 **Presence calls**, four new `ClientRpc` methods sent to every node like `submit`. They are client traffic: a silenced node
 drops them (D324).

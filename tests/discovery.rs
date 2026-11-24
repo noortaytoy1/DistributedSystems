@@ -353,3 +353,43 @@ async fn the_directory_works_the_same_under_rotating_rounds() {
     converged(&cluster, 0).await;
     cluster.shutdown().await;
 }
+
+/// The measurement (D293, D294): every node logs when a registration showed in its own directory, the
+/// proposer among them, and a report of its directory once a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_node_logs_when_a_registration_shows_and_its_directory_each_second() {
+    let dir = std::env::temp_dir().join(format!("rescuemesh-directory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let metrics = dir.clone();
+    let cluster = TestCluster::start_with(3, |c| {
+        fast(c);
+        c.metrics.dir = Some(metrics);
+    })
+    .await;
+    leader_everywhere(&cluster).await;
+    let a = MeshClient::new(69, &cluster.config, EventLog::disabled("a"));
+    a.join(user(69, 0), PresenceRole::Ordinary, 1, vec![])
+        .await
+        .unwrap();
+    let logged = |id: u64, what: &str| {
+        cluster.node(id).ctx.log.flush();
+        std::fs::read_to_string(dir.join(format!("node-{id}.jsonl")))
+            .is_ok_and(|text| text.contains(what))
+    };
+    for id in 1..=3 {
+        wait_until(WAIT, "directory_seen on every node", || {
+            logged(id, r#""ev":"directory_seen""#)
+        })
+        .await;
+        wait_until(WAIT, "directory_state on every node", || {
+            logged(id, r#""ev":"directory_state""#)
+        })
+        .await;
+    }
+    let proposers = (1..=3)
+        .filter(|id| logged(*id, r#""proposer":true"#))
+        .count();
+    assert_eq!(proposers, 1, "one node proposed the registration");
+    cluster.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

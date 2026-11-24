@@ -243,6 +243,37 @@ class TheLeadersRole(unittest.TestCase):
         self.assertEqual(m["commit_local_count"], 0)
 
 
+def seen(node_ts_s, user, wait_ms, kind="register", proposer=False):
+    return {"ts_us": T0 + int(node_ts_s * S), "ev": "directory_seen", "user": {"client": 1, "user": user},
+            "kind": kind, "proposer": proposer, "log_index": 1, "wait_us": wait_ms * 1000}
+
+
+def directory_state(last_applied, digest, records=3, expired=0):
+    return {"ts_us": T0, "ev": "directory_state", "last_applied": last_applied, "digest": digest,
+            "records": records, "live": records, "clock_ms": 0, "expired": expired, "superseded": 0,
+            "revived": 0}
+
+
+class Presence(unittest.TestCase):
+    def test_convergence_is_the_slowest_node_of_each_write(self):
+        events = {
+            "node-1": [seen(1.0, 7, 2, proposer=True), seen(5.0, 7, 4, kind="deregister"),
+                       directory_state(10, 99), directory_state(20, 5, expired=2)],
+            "node-2": [seen(1.001, 7, 3), seen(5.0, 7, 6, kind="deregister", proposer=True),
+                       directory_state(10, 99)],
+            "node-3": [seen(1.002, 7, 9), directory_state(20, 6)],
+            "client-1": [{"ts_us": T0 + 2 * S, "ev": "discovered", "latency_us": 4000}],
+        }
+        m = analyze.presence_metrics(events, T0)
+        self.assertEqual(m["presence_writes_seen_by_all"], 1)
+        self.assertEqual(m["presence_writes_seen_by_some"], 1, "the deregistration reached two nodes")
+        self.assertAlmostEqual(m["presence_convergence_p50_ms"], 9.0)
+        self.assertEqual(m["presence_seen_count"], 5)
+        self.assertAlmostEqual(m["discover_client_mean_ms"], 4.0)
+        self.assertEqual(m["directory_digest_mismatches"], 1, "index 20 differs between nodes 1 and 3")
+        self.assertEqual(m["directory_expired"], 2)
+
+
 class OneRun(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
