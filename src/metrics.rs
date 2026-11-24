@@ -421,6 +421,27 @@ pub enum Event {
         failed: usize,
         reconcile_us: u64,
     },
+    /// A peer update that could not get through is held by its sender, `held` in all now (D407).
+    PeerUpdateHeld {
+        update: UpdateId,
+        to_addr: String,
+        held: usize,
+    },
+    /// A held update got through. `ack` is `accepted` or `duplicate`; `since_made_ms` runs from when
+    /// its origin made it, on the origin's clock (D411).
+    PeerUpdateForwarded {
+        update: UpdateId,
+        to_addr: String,
+        ack: &'static str,
+        since_made_ms: u64,
+    },
+    /// A held update was let go undelivered. `reason` is `age`, `limit`, `obsolete` or `refused`
+    /// (D408, D409).
+    PeerUpdateDropped {
+        update: UpdateId,
+        to_addr: String,
+        reason: &'static str,
+    },
     // --- the P2P link (Phase 2, Part H, D464)
     /// This program's peer endpoint opened at `addr`, the address its presence records advertise.
     P2pListening {
