@@ -166,6 +166,17 @@ yields none. Results of one group share a `log_index` (D133).
 | `RegisterResponders { responders }`       | adds unknown responders; known ones are untouched. Any serving node proposes it at start until its state holds responders, so a log can hold several (D164) | `Applied` |
 | `CommitResult(ResultProposal)`            | the first result per report ID wins and holds its responder               | `Committed`, `Duplicate(winner)` or `Stale` |
 | `ReleaseResponder { responder, request }` | frees the responder if `request` holds it. Proposed by the node that planned after the service time, by other nodes after twice that (D39) | `Applied` |
+| `PresenceRegister { record, lease }` | puts the user's record in the directory, or replaces it; a zone move is a register with the new zone. A lower incarnation than the one held is refused (D282, D286) | `Presence(Registered)` or `Presence(Superseded)` |
+| `PresenceRenew { user, incarnation, lease }` | extends the lease of a live or late record at this incarnation (D285) | `Presence(Renewed)` or `Presence(Unknown)` |
+| `PresenceDeregister { user, incarnation, at_ms }` | removes the record if it is at this incarnation | `Presence(Deregistered)` or `Presence(Unknown)` |
+| `PresenceTick { at_ms }` | moves the directory's log clock and drops what ran out of grace (D281) | `Presence(Ticked { expired })` |
+
+**The presence directory's clock (D281).** Every presence command carries the proposing node's wall-clock time (`at_ms`, in
+`PresenceLease` for register and renew). The directory keeps the highest one applied as its log clock and never moves it back.
+A lease runs from its command's `at_ms` for `lease_ms` (live, found by `discover`), then `grace_ms` more (late: hidden, still
+renewable), then the record is gone, on every node at the same log position (D285). `lease_ms` and `grace_ms` are copied from
+the proposing node's `[presence]` config into the command, so the log decides them (D284). Every presence outcome carries its
+`log_index`, and the `commit` event logs it (D283).
 
 A plan whose responder is held by another report is chosen again at apply, the same way on every node (D241). `Stale` means the plan's responder is unknown. Nothing is recorded,
 and the winner plans again with fresh state. After 3 stale plans it makes a plan with nobody on it final, which cannot be stale, and
@@ -401,7 +412,8 @@ No message changes: a queued report is an ordinary `ClientRequest`, sent later w
 ## Presence and the P2P link (Phase 2, Part H, D310–D325)
 
 The contract from `part-h-peer-envelope`, the presence agent from `part-h-presence` and the P2P link from `part-h-p2p`. Until
-Part G's directory exists, every node answers the presence calls with `Rejected` (D325).
+Part G's directory exists, every node answers the presence calls with `Rejected` (D325). Part G's log commands for these calls are in the
+Raft log table above (D280 to D288).
 
 **Presence calls**, four new `ClientRpc` methods sent to every node like `submit`. They are client traffic: a silenced node
 drops them (D324).

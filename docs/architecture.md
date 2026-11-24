@@ -2127,7 +2127,9 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
 
 - **Discovery service** as a second state machine on the same Raft log: registrations and lease
   renewals become `Command` variants, so the directory is consistent on all three nodes with no new
-  protocol for copying the log (D69).
+  protocol for copying the log (D69). The log contract is in (Part G, D280 to D288): four presence commands, a lease clock
+  carried in the commands rather than read at apply (D281), and a live, late and gone record (D285). The directory itself
+  is planned, in `part-g-directory`.
 - **Leases with fencing tokens** for the node that plans: the token is the result's log position, so a stale holder's late write is rejected. The leader issues nothing new, because a new
   leader duty would go against the table in section 2 (D69, D163).
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
