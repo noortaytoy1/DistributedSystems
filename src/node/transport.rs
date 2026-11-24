@@ -820,6 +820,28 @@ pub type RequestHandler = Arc<dyn Fn(ClientRequest, ReplyTx) + Send + Sync>;
 /// Answers one control command. Must not block.
 pub type ControlHandler = Arc<dyn Fn(ControlRequest) -> ControlReply + Send + Sync>;
 
+/// One presence call as the presence service takes it (Part G, D290).
+#[derive(Debug, Clone)]
+pub enum PresenceCall {
+    Register(PresenceRecord),
+    Renew { user: UserId, incarnation: u64 },
+    Deregister { user: UserId, incarnation: u64 },
+    Discover(PresenceQuery),
+}
+
+/// What the presence service answers. A call's own reply type, so the right one goes back.
+#[derive(Debug, Clone)]
+pub enum PresenceAnswer {
+    Reply(PresenceReply),
+    Discover(DiscoverReply),
+}
+
+/// Handles one presence call. `None` keeps the call open with nothing said, as a node that is not the
+/// one to answer does (D36, D287). The server runs it in a task of its own, so a client's cancel
+/// cannot cut off a commit (D169).
+pub type PresenceHandler =
+    Arc<dyn Fn(PresenceCall) -> BoxFuture<'static, Option<PresenceAnswer>> + Send + Sync>;
+
 /// The server side of [`ClientRpc`].
 #[derive(Clone)]
 pub struct ClientServer {
@@ -827,6 +849,7 @@ pub struct ClientServer {
     msgs: Arc<MessageCounters>,
     on_request: RequestHandler,
     on_control: ControlHandler,
+    on_presence: PresenceHandler,
 }
 
 impl ClientServer {
@@ -835,12 +858,14 @@ impl ClientServer {
         msgs: Arc<MessageCounters>,
         on_request: RequestHandler,
         on_control: ControlHandler,
+        on_presence: PresenceHandler,
     ) -> Self {
         Self {
             gate,
             msgs,
             on_request,
             on_control,
+            on_presence,
         }
     }
 }
@@ -880,39 +905,68 @@ impl ClientRpc for ClientServer {
         (self.on_control)(ControlRequest::Incidents(query))
     }
 
-    // Presence is client traffic: a silenced node stays quiet, as for `submit` (D324). Until the
-    // directory exists every node refuses, so a client learns that at once instead of timing out (D325).
-    // TODO(G): hand these to the directory once Part G builds it.
+    // Presence is client traffic: a silenced node stays quiet, as for `submit` (D324). The presence
+    // service (Part G, `node/directory.rs`) decides the rest, and D325's refusals are gone (D290).
 
-    async fn register(self, _: tarpc::context::Context, _: PresenceRecord) -> PresenceReply {
-        self.no_directory_yet().await
-    }
-
-    async fn renew(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
-        self.no_directory_yet().await
-    }
-
-    async fn deregister(self, _: tarpc::context::Context, _: UserId, _: u64) -> PresenceReply {
-        self.no_directory_yet().await
-    }
-
-    async fn discover(self, _: tarpc::context::Context, _: PresenceQuery) -> DiscoverReply {
-        if self.gate.is_silenced() {
-            return std::future::pending().await;
+    async fn register(self, _: tarpc::context::Context, record: PresenceRecord) -> PresenceReply {
+        match self.presence(PresenceCall::Register(record)).await {
+            PresenceAnswer::Reply(reply) => reply,
+            PresenceAnswer::Discover(_) => std::future::pending().await,
         }
-        DiscoverReply::Rejected(NO_DIRECTORY.into())
+    }
+
+    async fn renew(
+        self,
+        _: tarpc::context::Context,
+        user: UserId,
+        incarnation: u64,
+    ) -> PresenceReply {
+        match self
+            .presence(PresenceCall::Renew { user, incarnation })
+            .await
+        {
+            PresenceAnswer::Reply(reply) => reply,
+            PresenceAnswer::Discover(_) => std::future::pending().await,
+        }
+    }
+
+    async fn deregister(
+        self,
+        _: tarpc::context::Context,
+        user: UserId,
+        incarnation: u64,
+    ) -> PresenceReply {
+        match self
+            .presence(PresenceCall::Deregister { user, incarnation })
+            .await
+        {
+            PresenceAnswer::Reply(reply) => reply,
+            PresenceAnswer::Discover(_) => std::future::pending().await,
+        }
+    }
+
+    async fn discover(self, _: tarpc::context::Context, query: PresenceQuery) -> DiscoverReply {
+        match self.presence(PresenceCall::Discover(query)).await {
+            PresenceAnswer::Discover(reply) => reply,
+            PresenceAnswer::Reply(_) => std::future::pending().await,
+        }
     }
 }
 
-/// Why every node refuses presence calls until Part G's directory is built (D325).
-const NO_DIRECTORY: &str = "no presence directory on this node yet (Part G)";
-
 impl ClientServer {
-    async fn no_directory_yet(&self) -> PresenceReply {
+    /// Run one presence call through the presence service, in its own task. Never returns when the
+    /// node stays quiet: the call lasts until the client cancels it or its deadline passes (D36).
+    async fn presence(&self, call: PresenceCall) -> PresenceAnswer {
+        // Over UDP the reader has already dropped this; a call over TCP arrives here first.
         if self.gate.is_silenced() {
             return std::future::pending().await;
         }
-        PresenceReply::Rejected(NO_DIRECTORY.into())
+        let work = tokio::spawn((self.on_presence)(call));
+        match work.await {
+            // The gate can have closed while the work ran.
+            Ok(Some(answer)) if !self.gate.is_silenced() => answer,
+            _ => std::future::pending().await,
+        }
     }
 }
 

@@ -301,6 +301,9 @@ Defaults from `config.rs`, tuned for a LAN:
 | `policy.leader_overload_ratio` | 3 | a leader is overloaded at this many times its lowest peer's mean bid. 0 turns the step-aside off, otherwise at least 2 (D218) |
 | `policy.leader_overload_for_ms` | 5000 | how long a leader must stay overloaded, without a break, before it steps aside (D218) |
 | `policy.leader_overload_cooldown_ms` | 60000 | no step-aside until this long after the last term change or the last try; at least 3000. This is what stops a storm of elections (D218) |
+| `presence.lease_ms` | 10000 | a registration or renewal keeps a user discoverable this long on the directory's log clock; clients renew at a third (D284, D320) |
+| `presence.grace_ms` | 5000 | after its lease a record is kept this long, hidden but renewable, then removed (D285) |
+| `presence.tick_ms` | 1000 | how often the lowest member of a node's view proposes `PresenceTick` while the directory holds records (D281) |
 
 Do not confuse `incident_ttl_ms` with the `hard_ttl` openraft gives one RPC. The deadline on one record is
 `assigned_at_ms + ttl_ms - age_ms`, and no timer waits on it.
@@ -411,9 +414,20 @@ No message changes: a queued report is an ordinary `ClientRequest`, sent later w
 
 ## Presence and the P2P link (Phase 2, Part H, D310–D325)
 
-The contract from `part-h-peer-envelope`, the presence agent from `part-h-presence` and the P2P link from `part-h-p2p`. Until
-Part G's directory exists, every node answers the presence calls with `Rejected` (D325). Part G's log commands for these calls are in the
-Raft log table above (D280 to D288).
+The contract from `part-h-peer-envelope`, the presence agent from `part-h-presence` and the P2P link from `part-h-p2p`. The nodes
+answer the presence calls from Part G's directory (`part-g-directory`, D289 to D292); its log commands are in the Raft log table
+above (D280 to D288). D325's refusals are gone (D290).
+
+**How a node answers (Part G, `node/directory.rs`).** A node that is not serving stays quiet. `discover` is answered by every
+serving node, degraded or not, from its applied directory at the log clock, labelled with its last applied index; a zone's answer
+takes one record per program first (D288). `register`, `renew` and `deregister` are proposed by one node only: the member of its
+view at `sample_mix(sample_mix(client) ^ user) mod size`; the others stay quiet, as does a node left alone (D287). The proposer
+commits, then replies from the outcome: `Registered`/`Renewed` → `Registered { lease_ms, log_index }`, `Unknown` and
+`Deregistered` → `Unknown`, `Superseded { held }` → `Rejected("superseded by incarnation N")` (D286). While the directory holds
+records, the lowest member of each node's view proposes `PresenceTick` every `presence.tick_ms` (D281). Node events (D292):
+`directory_query { zone, capability, records, log_index, latency_us }` for each `discover` answered, and
+`directory_write { user, kind, outcome, log_index, latency_us }` for each write this node proposed and committed, `latency_us`
+from the call arriving to the commit.
 
 **Presence calls**, four new `ClientRpc` methods sent to every node like `submit`. They are client traffic: a silenced node
 drops them (D324).

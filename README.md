@@ -51,8 +51,10 @@ experiments have not been run there.
 - **Phase 2, in progress:** offline clients and their outbox (D400–D406); the client's presence agent and the direct P2P link
   between client programs (D310–D339, D460–D465), each program listening on the first free UDP port of `[p2p]`'s range
   (default 20000–20999, so client PCs need `sudo ufw allow 20000:20999/udp`); zone gossip (D340–D368), which spreads each
-  committed report through its zone peer to peer, set by `[gossip]` in the config. Zone gossip needs the discovery directory,
-  which is still to come (`docs/phase2-plan.md`).
+  committed report through its zone peer to peer, set by `[gossip]` in the config; and the presence directory (D280–D292), a
+  second state machine on the shared log that every node answers `discover` from, with leases set by `[presence]` in the config
+  (10 s, plus 5 s of grace). A node from before the directory cannot read the new snapshot format: wipe `storage.dir` when you
+  upgrade (`docs/runbook.md`).
 
 ## Requirements
 

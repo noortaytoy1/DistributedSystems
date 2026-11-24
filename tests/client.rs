@@ -177,6 +177,7 @@ fn stub_config(addrs: &[String]) -> Config {
         consensus: Default::default(),
         p2p: Default::default(),
         gossip: Default::default(),
+        presence: Default::default(),
     };
     fast_retries(&mut config);
     config
@@ -633,19 +634,29 @@ async fn a_cancel_does_not_stop_the_nodes_work_and_is_counted() {
     })
     .await;
     // The committed answer is published into its zone (D366), so the gossip agent asks every node
-    // for the zone's programs once, the first time (D358): three more requests, each answered
-    // `Rejected` until Part G's directory exists (D325). Those calls end with an answer, so they add
-    // no cancel.
+    // for the zone's programs once, the first time (D358): three more requests. Every node answers
+    // from Part G's directory (D288, D290), and the first answer ends the other two calls, so each
+    // of those is either answered or cancelled, and a cancel that crosses its answer is both.
+    let discover_settled = || {
+        let c = client.udp_counts();
+        c.rx_datagrams.saturating_sub(1) + c.tx_cancels.saturating_sub(2) >= 3
+    };
     wait_until(
         Duration::from_secs(10),
         "the gossip agent's discover",
-        || client.udp_counts().rx_datagrams == 4,
+        discover_settled,
     )
     .await;
     let counts = client.udp_counts();
     assert_eq!(counts.tx_requests, 3 + 3, "3 report copies, 3 discovers");
-    assert_eq!(counts.rx_datagrams, 1 + 3, "one reply, 3 discover answers");
-    assert_eq!(counts.tx_cancels, 2);
+    assert!(
+        (2..=4).contains(&counts.rx_datagrams),
+        "one reply and at least one discover answer: {counts:?}"
+    );
+    assert!(
+        (2..=4).contains(&counts.tx_cancels),
+        "the report's 2 cancels and at most 2 for the discover: {counts:?}"
+    );
     cluster.shutdown().await;
 }
 

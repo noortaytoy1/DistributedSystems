@@ -327,15 +327,19 @@ table below in sync.
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 | D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
 | D267 | Phase 2 parts G to L, their owners, review pairs and design-log ID blocks | all | Decided |
-| D280 | Part G's first PR is the directory's log contract: four presence commands and their outcome | G, with A and H | Implemented (contract) |
-| D281 | The lease clock is the directory's log clock: the highest time a proposing node stamped | G | Implemented (contract) |
-| D282 | Four presence commands; a zone move is a registration, not a fifth command | G, with H | Implemented (contract) |
-| D283 | Presence outcomes carry their log index, which the node passes to the client | G, with A | Implemented (contract) |
-| D284 | A 10 s lease with 5 s of grace, a tick every second, and the lease carried in each command | G, with H | Accepted |
-| D285 | A record is live, then late (hidden, still renewable), then gone | G | Implemented (contract) |
-| D286 | Duplicate registrations: the higher incarnation wins, an equal one replaces, a lower one is refused | G, with H | Implemented (contract) |
-| D287 | One node proposes each user's presence commands, chosen by hashing the user over the view | G, with H and C | Accepted |
-| D288 | Discovery reads applied state at the log clock, labelled with the index, spread over programs | G, with H and I | Accepted |
+| D280 | Part G's first PR is the directory's log contract: four presence commands and their outcome | G, with A and H | Implemented |
+| D281 | The lease clock is the directory's log clock: the highest time a proposing node stamped | G | Implemented |
+| D282 | Four presence commands; a zone move is a registration, not a fifth command | G, with H | Implemented |
+| D283 | Presence outcomes carry their log index, which the node passes to the client | G, with A | Implemented |
+| D284 | A 10 s lease with 5 s of grace, a tick every second, and the lease carried in each command | G, with H | Implemented |
+| D285 | A record is live, then late (hidden, still renewable), then gone | G | Implemented |
+| D286 | Duplicate registrations: the higher incarnation wins, an equal one replaces, a lower one is refused | G, with H | Implemented |
+| D287 | One node proposes each user's presence commands, chosen by hashing the user over the view | G, with H and C | Implemented |
+| D288 | Discovery reads applied state at the log clock, labelled with the index, spread over programs | G, with H and I | Implemented, answers D357 |
+| D289 | The directory is a pure `Directory` in `src/discovery.rs`, held by `CloudState`, with indexes | G, with A | Implemented |
+| D290 | The node's presence handler is `node/directory.rs`, reached through a handler on the client port | G, with A and C | Implemented, supersedes D325 |
+| D291 | An optional `[presence]` config section: `lease_ms`, `grace_ms`, `tick_ms` | G, with A | Implemented |
+| D292 | Node events `directory_query` and `directory_write`; the hard cases tested on real nodes | G, with L | Implemented |
 | D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
 | D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
 | D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
@@ -365,7 +369,7 @@ table below in sync.
 | D322 | `to: Option<UserId>`: one user, or everyone in the zone | H, with I | Implemented (contract) |
 | D323 | The presence record's fields, and the program's start time as its incarnation | H, with G | Implemented (contract) |
 | D324 | Presence calls are client traffic: the fault gate drops them | H, with C | Implemented |
-| D325 | Until Part G's directory exists, every node answers presence calls with `Rejected` | H, with G | Implemented, to be replaced by G |
+| D325 | Until Part G's directory exists, every node answers presence calls with `Rejected` | H, with G | Superseded by D290 |
 | D326 | The presence agent lives in a new file, `src/presence.rs`, held by `MeshClient` | H, with F | Implemented |
 | D327 | Presence calls go to all three nodes, with the report's retries, and end at once if every node refuses | H | Implemented |
 | D328 | One renewal loop per program, renewing due users together, with ±10% jitter | H | Implemented |
@@ -425,7 +429,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carries a request to Part G, and D368 lists what Part I still changes later.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts, and D368 lists what Part I still changes later. D280 to D292 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
 
 ---
 
@@ -8358,7 +8362,7 @@ them on the six PCs.
 
 ### D280 · Part G's first PR is the directory's log contract: four presence commands and their outcome
 
-- **Date:** 2026-11-24 · **Part:** G, with A and H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on
+- **Date:** 2026-11-24 · **Part:** G, with A and H · **Status:** Implemented · **Decided by:** Omar Leithy, on
   the agent's recommendation. Omar asked the agent to take every recommendation without a grill, for the team to review
   against the class notes once Phase 2 is done; every G entry dated 2026-11-24 was decided that way.
 - **Context.** The plan (D267, `docs/phase2-plan.md` section 3) makes Part G's first PR "the `Command` and query
@@ -8372,8 +8376,8 @@ them on the six PCs.
      contract three parts already code against, for something G can do inside its own answer.
 - **Decision.** Option 1. `Command::{PresenceRegister, PresenceRenew, PresenceDeregister, PresenceTick}`,
   `PresenceLease`, `Outcome::Presence(PresenceOutcome)` and `Outcome::log_index()`. `PresenceRecord` gains `Hash`,
-  because commands are hashed into the digest. `CloudState::apply` takes the new commands as no-ops, marked
-  `TODO(G)`, until `part-g-directory` builds the directory; nothing proposes them before then.
+  because commands are hashed into the digest. `CloudState::apply` took the new commands as no-ops in the contract PR; `part-g-directory` builds the directory
+  (D289).
 - **Why.** The smallest contract that unblocks the others: H's agent, I's discovery of zone programs and J's claims
   need to know how presence is ordered and timed, not new client messages.
 - **Consequences.** `proto.rs` is shared: the PR needs Wahiba's review (H sends the calls these commands come from) and
@@ -8385,7 +8389,7 @@ them on the six PCs.
 
 ### D281 · The lease clock is the directory's log clock: the highest time a proposing node stamped, carried in the commands
 
-- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the agent's
+- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
   recommendation (see D280)
 - **Context.** A lease must expire the same way on every node, and the state machine may not read a clock (AGENTS.md,
   "Deterministic core"). The plan recommends counting leases in shared-log rounds. In the code that does not work as
@@ -8421,7 +8425,7 @@ them on the six PCs.
 
 ### D282 · Four presence commands; a zone move is a registration, not a fifth command
 
-- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented · **Decided by:** Omar Leithy, on the
   agent's recommendation (see D280)
 - **Context.** The plan lists register, renew lease, deregister and change zone. H's contract (D323) already sends a
   zone move as a new `register` with the new zone, and H's agent does that (`move_zone`, D331).
@@ -8442,7 +8446,7 @@ them on the six PCs.
 
 ### D283 · Presence outcomes carry their log index, which the node passes to the client
 
-- **Date:** 2026-11-24 · **Part:** G, with A · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+- **Date:** 2026-11-24 · **Part:** G, with A · **Status:** Implemented · **Decided by:** Omar Leithy, on the
   agent's recommendation (see D280)
 - **Context.** `PresenceReply::Registered { lease_ms, log_index }` (D320) needs the log index the registration was applied
   at, and the node handling the call learns about the commit only through the outcome.
@@ -8459,7 +8463,7 @@ them on the six PCs.
 
 ### D284 · A 10 s lease with 5 s of grace, a tick every second, and the lease carried in each command
 
-- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Accepted; config keys built in `part-g-directory` ·
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented ·
   **Decided by:** Omar Leithy, on the agent's recommendation (see D280)
 - **Context.** The plan suggests a 10 s lease renewed every 3 s, from Phase 1's lab timings: failure detection in about
   1 s (D41), the client's 2 s retry (`client_retry_ms`), and node faults of up to 20 s. H's agent renews at a third of the
@@ -8484,7 +8488,7 @@ them on the six PCs.
 
 ### D285 · A record is live, then late (hidden, still renewable), then gone
 
-- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the agent's
+- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
   recommendation (see D280)
 - **Context.** The spec's hard case "delayed heartbeats" asks for a grace period before expiry. A renewal that arrives a
   little late should not force a full new registration.
@@ -8503,7 +8507,7 @@ them on the six PCs.
 
 ### D286 · Duplicate registrations: the higher incarnation wins, an equal one replaces, a lower one is refused
 
-- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented · **Decided by:** Omar Leithy, on the
   agent's recommendation (see D280)
 - **Context.** The spec's "duplicate registrations". The incarnation is the program's start time (D323), so a restarted
   program has a higher one; the same program registers again with the same one after losing its lease (D329) or to move
@@ -8522,7 +8526,7 @@ them on the six PCs.
 
 ### D287 · One node proposes each user's presence commands, chosen by hashing the user over the view; discovery is answered by every node
 
-- **Date:** 2026-11-24 · **Part:** G, with H and C · **Status:** Accepted; built in `part-g-directory` · **Decided by:**
+- **Date:** 2026-11-24 · **Part:** G, with H and C · **Status:** Implemented · **Decided by:**
   Omar Leithy, on the agent's recommendation (see D280)
 - **Context.** A client sends every presence call to all three nodes (D327). If all three proposed, renewals alone would
   put three times users ÷ 3.3 s commands in the log (D284), harmless because commands are idempotent but heavy at 5,000
@@ -8547,7 +8551,7 @@ them on the six PCs.
 
 ### D288 · Discovery reads this node's applied state at the log clock, labels it with the index, and spreads a zone's answer over programs
 
-- **Date:** 2026-11-24 · **Part:** G, with H and I · **Status:** Accepted; built in `part-g-directory` · **Decided by:**
+- **Date:** 2026-11-24 · **Part:** G, with H and I · **Status:** Implemented · **Decided by:**
   Omar Leithy, on the agent's recommendation (see D280)
 - **Context.** The plan's second decision (read consistency), already in H's contract as "local reads labelled with the
   index" (D321). D357 asks G to return at most one record per program before any second one, so 16 records reach up to
@@ -8569,6 +8573,88 @@ them on the six PCs.
 - **How we check it.** Unit tests for the order and the filters; the multi-node test compares the three nodes' answers.
 - **Report notes.** Consistency model for presence: sequential through the log, reads possibly stale by a few entries,
   labelled.
+
+### D289 · The directory is a pure `Directory` in a new `src/discovery.rs`, held by `CloudState`, with indexes by zone, capability and expiry
+
+- **Date:** 2026-11-24 · **Part:** G, with A · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** The plan asks for "a deterministic directory, in a new pure file `src/discovery.rs` … like `state.rs`",
+  included in the digest and in `state_checkpoint`. `state.rs` is Part A's file and already 870 lines.
+- **Options considered.**
+  1. *A `Directory` type in `discovery.rs`, owned by G, which `CloudState` holds and hands the four commands to (chosen).*
+     `state.rs` gains one field, four match arms and an accessor.
+  2. *Everything inside `state.rs`.* One file, but two parts' rules mixed, and A reviews all of G's code.
+  3. *A second state machine beside `CloudState`, applied separately.* Needs both consensus modes and the snapshot to
+     know about two states: much more of A's code changes.
+- **Decision.** Option 1. `Directory` keeps `entries: BTreeMap<UserId, Entry>` and three indexes, `by_gone`
+  (`BTreeSet<(gone_at_ms, UserId)>`), `by_zone` and `by_capability`, so expiry costs the records that go and a zone query
+  costs the zone. The clock and the record states are D281 and D285. The state digest
+  needs nothing new: it already chains every command and outcome. `Directory::content_digest` hashes only the records and
+  the clock, for the convergence measurement (D293).
+- **Why.** Same shape as the rest of the deterministic core, testable without a node, and the least change to A's code.
+- **Consequences.** `CloudState`'s snapshot (bincode) changes format, so a node on this version must start with an empty
+  `storage.dir`, as after every version change (AGENTS.md, `docs/runbook.md`).
+- **Where.** `src/discovery.rs`, `src/state.rs` (`CloudState::directory`), `src/lib.rs`.
+- **How we check it.** `discovery::tests` (13 unit tests: every hard case, idempotence, two copies agree, the order and
+  limit of answers).
+- **Report notes.** Class diagram: `CloudState` holds `Directory`.
+
+### D290 · The node's presence handler is a new application file, `node/directory.rs`, reached through one new handler on the client port
+
+- **Date:** 2026-11-24 · **Part:** G, with A and C · **Status:** Implemented, replaces D325's refusals · **Decided by:**
+  Omar Leithy, on the agent's recommendation (see D280)
+- **Context.** The plan says the cloud handler goes "through `node/service.rs` and `CloudGroup`, not past the middleware
+  line". `node/transport.rs` (C) answered every presence call with `Rejected` until now (D325, `TODO(G)`).
+- **Options considered.**
+  1. *A new application file `node/directory.rs`, beside `service.rs`; the client port gets a `PresenceHandler` next to
+     its `RequestHandler` and `ControlHandler`; `middleware.rs` re-exports the two call types (chosen).*
+  2. *Add presence to `service.rs`.* A's file, about reports; mixing the two makes both harder to explain.
+- **Decision.** Option 1. `transport::PresenceCall` is `Register`, `Renew`, `Deregister` or `Discover`, and the handler
+  answers `Option<PresenceAnswer>`: `None` keeps the call open, as a node that stays quiet does (D36). The handler runs
+  in a task of its own, so a client's cancel cannot cut off a commit (D169). The fault gate is checked before and after,
+  as for `submit` (D324). `tests/layers.rs` now checks `node/directory.rs` as a cloud application file.
+- **Why.** The service and the presence service are both applications on the same middleware; each stays readable, and
+  the layering test covers both.
+- **Consequences.** C's `transport.rs` and A's `node/mod.rs` change (the handler and two spawns): both owners review.
+- **Where.** `src/node/directory.rs`, `src/node/transport.rs`, `src/node/mod.rs`, `src/middleware.rs`, `tests/layers.rs`.
+- **How we check it.** `tests/discovery.rs` with real nodes and H's real presence agent.
+- **Report notes.** The layer diagram gains the presence service beside the incident service.
+
+### D291 · An optional `[presence]` config section: `lease_ms`, `grace_ms`, `tick_ms`
+
+- **Date:** 2026-11-24 · **Part:** G, with A · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** D284's values must be configurable for experiments and short for tests.
+- **Options considered.** (1) *An optional section, every key defaulting to D284's value (chosen),* like `[gossip]`
+  (D364). (2) Keys under `[timers]`: that section is required in every config and checked as a whole.
+- **Decision.** Option 1. Validation: `lease_ms > 0`, `tick_ms > 0`, `tick_ms <= lease_ms`; `grace_ms` may be 0.
+  `config/local.toml` and `config/lab.example.toml` list the defaults.
+- **Why.** Old configs keep working; one place documents the timing.
+- **Consequences.** None for Phase 1 runs.
+- **Where.** `config.rs::PresenceSettings`, both configs.
+- **How we check it.** `config::tests::presence_keys_are_optional_and_validated`.
+- **Report notes.** None.
+
+### D292 · Two node events, `directory_query` and `directory_write`, and the tests of the hard cases with real nodes
+
+- **Date:** 2026-11-24 · **Part:** G, with L · **Status:** Implemented · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** The plan's measures are discovery query latency (a node-side event plus the client's) and
+  presence-table convergence. The client side already logs `discovered` (D334).
+- **Options considered.** (1) *One event per query and one per committed write, each with its latency on the node's
+  clock and the log index (chosen).* (2) Only counters in the once-a-second report: no latency distribution.
+- **Decision.** Option 1. `directory_query { zone, capability, records, log_index, latency_us }` (the node's share of a
+  discovery, a read under the state lock) and `directory_write { user, kind, outcome, log_index, latency_us }` (from the
+  call arriving to the commit). The multi-node tests in `tests/discovery.rs`: registration, discovery by zone and
+  capability on every node with the same answer, expiry the same on every node, a zone move, a restarted program's
+  higher incarnation, a node that was down rebuilding the directory from the log, and a user whose proposer is silenced.
+- **Why.** Gives Part L the raw events for the plots, and covers each of the spec's hard cases twice: in the pure core
+  and on real nodes.
+- **Consequences.** One event per presence call per node; at 5,000 users per PC the node logs about 1,500 writes a
+  second. JSON Lines handles it, as it handles reports.
+- **Where.** `metrics.rs`, `node/directory.rs`, `tests/discovery.rs`.
+- **How we check it.** 10 runs in a row of `cargo test --test discovery`.
+- **Report notes.** Node-side against client-side discovery latency.
 
 ### D400 · A report made offline: `submit_or_queue`, and `submit` fails at once
 
@@ -8958,7 +9044,7 @@ them on the six PCs.
 
 ### D325 · Until Part G's directory exists, every node answers presence calls with `Rejected`
 
-- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Implemented, to be replaced by G · **Decided by:** Wahiba
+- **Date:** 2026-11-24 · **Part:** H, with G · **Status:** Superseded by D290 · **Decided by:** Wahiba
   Elhimer, on the agent's recommendation (grill, 2026-11-24)
 - **Context.** Adding methods to `ClientRpc` means every server must implement them now, before the directory exists.
 - **Options considered.** Answer `Rejected("no presence directory on this node yet (Part G)")` (chosen); stay quiet

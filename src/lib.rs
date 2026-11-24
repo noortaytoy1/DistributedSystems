@@ -8,6 +8,8 @@
 //! layer        client PC                        cloud node
 //! -----------  -------------------------------  -------------------------------------------------
 //! application  bin/loadgen.rs: the users        node/service.rs: the incident service
+//!                                               node/directory.rs, discovery.rs: the presence
+//!                                               service and its directory (Part G)
 //!              bin/frontend.rs: the web page    node/release.rs, planner.rs, state.rs: its rules
 //!              campus.rs                        campus.rs
 //! -----------  middleware.rs, the one interface the application may use  ------------------------
@@ -33,6 +35,7 @@ pub mod bidding;
 pub mod campus;
 pub mod client;
 pub mod config;
+pub mod discovery;
 pub mod gossip;
 pub mod metrics;
 pub mod middleware;

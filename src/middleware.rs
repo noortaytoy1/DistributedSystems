@@ -53,6 +53,8 @@ pub use crate::p2p::{Delivered, PeerError};
 // The cloud side: what the incident service calls.
 pub use crate::node::group::{CloudGroup, View};
 pub use crate::node::transport::ReplyTx;
+// The presence service (Phase 2, Part G): one presence call and its answer (D290).
+pub use crate::node::transport::{PresenceAnswer, PresenceCall};
 pub use crate::node::workers::Overloaded;
 pub(crate) use crate::node::{Decision, decide_executor};
 pub use crate::node::{NodeContext, degraded};

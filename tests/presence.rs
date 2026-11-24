@@ -145,6 +145,7 @@ async fn stubs(n: usize) -> (Vec<Arc<Directory>>, Config) {
         consensus: Default::default(),
         p2p: Default::default(),
         gossip: Default::default(),
+        presence: Default::default(),
     };
     config.timers.client_retry_ms = 50;
     config.timers.client_retry_max_ms = 100;
