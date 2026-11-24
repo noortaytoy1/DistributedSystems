@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::proto::{NodeId, PeerBody, RaftRpc, RequestId, ResponderId};
+use crate::proto::{Capability, NodeId, PeerBody, RaftRpc, RequestId, ResponderId, UserId, ZoneId};
 
 /// Wall-clock time in unix microseconds. Use it for event timestamps only; measure durations
 /// with `std::time::Instant`.
@@ -418,6 +418,40 @@ pub enum Event {
         expired: usize,
         failed: usize,
         reconcile_us: u64,
+    },
+    // --- presence (Phase 2, Part H, D334)
+    /// The directory took `user`'s registration and gave a lease of `lease_ms`. `again` is true for a
+    /// re-registration: a zone move, a lost lease, or a return from offline (D329). `latency_us`
+    /// runs from the first send to the answer, on the client's clock.
+    PresenceRegistered {
+        user: UserId,
+        lease_ms: u64,
+        latency_us: u64,
+        again: bool,
+    },
+    /// A lease was renewed (D320).
+    PresenceRenewed {
+        user: UserId,
+        latency_us: u64,
+    },
+    /// The agent thinks the directory may have dropped `user`, and registers it again. `reason` is
+    /// `unknown to the directory` or `lease ran out` (D329).
+    PresenceLost {
+        user: UserId,
+        reason: &'static str,
+    },
+    /// The user left the directory on purpose.
+    PresenceLeft {
+        user: UserId,
+    },
+    /// A discovery query was answered with `records` records, read at `log_index`. `latency_us` is
+    /// the client's side of the discovery query latency (D334).
+    Discovered {
+        zone: Option<ZoneId>,
+        capability: Option<Capability>,
+        records: usize,
+        log_index: u64,
+        latency_us: u64,
     },
     /// A client connection to `node` was opened (D112). Nothing logs this since reports moved to
     /// UDP, which has no connection (D167). Kept because the analysis reads the name in old runs.

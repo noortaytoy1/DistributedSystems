@@ -429,3 +429,16 @@ of it.
 
 Every peer message and the largest `discover` answer fit one 1,400-byte datagram with tarpc's wrapping
 (`proto::tests::the_largest_peer_update_and_discover_answer_fit_one_datagram`).
+
+**The presence agent** (`src/presence.rs`, from `part-h-presence`, D326–D335). The client side of the calls above.
+
+| Item | What it is |
+|------|------------|
+| `MeshClient::join(user, role, zone, capabilities, peer_addr)` | Registers the user and keeps renewing its lease until `leave`; returns the lease (D326, D330, D331) |
+| `leave(user)`, `move_zone(user, zone)` | Stop and deregister; register again with the new zone |
+| `discover(query)`, `discover_zone(z)`, `discover_capability(c)` | Ask every node; a limit above 16 is lowered (D321, D331) |
+| Sending | Every node, the report's retry waits and budget; ends at once with `Rejected` when every node refuses (D327) |
+| Renewal | One loop per program; each user at a third of its lease ±10%; a failed renewal tries again after at most 2 s (D328, D329) |
+| Lost lease | `Unknown`, or no renewal that worked for a whole lease: register again, same incarnation (D329) |
+| Offline | Nothing is sent; on `go_online` every joined user registers again (D329) |
+| Events | `presence_registered`, `presence_renewed`, `presence_lost`, `presence_left`, `discovered` (D334) |
