@@ -110,6 +110,12 @@ impl CloudState {
                 }
                 Outcome::Applied
             }
+            // TODO(G): the directory applies these in `part-g-directory` (D280). Nothing proposes
+            // them before then.
+            Command::PresenceRegister { .. }
+            | Command::PresenceRenew { .. }
+            | Command::PresenceDeregister { .. }
+            | Command::PresenceTick { .. } => Outcome::Applied,
         };
         self.last_index = index;
         self.digest = chain(self.digest, index, cmd, &outcome);

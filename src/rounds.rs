@@ -1524,10 +1524,7 @@ impl Consensus for RoundsNode {
                     outcome: outcome.kind(),
                     latency_us,
                     forwarded: false,
-                    log_index: match outcome {
-                        Outcome::Committed(r) => Some(r.log_index),
-                        _ => None,
-                    },
+                    log_index: outcome.log_index(),
                 }),
                 Err(e) => self.inner.log.log(Event::ProposeFailed {
                     request,

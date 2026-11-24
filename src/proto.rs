@@ -245,6 +245,43 @@ pub enum Command {
         responder: ResponderId,
         request: RequestId,
     },
+    /// Put a user in the presence directory, or replace its record: a zone move is a new
+    /// registration with the new zone (D282, D323). A lower incarnation than the one held is
+    /// refused (D286). The lease runs from `at_ms` on the directory's log clock (D281).
+    PresenceRegister {
+        record: PresenceRecord,
+        lease: PresenceLease,
+    },
+    /// Extend the lease of the user's record at this incarnation. Nothing to extend is answered
+    /// [`PresenceOutcome::Unknown`] (D282).
+    PresenceRenew {
+        user: UserId,
+        incarnation: u64,
+        lease: PresenceLease,
+    },
+    /// Take the user's record out, if it is still at this incarnation (D282).
+    PresenceDeregister {
+        user: UserId,
+        incarnation: u64,
+        at_ms: u64,
+    },
+    /// Move the directory's log clock to `at_ms` and drop what expired by then, so leases run out
+    /// with no client traffic too (D281).
+    PresenceTick { at_ms: u64 },
+}
+
+/// When a presence lease starts and how long it lasts, as the proposing node stamped it (D281,
+/// D284). In the command, so the log decides it and every node applies the same numbers whatever its
+/// own clock and config say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PresenceLease {
+    /// The proposing node's wall clock, unix milliseconds. It moves the directory's log clock
+    /// forward, never back.
+    pub at_ms: u64,
+    /// The record is found by `discover` until `at_ms + lease_ms`.
+    pub lease_ms: u64,
+    /// After the lease, the record is kept for `grace_ms` more, hidden but renewable (D285).
+    pub grace_ms: u64,
 }
 
 impl Command {
@@ -254,6 +291,10 @@ impl Command {
             Command::RegisterResponders { .. } => "register_responders",
             Command::CommitResult(_) => "commit_result",
             Command::ReleaseResponder { .. } => "release_responder",
+            Command::PresenceRegister { .. } => "presence_register",
+            Command::PresenceRenew { .. } => "presence_renew",
+            Command::PresenceDeregister { .. } => "presence_deregister",
+            Command::PresenceTick { .. } => "presence_tick",
         }
     }
 
@@ -261,7 +302,11 @@ impl Command {
         match self {
             Command::CommitResult(p) => Some(p.request),
             Command::ReleaseResponder { request, .. } => Some(*request),
-            Command::RegisterResponders { .. } => None,
+            Command::RegisterResponders { .. }
+            | Command::PresenceRegister { .. }
+            | Command::PresenceRenew { .. }
+            | Command::PresenceDeregister { .. }
+            | Command::PresenceTick { .. } => None,
         }
     }
 }
@@ -444,6 +489,8 @@ pub enum Outcome {
     },
     /// Applied with nothing to report (registration, release, internal Raft entries).
     Applied,
+    /// What a presence command did to the directory (D283).
+    Presence(PresenceOutcome),
 }
 
 impl Outcome {
@@ -454,6 +501,66 @@ impl Outcome {
             Outcome::Duplicate(_) => "duplicate",
             Outcome::Stale { .. } => "stale",
             Outcome::Applied => "applied",
+            Outcome::Presence(p) => p.kind(),
+        }
+    }
+
+    /// The log index the command was applied at, where the outcome says it.
+    pub fn log_index(&self) -> Option<u64> {
+        match self {
+            Outcome::Committed(r) => Some(r.log_index),
+            Outcome::Presence(p) => Some(p.log_index()),
+            Outcome::Duplicate(_) | Outcome::Stale { .. } | Outcome::Applied => None,
+        }
+    }
+}
+
+/// What a presence command did, with the log index it was applied at, which the node passes on to
+/// the client (D283, D320).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PresenceOutcome {
+    /// The record is in, until `lease_ends_ms` on the directory's log clock.
+    Registered {
+        lease_ms: u64,
+        lease_ends_ms: u64,
+        log_index: u64,
+    },
+    /// The lease is extended, until `lease_ends_ms`.
+    Renewed {
+        lease_ms: u64,
+        lease_ends_ms: u64,
+        log_index: u64,
+    },
+    /// A record with a higher incarnation is held: this one lost (D286).
+    Superseded { held: u64, log_index: u64 },
+    /// No record for this user at this incarnation: it expired, was replaced or never came (D282).
+    Unknown { log_index: u64 },
+    /// The record is out.
+    Deregistered { log_index: u64 },
+    /// The log clock moved; `expired` records ran out of grace and are gone (D285).
+    Ticked { expired: u32, log_index: u64 },
+}
+
+impl PresenceOutcome {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PresenceOutcome::Registered { .. } => "presence_registered",
+            PresenceOutcome::Renewed { .. } => "presence_renewed",
+            PresenceOutcome::Superseded { .. } => "presence_superseded",
+            PresenceOutcome::Unknown { .. } => "presence_unknown",
+            PresenceOutcome::Deregistered { .. } => "presence_deregistered",
+            PresenceOutcome::Ticked { .. } => "presence_ticked",
+        }
+    }
+
+    pub fn log_index(&self) -> u64 {
+        match *self {
+            PresenceOutcome::Registered { log_index, .. }
+            | PresenceOutcome::Renewed { log_index, .. }
+            | PresenceOutcome::Superseded { log_index, .. }
+            | PresenceOutcome::Unknown { log_index }
+            | PresenceOutcome::Deregistered { log_index }
+            | PresenceOutcome::Ticked { log_index, .. } => log_index,
         }
     }
 }
@@ -560,8 +667,9 @@ pub enum PresenceRole {
 
 /// One user in the presence directory: what `register` sends and what `discover` returns (D319,
 /// D323). The lease's expiry is not here: the directory keeps it by its own lease clock (Part G),
-/// and a client only learns the lease length, from [`PresenceReply::Registered`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// and a client only learns the lease length, from [`PresenceReply::Registered`]. `Hash` because it
+/// travels in [`Command::PresenceRegister`], which the state digest hashes (D282).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PresenceRecord {
     /// One record per user, not per program (D319). Many users of one program share its endpoint.
     pub user: UserId,
@@ -1103,6 +1211,53 @@ mod tests {
         });
         let back: Command = decode(&encode(&cmd).unwrap()).unwrap();
         assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn presence_commands_and_outcomes_round_trip() {
+        let user = UserId { client: 7, user: 3 };
+        let lease = PresenceLease {
+            at_ms: 1_700_000_000_000,
+            lease_ms: 10_000,
+            grace_ms: 5_000,
+        };
+        let commands = [
+            Command::PresenceRegister {
+                record: PresenceRecord {
+                    user,
+                    role: PresenceRole::VolunteerResponder,
+                    zone: 4,
+                    peer_addr: "10.0.0.7:20001".into(),
+                    capabilities: vec![Capability::Medical, Capability::Rescue],
+                    incarnation: 1_700_000_000_000,
+                },
+                lease,
+            },
+            Command::PresenceRenew {
+                user,
+                incarnation: 1,
+                lease,
+            },
+            Command::PresenceDeregister {
+                user,
+                incarnation: 1,
+                at_ms: 5,
+            },
+            Command::PresenceTick { at_ms: 6 },
+        ];
+        for cmd in commands {
+            let back: Command = decode(&encode(&cmd).unwrap()).unwrap();
+            assert_eq!(back, cmd);
+        }
+        let outcome = Outcome::Presence(PresenceOutcome::Registered {
+            lease_ms: 10_000,
+            lease_ends_ms: 1_700_000_010_000,
+            log_index: 42,
+        });
+        let back: Outcome = decode(&encode(&outcome).unwrap()).unwrap();
+        assert_eq!(back, outcome);
+        assert_eq!(outcome.log_index(), Some(42));
+        assert_eq!(outcome.kind(), "presence_registered");
     }
 
     /// A record with a 60 s TTL.

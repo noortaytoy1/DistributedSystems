@@ -327,6 +327,15 @@ table below in sync.
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 | D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
 | D267 | Phase 2 parts G to L, their owners, review pairs and design-log ID blocks | all | Decided |
+| D280 | Part G's first PR is the directory's log contract: four presence commands and their outcome | G, with A and H | Implemented (contract) |
+| D281 | The lease clock is the directory's log clock: the highest time a proposing node stamped | G | Implemented (contract) |
+| D282 | Four presence commands; a zone move is a registration, not a fifth command | G, with H | Implemented (contract) |
+| D283 | Presence outcomes carry their log index, which the node passes to the client | G, with A | Implemented (contract) |
+| D284 | A 10 s lease with 5 s of grace, a tick every second, and the lease carried in each command | G, with H | Accepted |
+| D285 | A record is live, then late (hidden, still renewable), then gone | G | Implemented (contract) |
+| D286 | Duplicate registrations: the higher incarnation wins, an equal one replaces, a lower one is refused | G, with H | Implemented (contract) |
+| D287 | One node proposes each user's presence commands, chosen by hashing the user over the view | G, with H and C | Accepted |
+| D288 | Discovery reads applied state at the log clock, labelled with the index, spread over programs | G, with H and I | Accepted |
 | D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
 | D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
 | D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
@@ -8346,6 +8355,220 @@ them on the six PCs.
 - **How we check it.** Every Phase 2 PR names its part and cites IDs from its owner's block; a search for duplicate
   `### D` headings finds none.
 - **Report notes.** The Phase 2 contribution section follows these parts.
+
+### D280 · Part G's first PR is the directory's log contract: four presence commands and their outcome
+
+- **Date:** 2026-11-24 · **Part:** G, with A and H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on
+  the agent's recommendation. Omar asked the agent to take every recommendation without a grill, for the team to review
+  against the class notes once Phase 2 is done; every G entry dated 2026-11-24 was decided that way.
+- **Context.** The plan (D267, `docs/phase2-plan.md` section 3) makes Part G's first PR "the `Command` and query
+  messages", due 2026-11-25 because H, I and J build on it. Wahiba's contract (D310 to D325) already added the
+  client-facing half: the four `ClientRpc` presence calls, `PresenceRecord`, `PresenceReply`, `PresenceQuery` and
+  `DiscoverReply`, merged in #35. What is left is the half inside the cloud: how a presence call becomes a log entry.
+- **Options considered.**
+  1. *Only the log half: `Command` variants, their `Outcome`, and the entries that fix the lease clock and timings
+     (chosen).* The client calls stay as H made them.
+  2. *Redo the query messages too* (for example a `distinct_programs` flag, D357's option 2). A second change to a
+     contract three parts already code against, for something G can do inside its own answer.
+- **Decision.** Option 1. `Command::{PresenceRegister, PresenceRenew, PresenceDeregister, PresenceTick}`,
+  `PresenceLease`, `Outcome::Presence(PresenceOutcome)` and `Outcome::log_index()`. `PresenceRecord` gains `Hash`,
+  because commands are hashed into the digest. `CloudState::apply` takes the new commands as no-ops, marked
+  `TODO(G)`, until `part-g-directory` builds the directory; nothing proposes them before then.
+- **Why.** The smallest contract that unblocks the others: H's agent, I's discovery of zone programs and J's claims
+  need to know how presence is ordered and timed, not new client messages.
+- **Consequences.** `proto.rs` is shared: the PR needs Wahiba's review (H sends the calls these commands come from) and
+  A's for `state.rs`, `raft/mod.rs` and `rounds.rs` (one line each, the commit event's `log_index`).
+- **Where.** `src/proto.rs`, `src/state.rs`, `src/raft/mod.rs`, `src/rounds.rs`, `src/node/degraded.rs`.
+- **How we check it.** `proto::tests::presence_commands_and_outcomes_round_trip`; the workspace builds and every
+  existing test passes.
+- **Report notes.** The presence service adds commands, not a mechanism (D69).
+
+### D281 · The lease clock is the directory's log clock: the highest time a proposing node stamped, carried in the commands
+
+- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** A lease must expire the same way on every node, and the state machine may not read a clock (AGENTS.md,
+  "Deterministic core"). The plan recommends counting leases in shared-log rounds. In the code that does not work as
+  written: (1) rounds exist only with `consensus = "rounds"`, and Raft is still the default in the code and in the tests
+  (D249); (2) a round with nothing to say is never sent or logged, so the number of rounds in the log does not measure
+  time; (3) `CloudState::apply` sees a log index and never a round number, and D249 kept it that way on purpose.
+- **Options considered.**
+  1. *A log clock (chosen).* Every presence command carries the proposing node's wall-clock time, `at_ms`. The
+     directory keeps `clock_ms`, the highest `at_ms` applied so far, and judges every lease by it. A
+     `PresenceTick { at_ms }` command, proposed by serving nodes once a second while the directory holds records, moves
+     the clock when no client is sending. The time is in the log, so every node applies the same number, as with
+     `assigned_at_ms` (D144).
+  2. *Rounds, as the plan says.* Needs the round number passed into `apply` in rounds mode, and some other clock under
+     Raft, so two clocks and two sets of tests.
+  3. *Count log entries.* Deterministic but meaningless: a busy minute and an idle one differ a thousandfold.
+  4. *Each node expires by its own clock and proposes a `PresenceExpire`.* Deterministic too, but two nodes with
+     different clocks propose different expiries, and an expiry races with a renewal through the log.
+- **Decision.** Option 1. The clock only moves forward (`max`), so a command from a node with a slower clock cannot
+  bring a lease back. A lease starts at its command's `at_ms`, not at the clock, so applying the same command twice
+  gives the same lease.
+- **Why.** It works the same under both consensus modes, needs no change to how either orders the log, and expires
+  every record at the same log position on every node, which is what the plan's recommendation was for.
+- **Consequences.** (1) A node whose clock runs ahead moves the log clock ahead and shortens every lease by its error.
+  The lab runs NTP (AGENTS.md) and the grace period (D285) absorbs seconds. A node an hour ahead would expire everyone:
+  said openly, not guarded. (2) While the cloud cannot commit, the clock stops, so nothing expires during an outage
+  either; the first command after it expires what was not renewed, and those clients register again (D329). (3) The
+  ticks add up to three tiny entries a second, only while the directory is not empty.
+- **Where.** `proto.rs::{PresenceLease, Command::PresenceTick}`; the directory in `part-g-directory`.
+- **How we check it.** Unit tests in `discovery.rs` that the same commands in the same order expire the same records,
+  whatever order ticks from different nodes arrive in; a multi-node test that all three nodes hold the same directory
+  after an expiry.
+- **Report notes.** "Time in the log": the deterministic-core rule applied to leases, and why it is not rounds.
+
+### D282 · Four presence commands; a zone move is a registration, not a fifth command
+
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+  agent's recommendation (see D280)
+- **Context.** The plan lists register, renew lease, deregister and change zone. H's contract (D323) already sends a
+  zone move as a new `register` with the new zone, and H's agent does that (`move_zone`, D331).
+- **Options considered.**
+  1. *`PresenceRegister`, `PresenceRenew`, `PresenceDeregister` and `PresenceTick` (chosen).* A zone move is a register
+     with the same incarnation and the new zone.
+  2. *A separate `PresenceMoveZone`.* Matches the plan's list, but the client has no call that would send it, and it
+     would duplicate register.
+- **Decision.** Option 1. Every command is idempotent (AGENTS.md): register keeps the later of two lease ends, renew the
+  same, deregister removes only the incarnation it names, tick takes the higher clock.
+- **Why.** One way to change a record keeps the rules (incarnation, lease, indexes) in one place.
+- **Consequences.** The directory counts a register that changes the zone as a zone move, for the spec's "a user
+  moving between zones" case. A deregister retried after the same incarnation registered again would remove it: this
+  needs a lost answer and a quick re-join in the same program, and the next renewal puts the user back (D329).
+- **Where.** `proto.rs::Command`.
+- **How we check it.** The zone-move and idempotence tests in `discovery.rs`.
+- **Report notes.** The command table.
+
+### D283 · Presence outcomes carry their log index, which the node passes to the client
+
+- **Date:** 2026-11-24 · **Part:** G, with A · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+  agent's recommendation (see D280)
+- **Context.** `PresenceReply::Registered { lease_ms, log_index }` (D320) needs the log index the registration was applied
+  at, and the node handling the call learns about the commit only through the outcome.
+- **Options considered.** (1) *An `Outcome::Presence(PresenceOutcome)` whose variants hold `log_index` (chosen).* (2)
+  Read the state's last index after the commit: wrong whenever another entry applied in between.
+- **Decision.** Option 1: `Registered`, `Renewed`, `Superseded`, `Unknown`, `Deregistered` and `Ticked`, each with
+  `log_index`. `Outcome::log_index()` gives it for any outcome that has one, and the `commit` event now logs it for
+  presence commands as for results.
+- **Why.** Exact, and the outcome is already in the digest.
+- **Consequences.** None for Phase 1 code: degraded mode treats a presence outcome as unexpected, as it does `Applied`.
+- **Where.** `proto.rs::{Outcome, PresenceOutcome}`.
+- **How we check it.** The round-trip test; the node's reply tests in `part-g-directory`.
+- **Report notes.** None.
+
+### D284 · A 10 s lease with 5 s of grace, a tick every second, and the lease carried in each command
+
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Accepted; config keys built in `part-g-directory` ·
+  **Decided by:** Omar Leithy, on the agent's recommendation (see D280)
+- **Context.** The plan suggests a 10 s lease renewed every 3 s, from Phase 1's lab timings: failure detection in about
+  1 s (D41), the client's 2 s retry (`client_retry_ms`), and node faults of up to 20 s. H's agent renews at a third of the
+  lease (D320) and retries a failed renewal within 2 s (D329).
+- **Options considered.**
+  1. *Lease 10 s, grace 5 s, tick 1 s (chosen).* Renewal every 3.3 s: two renewals can be lost and the lease still
+     holds; grace covers a third, a slow minute on the lab Wi-Fi, or clock skew between nodes (D281).
+  2. *Lease 5 s.* Faster to notice a user gone, but one lost renewal plus a retry already eats the lease.
+  3. *Lease 30 s.* Very safe, but a crashed program stays discoverable for half a minute, and the spec's expiry is slow
+     to demo.
+- **Decision.** Option 1, as config keys `[presence] lease_ms = 10000`, `grace_ms = 5000`, `tick_ms = 1000`. The
+  proposing node copies `lease_ms` and `grace_ms` into the command (`PresenceLease`), so the log, not each node's file,
+  decides a lease.
+- **Why.** Matches the plan's numbers and Phase 1's measured timings; the tick is ten times finer than the lease, so
+  expiry is late by at most about a second.
+- **Consequences.** Renewal traffic is users ÷ 3.3 s commands: about 300 a second for 1,000 users. At 5,000 users per
+  client PC it is about 4,500 a second, which the experiments must measure (Part L). Longer leases are the knob if it
+  costs too much.
+- **Where.** `proto.rs::PresenceLease`; `config.rs` and the configs in `part-g-directory`.
+- **How we check it.** The lease and grace tests; the presence-convergence measurement in `part-g-measure`.
+- **Report notes.** Lease, renewal and grace timing, derived from Phase 1's measurements.
+
+### D285 · A record is live, then late (hidden, still renewable), then gone
+
+- **Date:** 2026-11-24 · **Part:** G · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the agent's
+  recommendation (see D280)
+- **Context.** The spec's hard case "delayed heartbeats" asks for a grace period before expiry. A renewal that arrives a
+  little late should not force a full new registration.
+- **Options considered.**
+  1. *Three states by the log clock (chosen):* **live** until `at_ms + lease_ms`, found by `discover`; **late** until
+     `+ grace_ms` more, not found but kept, and a renewal brings it back; **gone** after that, removed on every node at
+     the same log position, and a renewal gets `Unknown`.
+  2. *Grace folded into the lease.* Simpler, but a dead user stays discoverable for 15 s instead of 10.
+  3. *No grace.* A delayed renewal loses the record and costs a re-registration.
+- **Decision.** Option 1.
+- **Why.** Discovery never offers a peer that missed its lease, and a delayed heartbeat costs nothing.
+- **Consequences.** The `Ticked` outcome counts the records that went from late to gone.
+- **Where.** `proto.rs::{PresenceLease, PresenceOutcome}`; `discovery.rs`.
+- **How we check it.** `discovery.rs` tests for a renewal in grace and one after it.
+- **Report notes.** The record state diagram in `docs/architecture.md`.
+
+### D286 · Duplicate registrations: the higher incarnation wins, an equal one replaces, a lower one is refused
+
+- **Date:** 2026-11-24 · **Part:** G, with H · **Status:** Implemented (contract) · **Decided by:** Omar Leithy, on the
+  agent's recommendation (see D280)
+- **Context.** The spec's "duplicate registrations". The incarnation is the program's start time (D323), so a restarted
+  program has a higher one; the same program registers again with the same one after losing its lease (D329) or to move
+  zone.
+- **Options considered.** (1) *Higher wins, equal replaces the record and extends the lease, lower is refused
+  (chosen).* (2) Last write wins: an old program's delayed registration would overwrite its restart.
+- **Decision.** Option 1. A lower incarnation gets `Superseded { held }`, which the node answers as
+  `PresenceReply::Rejected("superseded by incarnation N")`. A renew or deregister naming another incarnation gets
+  `Unknown` and changes nothing.
+- **Why.** The rule in the plan, and it makes any order of the two programs' messages end the same.
+- **Consequences.** A program whose clock went back on restart would be refused until its old record expires; NTP makes
+  this unlikely.
+- **Where.** `discovery.rs`.
+- **How we check it.** The duplicate-registration tests.
+- **Report notes.** The hard cases table.
+
+### D287 · One node proposes each user's presence commands, chosen by hashing the user over the view; discovery is answered by every node
+
+- **Date:** 2026-11-24 · **Part:** G, with H and C · **Status:** Accepted; built in `part-g-directory` · **Decided by:**
+  Omar Leithy, on the agent's recommendation (see D280)
+- **Context.** A client sends every presence call to all three nodes (D327). If all three proposed, renewals alone would
+  put three times users ÷ 3.3 s commands in the log (D284), harmless because commands are idempotent but heavy at 5,000
+  users per PC. Reports avoid this with a bid (D2), which is too costly for a renewal.
+- **Options considered.**
+  1. *Every node proposes.* Simplest and fastest, three times the log load.
+  2. *One node per user: the member of this node's view at `sample_mix(user) mod size`; the others stay quiet (chosen).*
+     A node that stays quiet means "not me" (D36), so the client takes the one answer. When the chosen node fails, the
+     others drop it from their view after `degraded_after_ms` (2 s) and the next one takes the user; the client's
+     retries cover the gap.
+  3. *One node per user with the others waiting to see the commit and taking over after a backstop*, like D110. Faster
+     after a failure, much more code.
+- **Decision.** Option 2. `discover` is a read and every serving node answers it from its own state.
+- **Why.** One log entry per call, no coordination, and the failure path reuses the group's view and the client's
+  retries.
+- **Consequences.** (1) Two nodes whose views differ for a moment can both propose: harmless, the commands are
+  idempotent. (2) A refusal (`Superseded`) comes from one node only, so the client waits for its other two calls to time
+  out before giving up; refusals are rare. (3) A call to a chosen node that has just failed waits up to about 2 s.
+- **Where.** The node's presence handler in `part-g-directory`.
+- **How we check it.** A multi-node test that registers with one node silenced.
+- **Report notes.** Why presence needs no election: the user's hash is the agreement.
+
+### D288 · Discovery reads this node's applied state at the log clock, labels it with the index, and spreads a zone's answer over programs
+
+- **Date:** 2026-11-24 · **Part:** G, with H and I · **Status:** Accepted; built in `part-g-directory` · **Decided by:**
+  Omar Leithy, on the agent's recommendation (see D280)
+- **Context.** The plan's second decision (read consistency), already in H's contract as "local reads labelled with the
+  index" (D321). D357 asks G to return at most one record per program before any second one, so 16 records reach up to
+  16 programs.
+- **Options considered.**
+  1. *Local read, judged at the directory's log clock, not the node's wall clock; answers in user order, first one
+     record per program, then the rest (chosen).*
+  2. *A linearizable read through the leader or a quorum* (Raft's read index): exact, but costs a round trip and does
+     not exist under rotating rounds.
+  3. *Judge "live" by the node's wall clock.* Fresher for an idle cloud, but two nodes at the same index would answer
+     differently.
+- **Decision.** Option 1, and D357's request is accepted with no contract change.
+- **Why.** Two nodes at the same log index give the same answer, so "same on all three nodes" can be shown in the demo
+  (scenario 5); the spec asks only for "sufficiently consistent". A node a few entries behind answers a few entries
+  behind, and says which.
+- **Consequences.** A record can be late by up to one tick when the cloud is idle. A zone of more than 16 programs is
+  seen 16 at a time, always the same 16 (lowest user IDs first).
+- **Where.** `discovery.rs::Directory::discover`.
+- **How we check it.** Unit tests for the order and the filters; the multi-node test compares the three nodes' answers.
+- **Report notes.** Consistency model for presence: sequential through the log, reads possibly stale by a few entries,
+  labelled.
 
 ### D400 · A report made offline: `submit_or_queue`, and `submit` fails at once
 
