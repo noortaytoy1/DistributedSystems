@@ -18,7 +18,7 @@
 //!
 //! Phase 2 (D430): with `workload.lifecycle = true` in the config, each user also has a role and
 //! registers, subscribes, discovers, talks to peers, offers, claims, moves zone and goes offline.
-//! Actions whose part is not merged yet are stubs, counted as `stub` (D433).
+//! Offers and claims are stubs until Part J merges, counted as `stub` (D433, D436).
 //!
 //! Every address comes from `--config`, so the same command works on all three client machines.
 //! Prints throughput and percentiles; raw events go to `metrics.dir` from the config. TERM or
@@ -39,8 +39,13 @@ use rand::{Rng, SeedableRng};
 use rescuemesh::campus;
 use rescuemesh::config::{CampusConfig, Config, WorkloadConfig};
 use rescuemesh::metrics::{self, Event, EventLog, now_ms};
-use rescuemesh::middleware::{ClientError, Delivery, MeshClient, Reconciled};
-use rescuemesh::proto::{ClientId, IncidentStatus, UserId, ZoneId};
+use rescuemesh::middleware::{
+    ClientError, Delivery, MeshClient, PeerError, PeerSend, PresenceError, Reconciled,
+};
+use rescuemesh::proto::{
+    Capability, ClientId, Incident, IncidentStatus, IncidentSummary, P2pAck, P2pBody, Point,
+    PresenceRecord, PresenceRole, RequestId, ResourceOffer, UserId, ZoneId,
+};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -433,10 +438,15 @@ fn role_counts(users: u32, w: &WorkloadConfig) -> (u32, u32, u32) {
     })
 }
 
-/// One user's Phase 2 life: its role, its zone and its own generator (D430).
+/// One user's Phase 2 life: its role, its zone, what it can do, the peers it last found, and its own
+/// generator (D430).
 struct Life {
     role: Role,
     zone: ZoneId,
+    /// What a responder or provider offers; none for an ordinary user.
+    capability: Option<Capability>,
+    /// Users of other programs from this user's last discovery: whom a peer send goes to (D436).
+    found: Vec<PresenceRecord>,
     rng: StdRng,
 }
 
@@ -454,9 +464,13 @@ impl Life {
             ^ LIFE_STREAM;
         let mut rng = StdRng::seed_from_u64(stream);
         let zone = rng.gen_range(0..zones.max(1));
+        let role = role_of(user, users, w);
+        let capability = Capability::ALL[rng.gen_range(0..Capability::ALL.len())];
         Self {
-            role: role_of(user, users, w),
+            role,
             zone,
+            capability: (role != Role::Ordinary).then_some(capability),
+            found: Vec::new(),
             rng,
         }
     }
@@ -484,38 +498,168 @@ impl Life {
             self.zone = (self.zone + self.rng.gen_range(1..zones)) % zones;
         }
     }
+
+    /// The directory's word for this role.
+    fn presence_role(&self) -> PresenceRole {
+        match self.role {
+            Role::Ordinary => PresenceRole::Ordinary,
+            Role::Responder => PresenceRole::VolunteerResponder,
+            Role::Provider => PresenceRole::ResourceProvider,
+        }
+    }
+
+    /// A peer from the last discovery, at random. `None` if it found nobody in another program.
+    fn pick_peer(&mut self) -> Option<PresenceRecord> {
+        (!self.found.is_empty())
+            .then(|| self.found[self.rng.gen_range(0..self.found.len())].clone())
+    }
 }
 
-/// A Phase 2 call other than a report. Until the part behind it merges, it is a stub: it sends
-/// nothing and counts as `stub`, so no number in the analysis can come from it (D433).
-async fn phase2_call(action: Action, life: &mut Life, zones: u16) -> &'static str {
+/// What every user of one program shares for the Phase 2 calls.
+struct Shared {
+    client: Arc<MeshClient>,
+    zones: u16,
+    /// The last incident this program reported: what an ordinary user or a responder passes to a
+    /// peer, so a peer update is about a real report (D436).
+    last_report: Mutex<Option<IncidentSummary>>,
+    /// A place in each zone, taken from the campus's first responder there: where a provider says
+    /// its offer is.
+    spots: Vec<Point>,
+}
+
+impl Shared {
+    fn new(client: Arc<MeshClient>, campus: &CampusConfig) -> Self {
+        let mut spots = vec![Point { x: 0, y: 0 }; usize::from(campus.zones.max(1))];
+        for r in campus::responders(campus).iter().rev() {
+            if let Some(spot) = spots.get_mut(usize::from(r.zone)) {
+                *spot = r.location;
+            }
+        }
+        Self {
+            client,
+            zones: campus.zones,
+            last_report: Mutex::new(None),
+            spots,
+        }
+    }
+
+    fn spot(&self, zone: ZoneId) -> Point {
+        self.spots
+            .get(usize::from(zone))
+            .copied()
+            .unwrap_or(Point { x: 0, y: 0 })
+    }
+}
+
+/// An outcome name for a presence call (D436). `rejected` is what every node answers until Part G's
+/// directory merges (D325).
+fn presence_outcome<T>(result: &Result<T, PresenceError>) -> &'static str {
+    match result {
+        Ok(_) => "ok",
+        Err(PresenceError::Rejected(_)) => "rejected",
+        Err(PresenceError::GaveUp { .. }) => "gave_up",
+        Err(PresenceError::Offline) => "offline",
+        Err(PresenceError::NotJoined(_)) => "not_joined",
+        Err(PresenceError::NoPeerEndpoint) => "no_endpoint",
+    }
+}
+
+/// An outcome name for a peer send (D436).
+fn peer_outcome(result: &Result<PeerSend, PeerError>) -> &'static str {
+    match result {
+        Ok(PeerSend::Delivered(d)) => match d.ack {
+            P2pAck::Accepted => "delivered",
+            P2pAck::Duplicate => "duplicate",
+            P2pAck::Refused(_) => "refused",
+        },
+        Ok(PeerSend::Held) => "held",
+        Err(PeerError::Offline) => "offline",
+        Err(PeerError::GaveUp { .. }) => "gave_up",
+        Err(_) => "failed",
+    }
+}
+
+/// A Phase 2 call other than a report (D433, D436). Join, discovery, moving zone and peer sends are
+/// Part H's real calls; offers and claims stay stubs until Part J merges, sending nothing and
+/// counted as `stub`, so no number in the analysis can come from them.
+async fn phase2_call(
+    action: Action,
+    life: &mut Life,
+    owner: UserId,
+    shared: &Shared,
+) -> &'static str {
+    let client = &shared.client;
     match action {
-        // TODO(L): MeshClient's register, through Part H's presence agent, when G and H merge.
-        Action::Register => "stub",
-        // TODO(L): subscribe to `life.zone` when Part I merges.
-        Action::Subscribe => "stub",
-        // TODO(L): discover by zone or capability when G and H merge.
-        Action::Discover => "stub",
-        // TODO(L): send to a discovered peer when Part H merges.
-        Action::PeerSend => "stub",
+        Action::Register => {
+            let capabilities = life.capability.into_iter().collect();
+            presence_outcome(
+                &client
+                    .join(owner, life.presence_role(), life.zone, capabilities)
+                    .await,
+            )
+        }
+        // The program subscribes to the zones of its joined users (Part I, D359): joining is the
+        // subscription, so this counts what the join did.
+        Action::Subscribe => "with_join",
+        Action::Discover => {
+            // By zone, or by capability half the time for a user who has one.
+            let found = match life.capability {
+                Some(capability) if life.rng.gen_bool(0.5) => {
+                    client.discover_capability(capability).await
+                }
+                _ => client.discover_zone(life.zone).await,
+            };
+            if let Ok(found) = &found {
+                life.found = found
+                    .records
+                    .iter()
+                    .filter(|r| r.user.client != owner.client)
+                    .cloned()
+                    .collect();
+            }
+            presence_outcome(&found)
+        }
+        Action::PeerSend => {
+            let Some(peer) = life.pick_peer() else {
+                return "no_peer";
+            };
+            let body = match life.role {
+                Role::Provider => P2pBody::ResourceOffer(ResourceOffer {
+                    provider: owner,
+                    capability: life.capability.unwrap_or(Capability::ALL[0]),
+                    zone: life.zone,
+                    location: shared.spot(life.zone),
+                    available_until_ms: now_ms() + OFFER_FOR_MS,
+                }),
+                Role::Ordinary | Role::Responder => {
+                    let Some(summary) = lock(&shared.last_report).clone() else {
+                        return "nothing_to_send";
+                    };
+                    P2pBody::IncidentSummary(summary)
+                }
+            };
+            let update = client.new_update(owner, Some(peer.user), peer.zone, 1, 0, body);
+            peer_outcome(&client.send_peer_or_hold(&peer.peer_addr, update).await)
+        }
         // TODO(L): offer and claim when Part J merges.
         Action::Offer | Action::Claim => "stub",
         Action::MoveZone => {
-            // The user moves even now, so its zone is right when the directory call arrives.
-            // TODO(L): tell the directory (G) and move the subscription (I) when they merge.
-            life.move_zone(zones);
-            "stub"
+            life.move_zone(shared.zones);
+            presence_outcome(&client.move_zone(owner, life.zone).await)
         }
         // Reports go through `lifecycle_user`, never here.
         Action::Report => "not_a_phase2_call",
     }
 }
 
+/// How long a provider's offer to a peer says it holds.
+const OFFER_FOR_MS: u64 = 60_000;
+
 /// One user's Phase 2 loop: register, subscribe, then one action per think time as its role says,
 /// until the run ends. Reports are real and counted as in Phase 1.
 #[allow(clippy::too_many_arguments)]
 async fn lifecycle_user(
-    client: Arc<MeshClient>,
+    shared: Arc<Shared>,
     campus: CampusConfig,
     mut life: Life,
     mut rng: StdRng,
@@ -536,7 +680,7 @@ async fn lifecycle_user(
     };
     for action in [Action::Register, Action::Subscribe] {
         let started = Instant::now();
-        let outcome = phase2_call(action, &mut life, campus.zones).await;
+        let outcome = phase2_call(action, &mut life, owner, &shared).await;
         count(&stats, started, action, outcome);
     }
     pause(pacer.first_wait(owner.user, users, now_ms()), stop_at).await;
@@ -544,9 +688,16 @@ async fn lifecycle_user(
         let started = Instant::now();
         let action = life.next_action();
         if action == Action::Report {
-            let outcome = client
-                .submit_or_queue(incident(&mut rng, &campus, owner))
-                .await;
+            let report = incident(&mut rng, &campus, owner);
+            let outcome = shared.client.submit_or_queue(report.clone()).await;
+            let id = match &outcome {
+                Ok(Delivery::Answered(done)) => Some(done.id),
+                Ok(Delivery::Queued(id)) => Some(*id),
+                Err(_) => None,
+            };
+            if let Some(id) = id {
+                *lock(&shared.last_report) = Some(summary_of(id, &report));
+            }
             let shown = match &outcome {
                 Ok(Delivery::Answered(_)) => "answered",
                 Ok(Delivery::Queued(_)) => "queued",
@@ -558,10 +709,49 @@ async fn lifecycle_user(
                 lock(&stats).record(outcome);
             }
         } else {
-            let outcome = phase2_call(action, &mut life, campus.zones).await;
+            let outcome = phase2_call(action, &mut life, owner, &shared).await;
             count(&stats, started, action, outcome);
         }
         pause(pacer.next_wait(now_ms()), stop_at).await;
+    }
+}
+
+/// A report as peers pass it on.
+fn summary_of(id: RequestId, report: &Incident) -> IncidentSummary {
+    IncidentSummary {
+        incident: id,
+        category: report.category,
+        severity: report.severity,
+        zone: report.zone,
+        location: report.location,
+        needs: report.needs,
+        reported_at_ms: report.reported_at_ms,
+    }
+}
+
+/// Reads what other programs deliver to this one, so the inbox never fills, and counts it by kind
+/// as `peer_received:<kind>` (D436). Ends when the client is dropped.
+async fn drain_peer_updates(
+    client: Arc<MeshClient>,
+    measure_from: Instant,
+    stats: Arc<Mutex<Stats>>,
+) {
+    let Some(mut updates) = client.take_peer_updates() else {
+        return;
+    };
+    drop(client);
+    while let Some(update) = updates.recv().await {
+        if Instant::now() >= measure_from {
+            let kind = match update.body {
+                P2pBody::IncidentSummary(_) => "incident_summary",
+                P2pBody::ResourceOffer(_) => "resource_offer",
+                P2pBody::AssignmentUpdate(_) => "assignment_update",
+            };
+            *lock(&stats)
+                .actions
+                .entry(format!("peer_received:{kind}"))
+                .or_default() += 1;
+        }
     }
 }
 
@@ -576,6 +766,12 @@ async fn lifecycle_loop(
     stats: Arc<Mutex<Stats>>,
 ) {
     let total = args.users;
+    let drain = tokio::spawn(drain_peer_updates(
+        client.clone(),
+        measure_from,
+        stats.clone(),
+    ));
+    let shared = Arc::new(Shared::new(client, &campus));
     let mut users = JoinSet::new();
     for user in 0..total {
         let life = Life::new(
@@ -591,7 +787,7 @@ async fn lifecycle_loop(
             user,
         };
         users.spawn(lifecycle_user(
-            client.clone(),
+            shared.clone(),
             campus,
             life,
             user_rng(args.seed, u64::from(user)),
@@ -604,6 +800,8 @@ async fn lifecycle_loop(
         ));
     }
     while users.join_next().await.is_some() {}
+    // What arrived after the users stopped is not counted.
+    drain.abort();
 }
 
 /// When this program's random outages start, as offsets from the run's start (D432). Each whole
@@ -1192,20 +1390,60 @@ mod tests {
         assert_eq!(l.zone, 0, "one zone: nowhere to go");
     }
 
-    #[tokio::test]
-    async fn every_call_but_a_report_is_a_stub_until_its_part_merges() {
+    #[test]
+    fn only_responders_and_providers_offer_a_capability() {
+        assert_eq!(life(0, 100, 5, 1).capability, None);
+        assert!(life(85, 100, 5, 1).capability.is_some());
+        assert!(life(97, 100, 5, 1).capability.is_some());
+        assert_eq!(
+            life(85, 100, 5, 1).presence_role(),
+            PresenceRole::VolunteerResponder
+        );
+        assert_eq!(
+            life(97, 100, 5, 1).presence_role(),
+            PresenceRole::ResourceProvider
+        );
+    }
+
+    #[test]
+    fn a_peer_comes_from_the_last_discovery_or_not_at_all() {
         let mut l = life(0, 1, 5, 1);
-        for action in [
-            Action::Register,
-            Action::Subscribe,
-            Action::Discover,
-            Action::PeerSend,
-            Action::Offer,
-            Action::Claim,
-            Action::MoveZone,
-        ] {
-            assert_eq!(phase2_call(action, &mut l, 6).await, "stub", "{action:?}");
-        }
+        assert_eq!(l.pick_peer(), None);
+        let record = PresenceRecord {
+            user: UserId { client: 2, user: 3 },
+            role: PresenceRole::Ordinary,
+            zone: 1,
+            peer_addr: "10.0.0.2:20000".into(),
+            capabilities: vec![],
+            incarnation: 1,
+        };
+        l.found = vec![record.clone()];
+        assert_eq!(l.pick_peer(), Some(record));
+    }
+
+    #[test]
+    fn outcomes_name_what_happened_and_no_directory_reads_as_rejected() {
+        let rejected: Result<(), _> = Err(PresenceError::Rejected("no directory".into()));
+        assert_eq!(presence_outcome(&rejected), "rejected");
+        assert_eq!(presence_outcome(&Ok::<_, PresenceError>(())), "ok");
+        assert_eq!(
+            presence_outcome::<()>(&Err(PresenceError::Offline)),
+            "offline"
+        );
+        let delivered = |ack| {
+            Ok(PeerSend::Delivered(rescuemesh::middleware::Delivered {
+                ack,
+                latency: Duration::from_millis(1),
+                tries: 1,
+            }))
+        };
+        assert_eq!(peer_outcome(&delivered(P2pAck::Accepted)), "delivered");
+        assert_eq!(peer_outcome(&delivered(P2pAck::Duplicate)), "duplicate");
+        assert_eq!(peer_outcome(&Ok(PeerSend::Held)), "held");
+        assert_eq!(
+            peer_outcome(&Err(PeerError::GaveUp { tries: 3 })),
+            "gave_up"
+        );
     }
 
     #[test]

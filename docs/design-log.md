@@ -443,9 +443,10 @@ table below in sync.
 | D430 | The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default | L | Implemented |
 | D431 | Three roles by fixed share (80, 15, 5) and a per-role action mix | L | Implemented |
 | D432 | Random outages per program, drawn once a minute, through Part K's switch | L | Implemented |
-| D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented |
+| D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented, amended by D436 |
 | D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Accepted |
 | D435 | P2P traffic runs between the client PCs only, and the cloud's bytes prove it | L | Accepted |
+| D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10797,7 +10798,7 @@ them on the six PCs.
 
 ### D433 · Actions of parts not merged yet are stubs that send nothing and count as `stub`
 
-- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented, amended by D436 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** The plan starts Part L's workload "from stubs where other parts are not merged yet". A stub must not produce a number that looks measured.
 - **Options considered.**
   1. *A stub returns at once, sends nothing, and is counted as `action:stub` (chosen).*
@@ -10837,6 +10838,28 @@ them on the six PCs.
 - **Where.** `experiments/`, `analysis/` (to come).
 - **How we check it.** The scenario 6 cell shows no growth in the cloud's bytes during the exchange.
 - **Report notes.** One plot: cloud bytes against P2P messages over time.
+
+### D436 · The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs
+
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented, amends D433 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-24)
+- **Context.** Part H's presence agent and P2P link (D326–D339, D460–D465) and Part I's zone gossip (D340–D368) merged after D433. D465 leaves the P2P load in loadgen to Part L. Part G's directory is not merged, so every node answers presence calls with `Rejected` (D325). Part J is not merged.
+- **Options considered.**
+  1. *Call the merged parts now, and count each outcome by name (chosen).* Until Part G merges, joins and discoveries count as `rejected`; the same code measures once it lands.
+  2. *Keep them stubs until Part G merges.* Nothing to change later in one place, but the lifecycle would not exercise Part H's code on the lab until the last days.
+- **Decision.** Option 1:
+  - **Register** is `MeshClient::join` with the user's role, home zone and, for a responder or provider, one capability drawn at start.
+  - **Subscribe** counts as `with_join`: a program subscribes to the zones of its joined users (D359).
+  - **Discover** asks by zone, or by capability half the time for a user who has one, and keeps the users of other programs it found.
+  - **Move zone** is `MeshClient::move_zone`.
+  - **Peer send** goes, through `send_peer_or_hold`, to a user from the last discovery. A provider sends a `ResourceOffer`; anyone else sends an `IncidentSummary` of the last incident its program reported, so a peer update is about a real report. With nobody found it counts as `no_peer`.
+  - **Offer and claim** stay stubs with `TODO(L)` until Part J merges.
+  - **Received updates** are read from `take_peer_updates`, so the inbox never fills, and counted as `peer_received:<kind>`.
+  - **Outcome names:** `ok`, `rejected`, `gave_up`, `offline`, `not_joined`, `no_endpoint` for presence; `delivered`, `duplicate`, `refused`, `held`, `offline`, `gave_up`, `failed` for peer sends.
+- **Why.** Every outcome is named after what really happened, so a `rejected` today is not mistaken for a measurement, and the analysis needs no change when Part G merges.
+- **Consequences.** Until Part G merges, a lifecycle run shows `register:rejected`, `discover:rejected`, `move_zone:not_joined` and `peer_send:no_peer`.
+- **Where.** `bin/loadgen.rs::{phase2_call, Shared, presence_outcome, peer_outcome, drain_peer_updates}`.
+- **How we check it.** `outcomes_name_what_happened_and_no_directory_reads_as_rejected`, `a_peer_comes_from_the_last_discovery_or_not_at_all`, `only_responders_and_providers_offer_a_capability`. By hand on three local nodes, 20 users for 70 s: 941 reports answered, one 10 s outage with all 196 queued reports answered after it, and every presence call `rejected`, as expected without Part G.
+- **Report notes.** The full list of outcome names goes with the methodology.
 
 ### Notes on older entries
 

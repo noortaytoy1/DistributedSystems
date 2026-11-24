@@ -580,3 +580,5 @@ No message changes. `loadgen` reads `[workload]` from the config; nodes ignore i
 |-------|------|
 | `workload_started` | At the start: users per role and the outage settings |
 | `workload_done` | At the end: `actions`, keyed `action:outcome`, and `outages`. `stub` means the part behind the action is not merged and nothing was sent (D433) |
+
+Outcomes (D436): presence calls `ok`, `rejected` (no directory yet, D325), `gave_up`, `offline`, `not_joined`, `no_endpoint`; peer sends `delivered`, `duplicate`, `refused`, `held`, `offline`, `gave_up`, `failed`, `no_peer`, `nothing_to_send`; `subscribe:with_join` (D359); offers and claims `stub` until Part J. Updates other programs delivered count as `peer_received:<kind>`.

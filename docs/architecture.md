@@ -2307,20 +2307,21 @@ store-and-forward (D415), zone lists from Part G's directory (D288), and `tests/
 node (D369). Planned: the sender of each copy if the lab shows the extra duplicates matter, the one `TODO(I)` left (D354); the
 planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into loadgen and the zone panel is Part L's.
 
-### 13.2 The Phase 2 user lifecycle in loadgen (built with stubs, Part L, D430–D433)
+### 13.2 The Phase 2 user lifecycle in loadgen (built, offers and claims stubbed, Part L, D430–D436)
 
 With `workload.lifecycle = true` each simulated user gets a role by fixed share (80% ordinary, 15% responder, 5%
 provider), registers, subscribes to its home zone, then does one action per think time from its role's mix. Reports
-are real, through `submit_or_queue`. Register, subscribe, discover, peer send, offer, claim and move zone are **stubs**
-that send nothing and count as `stub` until Parts G, H, I and J merge. Each whole minute a program may go offline
+are real, through `submit_or_queue`. Register, discover, move zone and peer send call Part H's presence agent and P2P
+link; until Part G's directory merges every node answers `rejected` (D436). Offer and claim are **stubs** that send
+nothing and count as `stub` until Part J merges. Each whole minute a program may go offline
 through Part K's switch, for `workload.offline_for_ms`. Off by default, so Phase 1's runs repeat unchanged.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Registered: register (stub, G/H)
-    Registered --> Subscribed: subscribe to home zone (stub, I)
+    [*] --> Registered: join (H; rejected until G)
+    Registered --> Subscribed: subscribed with the join (I, D359)
     Subscribed --> Acting: first think-time slot
-    Acting --> Acting: report (real) / discover, peer send, offer, claim, move zone (stubs)
+    Acting --> Acting: report, discover, peer send, move zone (real) / offer, claim (stubs until J)
     Acting --> Offline: this minute's draw hits (whole program)
     Offline --> Acting: back after offline_for_ms, outbox sent
     Acting --> [*]: run ends
