@@ -48,7 +48,10 @@ experiments have not been run there.
   group communication with a who's-alive list, the client middleware, reports over UDP through tarpc with `ctl` on tarpc over TCP (D167, D168),
   any serving node loading the responder list (D164), the load generator with 10 real programs per client
   machine, a web page for each client machine, the middleware and application kept apart on both sides (D156), the experiment runner and the analysis.
-- **Phase 2, documented only:** discovery, direct P2P, zone publish-subscribe (D209).
+- **Phase 2, in progress:** offline clients and their outbox (D400–D406); the client's presence agent and the direct P2P link
+  between client programs (D310–D339, D460–D465), each program listening on the first free UDP port of `[p2p]`'s range
+  (default 20000–20999, so client PCs need `sudo ufw allow 20000:20999/udp`). The discovery directory and zone
+  publish-subscribe are still to come (`docs/phase2-plan.md`).
 
 ## Requirements
 

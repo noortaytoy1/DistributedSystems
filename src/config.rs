@@ -36,6 +36,9 @@ pub struct Config {
     /// How the nodes reach one order: rotating rounds, or Raft with its elected leader (D249).
     #[serde(default)]
     pub consensus: ConsensusMode,
+    /// Client programs talking to each other directly (Phase 2, Part H).
+    #[serde(default)]
+    pub p2p: P2pConfig,
 }
 
 /// See [`Config::consensus`].
@@ -275,6 +278,39 @@ pub struct StorageConfig {
     /// Directory for each node's Raft log file (`node-<id>.wal`). Unset keeps the log in memory
     /// only, so a restarted node has forgotten its vote: tests only, never the lab (D118).
     pub dir: Option<PathBuf>,
+}
+
+/// A client program's peer endpoint and how hard it tries to deliver a peer message (Phase 2, Part
+/// H, D336–D339).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct P2pConfig {
+    /// Each program listens on the first free UDP port from `port_min` to `port_max` and advertises
+    /// it in its presence record (D313, D336). `port_min = 0` lets the system pick any port, for
+    /// tests on one machine. On the lab's client PCs: `sudo ufw allow 20000:20999/udp`.
+    pub port_min: u16,
+    pub port_max: u16,
+    /// How long one try of a peer message waits for its ack, and how many tries it gets in all,
+    /// with the same update ID each time (D339).
+    pub try_ms: u64,
+    pub tries: u32,
+}
+
+impl Default for P2pConfig {
+    fn default() -> Self {
+        Self {
+            port_min: 20_000,
+            port_max: 20_999,
+            try_ms: 500,
+            tries: 3,
+        }
+    }
+}
+
+impl P2pConfig {
+    pub fn try_timeout(&self) -> Duration {
+        Duration::from_millis(self.try_ms)
+    }
 }
 
 /// Fault injection (faults.rs). `bin/node.rs --faults on|off` overrides `enabled` for one run.

@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod middleware;
 pub mod node;
 pub mod offline;
+pub mod p2p;
 pub mod planner;
 pub mod presence;
 pub mod proto;

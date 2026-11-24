@@ -97,3 +97,13 @@ silence_max_ms = 20000
 # silence_min_ms = 20000
 # silence_max_ms = 20000
 # seed = 1   # repeats each node's numbers per round; unset picks a random seed and logs it
+
+[p2p]
+# Each client program's peer endpoint, for direct P2P exchange (Phase 2, Part H, D336). Every program
+# listens on the first free UDP port in this range and advertises it in its presence record. On the
+# three client PCs: sudo ufw allow 20000:20999/udp
+port_min = 20000
+port_max = 20999
+# One peer message is tried up to `tries` times, `try_ms` each, with the same update ID (D339).
+try_ms = 500
+tries = 3

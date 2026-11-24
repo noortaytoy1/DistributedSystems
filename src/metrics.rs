@@ -19,7 +19,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::proto::{Capability, NodeId, PeerBody, RaftRpc, RequestId, ResponderId, UserId, ZoneId};
+use crate::proto::{
+    Capability, NodeId, PeerBody, RaftRpc, RequestId, ResponderId, UpdateId, UserId, ZoneId,
+};
 
 /// Wall-clock time in unix microseconds. Use it for event timestamps only; measure durations
 /// with `std::time::Instant`.
@@ -418,6 +420,28 @@ pub enum Event {
         expired: usize,
         failed: usize,
         reconcile_us: u64,
+    },
+    // --- the P2P link (Phase 2, Part H, D464)
+    /// This program's peer endpoint opened at `addr`, the address its presence records advertise.
+    P2pListening {
+        addr: String,
+    },
+    /// A peer update was delivered, or not. `ack` is `accepted`, `duplicate`, `refused`, or `none`
+    /// after every try. `latency_us` is the P2P delivery latency: first try to ack, on the sender's
+    /// clock.
+    P2pSent {
+        update: UpdateId,
+        to_addr: String,
+        ack: &'static str,
+        tries: u32,
+        latency_us: u64,
+    },
+    /// A peer update arrived. `outcome` is `accepted`, `duplicate` or `refused`.
+    P2pReceived {
+        update: UpdateId,
+        from: UserId,
+        hops: u8,
+        outcome: &'static str,
     },
     // --- presence (Phase 2, Part H, D334)
     /// The directory took `user`'s registration and gave a lease of `lease_ms`. `again` is true for a

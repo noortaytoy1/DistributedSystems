@@ -394,8 +394,8 @@ No message changes: a queued report is an ordinary `ClientRequest`, sent later w
 
 ## Presence and the P2P link (Phase 2, Part H, D310–D325)
 
-The contract only, from `part-h-peer-envelope`. Until Part G's directory exists, every node answers the presence calls with
-`Rejected` (D325). The peer endpoint and its config keys come with `part-h-p2p` (D311–D313).
+The contract from `part-h-peer-envelope`, the presence agent from `part-h-presence` and the P2P link from `part-h-p2p`. Until
+Part G's directory exists, every node answers the presence calls with `Rejected` (D325).
 
 **Presence calls**, four new `ClientRpc` methods sent to every node like `submit`. They are client traffic: a silenced node
 drops them (D324).
@@ -434,7 +434,7 @@ Every peer message and the largest `discover` answer fit one 1,400-byte datagram
 
 | Item | What it is |
 |------|------------|
-| `MeshClient::join(user, role, zone, capabilities, peer_addr)` | Registers the user and keeps renewing its lease until `leave`; returns the lease (D326, D330, D331) |
+| `MeshClient::join(user, role, zone, capabilities)` | Registers the user, advertising this program's peer endpoint, and keeps renewing its lease until `leave`; returns the lease (D326, D331, D336) |
 | `leave(user)`, `move_zone(user, zone)` | Stop and deregister; register again with the new zone |
 | `discover(query)`, `discover_zone(z)`, `discover_capability(c)` | Ask every node; a limit above 16 is lowered (D321, D331) |
 | Sending | Every node, the report's retry waits and budget; ends at once with `Rejected` when every node refuses (D327) |
@@ -442,3 +442,17 @@ Every peer message and the largest `discover` answer fit one 1,400-byte datagram
 | Lost lease | `Unknown`, or no renewal that worked for a whole lease: register again, same incarnation (D329) |
 | Offline | Nothing is sent; on `go_online` every joined user registers again (D329) |
 | Events | `presence_registered`, `presence_renewed`, `presence_lost`, `presence_left`, `discovered` (D334) |
+
+**The P2P link** (`src/p2p.rs`, from `part-h-p2p`, D336–D339, D460–D465).
+
+| Item | What it is |
+|------|------------|
+| Endpoint | Opened in `MeshClient::new` on the first free UDP port of `[p2p] port_min..port_max` (default 20000–20999; `port_min = 0`: any port), advertised as the local IP toward the first node plus that port (D336, D337). `peer_addr()` returns it |
+| `new_update(from, to, zone, version, max_hops, body)` | A new envelope with a fresh `UpdateId` (counter from the current time), `hops` 0 and `created_at_ms` now (D339) |
+| `send_peer(peer_addr, envelope)` | Up to `[p2p] tries` (3) of `try_ms` (500 ms) each, same update ID; returns `Delivered { ack, latency, tries }` or `PeerError` (D339) |
+| `take_peer_updates()` | The inbox, once: updates for a user of this program (`to.client` is its ID) or for a zone; others are `Refused("not here")`. 1,024 waiting at most, then `Refused("busy")` (D460, D462) |
+| Duplicates | Update IDs seen in the last 300 s, at most 10,000, answer `Duplicate` and are not handed on twice (D461) |
+| Stubs | One per peer address, at most 256, least recently used dropped first (D463) |
+| Offline | The endpoint and every stub sit behind the program's offline gate: nothing sent, everything arriving dropped (D338) |
+| Events | `p2p_listening { addr }`, `p2p_sent { update, to_addr, ack, tries, latency_us }`, `p2p_received { update, from, hops, outcome }` (D464) |
+| Config | `[p2p] port_min`, `port_max`, `try_ms`, `tries` |

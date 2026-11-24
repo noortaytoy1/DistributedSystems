@@ -28,7 +28,7 @@ something. When in doubt, log it. Small entries are fine; missing entries are no
 **IDs.** `D1`–`D13` are the decisions of the Phase 1 architecture document (27 Oct 2026), kept
 with their original numbers so the report can cite them. `D14` onwards are decisions taken in the
 code or since. IDs are never reused: a changed decision gets a new entry, and the old one is marked
-`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 was kept free for a leader step-aside, and now holds it. Phase 2 IDs come in blocks, one per owner (D267): D267–D279 shared, D280–D309 Omar (G), D310–D339 Wahiba (H), D340–D369 Yahia (I), D370–D399 Ahmed (J), D400–D429 Aabed (K), D430–D459 Noor (L). Take the next free ID in your own block.
+`Superseded by Dnn` or `Amended by Dnn`. D192 to D196 are kept for publish-subscribe, Phase 2: its code on `lane-wire` cites them, and cites D188 to D191 too, which went to the review of item 16, so those comments need new numbers when it lands. D218 was kept free for a leader step-aside, and now holds it. Phase 2 IDs come in blocks, one per owner (D267): D267–D279 shared, D280–D309 Omar (G), D310–D339 Wahiba (H), D340–D369 Yahia (I), D370–D399 Ahmed (J), D400–D429 Aabed (K), D430–D459 Noor (L). A block that runs out takes the next free block after D459: D460–D489 Wahiba (H). Take the next free ID in your own block.
 
 **Status values.**
 
@@ -354,12 +354,22 @@ table below in sync.
 | D327 | Presence calls go to all three nodes, with the report's retries, and end at once if every node refuses | H | Implemented |
 | D328 | One renewal loop per program, renewing due users together, with ±10% jitter | H | Implemented |
 | D329 | A lost lease is registered again with the same incarnation; offline pauses renewals | H, with K | Implemented |
-| D330 | Until the peer endpoint exists, the caller passes `peer_addr` to `join` | H | Implemented, to be amended by `part-h-p2p` |
+| D330 | Until the peer endpoint exists, the caller passes `peer_addr` to `join` | H | Superseded by D336 |
 | D331 | The application's presence calls: `join`, `leave`, `move_zone` and `discover` | H | Implemented |
 | D332 | PR 2 does not wire presence into the load programs | H, with L | Decided |
 | D333 | `UserId` is ordered | H, with G | Implemented |
 | D334 | Five presence events: registered, renewed, lost, left and discovered | H | Implemented |
 | D335 | The presence tests run against stub nodes until Part G exists | H | Implemented |
+| D336 | Every program opens its peer endpoint when it starts, on the first free port of `[p2p]`'s range, and `join` advertises it | H | Implemented, supersedes D330 |
+| D337 | A program advertises the local address it would use to reach the first cloud node | H | Implemented |
+| D338 | The peer endpoint and every peer stub sit behind the program's offline gate | H, with K | Implemented |
+| D339 | `new_update` and `send_peer`; three tries of 500 ms with the same update ID | H | Implemented |
+| D460 | Arriving updates wait in a bounded inbox of 1,024; a full inbox answers `Refused("busy")` | H | Implemented |
+| D461 | The endpoint drops repeated update IDs: 10,000 kept, for 300 s | H, with I and K | Implemented |
+| D462 | An update for one user is taken only by that user's program | H | Implemented |
+| D463 | One stub per peer address, at most 256, least recently used dropped first | H | Implemented |
+| D464 | Three P2P events: listening, sent and received | H | Implemented |
+| D465 | A test with a real three-node cloud shows it carries none of a P2P exchange; loadgen is left to Part L | H, with L | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -8786,7 +8796,7 @@ them on the six PCs.
 
 ### D330 · Until the peer endpoint exists, the caller passes `peer_addr` to `join`
 
-- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented, to be amended by `part-h-p2p` · **Decided by:** Wahiba
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Superseded by D336 · **Decided by:** Wahiba
   Elhimer, on the agent's recommendation (grill, 2026-11-24)
 - **Context.** A presence record carries the program's peer address (D323), but the peer endpoint is PR 3.
 - **Options considered.** The caller passes it (chosen); or send an empty address until PR 3.
@@ -8875,6 +8885,176 @@ them on the six PCs.
 - **Where.** `tests/presence.rs`.
 - **How we check it.** 8 tests, 10 runs in a row green.
 - **Report notes.** Test plan for Part H.
+
+### D336 · Every program opens its peer endpoint when it starts, on the first free port of `[p2p]`'s range, and `join` advertises it
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented, supersedes D330 · **Decided by:** Wahiba Elhimer, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** D313 settled "the first free port in a configured range", leaving the keys and the moment of opening to this
+  PR. D330 had `join` take the peer address from its caller until the endpoint existed.
+- **Options considered.**
+  1. *A new `[p2p]` section with `port_min` and `port_max` (default 20000–20999); the endpoint opens in `MeshClient::new`;
+     `join` fills in the address itself (chosen).*
+  2. *The keys in an existing section, and the endpoint opened on demand by the application.* No new section and no port
+     used by programs that never talk P2P, but ports do not belong with timers, and `join` would have to wait for or fail
+     without the endpoint.
+- **Decision.** Option 1. `bind_peer_endpoint` in `node/transport.rs` tries each port of the range in turn on every local
+  address; `port_min = 0` lets the system pick, for tests on one machine. A program with no free port runs on without an
+  endpoint, and `join` then returns `PresenceError::NoPeerEndpoint`. `join` loses its `peer_addr` parameter (D330 is
+  superseded). Client PCs need `sudo ufw allow 20000:20999/udp`.
+- **Why.** One section names everything P2P; a thousand ports is far more than a PC's ten programs and its web page; and
+  every program can be reached as soon as it exists, which is what a peer is.
+- **Consequences.** Every `MeshClient` binds one more UDP socket, including in tests (on free ports of the range).
+- **Where.** `config.rs::P2pConfig`, `config/*.toml`, `node/transport.rs::bind_peer_endpoint`, `p2p.rs::PeerLink::new`,
+  `client.rs::MeshClient::{new, join, peer_addr}`, `docs/runbook.md`.
+- **How we check it.** `tests/p2p.rs::programs_take_the_first_free_port_of_the_range`;
+  `tests/presence.rs::joining_registers_on_every_node_and_keeps_renewing` checks `join` advertises the endpoint.
+- **Report notes.** The peer endpoint and its firewall rule.
+
+### D337 · A program advertises the local address it would use to reach the first cloud node
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The config lists the three nodes but not the client PCs, and AGENTS.md requires one config file on all six.
+- **Options considered.** The route toward the first node, asked of the system with no packet sent, as the load programs
+  already do for their logs (D258) (chosen); or a per-PC config key.
+- **Decision.** `transport::local_ip_toward(first node's client_addr)` gives the IP; the bound port completes the address,
+  logged once as `p2p_listening`.
+- **Why.** Right on every PC with the same file; on the lab's one network the address that reaches a node also reaches the
+  other client PCs.
+- **Consequences.** A PC with two networks advertises the one facing the cloud.
+- **Where.** `node/transport.rs::local_ip_toward`, `p2p.rs::PeerLink::new`.
+- **How we check it.** The P2P tests send to the advertised address.
+- **Report notes.** None.
+
+### D338 · The peer endpoint and every peer stub sit behind the program's offline gate
+
+- **Date:** 2026-11-24 · **Part:** H, with K · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** Part K's offline gate (D402) closes a program's cloud sockets, and D402 asks for the peer endpoint to sit
+  behind it too.
+- **Options considered.** Behind the gate, sending and receiving (chosen); or P2P keeps working while offline.
+- **Decision.** `serve_p2p` drops every arriving message while the gate is closed, before tarpc sees it, and every stub is
+  made with the same gate, so nothing leaves. `send_peer` returns `PeerError::Offline` at once.
+- **Why.** One meaning of offline for the whole program, which Part K's tests and store-and-forward rely on.
+- **Consequences.** A peer that sends to an offline program gets no ack and gives up after its tries.
+- **Where.** `node/transport.rs::{serve_p2p, p2p_client}`, `p2p.rs::PeerLink::send_peer`.
+- **How we check it.** `tests/p2p.rs::offline_sends_nothing_and_an_offline_peer_hears_nothing`.
+- **Report notes.** The offline policy covers P2P too.
+
+### D339 · `new_update` and `send_peer`; three tries of 500 ms with the same update ID
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The application, and Part I's forwarding, must send updates directly; a datagram can be lost.
+- **Options considered.**
+  1. *`new_update(from, to, zone, version, max_hops, body)` and `send_peer(peer_addr, envelope)`, up to 3 tries of 500 ms
+     with the same ID (chosen).*
+  2. *The report's schedule, about 36 s.* A dead peer would hold a forward for half a minute.
+  3. *One try.* Any lost datagram is lost unless Part K resends it.
+  4. *One `send_to(user, body)` that discovers and sends.* Simple for a demo, but needs Part G to work at all and does not
+     fit forwarding.
+- **Decision.** Option 1, with `[p2p] try_ms = 500` and `tries = 3`. `new_update` takes a fresh `UpdateId` from a counter
+  that starts at the current time (as `RequestId`, D113), sets `hops` to 0 and stamps `created_at_ms`. `send_peer` returns
+  `Delivered { ack, latency, tries }`, or `PeerError::GaveUp`. A resend after a lost ack is answered `Duplicate`.
+- **Why.** About 1.5 s at worst fits gossip; a peer that is really gone is Part K's store-and-forward's case.
+- **Consequences.** Part I forwards by sending an existing envelope again with `hops` raised.
+- **Where.** `p2p.rs::PeerLink::{new_update, send_peer}`, `client.rs`, `config.rs::P2pConfig`.
+- **How we check it.** `two_programs_exchange_an_update_directly_and_a_repeat_is_a_duplicate`,
+  `offline_sends_nothing_and_an_offline_peer_hears_nothing`.
+- **Report notes.** Peer timeouts and retries, for the "Peer protocol" section.
+
+### D460 · Arriving updates wait in a bounded inbox of 1,024; a full inbox answers `Refused("busy")`
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24). Part H's block D310–D339 ran out, so by D267's rule this PR takes D460–D489 for
+  Part H.
+- **Context.** Updates arrive on the endpoint's tasks; the application or Part I's gossip reads them at its own pace.
+- **Options considered.** A bounded channel the application takes once (chosen); or a handler the application registers.
+- **Decision.** `MeshClient::take_peer_updates()` returns the receiving end once. Capacity 1,024 (`INBOX_CAPACITY`). A full
+  inbox answers `Refused("busy")` and does not mark the update as seen, so a later try still gets in.
+- **Why.** A queue is easy to read from any task, and a bound means a slow reader slows its senders instead of growing
+  memory.
+- **Consequences.** A program that never takes the inbox refuses everything once 1,024 updates wait.
+- **Where.** `p2p.rs::{Inbox, INBOX_CAPACITY, PeerLink::take_updates}`.
+- **How we check it.** `p2p::tests::a_full_inbox_refuses_and_a_later_try_still_gets_in`.
+- **Report notes.** Back-pressure on the P2P path.
+
+### D461 · The endpoint drops repeated update IDs: 10,000 kept, for 300 s
+
+- **Date:** 2026-11-24 · **Part:** H, with I and K · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** A resend after a lost ack (D339) must not reach the application twice.
+- **Options considered.** A seen-set at the endpoint (chosen); or leave it to Part I's seen-cache, which only covers gossip.
+- **Decision.** `Seen` keeps update IDs for 300 s, at most 10,000, oldest forgotten first; a repeat is answered `Duplicate`.
+- **Why.** The same bounds as Part I's seen-cache (D342) and Part K's planned retention, so the three agree on how long a
+  repeat is recognised.
+- **Consequences.** A repeat older than 300 s is taken as new; Part I's version check still drops it as stale.
+- **Where.** `p2p.rs::{Seen, SEEN_CAPACITY, SEEN_FOR}`.
+- **How we check it.** `p2p::tests::{a_repeat_is_a_duplicate_and_reaches_the_application_once,
+  seen_ids_are_forgotten_by_age_and_by_count}`.
+- **Report notes.** Duplicate suppression on the direct path.
+
+### D462 · An update for one user is taken only by that user's program
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** `to: Some(user)` addresses one user (D322); users that have not joined, like loadgen's today, still belong to
+  their program.
+- **Options considered.** Accept when `to.client` is this program's client ID (chosen); or only users that joined.
+- **Decision.** Anything else addressed to one user is answered `Refused("not here")`; `to: None` is always taken.
+- **Why.** The client ID names the program for certain, with no dependency on presence.
+- **Consequences.** A stale presence record that points at the wrong program shows as a refusal, not a silent loss.
+- **Where.** `p2p.rs::Inbox::take`.
+- **How we check it.** `p2p::tests::a_message_for_another_programs_user_is_refused`;
+  `tests/p2p.rs::an_update_for_another_programs_user_is_refused`.
+- **Report notes.** None.
+
+### D463 · One stub per peer address, at most 256, least recently used dropped first
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** A program sends to many peers over time; each stub is a UDP socket and a task.
+- **Options considered.** A cache of 256 (chosen); or a new socket per send.
+- **Decision.** `PeerLink` keeps stubs by address and drops the least recently used past `STUB_CAPACITY`; dropping the last
+  handle ends that stub's task.
+- **Why.** Gossip's fan-out is 3, so few are open at once; the bound keeps file handles in check on busy load PCs, and a
+  reused stub still hears a late ack.
+- **Consequences.** None beyond memory for 256 stubs.
+- **Where.** `p2p.rs::{Stubs, PeerLink::stub, STUB_CAPACITY}`.
+- **How we check it.** The P2P tests reuse a stub for every send to the same peer.
+- **Report notes.** None.
+
+### D464 · Three P2P events: listening, sent and received
+
+- **Date:** 2026-11-24 · **Part:** H · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** Part H measures P2P delivery latency and the ack rate; the duplicate count helps Part I.
+- **Options considered.** Sent and received (chosen); or sent only.
+- **Decision.** `p2p_listening { addr }` at start; `p2p_sent { update, to_addr, ack, tries, latency_us }` on the sender,
+  `ack` being `accepted`, `duplicate`, `refused` or `none`; `p2p_received { update, from, hops, outcome }` on the receiver.
+- **Why.** P2P delivery latency = `p2p_sent.latency_us`, first try to ack on the sender's clock, with no clock comparison;
+  the ack rate is the share of `p2p_sent` with an ack.
+- **Consequences.** Field names are fixed once Noor's analysis reads them.
+- **Where.** `metrics.rs::Event`, `p2p.rs`.
+- **How we check it.** The P2P tests run the code that logs them.
+- **Report notes.** The P2P measurements.
+
+### D465 · A test with a real three-node cloud shows it carries none of a P2P exchange; loadgen is left to Part L
+
+- **Date:** 2026-11-24 · **Part:** H, with L · **Status:** Implemented · **Decided by:** Wahiba Elhimer, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The plan asks to prove the cloud is out of the data path (demo scenario 6). D332 left loadgen's wiring open.
+- **Options considered.** A real cluster with its client-port counters checked (chosen), or stub programs only; and a
+  loadgen flag now, or leave loadgen to Noor (chosen).
+- **Decision.** `the_cloud_carries_none_of_a_p2p_exchange` starts three real nodes and two programs, exchanges 100 updates,
+  and checks every node's client-port `rx_bytes` did not move while the programs' peer counters did. The same counters can
+  be shown live at the demo. Loadgen and the web page are wired by Part L.
+- **Why.** It shows the cloud saw nothing while running, not only that P2P works without it.
+- **Consequences.** Scenario 6 on the lab PCs needs Part L's wiring and Part G's directory for discovery.
+- **Where.** `tests/p2p.rs`.
+- **How we check it.** 10 runs in a row green.
+- **Report notes.** The evidence for "the cloud carries no peer payload".
 
 ### Notes on older entries
 

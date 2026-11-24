@@ -51,6 +51,12 @@ sudo ufw allow 8001/udp      # reports from clients: reachable from the client m
 sudo ufw allow 8001/tcp      # ctl: reachable from wherever you run it
 ```
 
+On the three client machines, open the peer ports, so client programs can reach each other directly (Phase 2, D336):
+
+```bash
+sudo ufw allow 20000:20999/udp   # [p2p] port_min..port_max: each program listens on the first free one
+```
+
 The frontend needs no open port when the browser is on the same machine. Only if neither that nor `ssh -L` works, use
 `--listen 0.0.0.0:9001` and `sudo ufw allow 9001/tcp` on that client machine. There is no password (D199).
 

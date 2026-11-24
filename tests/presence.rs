@@ -143,6 +143,7 @@ async fn stubs(n: usize) -> (Vec<Arc<Directory>>, Config) {
         faults: Default::default(),
         storage: Default::default(),
         consensus: Default::default(),
+        p2p: Default::default(),
     };
     config.timers.client_retry_ms = 50;
     config.timers.client_retry_max_ms = 100;
@@ -161,7 +162,6 @@ async fn join(client: &MeshClient) -> Result<Duration, PresenceError> {
             PresenceRole::VolunteerResponder,
             2,
             vec![Capability::Medical],
-            "10.0.0.21:20000".into(),
         )
         .await
 }
@@ -183,7 +183,8 @@ async fn joining_registers_on_every_node_and_keeps_renewing() {
     let record = dirs[0].last.lock().unwrap().clone().unwrap();
     assert_eq!(record.user, USER);
     assert_eq!(record.zone, 2);
-    assert_eq!(record.peer_addr, "10.0.0.21:20000");
+    // The program's own peer endpoint, filled in by `join` (D336).
+    assert_eq!(Some(record.peer_addr.as_str()), client.peer_addr());
     // Renewals come at about a third of the 300 ms lease, so several within a second.
     let started = Instant::now();
     wait_until(WAIT, "three rounds of renewals", || {

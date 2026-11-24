@@ -53,6 +53,7 @@ impl TestCluster {
             cluster: ClusterConfig { nodes: addrs },
             timers: Default::default(),
             consensus: Default::default(),
+            p2p: Default::default(),
             policy: Default::default(),
             workers: Default::default(),
             campus: Default::default(),
