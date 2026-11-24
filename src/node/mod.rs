@@ -301,6 +301,7 @@ pub async fn start_with(
     tasks.extend(degraded::spawn(&ctx));
     tasks.extend(step_aside::spawn(&ctx));
     tasks.push(directory::spawn_ticks(&ctx));
+    tasks.push(directory::spawn_report(&ctx));
 
     Ok(NodeHandle {
         ctx,

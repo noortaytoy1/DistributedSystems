@@ -522,6 +522,29 @@ pub enum Event {
         latency_us: u64,
     },
 
+    /// This node's directory showed a `register` or `deregister` it was sent, `wait_us` after the
+    /// call arrived, on this node's clock. Every node logs it, the proposer too (`proposer`). The
+    /// slowest of the three is the presence-table convergence (D293).
+    DirectorySeen {
+        user: UserId,
+        kind: &'static str,
+        proposer: bool,
+        log_index: u64,
+        wait_us: u64,
+    },
+    /// Once a second: the directory's size, its log clock, its counters and its own digest, which two
+    /// nodes at the same `last_applied` must share (D294).
+    DirectoryState {
+        last_applied: u64,
+        digest: u64,
+        records: usize,
+        live: usize,
+        clock_ms: u64,
+        expired: u64,
+        superseded: u64,
+        revived: u64,
+    },
+
     // --- presence (Phase 2, Part H, D334)
     /// The directory took `user`'s registration and gave a lease of `lease_ms`. `again` is true for a
     /// re-registration: a zone move, a lost lease, or a return from offline (D329). `latency_us`

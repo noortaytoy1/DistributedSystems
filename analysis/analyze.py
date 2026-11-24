@@ -628,6 +628,70 @@ def convergence_metrics(events):
     }
 
 
+PRESENCE_GROUP_US = 1_000_000  # directory_seen events of one write arrive within this of each other (D293)
+
+
+def presence_metrics(events, start_us):
+    """Part G's directory (D292 to D295). Discovery latency on the client (`discovered`, D334) and on the
+    node (`directory_query`); write latency at the proposer (`directory_write`); presence-table convergence:
+    each node's wait from a register or deregister arriving to it showing in its own directory
+    (`directory_seen`), on that node's clock, and per write the slowest of the nodes. A write's events are
+    grouped by user and kind, the first within PRESENCE_GROUP_US. Convergence compares no two clocks; only
+    the grouping reads timestamps from different machines, at a one-second scale."""
+    nodes = node_events(events)
+    measured = lambda e: e["ts_us"] >= start_us  # noqa: E731
+    client_discover = [
+        e["latency_us"]
+        for s, es in events.items()
+        if s.startswith("client-")
+        for e in es
+        if e["ev"] == "discovered" and measured(e)
+    ]
+    node_query = [e["latency_us"] for es in nodes.values() for e in es if e["ev"] == "directory_query" and measured(e)]
+    writes = [e for es in nodes.values() for e in es if e["ev"] == "directory_write" and measured(e)]
+    seen = sorted(
+        (e for es in nodes.values() for e in es if e["ev"] == "directory_seen" and measured(e)),
+        key=lambda e: e["ts_us"],
+    )
+    metrics = latency_metrics("discover_client_", client_discover)
+    metrics.update(latency_metrics("discover_node_", node_query))
+    for kind in ("register", "renew", "deregister"):
+        metrics.update(latency_metrics(f"presence_{kind}_", [e["latency_us"] for e in writes if e["kind"] == kind]))
+    metrics.update(latency_metrics("presence_seen_", [e["wait_us"] for e in seen]))
+    groups = []
+    open_groups = {}
+    for e in seen:
+        key = (e["user"]["client"], e["user"]["user"], e["kind"])
+        group = open_groups.get(key)
+        if group is None or e["ts_us"] - group["first"] > PRESENCE_GROUP_US:
+            group = {"first": e["ts_us"], "waits": []}
+            open_groups[key] = group
+            groups.append(group)
+        group["waits"].append(e["wait_us"])
+    full = [max(g["waits"]) for g in groups if len(g["waits"]) == len(nodes)]
+    metrics.update(latency_metrics("presence_convergence_", full))
+    metrics["presence_writes_seen_by_all"] = len(full)
+    metrics["presence_writes_seen_by_some"] = len(groups) - len(full)
+    outcomes = defaultdict(int)
+    for e in writes:
+        outcomes[e["outcome"]] += 1
+    for name in ("presence_registered", "presence_renewed", "presence_superseded", "presence_unknown",
+                 "presence_deregistered"):
+        metrics[f"{name}_count"] = outcomes[name]
+    states = [e for es in nodes.values() for e in es if e["ev"] == "directory_state"]
+    by_index = defaultdict(set)
+    for e in states:
+        by_index[e["last_applied"]].add(e["digest"])
+    metrics["directory_states_compared"] = sum(1 for d in by_index.values() if d)
+    metrics["directory_digest_mismatches"] = sum(1 for d in by_index.values() if len(d) > 1)
+    last = {s: [e for e in es if e["ev"] == "directory_state"] for s, es in nodes.items()}
+    last = [es[-1] for es in last.values() if es]
+    metrics["directory_records_max"] = max((e["records"] for e in states), default=0)
+    metrics["directory_expired"] = max((e["expired"] for e in last), default=0)
+    metrics["directory_revived"] = max((e["revived"] for e in last), default=0)
+    return metrics
+
+
 def sent_in_window(events, start_us):
     """Messages sent in the measured time, by kind. Counters are cumulative."""
     per_kind = defaultdict(int)
@@ -990,6 +1054,7 @@ def analyse_run(run_dir):
     metrics.update(fault_metrics(events, done))
     metrics.update(refusal_metrics(events, start))
     metrics.update(convergence_metrics(events))
+    metrics.update(presence_metrics(events, start))
     metrics.update(fault_election_metrics(events, start))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))

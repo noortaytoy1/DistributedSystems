@@ -2316,7 +2316,7 @@ sequenceDiagram
 **Keep the meanings of TTL apart** wherever the word appears: `Incident.ttl_ms` (D143), the table trim D9 dropped, the hop
 limit the spec describes for Phase 2 dissemination, and `option.hard_ttl()`, a deadline on one RPC in `raft/network.rs`.
 
-### 13.4 The presence directory (built, Part G, D280–D292)
+### 13.4 The presence directory (built, Part G, D280–D295)
 
 The directory is a second state machine on the same log (D69): `src/discovery.rs` holds a pure `Directory`, and `CloudState`
 applies the four presence commands to it, so every node holds the same directory and the state digest covers it (D289). Nothing in
@@ -2365,6 +2365,9 @@ stateDiagram-v2
 | Duplicate registrations | the higher incarnation wins in either order; a lower one gets `Superseded` (D286) | `the_higher_incarnation_wins_in_either_order`, `a_restarted_program_wins_over_its_old_registration` |
 | Server failure and reconstruction | a silenced node catches up from the log and holds the same directory; another node takes its users meanwhile (D287) | `a_node_back_from_silence_rebuilds_the_directory_from_the_log` |
 | Zone moves | a register with the new zone; found only there (D282) | `a_zone_move_is_a_registration_with_the_new_zone`, `a_user_that_moves_zone_is_found_in_the_new_zone_only` |
+Measured (D293 to D295): discovery latency on the client and on the node, write latency at the proposer, and presence-table
+convergence as each node's own wait from a register or deregister arriving to it showing locally, the slowest of the three. `ctl
+discover` asks all three nodes side by side for demo scenario 5.
 
 ## 14. What remains
 

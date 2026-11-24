@@ -265,6 +265,35 @@ If one node's line has `victim: null`, explain it as the rule at work: that node
 
 The spec's Required Demonstration Scenarios table, rows 5 to 8. The numbers below are the spec's, not this page's Phase 1 scenes.
 
+## Spec scenario 5. Peer discovery (Part G, D280–D295)
+
+*Register many simulated users, query by zone and capability on each node, and show that all three directories match.*
+
+**On one machine, with real nodes and the real presence agent:**
+
+```bash
+cargo test --release --test discovery -- --nocapture
+```
+
+Eight tests, one per hard case of the spec: registration and discovery by zone and capability with the same answer on every
+node, a zone move, expiry with no renewals (the same on every node, by the log clock, D281), a restarted program's higher
+incarnation (D286), a node silenced while users register and rebuilding the directory from the log when it returns (D287), a user
+leaving, the same under rotating rounds, and the measurement events.
+
+**On the lab cluster**, once programs have joined users (loadgen's lifecycle, Part L), ask all three nodes side by side:
+
+```bash
+target/release/ctl --config config/lab.toml discover --zone 3
+target/release/ctl --config config/lab.toml discover --capability medical
+```
+
+**Expect** one block per node, each with its `log_index`, and a last line `same answer from 3 nodes`. Under steady renewals two
+nodes can read a few entries apart; the line then says `answers differ, read at different log indexes: ask again`, and asking again
+agrees. Then silence a node (`ctl silence --node 2 --ms 8000`), ask again (`no answer` from it, the other two agree), and once it
+is back, ask again: it holds the same directory, rebuilt from the log. Say how it works: the directory is a second state machine on
+the same log (D69), a lease expires by the time carried in the log and not by any node's clock (D281), and a record is live, then
+late for 5 s of grace, then gone (D285). The numbers are `discover_*` and `presence_convergence_*` in Part L's analysis.
+
 ## Spec scenario 7. Offline peer (Part K, D400–D413)
 
 *Disconnect a client, create updates elsewhere, reconnect it, and show the best-effort synchronization.* The policy being shown is

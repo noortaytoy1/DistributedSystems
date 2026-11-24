@@ -4,6 +4,7 @@
 //! cargo run --bin ctl -- status
 //! cargo run --bin ctl -- incidents --client 3 --limit 5
 //! cargo run --bin ctl -- incidents --id 3-1762180000000123 --node 2
+//! cargo run --bin ctl -- discover --zone 3 --capability medical
 //! cargo run --bin ctl -- silence --node 2 --ms 5000
 //! cargo run --bin ctl -- skew --node 1 --work 200000
 //! ```
@@ -17,9 +18,10 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use rescuemesh::client::{control, udp_answers};
 use rescuemesh::config::{Config, NodeAddr};
+use rescuemesh::node::transport::connect_client;
 use rescuemesh::proto::{
-    ControlReply, ControlRequest, DEFAULT_INCIDENT_ROWS, IncidentQuery, IncidentView, NodeStatus,
-    RequestId,
+    Capability, ControlReply, ControlRequest, DEFAULT_INCIDENT_ROWS, DiscoverReply, IncidentQuery,
+    IncidentView, MAX_DISCOVER_RECORDS, NodeStatus, PresenceQuery, PresenceRecord, RequestId,
 };
 
 #[derive(Parser)]
@@ -49,6 +51,17 @@ enum Cmd {
         id: Option<RequestId>,
         #[arg(long)]
         node: Option<u64>,
+    },
+    /// Ask every node's presence directory who is online, side by side, for demo scenario 5 (D295).
+    /// Each node answers from its own copy, labelled with the log index it read at.
+    Discover {
+        #[arg(long)]
+        zone: Option<u16>,
+        /// medical, fire, technical or rescue.
+        #[arg(long, value_parser = parse_capability)]
+        capability: Option<Capability>,
+        #[arg(long, default_value_t = MAX_DISCOVER_RECORDS)]
+        limit: u16,
     },
     /// Drop all traffic in and out of a node for a while.
     Silence {
@@ -90,6 +103,21 @@ async fn main() -> anyhow::Result<()> {
                 (None, None) => bail!("give --client or --id"),
             };
             incidents(&config, node, query).await
+        }
+        Cmd::Discover {
+            zone,
+            capability,
+            limit,
+        } => {
+            discover(
+                &config,
+                PresenceQuery {
+                    zone,
+                    capability,
+                    limit,
+                },
+            )
+            .await
         }
         Cmd::Silence { node, ms } => send(&config, node, ControlRequest::Silence { ms }).await,
         Cmd::Skew { node, work } => {
@@ -192,6 +220,77 @@ async fn incidents(config: &Config, only: Option<u64>, query: IncidentQuery) -> 
         }
     }
     Ok(())
+}
+
+fn parse_capability(text: &str) -> Result<Capability, String> {
+    Capability::ALL
+        .into_iter()
+        .find(|c| format!("{c:?}").eq_ignore_ascii_case(text))
+        .ok_or_else(|| format!("unknown capability {text:?}: medical, fire, technical or rescue"))
+}
+
+/// Asks each node in turn over TCP. A node that is not serving, or is silenced, stays quiet, which
+/// shows as no answer. The last line says whether the nodes that answered at the same index agree.
+async fn discover(config: &Config, query: PresenceQuery) -> anyhow::Result<()> {
+    let mut answers: Vec<(u64, u64, Vec<PresenceRecord>)> = Vec::new();
+    for n in &config.cluster.nodes {
+        let call = async {
+            let tarpc::client::NewClient { client, dispatch } =
+                connect_client(&n.client_addr).await?;
+            let dispatch = tokio::spawn(dispatch);
+            let mut context = tarpc::context::current();
+            context.deadline = std::time::Instant::now() + TIMEOUT;
+            let reply = client.discover(context, query.clone()).await;
+            dispatch.abort();
+            anyhow::Ok(reply?)
+        };
+        match tokio::time::timeout(TIMEOUT, call).await {
+            Ok(Ok(DiscoverReply::Found { records, log_index })) => {
+                println!(
+                    "node {}: log_index={log_index} records={}",
+                    n.id,
+                    records.len()
+                );
+                for r in &records {
+                    println!("  {}", record_line(r));
+                }
+                answers.push((n.id, log_index, records));
+            }
+            Ok(Ok(DiscoverReply::Rejected(reason))) => println!("node {}: refused: {reason}", n.id),
+            Ok(Err(e)) => println!("node {}: unreachable: {e}", n.id),
+            Err(_) => println!("node {}: no answer (silenced or catching up)", n.id),
+        }
+    }
+    println!("{}", agreement(&answers));
+    Ok(())
+}
+
+/// Whether the answers agree. Answers read at different indexes may differ for a moment: that is
+/// catch-up, not disagreement, so it is said apart (D288).
+fn agreement(answers: &[(u64, u64, Vec<PresenceRecord>)]) -> String {
+    let Some((_, index, records)) = answers.first() else {
+        return "no node answered".into();
+    };
+    if answers.iter().all(|(_, _, r)| r == records) {
+        return format!("same answer from {} nodes", answers.len());
+    }
+    if answers.iter().all(|(_, i, _)| i == index) {
+        return "DIFFERENT answers at the same log index: a bug".into();
+    }
+    "answers differ, read at different log indexes: ask again".into()
+}
+
+fn record_line(r: &PresenceRecord) -> String {
+    let capabilities: Vec<String> = r.capabilities.iter().map(|c| format!("{c:?}")).collect();
+    format!(
+        "{} role={:?} zone={} peer_addr={} capabilities={} incarnation={}",
+        r.user,
+        r.role,
+        r.zone,
+        r.peer_addr,
+        capabilities.join(","),
+        r.incarnation
+    )
 }
 
 fn node_line(s: &NodeStatus) -> String {
@@ -374,5 +473,25 @@ mod tests {
         };
         assert!(row_line(&nobody).contains("responder=- "));
         assert!(row_line(&nobody).contains("expires_at_ms=- "));
+    }
+
+    #[test]
+    fn capabilities_parse_in_any_case_and_answers_are_compared() {
+        assert_eq!(parse_capability("Medical"), Ok(Capability::Medical));
+        assert_eq!(parse_capability("rescue"), Ok(Capability::Rescue));
+        assert!(parse_capability("plumbing").is_err());
+        assert_eq!(agreement(&[]), "no node answered");
+        let same = vec![(1, 5, vec![]), (2, 5, vec![])];
+        assert!(agreement(&same).starts_with("same"));
+        let record = PresenceRecord {
+            user: UserId { client: 1, user: 2 },
+            role: rescuemesh::proto::PresenceRole::Ordinary,
+            zone: 0,
+            peer_addr: "a:1".into(),
+            capabilities: vec![],
+            incarnation: 1,
+        };
+        assert!(agreement(&[(1, 5, vec![record.clone()]), (2, 5, vec![])]).contains("bug"));
+        assert!(agreement(&[(1, 5, vec![record]), (2, 6, vec![])]).contains("ask again"));
     }
 }
