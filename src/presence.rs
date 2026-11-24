@@ -22,7 +22,7 @@
 //!
 //! Owner: H (client presence and P2P link).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -310,6 +310,16 @@ impl Presence {
             .ok_or(PresenceError::NotJoined(user))?;
         record.zone = zone;
         self.register_and_keep(record, true).await
+    }
+
+    /// The zones this program's joined users are in: what it subscribes to for zone gossip (Part I,
+    /// D359). Read-only; `join`, `move_zone` and `leave` change it.
+    pub(crate) fn zones(&self) -> BTreeSet<ZoneId> {
+        lock(&self.users)
+            .joined
+            .values()
+            .map(|joined| joined.record.zone)
+            .collect()
     }
 
     pub(crate) async fn discover(&self, query: PresenceQuery) -> Result<Discovered, PresenceError> {

@@ -29,6 +29,9 @@
 //!   hears and sends nothing. `submit` then fails at once with `Offline`, and `submit_or_queue` keeps
 //!   the report in the outbox (`offline.rs`) under the ID it was given. `go_online` opens the gate and
 //!   sends the outbox with those IDs, so a report the cloud already has is answered from its record.
+//! - **Zone gossip (Phase 2, Part I, D360, D366).** Every committed answer is handed to the gossip
+//!   agent (`gossip.rs`), which publishes it into the incident's zone in the background. The agent
+//!   also stands between the P2P inbox and `take_peer_updates`.
 //!
 //! `ctl`'s commands are the other half of this file: tarpc over TCP, one call, then done (D168).
 //!
@@ -48,6 +51,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::config::{Config, Timers};
+use crate::gossip::GossipAgent;
 use crate::metrics::{Event, EventLog, UdpCounters, UdpCounts, now_ms, now_us};
 use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
@@ -180,13 +184,17 @@ pub struct MeshClient {
     counters: Arc<UdpCounters>,
     retry_budget: Arc<std::sync::Mutex<RetryBudget>>,
     retries_skipped: Arc<AtomicU64>,
-    /// The presence agent (Part H): joins, renewals and discovery (D326).
-    presence: Presence,
+    /// The presence agent (Part H): joins, renewals and discovery (D326). Shared with the gossip
+    /// agent, which reads the joined users' zones and discovers zones (D357, D359).
+    presence: Arc<Presence>,
     /// The P2P link (Part H): this program's peer endpoint and its way to other programs (D336).
-    /// Shared with the redelivery task (Part K, D410).
+    /// Shared with the redelivery task (Part K, D410) and the gossip agent, which sends through it.
     peer: Arc<PeerLink>,
     /// Peer updates held until their peer can take them (Part K, D407).
     forwarder: Arc<Forwarder>,
+    /// Zone gossip (Part I): takes the P2P inbox, forwards zone updates, and publishes committed
+    /// answers into their zone (D360, D366).
+    gossip: GossipAgent,
     /// Closed while offline; every socket holds a copy (D402).
     gate: FaultGate,
     /// Reports made while offline (D401).
@@ -231,7 +239,7 @@ impl MeshClient {
         }
         let retry_budget = Arc::new(std::sync::Mutex::new(RetryBudget::new(Instant::now())));
         let retries_skipped = Arc::new(AtomicU64::new(0));
-        let presence = Presence::new(
+        let presence = Arc::new(Presence::new(
             presence::Sender {
                 nodes: nodes.clone(),
                 gate: gate.clone(),
@@ -245,7 +253,7 @@ impl MeshClient {
             },
             // The program's start time, every user's incarnation (D323).
             now_ms(),
-        );
+        ));
         let peer = Arc::new(PeerLink::new(id, config, gate.clone(), log.clone()));
         let forwarder = Arc::new(Forwarder::default());
         tasks.spawn(offline::redeliver_every(
@@ -255,6 +263,18 @@ impl MeshClient {
             log.clone(),
             config.timers.client_retry(),
         ));
+        // The inbox is new here, so it is always there to take; an empty one stands in otherwise.
+        let inbox = peer
+            .take_updates()
+            .unwrap_or_else(|| tokio::sync::mpsc::channel(1).1);
+        let gossip = GossipAgent::start(
+            id,
+            config.gossip,
+            peer.clone(),
+            presence.clone(),
+            inbox,
+            log.clone(),
+        );
         Self {
             id,
             retry: config.timers.client_retry(),
@@ -272,6 +292,7 @@ impl MeshClient {
             presence,
             peer,
             forwarder,
+            gossip,
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
@@ -351,10 +372,12 @@ impl MeshClient {
         self.peer.addr()
     }
 
-    /// The updates other programs delivered to this one, as a stream the application or Part I's
-    /// gossip reads (D460). Only the first call gets it.
+    /// The updates other programs delivered to this one, as a stream the application reads (D460).
+    /// Zone gossip sees them first: what comes out is what it found new, with repeats, obsolete
+    /// versions and zones this program does not subscribe to already dropped, and zone updates
+    /// already forwarded (D360). Only the first call gets it.
     pub fn take_peer_updates(&self) -> Option<tokio::sync::mpsc::Receiver<P2pEnvelope>> {
-        self.peer.take_updates()
+        self.gossip.take_updates()
     }
 
     /// A new peer update from `from`, with a fresh update ID (D339). `to: None` is for a whole zone.
@@ -693,6 +716,11 @@ impl MeshClient {
             ReplyBody::Provisional(plan) => (reply.from, plan, IncidentStatus::Provisional, None),
             ReplyBody::Rejected(_) => unreachable!("answer_to does not hand over Rejected replies"),
         };
+        // A committed answer, refusals of reports too old included, goes into its zone; a
+        // provisional one may still change, so it does not (D356, D366).
+        if let Some(result) = &committed {
+            self.gossip.publish(result);
+        }
         let provisional = committed.is_none();
         let latency = started.elapsed();
         self.log.log(Event::ClientDone {

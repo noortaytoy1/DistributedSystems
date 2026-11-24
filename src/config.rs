@@ -39,6 +39,9 @@ pub struct Config {
     /// Client programs talking to each other directly (Phase 2, Part H).
     #[serde(default)]
     pub p2p: P2pConfig,
+    /// Zone publish-subscribe among client programs (Phase 2, Part I).
+    #[serde(default)]
+    pub gossip: GossipSettings,
 }
 
 /// See [`Config::consensus`].
@@ -313,6 +316,53 @@ impl P2pConfig {
     }
 }
 
+/// How a client program spreads zone updates (Phase 2, Part I, D364). Every key is optional and
+/// defaults to the value `gossip.rs` was measured with (D344, D345).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GossipSettings {
+    /// Programs a program sends each new zone update to.
+    pub fanout: usize,
+    /// The `max_hops` a program puts on what it publishes, and the most it obeys (D346).
+    pub hop_cap: u8,
+    /// Most entries each seen-cache holds, and how long it keeps one (D344).
+    pub seen_cap: usize,
+    pub seen_max_age_ms: u64,
+    /// How often a zone's list of programs is asked for again, at most (D358).
+    pub refresh_ms: u64,
+    /// Most gossip sends in flight at once; past it the gossip task waits (D363).
+    pub max_in_flight: usize,
+}
+
+impl Default for GossipSettings {
+    fn default() -> Self {
+        Self {
+            fanout: crate::gossip::DEFAULT_FANOUT,
+            hop_cap: crate::gossip::DEFAULT_HOP_CAP,
+            seen_cap: crate::gossip::DEFAULT_SEEN_CAP,
+            seen_max_age_ms: crate::gossip::DEFAULT_SEEN_MAX_AGE_MS,
+            refresh_ms: crate::gossip::DEFAULT_REFRESH_MS,
+            max_in_flight: crate::gossip::DEFAULT_MAX_IN_FLIGHT,
+        }
+    }
+}
+
+impl GossipSettings {
+    /// The bounds the pure core takes.
+    pub fn core(&self) -> crate::gossip::GossipConfig {
+        crate::gossip::GossipConfig {
+            fanout: self.fanout,
+            hop_cap: self.hop_cap,
+            seen_cap: self.seen_cap,
+            seen_max_age_ms: self.seen_max_age_ms,
+        }
+    }
+
+    pub fn refresh(&self) -> Duration {
+        Duration::from_millis(self.refresh_ms)
+    }
+}
+
 /// Fault injection (faults.rs). `bin/node.rs --faults on|off` overrides `enabled` for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -474,6 +524,13 @@ impl Config {
         if self.campus.zones == 0 {
             return invalid("campus.zones must be > 0".into());
         }
+        let g = &self.gossip;
+        if let Err(e) = g.core().validate() {
+            return invalid(e.to_string());
+        }
+        if g.refresh_ms == 0 || g.max_in_flight == 0 {
+            return invalid("gossip: refresh_ms and max_in_flight must be > 0".into());
+        }
         let f = &self.faults;
         if f.interval_min_ms == 0 || f.interval_min_ms > f.interval_max_ms {
             return invalid("faults: need 0 < interval_min_ms <= interval_max_ms".into());
@@ -508,6 +565,34 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gossip_keys_are_optional_and_validated() {
+        let node = "[[cluster.nodes]]\nid = 1\npeer_addr = \"a:1\"\nclient_addr = \"a:2\"\n";
+        let config = Config::from_toml(node).unwrap();
+        assert_eq!(config.gossip, GossipSettings::default());
+        assert_eq!(config.gossip.core(), crate::gossip::GossipConfig::default());
+        assert_eq!(config.gossip.refresh(), Duration::from_secs(10));
+        assert_eq!(config.gossip.max_in_flight, 256);
+
+        let with = |lines: &str| Config::from_toml(&format!("{node}[gossip]\n{lines}\n"));
+        let set = with("fanout = 2\nhop_cap = 4\nrefresh_ms = 500").unwrap();
+        assert_eq!((set.gossip.fanout, set.gossip.hop_cap), (2, 4));
+        assert_eq!(
+            set.gossip.seen_cap, 10_000,
+            "keys left out keep their default"
+        );
+        for bad in [
+            "fanout = 0",
+            "seen_cap = 0",
+            "seen_max_age_ms = 0",
+            "refresh_ms = 0",
+            "max_in_flight = 0",
+            "fan_out = 3",
+        ] {
+            assert!(with(bad).is_err(), "{bad} must be refused");
+        }
+    }
 
     #[test]
     fn policy_keys_parse_and_default() {

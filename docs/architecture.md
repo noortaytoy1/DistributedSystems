@@ -79,7 +79,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Clients send to the cloud over UDP                         | `submit` through tarpc on a small UDP adapter; `ctl` on tarpc over TCP. Noor's decision, reverses D17 | built; **only on loopback so far: real switches and network cards are untested, and no run has had the buffer raised** | D167, D168, D170, D171 |
 | A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
-| Publish-subscribe                                          | Phase 2, by Lecture 9. The dissemination core is built in `src/gossip.rs`; its wiring is next, section 13.3 | core built, wiring planned | D131, D209, D340–D352 |
+| Publish-subscribe                                          | Phase 2, by Lecture 9. Zone gossip is built in `src/gossip.rs` and runs in every client program; the zone lists wait on Part G's directory, section 13.3 | built against stub nodes; directory planned (G) | D131, D209, D340–D368 |
 
 ### Rotating rounds: no elected node (built, D249)
 
@@ -2132,8 +2132,8 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   leader duty would go against the table in section 2 (D69, D163).
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
 - **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
-  duplicate suppression and bounded forwarding (D131). The dissemination core is built (section 13.3, D340–D350); its
-  wiring is next. Lecture 9 places it in Phase 2, because it needs a publish step
+  duplicate suppression and bounded forwarding (D131). Zone gossip is built (section 13.3, D340–D368); its zone lists
+  wait on Part G's directory. Lecture 9 places it in Phase 2, because it needs a publish step
   and discovery, so it is in the design here and not in Phase 1's build (D209). Reporting does not need it; it exists to
   tell others in a zone. The difference from group communication: there the sender drives one message to many; here
   providers publish, interested parties subscribe, and they are pushed a notice when something concerns them.
@@ -2211,46 +2211,86 @@ sequenceDiagram
     B-->>A: P2pAck Accepted, the round trip is the delivery latency
 ```
 
-### 13.3 Zone gossip: the dissemination core (core built, wiring planned, Part I, D340–D354)
+### 13.3 Zone gossip (core and agent built, against stub nodes until Part G, Part I, D340–D368)
 
-`src/gossip.rs` holds the rules by which a zone's programs spread an update; the wiring to the peer endpoint, the zone's
-programs from the directory and the cloud's publish come next (`part-i-gossip`). A gossip peer is a client program, not a
-user (D341). A program with a user subscribed to the zone that gets an update it has not seen hands it to its users and
-sends it to `k = 3` programs of the zone, picked by hash ranking, never itself, the program it came from or the origin
-(D347). Two checks drop copies: an update ID seen before is a duplicate, and a version at most the highest seen for its
-subject (incident, assignment, or provider and capability) is obsolete (D342, D343). Both caches hold 10,000 entries or
-300 s (D344). The origin sends with `hops = 0` and `max_hops = 7`; a program forwards while `hops < min(max_hops, 7)`
-(D316, D345, D346). A program not subscribed to the zone refuses the copy, and a direct message is never forwarded
-(D348). Part H's endpoint (`p2p.rs`) answers each `deliver` and drops repeated update IDs before gossip sees an update
-(D461), so the obsolete and not-subscribed outcomes are counted at the receiver; whether they also reach the sender's ack,
-and how the wiring learns which program a copy came from, are open (D353, D354). Measured with the core, this covers every program of a 5-program zone (the lab's size), about 96% of 50 and 93%
-of 500; forward-once push gossip misses about e^-k of the programs in a large zone, which Part K's store-and-forward
-covers (D345). Who publishes the cloud's summary is open (D351).
+`src/gossip.rs` holds the rules by which a zone's programs spread an update (the pure core) and the agent that runs them in
+every client program. A gossip peer is a client program, not a user (D341). A program with a user joined in the zone that gets
+an update it has not seen hands it to the application and sends it to `k = 3` programs of the zone, picked by hash ranking,
+never itself or the origin (D347, D354). Two checks drop copies: an update ID seen before is a duplicate, and a version at
+most the highest seen for its subject (incident, assignment, or provider and capability) is obsolete (D342, D343). Both caches
+hold 10,000 entries or 300 s (D344). The origin sends with `hops = 0` and `max_hops = 7`; a program forwards while
+`hops < min(max_hops, 7)` (D316, D345, D346). A program with no user in the zone drops the copy, and a direct message is never
+forwarded (D348). Part H's endpoint (`p2p.rs`) answers each `deliver` and drops repeated update IDs before gossip sees an
+update (D461), so the obsolete and not-subscribed outcomes are counted at the receiver, in `gossip_received` (D353). Measured
+with the core, this covers every program of a 5-program zone (the lab's size), about 96% of 50 and 93% of 500; forward-once
+push gossip misses about e^-k of the programs in a large zone, which Part K's store-and-forward covers (D345).
+
+**Who publishes.** The reporting program, as origin, once its report's answer is committed: `MeshClient` hands the committed
+result to the agent and returns at once (D351, D366). The agent publishes the incident's summary at version 1 and its
+assignment at the commit's log index (D355), Expired answers included and provisional ones never (D356). The cloud carries
+none of it, and still answers before anything is published.
+
+**Where the zone's programs come from.** `discover` for the zone, collapsed to one address per program, cached and asked for
+again at most every 10 s; a failed answer keeps the old list (D357, D358). Until Part G's directory exists, real nodes answer
+`Rejected` (D325), so on a real cluster every list is empty and a publish goes to nobody, logged with `targets` 0 (D367). The
+tests use a stub node.
+
+**Components in one program.**
+
+```mermaid
+flowchart LR
+    APP["Application, loadgen or frontend"]
+    MC["MeshClient, client.rs"]
+    GA["GossipAgent task, gossip.rs"]
+    CORE["Gossip core, pure"]
+    PR["Presence agent, presence.rs"]
+    PL["PeerLink, p2p.rs"]
+    CLOUD["Cloud nodes"]
+    PEERS["Other programs in the zone"]
+    APP -->|"submit"| MC
+    MC -->|"committed answer"| GA
+    GA -->|"new updates, take_peer_updates"| APP
+    GA --> CORE
+    GA -->|"zones of joined users, discover zone"| PR
+    PR -->|"discover"| CLOUD
+    MC -->|"report, group send"| CLOUD
+    PL -->|"inbox, after the ID check"| GA
+    GA -->|"send_peer, at most 256 in flight"| PL
+    PL <-->|"deliver over UDP"| PEERS
+```
+
+**A committed report spreads through its zone.**
 
 ```mermaid
 sequenceDiagram
-    participant O as Program 1, origin
-    participant A as Program 2
-    participant B as Program 3
-    participant C as Program 4
-    participant N as Program 5, not subscribed
-    O->>A: deliver(u1-7, incident v2, hops 0, max_hops 7)
-    O->>B: deliver(u1-7, hops 0)
-    A-->>O: Accepted
-    Note over A: new: hand to users, pick k, never O or itself
-    A->>B: deliver(u1-7, hops 1)
-    B-->>A: Duplicate, the ID was seen
-    A->>C: deliver(u1-7, hops 1)
-    C-->>A: Accepted
-    A->>N: deliver(u1-7, hops 1)
+    participant R as Program 51, reporter
+    participant C as Cloud
+    participant A as Program 52
+    participant B as Program 53
+    participant N as Program 56, other zone
+    R->>C: submit(report, zone 2)
+    C-->>R: Done(committed, log_index 9)
+    Note over R: submit returns, the agent publishes in the background
+    R->>C: discover(zone 2), first use only, cached 10 s
+    C-->>R: records of 52, 53 and others
+    R->>A: deliver(summary v1, hops 0, max_hops 7)
+    R->>B: deliver(summary v1, hops 0)
+    A-->>R: Accepted
+    B-->>R: Accepted
+    Note over R,B: the assignment v9 goes the same way
+    Note over A: new: to the application, forward to k programs, never 51
+    A->>B: deliver(summary v1, hops 1)
+    B-->>A: Duplicate, the endpoint saw the ID
+    A->>N: deliver(summary v1, hops 1), from a stale list
     N-->>A: Accepted by the endpoint
-    Note over N: gossip: not subscribed, dropped and counted (D353)
-    Note over C: a late copy of v1 under another ID is obsolete, dropped
-    Note over C: at hops 7 a copy is delivered, not forwarded
+    Note over N: no user in zone 2: dropped, gossip_received not_subscribed
 ```
 
-The zone's programs, the peer endpoint, the acks on the wire, the `[gossip]` config keys, the events and the cloud's
-publish are **planned** (G, and Part I's `part-i-gossip`, D350, D351, D353, D354).
+**Built and planned.** Built: the core, the agent, the `[gossip]` keys, the four events, `tests/gossip.rs` against a stub
+node. Planned, each marked `TODO(I)` in the code (D368): the zone lists from Part G's directory, spread over programs (D357);
+`send_peer_or_hold` once Part K's #39 merges (D362); a test with a real cloud after Part G; the sender of each copy if the lab
+shows the extra duplicates matter (D354); the planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into
+loadgen and the zone panel is Part L's.
 
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
@@ -2279,7 +2319,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219, D220 and D222 to D228, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Its dissemination core is built (D340–D350); the wiring is next.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built (D340–D368); its zone lists wait on Part G's directory.
 - **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
   report must state that.
 - **Lab results.** Nothing has run on the six PCs; see [runbook.md](runbook.md). Every number in these docs is from tests or from

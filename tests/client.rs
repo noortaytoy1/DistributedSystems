@@ -176,6 +176,7 @@ fn stub_config(addrs: &[String]) -> Config {
         storage: Default::default(),
         consensus: Default::default(),
         p2p: Default::default(),
+        gossip: Default::default(),
     };
     fast_retries(&mut config);
     config
@@ -631,8 +632,20 @@ async fn a_cancel_does_not_stop_the_nodes_work_and_is_counted() {
         client.udp_counts().tx_cancels == 2 && cancels_read() == 2
     })
     .await;
-    assert_eq!(client.udp_counts().tx_requests, 3);
-    assert_eq!(client.udp_counts().rx_datagrams, 1, "one reply");
+    // The committed answer is published into its zone (D366), so the gossip agent asks every node
+    // for the zone's programs once, the first time (D358): three more requests, each answered
+    // `Rejected` until Part G's directory exists (D325). Those calls end with an answer, so they add
+    // no cancel.
+    wait_until(
+        Duration::from_secs(10),
+        "the gossip agent's discover",
+        || client.udp_counts().rx_datagrams == 4,
+    )
+    .await;
+    let counts = client.udp_counts();
+    assert_eq!(counts.tx_requests, 3 + 3, "3 report copies, 3 discovers");
+    assert_eq!(counts.rx_datagrams, 1 + 3, "one reply, 3 discover answers");
+    assert_eq!(counts.tx_cancels, 2);
     cluster.shutdown().await;
 }
 
