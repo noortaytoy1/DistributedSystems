@@ -261,6 +261,56 @@ The numbers are there: each node's line has the same three tickets and names the
 
 If one node's line has `victim: null`, explain it as the rule at work: that node missed a number, so it did nothing, and the others went ahead.
 
+# Phase 2 scenarios
+
+The spec's Required Demonstration Scenarios table, rows 5 to 8. The numbers below are the spec's, not this page's Phase 1 scenes.
+
+## Spec scenario 7. Offline peer (Part K, D400–D413)
+
+*Disconnect a client, create updates elsewhere, reconnect it, and show the best-effort synchronization.* The policy being shown is
+[offline-policy.md](offline-policy.md); keep it open, because the questions come from it.
+
+**Reports made offline.** On one client machine, with the cluster running and terminal 1 on screen:
+
+```bash
+target/release/loadgen --config config/lab.toml --client-id 7 --users 5 --think-ms 200 --duration-s 12 --offline-at-s 3 --offline-for-s 5
+```
+
+**Expect** the usual summary, then one more line, as it printed on one PC:
+
+```text
+offline: queued 116, sent 116, answered 116, expired 0, failed 0, reconciled in 521.8 ms, still queued 0
+```
+
+Say what happened: for 5 s the program heard and sent nothing, not even answers on their way. Its users kept reporting, and each
+report got its ID at once and went into the outbox, a file on this PC. On return every one was sent with that same ID, so a report the
+cloud already had could not be planned twice. Then show one of them on all three nodes:
+
+```bash
+grep '"ev":"outbox_queued"' runs/lab/client-7.jsonl | head -1          # take its request, e.g. {"client":7,"seq":...} -> 7-<seq>
+target/release/ctl --config config/lab.toml incidents --id 7-<seq>
+grep -E '"ev":"(client_online|outbox_flushed)"' runs/lab/client-7.jsonl
+```
+
+**Expect** the same `log_index` and fields on all three, and `age_ms` near 5000: the time it waited offline, measured on the client's
+clock (D143). `outbox_flushed.reconcile_us` is the offline reconciliation delay. To show the expiry rule, run it again with
+`--ttl-ms 3000`: reports made early in the outage come back `expired`, refused by the cloud and on record, not dropped by the client
+(D403). On one PC: `offline: queued 103, sent 103, answered 72, expired 31, failed 0, reconciled in 436.3 ms, still queued 0`.
+
+**Peer updates held for an offline peer.** Until Part L's page has the offline toggle, show it with the test that drives two real
+client programs, on one machine:
+
+```bash
+cargo test --release --test store_forward -- --nocapture
+```
+
+It shows three cases: the sender offline, the peer offline (the update arrives by the 2 s retry, with nobody calling), and a newer
+version replacing an older one while held. Then say the limits: 100 per peer, 10,000 in all, 300 s, the same as how long receivers
+remember IDs (D408).
+
+**If asked what is lost:** read section 7 of the policy. **If asked about claims made offline:** Part J, and the rule is speculative
+with a visible reconciliation state (section 2).
+
 ## Questions to be ready for
 
 Every answer here comes from the spec, the class notes or the recordings, and nothing is left open (D213).
@@ -295,6 +345,10 @@ Every answer here comes from the spec, the class notes or the recordings, and no
   override them. So our own queue sits in front of Raft: one write in flight per node, and everything waiting goes in one save. A report that waits
   over 3 s leaves the queue, and the client resends.
 - **"What happens past what it can answer?"** A plan that loses the race for a responder three times commits that nobody could be sent, and the report hears at once (D220). So overload shows as `no_responder_share` rising at low latency. The trade: an answer now, for a chance of a responder later.
+
+- **"What can a user do offline, and what is lost?"** Only add things: new reports, queued in a file with their IDs, and new peer
+  updates, held by the sender. Nothing offline can change someone else's item, so first commit wins is the only conflict rule needed.
+  Limits: 10,000 queued reports, and 100 held updates per peer for at most 300 s. All of it is in `docs/offline-policy.md` (D400–D413).
 
 **Do not narrate `members` as health.** Lists differ between nodes, and a silenced node's list is frozen. Point at leader, serving and
 degraded as well.

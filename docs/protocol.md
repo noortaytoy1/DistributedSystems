@@ -378,7 +378,9 @@ All nodes apply batches in the order (round, node ID), up to the lowest round al
 | Retry budget, in `client.rs` | 20% of first sends, floor 200 a second, cap 5,000, start 100 |
 | `client_retries_skipped` | New event: retries a client left unsent, as its last log line |
 
-## Offline clients (Phase 2, Part K, D400–D411)
+## Offline clients (Phase 2, Part K, D400–D413)
+
+The policy in full: [offline-policy.md](offline-policy.md).
 
 No message changes: a queued report is an ordinary `ClientRequest`, sent later with the ID it was given when it was made.
 

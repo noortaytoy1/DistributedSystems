@@ -339,6 +339,8 @@ table below in sync.
 | D409 | Obsolete: a newer version of the same subject replaces an older one; a run-out offer is dropped | K | Implemented |
 | D410 | Redelivery every `client_retry_ms`, and at once on `go_online`; one failure per peer per round | K | Implemented |
 | D411 | Events `peer_update_held`, `peer_update_forwarded` and `peer_update_dropped` | K | Implemented |
+| D412 | Offline, a user may only add: new reports and new peer updates | K | Implemented |
+| D413 | Demo scenario 7 uses loadgen's outage and the store-and-forward test, until the page has a toggle | K | Implemented |
 | D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
 | D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
 | D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
@@ -9835,6 +9837,47 @@ them on the six PCs.
   to every program but itself and the origin.
 - **Report notes.** Test plan for Part I. Coverage is certain for zones of at most k + 2 programs, which is the lab's size
   (D341), and probabilistic above it.
+
+### D412 · Offline, a user may only add: new reports and new peer updates
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec: if the owner of an incident or resource is offline, other clients may continue only the operations the
+  consistency model permits, and any speculative action must be clearly labelled and reconciled. The plan (section 7) left open which
+  operations are allowed offline.
+- **Options considered.**
+  1. *Add only (chosen).* New reports (queued) and new peer updates (held) are allowed; presence calls and discovery fail at once;
+     claims, when Part J builds them, are speculative and may lose; nothing can change another user's item.
+  2. *Also allow changes to one's own earlier items offline.* Needs a merge rule per field and per version, for little gain in this
+     application.
+  3. *Nothing offline.* Simplest, but the spec asks for offline operation.
+- **Decision.** Option 1, written as the policy in `docs/offline-policy.md`, section 2. `submit_or_queue` and `send_peer_or_hold`
+  are the offline-capable calls; `submit` and `send_peer` fail at once with `Offline`.
+- **Why.** An offline action that only adds cannot contradict anyone else's, so the cloud's "first commit wins" per ID (D27) and the
+  peers' duplicate suppression (D461) are the whole conflict rule. The one real conflict, two claims on one resource, is Part J's,
+  with a visible reconciliation state.
+- **Consequences.** A queued report has no status until it reaches the cloud; the user sees `Queued(id)`, which is the speculative
+  label. Part J must label offline claims the same way.
+- **Where.** `docs/offline-policy.md`; `client.rs::{submit_or_queue, send_peer_or_hold}`.
+- **How we check it.** `tests/offline.rs`, `tests/store_forward.rs`; the policy cites the test for each rule.
+- **Report notes.** The offline policy section of the Phase 2 report is `docs/offline-policy.md`.
+
+### D413 · Demo scenario 7 uses loadgen's outage and the store-and-forward test, until the page has a toggle
+
+- **Date:** 2026-11-24 · **Part:** K · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** The spec's scenario 7: disconnect a client, create updates elsewhere, reconnect it, show the synchronization. The web
+  page's offline toggle is Part L's and not built.
+- **Options considered.**
+  1. *Loadgen's `--offline-at-s` / `--offline-for-s` and `ctl incidents` for reports, and `tests/store_forward.rs` for peer updates
+     (chosen).* Works today, with commands tried on one PC.
+  2. *Add a demo command now for peer updates.* Duplicates what Part L's page will do.
+  3. *Wait for the page.* Leaves the scenario with no script until the last days.
+- **Decision.** Option 1, in `docs/demo.md`, "Spec scenario 7", with the outputs printed on one PC.
+- **Why.** Every command in the script has been run; the lab only has to confirm it.
+- **Consequences.** Part L replaces the test step with the page's toggle when it lands.
+- **Where.** `docs/demo.md`.
+- **How we check it.** Rehearsal on the six lab PCs (integration day, 2026-12-02).
+- **Report notes.** One PC: 116 reports queued in 5 s, all answered after reconnecting, reconciled in 522 ms; with `--ttl-ms 3000`,
+  31 of 103 refused as expired, on record.
 
 ### Notes on older entries
 
