@@ -375,6 +375,21 @@ table below in sync.
 | D463 | One stub per peer address, at most 256, least recently used dropped first | H | Implemented |
 | D464 | Three P2P events: listening, sent and received | H | Implemented |
 | D465 | A test with a real three-node cloud shows it carries none of a P2P exchange; loadgen is left to Part L | H, with L | Implemented |
+| D340 | Zone updates are pushed peer to peer | I | Accepted, core built |
+| D341 | A gossip peer is a client program, not a user | I, with H and G | Implemented in the core |
+| D342 | Two duplicate checks: the update ID, then the subject's highest version | I | Implemented in the core |
+| D343 | A subject is the kind of update and its natural key | I, with J | Implemented in the core |
+| D344 | Each seen-cache holds 10,000 entries or 300 s, oldest forgotten first | I | Implemented in the core |
+| D345 | Fan-out 3 and `max_hops` 7, measured | I | Implemented in the core |
+| D346 | Every program caps the hops it obeys at the shared value | I, with H | Implemented in the core |
+| D347 | Targets by hash ranking; never itself, the sender or the origin | I | Implemented in the core, the sender is open (D354) |
+| D348 | Only subscribed programs forward zone messages; direct messages are never forwarded | I, with H | Implemented in the core |
+| D349 | Obsolete and unsubscribed copies are acked `Refused`, with a fixed reason | I, with H | Implemented in the core, the wire path is open (D353) |
+| D350 | PR 1 is the pure core and its counters; events and config keys come with the wiring | I | Implemented, keys and events accepted |
+| D351 | How the cloud publishes into a zone, with no `ClientId` of its own | I, with H | Open |
+| D352 | The planner uses Phase 2 resources beside the synthetic responders | I, with E | Accepted |
+| D353 | Whether gossip's outcome reaches the sender's ack | I, with H | Open |
+| D354 | How the wiring learns which program a copy came from | I, with H | Open |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -385,7 +400,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351 (who publishes into a zone), D353 (gossip's outcome in the ack) and D354 (the sending program) are open, for Part I's `part-i-gossip` to settle.
 
 ---
 
@@ -9060,6 +9075,371 @@ them on the six PCs.
 - **Where.** `tests/p2p.rs`.
 - **How we check it.** 10 runs in a row green.
 - **Report notes.** The evidence for "the cloud carries no peer payload".
+
+### D340 · Zone updates are pushed peer to peer
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Accepted (the core is built; the wiring is `part-i-gossip`) · **Decided
+  by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** The spec asks for zone subscriptions among peers, with duplicate suppression and bounded forwarding. D131
+  and D209 put publish-subscribe in Phase 2, with the cloud as the directory of service (Lecture 8, section 10.3) and "push
+  a notice" in `docs/architecture.md` section 13. Phase 2 gives every client program a peer endpoint and one typed call,
+  `P2pRpc::deliver(envelope) -> P2pAck` (Part H, D310–D322), and a directory of who is in which zone (Part G). This
+  entry replaces the D340 of the closed PR #34, which never reached `main`; D340–D352 are written afresh on top of Part H's
+  envelope.
+- **Options considered.**
+  1. *Push gossip (chosen).* A program that gets a new zone update sends it at once to `k` programs of the zone. Fastest
+     coverage, a few round trips, and it fits `deliver` as it is. Its cost is duplicate copies, which the seen-caches and
+     the hop bound limit.
+  2. *Pull (anti-entropy).* Each subscriber asks `k` peers every `T` ms what they have. No storms, and it catches up after
+     an outage by itself, but every update waits at least one period, there is traffic when nothing happens, and it needs
+     a digest message: a contract change in `proto.rs`.
+  3. *Push, plus one pull on reconnect.* Better coverage after offline, but it overlaps Part K's reconnect and
+     store-and-forward, and needs agreeing with Aabed: more to build and measure before 2026-12-05.
+- **Decision.** Option 1. Updates are published once into the zone and spread by `gossip::Gossip` over the peer endpoint.
+- **Why.** The lecture and section 13 describe a push ("pushed a notice, with no asking"); a zone alert wants push's
+  latency, which a poll period would add to. Catch-up after offline belongs to Part K, so it is not built twice.
+- **Consequences.** Coverage is probabilistic (D345): a program nobody picks misses the update, and an offline one misses
+  what was pushed meanwhile. Both are Part K's to cover, by store-and-forward and reconnection.
+- **Where.** `src/gossip.rs`; the wiring in the client and the cloud's publish in `part-i-gossip`.
+- **How we check it.** Unit tests in `gossip.rs`; scenario 6 and the coverage measure once wired.
+- **Report notes.** Contrast with group communication (D210): there one sender drives a message to a known group; here
+  subscribers get what concerns them, and peers carry it, not the cloud.
+
+### D341 · A gossip peer is a client program, not a user
+
+- **Date:** 2026-11-24 · **Part:** I, with H and G · **Status:** Implemented in the core · **Decided by:** Yahia Kilany,
+  on the agent's recommendation (grill, 2026-11-24)
+- **Context.** The directory holds one record per user (D319), but all users of one program share its peer endpoint, and
+  a zone message (`to: None`, D322) reaching a program reaches all of that program's users in the zone at once. The old
+  core of PR #34 was generic over the peer type to leave this open; Part H's envelope has since merged.
+- **Options considered.**
+  1. *The program, by `ClientId` (chosen).* The wiring collapses the zone's user records into one entry per program.
+  2. *The user, by `UserId`.* The simplest mapping from the directory, but several picks land on one program, so the real
+     fan-out falls below `k` and the duplicate rate rises for nothing. A zone of 500 users may be 10 programs.
+  3. *Generic, decide later.* No decision now, but a mapping layer for nothing, and tests unlike the real thing.
+- **Decision.** Option 1. `Gossip` is one program's state; targets, senders and origins are `ClientId`s; the core uses
+  `proto::P2pEnvelope` directly. `UpdateId.origin` is already a `ClientId` (D315).
+- **Why.** One copy per program is all that is needed; anything more is a duplicate by construction.
+- **Consequences.** Zones are small in the lab: 10 programs per client PC by default (D181), 3 PCs and 6 zones gives about
+  5 programs per zone, about 50 if all 10 batches run (D184). The seen-caches are per program. The wiring (PR 2) must map
+  the directory's records to programs and tell the core whether any of its users subscribes to a zone (D348).
+- **Where.** `gossip::Gossip`, `gossip::pick_targets`.
+- **How we check it.** Every unit test uses `ClientId` peers; `a_zone_of_five_programs_is_always_covered`.
+- **Report notes.** Zone sizes in the report are in programs; state how many users that is.
+
+### D342 · Two duplicate checks: the update ID, then the subject's highest version
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** The envelope names each send by `UpdateId { origin, seq }` (D315) and counts changes to one subject by
+  `version` (D318). An incident's summary changes over its life, and a copy of an old version can arrive late.
+- **Options considered.**
+  1. *`UpdateId`, then highest version per subject (chosen).* A seen ID is a duplicate, as D315 says receivers do; a zone
+     update whose version is at most the highest seen for its subject is obsolete.
+  2. *`UpdateId` only.* Simplest, but a late old version still spreads and overwrites a newer one where it lands, and the
+     report gets no obsolete count.
+  3. *Subject and version only* (the old D342). Works, but against D315's contract, and two sends of one version under
+     different IDs cannot be told apart.
+- **Decision.** Option 1. `Receipt::Duplicate` for a seen ID; `Receipt::Obsolete` for a version `<=` the highest seen, so a
+  second publish of the same version under a new ID does not spread either. Neither is delivered or forwarded. A direct
+  message is checked by ID only and leaves the version cache alone, so a direct copy of v2 never makes the zone's copy of
+  v2 look old.
+- **Why.** Old versions are dropped for free, and it is D318's "a newer version exists" rule, which Part K uses for
+  obsolete pending updates: the two parts share one rule.
+- **Consequences.** Versions must only grow per subject, and every publisher of a subject must number it the same way.
+  Where the cloud's versions come from is settled with D351 in PR 2. Since Part H's P2P link merged (#37), the peer
+  endpoint drops repeated update IDs before gossip sees them (D461), with the same bounds (10,000, 300 s). On the live path
+  the core's ID check is then a backstop for repeats from anywhere else, and the repeats themselves show in the endpoint's
+  `Duplicate` replies and events (D464), not in `GossipStats::duplicates`. The version check is the core's alone.
+- **Where.** `Gossip::check_and_record`, `Receipt`.
+- **How we check it.** `a_seen_id_is_a_duplicate_and_is_not_forwarded`,
+  `a_newer_version_spreads_and_an_old_or_equal_one_is_obsolete`, `a_direct_message_is_delivered_once_and_never_forwarded`.
+- **Report notes.** Duplicate rate = `duplicates / delivered`; obsolete copies are counted apart.
+
+### D343 · A subject is the kind of update and its natural key
+
+- **Date:** 2026-11-24 · **Part:** I, with J · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** D318 leaves "the same subject" to each kind. It decides which updates replace each other.
+- **Options considered.**
+  1. *Kind plus its natural key (chosen).* `IncidentSummary` by incident, `AssignmentUpdate` by incident as a separate
+     subject, `ResourceOffer` by (provider, capability).
+  2. *The incident ID for both incident kinds.* Fewer subjects, but both publishers must share one counter, or a summary
+     and an assignment hide each other.
+  3. *Origin and kind.* Easy, but two updates about different incidents from one origin would make each other obsolete.
+- **Decision.** Option 1, as `gossip::Subject::{Incident, Assignment, Offer}` and `Subject::of(&P2pBody)`.
+- **Why.** Summary v3 never makes assignment v2 look old, and each provider's offer of each capability has its own versions.
+- **Consequences.** Ahmed (J) may change the offer key when he extends `ResourceOffer`; that is a change to this entry.
+- **Where.** `gossip::Subject`.
+- **How we check it.** `subjects_keep_kinds_apart`.
+- **Report notes.** None beyond the design section.
+
+### D344 · Each seen-cache holds 10,000 entries or 300 s, oldest forgotten first
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core (constants; config keys in PR 2, D350) ·
+  **Decided by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** A program runs for hours, so both caches (update IDs, and versions per subject) must be bounded. An entry
+  must outlive every copy still in flight: live gossip ends well inside a second, but Part K plans to hold a copy for an
+  offline peer up to about 5 minutes. At Phase 1's rates, thousands of reports a second over 6 zones, 10,000 entries fill
+  in tens of seconds.
+- **Options considered.**
+  1. *10,000 entries or 300 s (chosen).*
+  2. *10,000 entries or 60 s (the plan's example).* A copy Part K delivers after 60 s spreads again, though only as far
+     as its hops allow.
+  3. *100,000 entries or 300 s.* Fewest evictions, up to about 8 MB per program, times 10 programs per PC.
+- **Decision.** Option 1, for each cache: an entry is forgotten `DEFAULT_SEEN_MAX_AGE_MS` (300,000 ms) after it was
+  recorded, or when its cache passes `DEFAULT_SEEN_CAP` (10,000), oldest recorded first. A newer version moves its subject
+  to the back.
+- **Why.** The age matches Part K's retention; 10,000 entries is under 1 MB. Under heavy load the count binds first, and
+  the report measures how often a duplicate gets past an evicted entry (`GossipStats::evicted`).
+- **Consequences.** A late copy of a forgotten update is delivered again as new; its hops still bound how far it goes. A
+  clock that goes back forgets nothing; it does not crash.
+- **Where.** `gossip::Recent::{expire, record}`, `GossipStats::{evicted, expired}`.
+- **How we check it.** `the_caches_forget_the_oldest_past_their_cap`, `a_newer_version_moves_its_subject_to_the_back`,
+  `the_caches_forget_by_age`.
+- **Report notes.** Justify the bounds with the measured update rate per zone from the lab runs.
+
+### D345 · Fan-out 3 and `max_hops` 7, measured
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core (constants; config keys in PR 2, D350) ·
+  **Decided by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** Each program forwards a new zone update to `k` programs, and D316 fixes the hop rule: the origin sends with
+  `hops = 0`, and a copy is forwarded while `hops < max_hops`. So `max_hops = m` lets a copy cross `m + 1` links; the old
+  core's "hop limit 8" (links) is `max_hops = 7` here. The plan suggested `k = 3` and a hop limit of 4.
+- **Options considered.** k = 3 with `max_hops` 3 (the plan's limit), 5 or 7; k = 4 with 5; k = 2 with 7.
+- **Measured** with this core (`gossip::tests::measure_coverage`): one publishing program, every program subscribed, a
+  lossless network, copies delivered in send order, 100 updates per cell.
+
+  | Zone (programs) | k | max_hops | Coverage | Sends per update | Duplicates per delivery |
+  |-----------------|---|----------|----------|------------------|-------------------------|
+  | 5 | 2 | 7 | 100% | 10 | 1.50 |
+  | 5 | **3** | **7** | **100%** | **14** | **2.50** |
+  | 5 | 4 | 5 | 100% | 16 | 3.00 |
+  | 50 | 3 | 3 | 84.0% | 83 | 1.01 |
+  | 50 | 3 | 5 | 95.4% | 141 | 2.01 |
+  | 50 | **3** | **7** | **95.9%** | **144** | **2.06** |
+  | 50 | 4 | 5 | 98.6% | 197 | 3.08 |
+  | 50 | 2 | 7 | 82.0% | 81 | 1.00 |
+  | 500 | 3 | 3 | 20.7% | 115 | 0.12 |
+  | 500 | 3 | 5 | 75.5% | 700 | 0.86 |
+  | 500 | **3** | **7** | **93.2%** | **1,345** | **1.89** |
+  | 500 | 4 | 5 | 96.6% | 1,687 | 2.50 |
+  | 500 | 2 | 7 | 50.8% | 351 | 0.38 |
+
+- **Decision.** `DEFAULT_FANOUT = 3`, `DEFAULT_HOP_CAP = 7`; an origin puts `max_hops = 7` on what it publishes.
+- **Why.** The lab's zones are about 5 programs, up to about 50 (D341). There every setting with k >= 3 covers well and
+  `max_hops` above about 3 adds nothing: once everyone has the update, every further copy is a duplicate that stops at
+  the seen-cache, so total sends stay near `k` times the zone's size. A higher bound only costs sends along paths that
+  still find someone new, so `max_hops = 7` keeps coverage if zones grow (93% of 500) for less than raising k. No setting
+  reaches everyone in a large zone: forward-once push gossip misses a program nobody picks, about e^-k of them (5% at
+  k = 3), the textbook result for this scheme.
+- **Consequences.** Coverage below 100% in large zones is expected and measured, not a bug; Part K covers it. In a
+  5-program zone k = 3 costs 2.5 duplicates per delivery, where k = 2 would cost 1.5 with the same coverage: the
+  duplicate rate the report shows will be high in small zones, and k is the knob for it once it is a config key (D350).
+  The theoretical bound is `GossipConfig::reach_bound`, 9,840 programs.
+- **Where.** `gossip::{DEFAULT_FANOUT, DEFAULT_HOP_CAP, GossipConfig::reach_bound}`.
+- **How we check it.** `a_zone_of_five_programs_is_always_covered`, `a_zone_of_fifty_is_mostly_covered_with_bounded_cost`
+  (mean coverage at least 92%, every update at least 40 of 49, at most k sends per program holding it),
+  `the_hop_bound_bounds_the_reach`. The report sweeps k and `max_hops` on the lab PCs.
+- **Report notes.** The table is the overhead-against-coverage trade-off, and why the plan's limit of 4 was changed. State
+  the e^-k miss rate, and that the lab's zones are small.
+
+### D346 · Every program caps the hops it obeys at the shared value
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** D316 lets the origin set `max_hops` per envelope. A program built or configured wrongly could send
+  `max_hops = 255`, and every peer would forward that far.
+- **Options considered.**
+  1. *Forward only while `hops < min(max_hops, cap)`, with one shared cap (chosen).*
+  2. *Trust the envelope, exactly D316.* One rule fewer, but one wrong origin floods the zone further.
+- **Decision.** Option 1. The cap is `GossipConfig::hop_cap`, `DEFAULT_HOP_CAP = 7`, the same on every machine: a constant
+  now, a key in the one config file every machine copies later (D350, AGENTS.md "One config file"). The origin's own
+  sends are not forwards and go out whatever `max_hops` says. A copy received at the bound is delivered and not forwarded
+  (`GossipStats::hop_limited`).
+- **Why.** Normally the origin sets `max_hops` to the cap and nothing changes; the cap only matters when something is
+  wrong, and then it keeps the flood bounded. D316 still holds: it is checked as written, then capped.
+- **Consequences.** None for a well-configured system. This hop count is not `Incident.ttl_ms` (D143).
+- **Where.** `Gossip::accept`, `Gossip::publish`.
+- **How we check it.** `forwards_while_hops_are_below_the_envelopes_bound`, `the_shared_cap_holds_against_a_large_max_hops`.
+- **Report notes.** The hop count is the spec's Phase 2 TTL, under another name on purpose.
+
+### D347 · Targets by hash ranking; never itself, the sender or the origin
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill, 2026-11-24)
+- **Context.** Each program picks `k` of the zone's programs. The core has no randomness, so runs repeat and tests are
+  exact. The envelope names the origin (`from`, `id.origin`) but not the program a copy came from, which only the
+  transport knows.
+- **Options considered.**
+  1. *Hash ranking (chosen).* Rank candidates by FNV-1a of (update ID, this program, candidate), mixed with
+     `state::sample_mix`, and take the top `k`, as rendezvous hashing does.
+  2. *A seeded RNG passed in.* Truly random and repeatable, but tests depend on the RNG's stream, and two programs given
+     one seed by mistake pick alike.
+  3. *The first `k` by ID.* Every program picks the same low IDs, which carry the load while coverage collapses. Only a
+     baseline.
+- **Decision.** Option 1, in `gossip::pick_targets`. Integers are hashed little-endian, so a ranking is the same on every
+  machine; repeats count once and the list's order does not matter. Left out: the program itself, the `sender` the
+  wiring passes in (the program this copy came from), and `id.origin`.
+- **Why.** No RNG and repeatable, yet each program and each update gets its own targets, so it behaves like random
+  gossip. FNV-1a is already the digest's hash (D31). Never back, never a seen copy, at most `k` per program and at most
+  `max_hops + 1` links: that is why there is no broadcast storm.
+- **Consequences.** The wiring must give `receive` the sending program's `ClientId`. The endpoint's inbox (D460) carries
+  only the envelope, which names the origin and not the program a copy came from, so until D354 is settled the wiring can
+  pass only the origin: a copy can then go back to the program that just sent it. That costs one more duplicate, which the
+  endpoint drops; it never makes a storm, because the ID check and the hop bound still hold. `pick_targets` is public so the
+  cloud's single publish picks its first targets by the same rule.
+- **Where.** `gossip::{pick_targets, rank, Fnv}`.
+- **How we check it.** `targets_repeat_and_still_differ_by_program_and_update`, `targets_spread_evenly_over_the_zone` (each
+  program within ±17% of the mean), `never_back_to_the_sender_the_origin_or_itself`.
+- **Report notes.** The four rules against storms.
+
+### D348 · Only subscribed programs forward zone messages; direct messages are never forwarded
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the
+  agent's recommendation (grill, 2026-11-24)
+- **Context.** Two edge cases: a direct message (`to: Some(user)`, D322), and a zone message reaching a program none of
+  whose users subscribes to the zone, because a user just moved or the sender's directory view is stale.
+- **Options considered.**
+  1. *Zone messages for subscribed zones only (chosen).*
+  2. *Forward regardless of subscription.* Non-subscribers relay, for a little more coverage with stale directories, but
+     they work for zones they do not care about, against publish-subscribe.
+- **Decision.** Option 1. `receive` takes `subscribed`, which the wiring works out from its users' zones. A zone message to
+  a program that is not subscribed is `Receipt::NotSubscribed`: not delivered, not forwarded, and not recorded, so it is
+  new if the program subscribes later. A direct message is checked by ID (D342), delivered, and never forwarded;
+  subscription does not matter for it, and whether the user is held here is the wiring's check (D322).
+- **Why.** A stale directory must not pull non-subscribers into a flood; the sender's other picks still carry it.
+- **Consequences.** Coverage is counted over subscribed programs only.
+- **Where.** `Gossip::accept`, `Receipt::NotSubscribed`.
+- **How we check it.** `a_non_subscriber_refuses_a_zone_message_and_remembers_nothing`,
+  `a_direct_message_is_delivered_once_and_never_forwarded`.
+- **Report notes.** None beyond the design section.
+
+### D349 · Obsolete and unsubscribed copies are acked `Refused`, with a fixed reason
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented in the core; whether it reaches the wire is open
+  (D353) · **Decided
+  by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** `P2pAck` has `Accepted`, `Duplicate` and `Refused(reason)` (D314). `Duplicate` is documented as "had already
+  seen this update ID", which an obsolete update, with a new ID, is not.
+- **Options considered.**
+  1. *`Refused("obsolete")` (chosen).* Fits the contract as written; no `proto.rs` change.
+  2. *`Duplicate`.* Smallest reply, but it mixes obsolete copies into the duplicate rate, and the doc comment would change:
+     a contract change.
+  3. *A new `P2pAck::Obsolete`.* Cleanest, but a contract change with Wahiba's review, not for a core-only PR.
+- **Decision.** Option 1. `Receipt::ack`: `New` → `Accepted`, `Duplicate` → `Duplicate`, `Obsolete` →
+  `Refused(REFUSED_OBSOLETE)` (`"obsolete"`), `NotSubscribed` → `Refused(REFUSED_NOT_SUBSCRIBED)` (`"not subscribed"`).
+- **Why.** The sender's `Duplicate` count stays a pure duplicate rate for the report; the reasons are constants, so the
+  sender can tell them apart. About 10 bytes more in a reply.
+- **Consequences.** The endpoint (D460, D461), merged after this was decided, answers `deliver` itself, `Accepted` for any
+  new update ID, before gossip sees the update. As built, PR 2 cannot reply with `Receipt::ack`. The mapping holds if D353
+  moves the reply after gossip; otherwise the obsolete and not-subscribed outcomes are counted in `GossipStats` only, and
+  `Receipt::ack` has no caller.
+- **Where.** `gossip::{Receipt::ack, REFUSED_OBSOLETE, REFUSED_NOT_SUBSCRIBED}`.
+- **How we check it.** The duplicate, obsolete and non-subscriber tests check the ack.
+- **Report notes.** The ack table for Part I.
+
+### D350 · PR 1 is the pure core and its counters; events and config keys come with the wiring
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented (PR 1); the keys and events are Accepted for PR 2 ·
+  **Decided by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
+- **Context.** The report sweeps k and `max_hops`, so they must become config keys; Part I measures the duplicate rate,
+  the forwarding overhead and coverage, so they must become events. `config.rs` is Part A's and `metrics.rs` is shared.
+- **Options considered.**
+  1. *Core, counters and unit tests now; keys and events in PR 2 (chosen).*
+  2. *Config keys now.* Keys with nothing reading them, and Part A's review on a core PR.
+  3. *Events now.* Field names fixed early for Noor, but a shared file changes before anything emits them.
+- **Decision.** Option 1. PR 1 is `src/gossip.rs` and `pub mod gossip;` in `src/lib.rs`. `GossipStats` counts
+  `published, received, delivered, duplicates, obsolete, not_subscribed, sent, hop_limited, evicted, expired`. PR 2 adds a
+  `[gossip]` section with `fanout`, `hop_cap`, `seen_cap` and `seen_max_age_ms` to `config.rs`, both configs and
+  `docs/protocol.md`, validated by `GossipConfig::validate`, and `metrics::Event` lines for the counters.
+- **Why.** A key or an event is added when something reads or writes it, and PR 1 stays in its owner's file.
+- **Consequences.** Until PR 2 the values are constants. Duplicate rate = repeats per delivered update, where the repeats
+  are the endpoint's `Duplicate` replies (D461, D464) plus `GossipStats::duplicates`; forwarding overhead =
+  `sent` over all programs per update; coverage = programs that delivered it over the zone's subscribed programs.
+- **Where.** `gossip::{GossipConfig, GossipStats}`; later `config.rs`, `metrics.rs`.
+- **How we check it.** Every unit test checks the counters it touches; the flood tests check `sent = delivered +
+  duplicates`.
+- **Report notes.** These ratios are the Part I figures.
+
+### D351 · How the cloud publishes into a zone, with no `ClientId` of its own
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`) · **Decided by:** nobody yet;
+  raised by the agent during the grill of 2026-11-24
+- **Context.** The plan has the cloud push one incident summary into the zone when a plan commits. But `UpdateId.origin` is
+  a `ClientId` (D315), `from` is a `UserId`, and the cloud nodes have neither; `Gossip::publish` requires the origin to
+  be the publishing program. The version per incident must also come from somewhere every publisher agrees on (D342).
+- **Options considered.**
+  1. *The cloud hands the summary to the reporting program, which publishes it as origin.* No contract change; the
+     reporter already gets the committed answer, and the version can be the number of state changes the record has had.
+     But a reporter that has gone offline publishes nothing.
+  2. *Reserve `ClientId`s for the three nodes* (for example `u64::MAX - node_id`), and let a node publish directly. No new
+     field, but a convention in an ID space D113 hands out, and a node must then speak `P2pRpc`.
+  3. *Add an origin kind to `UpdateId` or the envelope.* Clear, but a contract change with Wahiba's review.
+- **Recommendation.** Option 1 for PR 2, since it needs no contract change and keeps the cloud out of the data path (D69,
+  section 13); measure how often the reporter is gone.
+- **Where.** PR 2, `part-i-gossip`.
+- **How we check it.** Decided before PR 2's code is written.
+- **Report notes.** Who publishes, and why.
+
+### D352 · The planner uses Phase 2 resources beside the synthetic responders
+
+- **Date:** 2026-11-24 · **Part:** I, with E · **Status:** Accepted (PR 3, `part-i-planner-phase2`) · **Decided by:** Yahia
+  Kilany, on the agent's recommendation (grill of PR #34, 2026-11-24, carried forward)
+- **Context.** The spec's planner combines severity, age, distance, resource availability and capability. Phase 2 makes
+  resources real: Part J's offers and online volunteer responders from Part G's directory. Phase 1's planner plans over
+  the synthetic campus only.
+- **Options considered.**
+  1. *Beside them (chosen).* Both lists are passed in.
+  2. *Replace them.* Truer to the spec, but every Phase 1 cell and scenario would need offers to run.
+  3. *A config switch (synthetic, Phase 2, both).* Three paths to test, and it would default to both anyway.
+- **Decision.** Option 1. The planner stays deterministic and gets its inputs passed in; availability from offers feeds
+  `Plan.priority`'s availability term (D148).
+- **Why.** Phase 1's scenarios and experiments must still run unchanged, for Noor's regression check.
+- **Consequences.** PR 3 needs Part J's offers and Part G's directory merged first.
+- **Where.** `planner.rs`, with Part E's review.
+- **How we check it.** PR 3's planner tests, and Phase 1's experiments re-run.
+- **Report notes.** How the planner's inputs grew in Phase 2.
+
+### D353 · Whether gossip's outcome reaches the sender's ack
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`, with Wahiba) · **Decided by:**
+  nobody yet; raised by the agent when #37 merged under this PR, 2026-11-24
+- **Context.** D349 maps gossip's outcomes to `P2pAck`, including `Refused("obsolete")` and `Refused("not subscribed")`. Part
+  H's endpoint (`p2p.rs`, D460, D461) answers `deliver` itself as soon as the update ID is new and the inbox has room, and
+  only then hands the envelope on. Gossip's outcome comes too late for the reply.
+- **Options considered.**
+  1. *Keep the endpoint's ack; count gossip's outcomes locally.* No change to Part H's code. The sender learns only
+     accepted, duplicate or busy; obsolete and not-subscribed copies are counted on the receiver, in `GossipStats` and its
+     events, which is where the report reads them. `Receipt::ack` goes unused or is removed.
+  2. *The endpoint asks gossip before it replies.* `p2p.rs` calls a check (the core is synchronous and fast) and replies with
+     `Receipt::ack`. The sender sees every outcome, but Part H's file changes, and the gossip state must be shared with the
+     endpoint's tasks behind a lock.
+  3. *A second message back.* No: a reply already exists, and a new message is a contract change.
+- **Recommendation.** Option 1: it needs nobody else's file, and the report counts at the receiver anyway (D350).
+- **Where.** PR 2, `part-i-gossip`; `p2p.rs` only if option 2.
+- **How we check it.** Decided before PR 2's code is written.
+- **Report notes.** Where each outcome is counted.
+
+### D354 · How the wiring learns which program a copy came from
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`, with Wahiba) · **Decided by:**
+  nobody yet; raised by the agent when #37 merged under this PR, 2026-11-24
+- **Context.** D347 never sends a copy back to the program it came from, so `Gossip::receive` takes the sender. The envelope
+  names only the origin (`from`, `id.origin`, D315), and the endpoint's inbox (D460) hands on the envelope alone. The
+  transport knows the sender's socket address, not its `ClientId`.
+- **Options considered.**
+  1. *Pass the origin as the sender.* No change anywhere. A forwarded copy can go back to the program that sent it,
+     about one extra copy per program holding the update at worst, dropped by the endpoint as a duplicate.
+  2. *The inbox carries the sender's address too,* and the wiring maps it to a program from the directory records. No
+     contract change, a small change to `p2p.rs`, and a map that can be stale.
+  3. *Add a `via: ClientId` field to `P2pEnvelope`,* set at each forward. Exact, but a contract change with a design-log
+     entry, `docs/protocol.md` and every owner who sends or receives it (H, K).
+- **Recommendation.** Option 1 first, and measure the extra duplicates on the lab zones; move to option 3 only if the
+  duplicate rate shows it matters. In a 5-program zone almost every copy is a duplicate anyway (D345).
+- **Where.** PR 2, `part-i-gossip`; `p2p.rs` or `proto.rs` only if option 2 or 3.
+- **How we check it.** Decided before PR 2's code is written; the duplicate rate in the lab.
+- **Report notes.** What "never back to the sender" costs to guarantee.
 
 ### D407 · The sender holds a peer update that cannot get through: `send_peer_or_hold`
 
