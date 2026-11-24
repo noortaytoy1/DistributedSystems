@@ -456,9 +456,25 @@ Every peer message and the largest `discover` answer fit one 1,400-byte datagram
 | Endpoint | Opened in `MeshClient::new` on the first free UDP port of `[p2p] port_min..port_max` (default 20000–20999; `port_min = 0`: any port), advertised as the local IP toward the first node plus that port (D336, D337). `peer_addr()` returns it |
 | `new_update(from, to, zone, version, max_hops, body)` | A new envelope with a fresh `UpdateId` (counter from the current time), `hops` 0 and `created_at_ms` now (D339) |
 | `send_peer(peer_addr, envelope)` | Up to `[p2p] tries` (3) of `try_ms` (500 ms) each, same update ID; returns `Delivered { ack, latency, tries }` or `PeerError` (D339) |
-| `take_peer_updates()` | The inbox, once: updates for a user of this program (`to.client` is its ID) or for a zone; others are `Refused("not here")`. 1,024 waiting at most, then `Refused("busy")` (D460, D462) |
+| `take_peer_updates()` | Through zone gossip since `part-i-gossip` (D360). The inbox, once: updates for a user of this program (`to.client` is its ID) or for a zone; others are `Refused("not here")`. 1,024 waiting at most, then `Refused("busy")` (D460, D462) |
 | Duplicates | Update IDs seen in the last 300 s, at most 10,000, answer `Duplicate` and are not handed on twice (D461) |
 | Stubs | One per peer address, at most 256, least recently used dropped first (D463) |
 | Offline | The endpoint and every stub sit behind the program's offline gate: nothing sent, everything arriving dropped (D338) |
 | Events | `p2p_listening { addr }`, `p2p_sent { update, to_addr, ack, tries, latency_us }`, `p2p_received { update, from, hops, outcome }` (D464) |
 | Config | `[p2p] port_min`, `port_max`, `try_ms`, `tries` |
+
+## Zone gossip (Phase 2, Part I, D340–D368)
+
+The pure core and the agent in `src/gossip.rs`. No new message: zone updates are `P2pEnvelope`s with `to: None`, sent with
+`deliver` like any peer update. `take_peer_updates()` now hands over what gossip found new (D360), not the raw inbox.
+
+| Item | What it is |
+|------|------------|
+| Who publishes | The reporting program, as origin, when its report's answer is committed, Expired included; never a provisional one (D351, D356, D366) |
+| What | `IncidentSummary` at `version` 1, and `AssignmentUpdate` at `version` = the commit's `log_index` (D355); `max_hops` = `[gossip] hop_cap` |
+| Forwarding | A program with a joined user in the zone forwards a new zone update to `fanout` programs of the zone while `hops < min(max_hops, hop_cap)`, never to itself or the origin (D345–D348, D354, D359) |
+| Dropped | A seen update ID (the endpoint answers `Duplicate`, D461); a version at most the subject's highest (`obsolete`); a zone this program has no user in (`not_subscribed`). The last two are acked `Accepted` by the endpoint and counted at the receiver (D342, D348, D353) |
+| Zone list | `discover` for the zone, one address per program, at most 16 records (D321); asked for on first use (waiting at most `refresh_ms`), then again in the background once older than `refresh_ms`. A failed answer keeps the old list (D357, D358) |
+| Sends | `send_peer` (3 × 500 ms), concurrent, at most `max_in_flight`; past it the gossip task waits (D362, D363) |
+| Events | `gossip_published { update, zone, kind, version, targets }`, `gossip_received { update, zone, kind, hops, outcome, forwarded, age_ms }`, `gossip_send_failed { update, to_addr, reason }`, `gossip_zone_refreshed { zone, programs, ok, latency_us }` (D365). `age_ms` compares the origin's clock with the receiver's |
+| Config | `[gossip] fanout` (3), `hop_cap` (7), `seen_cap` (10000), `seen_max_age_ms` (300000), `refresh_ms` (10000), `max_in_flight` (256); all optional (D364) |

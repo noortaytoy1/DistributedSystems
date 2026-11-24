@@ -1,10 +1,13 @@
-//! Zone publish-subscribe among peers: the pure dissemination core (Phase 2, Part I, D340–D350).
+//! Zone publish-subscribe among peers (Phase 2, Part I, D340–D368): the pure dissemination core,
+//! and the agent that runs it in every client program.
 //!
 //! A program whose users subscribe to a zone gets each update for that zone pushed to it, and
 //! pushes it on to a few other programs in the zone, so an update is published once and peers
-//! spread it (D340, `docs/architecture.md` section 13.3). This file holds only the rules. The peer
-//! endpoint (Part H), the zone's programs from the directory (Part G), the acks on the wire and the
-//! events come with the wiring, in PR 2 (`part-i-gossip`).
+//! spread it (D340, `docs/architecture.md` section 13.3).
+//!
+//! **The core** ([`Gossip`]) holds only the rules. No network, no clock and no randomness: time
+//! comes in as `now_ms`, and the zone's programs are passed in on every call. Only `BTreeMap`s are
+//! iterated.
 //!
 //! - **A peer is a program (D341).** Targets are [`ClientId`]s: all users of one program share its
 //!   peer endpoint (D319), and a zone message reaching a program reaches all of its users in the
@@ -27,26 +30,43 @@
 //! - **Who forwards (D348).** Only zone messages (`to: None`), and only by a program with a user
 //!   subscribed to the zone; any other program gets [`Receipt::NotSubscribed`]. A direct message
 //!   (`to: Some(user)`) is checked for a repeated ID, delivered, and never forwarded.
-//! - **Acks (D349).** [`Receipt::ack`] maps an outcome to a `P2pAck`: an obsolete copy is refused
-//!   with [`REFUSED_OBSOLETE`], since `P2pAck::Duplicate` means the ID itself was seen (D315). Part H's
-//!   endpoint answers `deliver` before gossip sees an update, so whether this reaches the sender is
-//!   open (D353).
-//! - **Counters (D350).** [`GossipStats`] counts what the report measures. PR 2 logs them as
-//!   `metrics::Event` lines.
+//! - **Acks (D349, D353).** [`Receipt::ack`] maps an outcome to a `P2pAck`. Part H's endpoint
+//!   answers `deliver` before gossip sees an update, so gossip's outcomes are counted where they
+//!   land, in events, and never reach the sender (D353).
+//! - **Counters (D350).** [`GossipStats`] counts what the report measures.
 //!
-//! No network, no clock and no randomness: time comes in as `now_ms`, and the zone's programs are
-//! passed in on every call. Only `BTreeMap`s are iterated.
+//! **The agent** ([`GossipAgent`], D360, D361) is the core's one user: a task per program, started by
+//! `MeshClient::new`. It takes the P2P inbox, judges each arriving update with the core, forwards
+//! the new ones and hands them to the application through `MeshClient::take_peer_updates`. When a
+//! report's answer is committed, `MeshClient` hands it here and the agent publishes the incident's
+//! summary and assignment into its zone as origin (D351, D355, D356, D366). A zone's programs come
+//! from `discover_zone`, one per program, cached and asked for again at most every `refresh_ms`
+//! (D357, D358). The program subscribes to the zones of its joined users (D359). Copies go out
+//! through `send_peer`, concurrently and at most `max_in_flight` at once (D362, D363).
+//!
+//! Until Part G's directory and Part K's held sends land, some of this is a stand-in, marked
+//! `TODO(I)` where it must change (D368).
 //!
 //! Owner: I (zone publish-subscribe).
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use thiserror::Error;
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::Instant;
 
+use crate::config::GossipSettings;
+use crate::metrics::{Event, EventLog, now_ms};
+use crate::p2p::{Delivered, INBOX_CAPACITY, PeerLink};
+use crate::presence::Presence;
 use crate::proto::{
-    Capability, ClientId, IncidentId, P2pAck, P2pBody, P2pEnvelope, UpdateId, UserId,
+    AssignmentUpdate, Capability, ClientId, CommittedResult, IncidentId, IncidentSummary,
+    MAX_DISCOVER_RECORDS, P2pAck, P2pBody, P2pEnvelope, PresenceQuery, UpdateId, UserId, ZoneId,
 };
 
 /// Programs each program sends a new zone update to (D345).
@@ -62,6 +82,16 @@ pub const DEFAULT_SEEN_CAP: usize = 10_000;
 /// How long a seen-cache entry is kept after it was recorded, in ms (D344). Matches the 5-minute
 /// store-and-forward retention planned for Part K, so a late stored copy is still recognised.
 pub const DEFAULT_SEEN_MAX_AGE_MS: u64 = 300_000;
+
+/// How often a zone's list of programs is asked for again, at most, in ms (D358).
+pub const DEFAULT_REFRESH_MS: u64 = 10_000;
+
+/// Most gossip sends in flight at once per program (D363). Matches the stub cache (D463).
+pub const DEFAULT_MAX_IN_FLIGHT: usize = 256;
+
+/// Committed answers waiting for the agent to publish them. One past it is not published, so
+/// `submit` never waits on gossip (D366).
+pub const AGENT_QUEUE: usize = 4_096;
 
 /// The reason in `P2pAck::Refused` for an older version of a subject (D349).
 pub const REFUSED_OBSOLETE: &str = "obsolete";
@@ -569,14 +599,377 @@ impl<K: Ord + Copy> Recent<K> {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The agent: the core at work in one client program (D360, D361)
+// ---------------------------------------------------------------------------------------------
+
+/// What an update is, for the events.
+fn kind_name(body: &P2pBody) -> &'static str {
+    match body {
+        P2pBody::IncidentSummary(_) => "summary",
+        P2pBody::AssignmentUpdate(_) => "assignment",
+        P2pBody::ResourceOffer(_) => "offer",
+    }
+}
+
+fn outcome_name(receipt: &Receipt) -> &'static str {
+    match receipt {
+        Receipt::New(_) => "new",
+        Receipt::Duplicate => "duplicate",
+        Receipt::Obsolete => "obsolete",
+        Receipt::NotSubscribed => "not_subscribed",
+    }
+}
+
+/// The two updates a committed answer is published as (D355): the summary at version 1, since a
+/// report's facts never change, and the assignment at the commit's log index, which only grows and
+/// is the same whoever reads it.
+pub fn published_bodies(result: &CommittedResult) -> [(u64, P2pBody); 2] {
+    let incident = &result.incident;
+    [
+        (
+            1,
+            P2pBody::IncidentSummary(IncidentSummary {
+                incident: result.request,
+                category: incident.category,
+                severity: incident.severity,
+                zone: incident.zone,
+                location: incident.location,
+                needs: incident.needs,
+                reported_at_ms: incident.reported_at_ms,
+            }),
+        ),
+        (
+            result.log_index,
+            P2pBody::AssignmentUpdate(AssignmentUpdate {
+                incident: result.request,
+                responder: result.plan.responder,
+                priority: result.plan.priority,
+                assigned_at_ms: result.assigned_at_ms,
+            }),
+        ),
+    ]
+}
+
+/// One zone's programs, as the directory last listed them (D357, D358).
+#[derive(Default)]
+struct ZoneList {
+    /// One peer address per program.
+    programs: BTreeMap<ClientId, String>,
+    /// When the last answer came; `None` until one has.
+    fetched: Option<Instant>,
+    /// A refresh is running in the background.
+    refreshing: bool,
+}
+
+/// The agent's handle, held by `MeshClient`. Dropping it ends the task.
+pub(crate) struct GossipAgent {
+    committed: mpsc::Sender<CommittedResult>,
+    updates: Mutex<Option<mpsc::Receiver<P2pEnvelope>>>,
+    task: JoinHandle<()>,
+}
+
+impl GossipAgent {
+    /// Start the agent of program `me`. `inbox` is the P2P endpoint's (D460). Must run inside a
+    /// tokio runtime.
+    pub(crate) fn start(
+        me: ClientId,
+        settings: GossipSettings,
+        peer: Arc<PeerLink>,
+        presence: Arc<Presence>,
+        inbox: mpsc::Receiver<P2pEnvelope>,
+        log: EventLog,
+    ) -> Self {
+        let (committed_tx, committed_rx) = mpsc::channel(AGENT_QUEUE);
+        let (out_tx, out_rx) = mpsc::channel(INBOX_CAPACITY);
+        let task = tokio::spawn(
+            Run {
+                me,
+                settings,
+                peer,
+                presence,
+                out: out_tx,
+                log,
+                zones: BTreeMap::new(),
+                sends: JoinSet::new(),
+                in_flight: Arc::new(Semaphore::new(settings.max_in_flight)),
+            }
+            .run(inbox, committed_rx),
+        );
+        Self {
+            committed: committed_tx,
+            updates: Mutex::new(Some(out_rx)),
+            task,
+        }
+    }
+
+    /// Publish a committed answer into its zone, in the background (D356, D366). Never waits: past
+    /// [`AGENT_QUEUE`] waiting answers this one is not published.
+    pub(crate) fn publish(&self, result: &CommittedResult) {
+        if self.committed.try_send(result.clone()).is_err() {
+            tracing::debug!(request = %result.request, "gossip queue full, not published");
+        }
+    }
+
+    /// The updates gossip found new, for the application, once (D360).
+    pub(crate) fn take_updates(&self) -> Option<mpsc::Receiver<P2pEnvelope>> {
+        self.updates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+impl Drop for GossipAgent {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The agent's task and everything only it touches.
+struct Run {
+    me: ClientId,
+    settings: GossipSettings,
+    peer: Arc<PeerLink>,
+    presence: Arc<Presence>,
+    out: mpsc::Sender<P2pEnvelope>,
+    log: EventLog,
+    zones: BTreeMap<ZoneId, ZoneList>,
+    sends: JoinSet<()>,
+    in_flight: Arc<Semaphore>,
+}
+
+/// A background refresh's answer: the zone, its programs or `None`, and how long it took.
+type Refreshed = (ZoneId, Option<BTreeMap<ClientId, String>>, Duration);
+
+impl Run {
+    async fn run(
+        mut self,
+        mut inbox: mpsc::Receiver<P2pEnvelope>,
+        mut committed: mpsc::Receiver<CommittedResult>,
+    ) {
+        let mut core = match Gossip::new(self.me, self.settings.core()) {
+            Ok(core) => core,
+            Err(e) => {
+                // `Config::validate` refuses these, so only a config built by hand gets here.
+                tracing::warn!("gossip is off: {e}");
+                return;
+            }
+        };
+        let mut refreshes: JoinSet<Refreshed> = JoinSet::new();
+        loop {
+            while self.sends.try_join_next().is_some() {}
+            tokio::select! {
+                Some(envelope) = inbox.recv() => self.arrived(&mut core, envelope, &mut refreshes).await,
+                Some(result) = committed.recv() => self.publish(&mut core, &result, &mut refreshes).await,
+                Some(Ok(refreshed)) = refreshes.join_next(), if !refreshes.is_empty() => {
+                    self.refreshed(refreshed);
+                }
+                else => break,
+            }
+        }
+    }
+
+    /// An update the endpoint let through (D360). The sender passed to the core is the origin,
+    /// because the inbox does not say which program sent this copy (D354).
+    async fn arrived(
+        &mut self,
+        core: &mut Gossip,
+        envelope: P2pEnvelope,
+        refreshes: &mut JoinSet<Refreshed>,
+    ) {
+        let zone_message = envelope.to.is_none();
+        let subscribed = zone_message && self.presence.zones().contains(&envelope.zone);
+        let programs = if subscribed {
+            self.programs_of(envelope.zone, refreshes).await
+        } else {
+            BTreeMap::new()
+        };
+        let ids: Vec<ClientId> = programs.keys().copied().collect();
+        // TODO(I): pass the program this copy came from, if D354 is revisited after the lab runs.
+        let receipt = core.receive(&envelope, envelope.id.origin, subscribed, now_ms(), &ids);
+        let forwarded = match &receipt {
+            Receipt::New(f) => f.to.len(),
+            _ => 0,
+        };
+        self.log.log(Event::GossipReceived {
+            update: envelope.id,
+            zone: envelope.zone,
+            kind: kind_name(&envelope.body),
+            hops: envelope.hops,
+            outcome: outcome_name(&receipt),
+            forwarded: u32::try_from(forwarded).unwrap_or(u32::MAX),
+            age_ms: now_ms().saturating_sub(envelope.created_at_ms),
+        });
+        if let Receipt::New(f) = receipt {
+            self.send_copies(&f, &envelope, &programs).await;
+            // An application that does not read, like loadgen today, must not stop the forwarding.
+            let _ = self.out.try_send(envelope);
+        }
+    }
+
+    /// Publish a committed answer as origin (D351, D355). A retry's answer has the same versions,
+    /// so the core finds it obsolete and nothing is sent again.
+    async fn publish(
+        &mut self,
+        core: &mut Gossip,
+        result: &CommittedResult,
+        refreshes: &mut JoinSet<Refreshed>,
+    ) {
+        let zone = result.incident.zone;
+        let programs = self.programs_of(zone, refreshes).await;
+        let ids: Vec<ClientId> = programs.keys().copied().collect();
+        for (version, body) in published_bodies(result) {
+            let kind = kind_name(&body);
+            let envelope = self.peer.new_update(
+                result.incident.owner,
+                None,
+                zone,
+                version,
+                self.settings.hop_cap,
+                body,
+            );
+            match core.publish(&envelope, now_ms(), &ids) {
+                Ok(Receipt::New(f)) => {
+                    // Logged with no targets too, so every publish shows in the log (D367).
+                    self.log.log(Event::GossipPublished {
+                        update: envelope.id,
+                        zone,
+                        kind,
+                        version,
+                        targets: u32::try_from(f.to.len()).unwrap_or(u32::MAX),
+                    });
+                    self.send_copies(&f, &envelope, &programs).await;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("gossip publish refused: {e}"),
+            }
+        }
+    }
+
+    /// Send one copy to each target, off this task, at most `max_in_flight` at once: past it this
+    /// waits for a slot, so the inbox fills and the endpoint answers `busy` (D362, D363).
+    async fn send_copies(
+        &mut self,
+        forward: &Forward,
+        envelope: &P2pEnvelope,
+        programs: &BTreeMap<ClientId, String>,
+    ) {
+        for target in &forward.to {
+            let Some(addr) = programs.get(target).cloned() else {
+                continue;
+            };
+            let Ok(permit) = self.in_flight.clone().acquire_owned().await else {
+                return;
+            };
+            let copy = forward.copy_of(envelope);
+            let (peer, log) = (self.peer.clone(), self.log.clone());
+            self.sends.spawn(async move {
+                // TODO(I): use Part K's `send_peer_or_hold` once #39 merges, so a peer that is
+                // briefly away gets the copy later (D362).
+                let update = copy.id;
+                let reason = match peer.send_peer(&addr, copy).await {
+                    Ok(Delivered {
+                        ack: P2pAck::Refused(reason),
+                        ..
+                    }) => Some(reason),
+                    Ok(_) => None,
+                    Err(e) => Some(e.to_string()),
+                };
+                if let Some(reason) = reason {
+                    log.log(Event::GossipSendFailed {
+                        update,
+                        to_addr: addr,
+                        reason,
+                    });
+                }
+                drop(permit);
+            });
+        }
+    }
+
+    /// The zone's programs. The first time, this waits for the directory, at most `refresh_ms`; after
+    /// that it answers from the cache and refreshes in the background once the list is older than
+    /// `refresh_ms` (D358).
+    async fn programs_of(
+        &mut self,
+        zone: ZoneId,
+        refreshes: &mut JoinSet<Refreshed>,
+    ) -> BTreeMap<ClientId, String> {
+        let refresh = self.settings.refresh();
+        let list = self.zones.entry(zone).or_default();
+        match list.fetched {
+            None if !list.refreshing => {
+                list.refreshing = true;
+                let fetch = discover_programs(self.presence.clone(), zone);
+                let answer = match tokio::time::timeout(refresh, fetch).await {
+                    Ok(answer) => answer,
+                    Err(_) => (zone, None, refresh),
+                };
+                self.refreshed(answer);
+            }
+            Some(at) if at.elapsed() >= refresh && !list.refreshing => {
+                list.refreshing = true;
+                refreshes.spawn(discover_programs(self.presence.clone(), zone));
+            }
+            _ => {}
+        }
+        self.zones
+            .get(&zone)
+            .map(|list| list.programs.clone())
+            .unwrap_or_default()
+    }
+
+    /// A directory answer for one zone. A failed one keeps the old list and is tried again after
+    /// `refresh_ms` (D358).
+    fn refreshed(&mut self, (zone, programs, took): Refreshed) {
+        let list = self.zones.entry(zone).or_default();
+        list.refreshing = false;
+        list.fetched = Some(Instant::now());
+        let ok = programs.is_some();
+        if let Some(programs) = programs {
+            list.programs = programs;
+        }
+        self.log.log(Event::GossipZoneRefreshed {
+            zone,
+            programs: u32::try_from(list.programs.len()).unwrap_or(u32::MAX),
+            ok,
+            latency_us: took.as_micros() as u64,
+        });
+    }
+}
+
+/// Ask the directory for `zone` and keep one peer address per program (D357). At most 16 records
+/// come back (D321).
+// TODO(I): Part G's directory answers a zone query with records spread over programs, as D357
+// asks Omar; until then, real nodes answer `Rejected` (D325) and every list stays empty.
+async fn discover_programs(presence: Arc<Presence>, zone: ZoneId) -> Refreshed {
+    let started = Instant::now();
+    let answer = presence
+        .discover(PresenceQuery {
+            zone: Some(zone),
+            capability: None,
+            limit: MAX_DISCOVER_RECORDS,
+        })
+        .await;
+    let programs = answer.ok().map(|found| {
+        let mut programs = BTreeMap::new();
+        for record in found.records {
+            programs
+                .entry(record.user.client)
+                .or_insert(record.peer_addr);
+        }
+        programs
+    });
+    (zone, programs, started.elapsed())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use crate::proto::{
-        AssignmentUpdate, Category, IncidentSummary, Point, RequestId, ResourceOffer,
-    };
+    use crate::proto::{Category, Point, RequestId, ResourceOffer};
 
     const ZONE: u16 = 2;
 

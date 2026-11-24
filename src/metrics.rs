@@ -464,6 +464,43 @@ pub enum Event {
         hops: u8,
         outcome: &'static str,
     },
+    // --- zone gossip (Phase 2, Part I, D365)
+    /// This program published an update into `zone` as origin, to `targets` programs. `kind` is
+    /// `summary`, `assignment` or `offer`. Logged with `targets` 0 too, when the zone's list is empty
+    /// (D367).
+    GossipPublished {
+        update: UpdateId,
+        zone: ZoneId,
+        kind: &'static str,
+        version: u64,
+        targets: u32,
+    },
+    /// The gossip core judged an update the endpoint let through. `outcome` is `new`, `duplicate`,
+    /// `obsolete` or `not_subscribed`; `forwarded` is how many copies this program sent on. `age_ms`
+    /// is this machine's clock minus the origin's `created_at_ms`: two machines' clocks, so only
+    /// as good as their difference (D233).
+    GossipReceived {
+        update: UpdateId,
+        zone: ZoneId,
+        kind: &'static str,
+        hops: u8,
+        outcome: &'static str,
+        forwarded: u32,
+        age_ms: u64,
+    },
+    /// A gossip copy got no ack, or was refused (for example `busy`), with the reason.
+    GossipSendFailed {
+        update: UpdateId,
+        to_addr: String,
+        reason: String,
+    },
+    /// This program asked the directory for `zone`'s programs. On `ok = false` the old list is kept.
+    GossipZoneRefreshed {
+        zone: ZoneId,
+        programs: u32,
+        ok: bool,
+        latency_us: u64,
+    },
     // --- presence (Phase 2, Part H, D334)
     /// The directory took `user`'s registration and gave a lease of `lease_ms`. `again` is true for a
     /// re-registration: a zone move, a lost lease, or a return from offline (D329). `latency_us`
