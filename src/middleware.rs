@@ -47,6 +47,8 @@ pub use crate::client::{ClientError, MeshClient, Submitted, control};
 pub use crate::offline::{Delivery, Reconciled};
 // Presence (Phase 2, Part H): what join and discover give back (D326).
 pub use crate::presence::{Discovered, PresenceError};
+// The P2P link (Phase 2, Part H): what a peer send gives back (D339).
+pub use crate::p2p::{Delivered, PeerError};
 
 // The cloud side: what the incident service calls.
 pub use crate::node::group::{CloudGroup, View};

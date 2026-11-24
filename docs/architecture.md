@@ -2163,12 +2163,14 @@ sequenceDiagram
     Note over M: outbox_flushed: reconcile_us
 ```
 
-### 13.2 Presence and the P2P link (presence agent built, P2P planned, Part H, D310–D335)
+### 13.2 Presence and the P2P link (built, Part H, D310–D339, D460–D465)
 
 The messages are in `proto.rs`. The presence agent is built (`src/presence.rs`, D326–D335): `MeshClient::join` registers a
 user on every node and one loop per program renews it at a third of the lease, registering it again after a lost lease or a
-return from offline; `discover` asks every node. The peer endpoint (`part-h-p2p`) is not built yet, and until Part G's
-directory exists every node answers the presence calls with `Rejected` (D325). Each user
+return from offline; `discover` asks every node. The P2P link is built too (`src/p2p.rs`, D336–D339, D460–D465): every program listens on the
+first free port of `[p2p]`'s range, behind its offline gate; `send_peer` delivers an update with up to three tries, a repeated
+update ID is answered `Duplicate`, and a test with a real cloud shows its client ports carry none of a P2P exchange. Until Part
+G's directory exists every node answers the presence calls with `Rejected` (D325), so discovery works end to end only then. Each user
 registers with its program's peer address (D319); a program listens on the first free port in a configured range
 (D313); peers then talk to each other directly over UDP with tarpc (D312), and the cloud carries none of it.
 

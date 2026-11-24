@@ -64,6 +64,9 @@ pub enum PresenceError {
     /// `leave` or `move_zone` for a user that has not joined.
     #[error("user {0} has not joined")]
     NotJoined(UserId),
+    /// This program has no peer endpoint to advertise, so its users cannot join (D336).
+    #[error("this program has no peer endpoint")]
+    NoPeerEndpoint,
 }
 
 /// What a discovery query found, and where it was read.

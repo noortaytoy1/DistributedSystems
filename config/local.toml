@@ -86,3 +86,10 @@ interval_max_ms = 60000
 silence_min_ms = 1000
 silence_max_ms = 20000
 # seed = 1   # repeats each node's numbers per round; unset picks a random seed and logs it
+
+[p2p]
+# Each client program's peer endpoint (Phase 2, Part H, D336): the first free UDP port in this range.
+port_min = 20000
+port_max = 20999
+try_ms = 500
+tries = 3

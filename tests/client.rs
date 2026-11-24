@@ -175,6 +175,7 @@ fn stub_config(addrs: &[String]) -> Config {
         faults: Default::default(),
         storage: Default::default(),
         consensus: Default::default(),
+        p2p: Default::default(),
     };
     fast_retries(&mut config);
     config

@@ -16,13 +16,18 @@
 //! The [`FaultGate`] drops all traffic in and out of a silenced node, except `ctl` control
 //! calls, so an operator can still query a silenced node (D23, D160).
 //!
+//! - Client programs' peer endpoints (Phase 2, Part H): each program serves [`P2pRpc`] over UDP on
+//!   the first free port of `[p2p]`'s range, behind the program's offline gate, and reaches another
+//!   program through a gated stub of its own. This is the named exception to the sockets rule:
+//!   `client.rs` and `p2p.rs` call these functions and open nothing themselves (D311, D336).
+//!
 //! Owner: C (faults and failover). The plumbing here was written with Part A because Raft cannot
 //! run without it; fault injection itself lives in faults.rs. Only `node/` and `raft/network.rs`
 //! open sockets.
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,8 +54,9 @@ use crate::node::squeeze::{expand, squeeze};
 use crate::proto::{
     self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
     ClientRpcResponse, Command, ControlReply, ControlRequest, DiscoverReply, FaultBid,
-    IncidentQuery, NodeId, PeerBody, PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient,
-    PresenceQuery, PresenceRecord, PresenceReply, RaftRpc, Term, UserId,
+    IncidentQuery, NodeId, P2pRpc, P2pRpcClient, P2pRpcRequest, P2pRpcResponse, PeerBody,
+    PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient, PresenceQuery, PresenceRecord, PresenceReply,
+    RaftRpc, Term, UserId,
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
@@ -1076,6 +1082,84 @@ pub fn gated_datagram_client(
     let end: ClientEnd<ClientRpcRequest, ClientRpcResponse> =
         ClientEnd::with_gate(socket, node, counters, gate);
     let NewClient { client, dispatch } = ClientRpcClient::new(stub_settings(), end);
+    Ok(NewClient {
+        client,
+        dispatch: dispatch.map(|_| ()),
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Client programs' peer endpoints (Phase 2, Part H)
+// ---------------------------------------------------------------------------------------------
+
+/// Bind a client program's peer endpoint on the first free UDP port from `port_min` to `port_max`,
+/// on every local address (D313, D336). `port_min == 0` lets the system pick any port.
+pub fn bind_peer_endpoint(port_min: u16, port_max: u16) -> std::io::Result<UdpSocket> {
+    let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+    if port_min == 0 {
+        return datagram::open_socket(SocketAddr::new(any, 0));
+    }
+    let mut last = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+    for port in port_min..=port_max.max(port_min) {
+        match datagram::open_socket(SocketAddr::new(any, port)) {
+            Ok(socket) => return Ok(socket),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
+/// The local address this machine would use to reach `toward`, for a program to advertise (D337).
+/// The same question `metrics::this_pc` asks for the logs (D258); nothing is sent.
+pub fn local_ip_toward(toward: &str) -> Option<IpAddr> {
+    let target = toward.to_socket_addrs().ok()?.next()?;
+    let socket = std::net::UdpSocket::bind(SocketAddr::new(
+        if target.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+        },
+        0,
+    ))
+    .ok()?;
+    socket.connect(target).ok()?;
+    socket.local_addr().ok().map(|a| a.ip())
+}
+
+/// Serve [`P2pRpc`] on a program's peer endpoint until aborted. While the program's `gate` is closed
+/// (offline, D402) every message is dropped before tarpc sees it, so nothing is answered (D338).
+pub(crate) async fn serve_p2p(
+    socket: UdpSocket,
+    server: crate::p2p::Inbox,
+    counters: Arc<UdpCounters>,
+    gate: FaultGate,
+) {
+    let keep = move |_: &ClientMessage<P2pRpcRequest>| !gate.is_silenced();
+    let open = move |end: ServerEnd<P2pRpcRequest, P2pRpcResponse>| {
+        run_calls(BaseChannel::with_defaults(end).execute(server.clone().serve()))
+    };
+    datagram::serve(
+        Arc::new(socket),
+        counters,
+        datagram::CHANNEL_IDLE,
+        keep,
+        open,
+    )
+    .await;
+}
+
+/// A stub for one other program's peer endpoint, with this program's offline gate inside its socket
+/// (D338, D402).
+pub fn p2p_client(
+    peer: SocketAddr,
+    counters: Arc<UdpCounters>,
+    gate: FaultGate,
+) -> std::io::Result<NewClient<P2pRpcClient, impl Future<Output = ()> + Send + use<>>> {
+    let socket = datagram::client_socket(peer)?;
+    let end: ClientEnd<P2pRpcRequest, P2pRpcResponse> =
+        ClientEnd::with_gate(socket, peer, counters, gate);
+    let NewClient { client, dispatch } = P2pRpcClient::new(stub_settings(), end);
     Ok(NewClient {
         client,
         dispatch: dispatch.map(|_| ()),

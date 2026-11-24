@@ -53,11 +53,12 @@ use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
 use crate::node::usage;
 use crate::offline::{Delivery, FLUSH_IN_FLIGHT, Outbox, OutboxError, Queued, Reconciled};
+use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::presence::{self, Discovered, Presence, PresenceError};
 use crate::proto::{
     Capability, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
-    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, Plan,
-    PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
+    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, P2pBody,
+    P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
 };
 
 /// Each wait varies by up to this share, in percent, so retries do not arrive together.
@@ -179,6 +180,8 @@ pub struct MeshClient {
     retries_skipped: Arc<AtomicU64>,
     /// The presence agent (Part H): joins, renewals and discovery (D326).
     presence: Presence,
+    /// The P2P link (Part H): this program's peer endpoint and its way to other programs (D336).
+    peer: PeerLink,
     /// Closed while offline; every socket holds a copy (D402).
     gate: FaultGate,
     /// Reports made while offline (D401).
@@ -238,6 +241,7 @@ impl MeshClient {
             // The program's start time, every user's incarnation (D323).
             now_ms(),
         );
+        let peer = PeerLink::new(id, config, gate.clone(), log.clone());
         Self {
             id,
             retry: config.timers.client_retry(),
@@ -253,6 +257,7 @@ impl MeshClient {
             retry_budget,
             retries_skipped,
             presence,
+            peer,
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
@@ -265,16 +270,20 @@ impl MeshClient {
     // -----------------------------------------------------------------------------------------
 
     /// Put a user in the presence directory and keep it there: the agent renews its lease until
-    /// [`leave`](Self::leave) (D326). Returns the lease the directory gave. `peer_addr` is where
-    /// the program serves peers; from `part-h-p2p` the client fills it in itself (D330).
+    /// [`leave`](Self::leave) (D326). Returns the lease the directory gave. The record carries this
+    /// program's peer endpoint, so other programs can reach the user directly (D336).
     pub async fn join(
         &self,
         user: UserId,
         role: PresenceRole,
         zone: ZoneId,
         capabilities: Vec<Capability>,
-        peer_addr: String,
     ) -> Result<Duration, PresenceError> {
+        let peer_addr = self
+            .peer
+            .addr()
+            .ok_or(PresenceError::NoPeerEndpoint)?
+            .to_string();
         self.presence
             .join(user, role, zone, capabilities, peer_addr)
             .await
@@ -316,6 +325,52 @@ impl MeshClient {
             limit: MAX_DISCOVER_RECORDS,
         })
         .await
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The P2P link (Phase 2, Part H): see `p2p.rs`
+    // -----------------------------------------------------------------------------------------
+
+    /// This program's peer endpoint, `ip:port`, as presence records advertise it (D336, D337).
+    /// `None` if it could not open.
+    pub fn peer_addr(&self) -> Option<&str> {
+        self.peer.addr()
+    }
+
+    /// The updates other programs delivered to this one, as a stream the application or Part I's
+    /// gossip reads (D460). Only the first call gets it.
+    pub fn take_peer_updates(&self) -> Option<tokio::sync::mpsc::Receiver<P2pEnvelope>> {
+        self.peer.take_updates()
+    }
+
+    /// A new peer update from `from`, with a fresh update ID (D339). `to: None` is for a whole zone.
+    pub fn new_update(
+        &self,
+        from: UserId,
+        to: Option<UserId>,
+        zone: ZoneId,
+        version: u64,
+        max_hops: u8,
+        body: P2pBody,
+    ) -> P2pEnvelope {
+        self.peer
+            .new_update(from, to, zone, version, max_hops, body)
+    }
+
+    /// Deliver an update straight to another program's peer endpoint, found with `discover`; the
+    /// cloud carries none of it (D310, D339). Forwarding (Part I) sends an existing envelope again
+    /// after raising its `hops`.
+    pub async fn send_peer(
+        &self,
+        peer_addr: &str,
+        envelope: P2pEnvelope,
+    ) -> Result<Delivered, PeerError> {
+        self.peer.send_peer(peer_addr, envelope).await
+    }
+
+    /// What this program's peer sockets did, sent and received.
+    pub fn p2p_counts(&self) -> UdpCounts {
+        self.peer.counters().snapshot()
     }
 
     // -----------------------------------------------------------------------------------------
