@@ -2140,7 +2140,10 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
 - **Speculative actions and conflicts** for offline clients can build on degraded mode's labelled answers
   and on the rule that the first plan to become final wins (D120, D122).
 
-### 13.1 An offline client and its outbox (built, Part K, D400–D406)
+### 13.1 An offline client and its outbox (built, Part K, D400–D413)
+
+The written policy, what is allowed offline, what is kept and for how long, and what can be lost, is
+[offline-policy.md](offline-policy.md) (D412).
 
 `MeshClient::go_offline` closes a gate inside the client's sockets: nothing leaves and nothing arrives. A report
 made meanwhile through `submit_or_queue` gets its ID at once and waits in the outbox, a JSON Lines file next to the
