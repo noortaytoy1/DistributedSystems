@@ -327,6 +327,16 @@ table below in sync.
 | D265 | How the final runs were chosen, and what passes | all | Implemented, amends D260 |
 | D266 | The Phase 1 report in LaTeX under `docs/report/`, for Overleaf, with diagrams in TikZ | all | Implemented |
 | D267 | Phase 2 parts G to L, their owners, review pairs and design-log ID blocks | all | Decided |
+| D340 | Zone updates are pushed peer to peer, from a subscriber list the directory gives | I | Accepted, core built |
+| D341 | Fan-out 3 and a hop limit of 8, measured first | I | Implemented in the core |
+| D342 | The seen-cache keeps the highest version per item | I | Implemented in the core |
+| D343 | The seen-cache holds 10,000 items or 300 s, oldest forgotten first | I | Implemented in the core |
+| D344 | Targets are picked by hash ranking, never the sender, the origin or itself | I | Implemented in the core |
+| D345 | The gossip core is generic over peer and item IDs | I | Implemented in the core |
+| D346 | The hop count is the links travelled; a copy is forwarded while it is below the limit | I | Implemented in the core |
+| D347 | The core counts what the report measures; events come with the wiring | I | Implemented in the core |
+| D348 | The gossip bounds become config keys in PR 2 | I | Accepted |
+| D349 | The planner uses Phase 2 resources beside the synthetic responders | I | Accepted |
 | D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
 | D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
 | D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
@@ -8374,6 +8384,164 @@ them on the six PCs.
 - **Where.** `metrics.rs` (client events), `bin/loadgen.rs::{go_offline_once, offline_summary}`.
 - **How we check it.** `loadgen` tests (the line, both flags required).
 - **Report notes.** Offline reconciliation delay = `outbox_flushed.reconcile_us`.
+
+### D340 · Zone updates are pushed peer to peer, from a subscriber list the directory gives
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Accepted (the core is built; the wiring is PR 2) · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** The spec asks for zone subscriptions among peers, with duplicate suppression and bounded forwarding. D131 and D209 put publish-subscribe in Phase 2, with the cloud as the directory of service (Lecture 8, section 10.3) and "push a notice" in `docs/architecture.md` section 13. Phase 2 gives every client a peer endpoint (H, Wahiba) and a directory of who is in which zone (G, Omar).
+- **Options considered.**
+  1. *Push gossip (chosen).* A peer that gets a new update forwards it at once to `k` subscribers of the zone. The fastest coverage, and it fits a typed tarpc `deliver(update) -> ack` call. Its cost is duplicates, which the seen-cache and the hop limit bound.
+  2. *Pull (anti-entropy).* Each subscriber polls `k` peers every `T` ms with a digest of what it has seen. No storms, and it catches up after an outage by itself, but every update waits at least one poll period, and there is traffic even when nothing happens.
+  3. *Push, plus one pull on reconnect.* Better coverage after offline, but it overlaps Part K's store-and-forward and needs agreeing with Aabed: more to build and measure in two weeks.
+- **Decision.** Option 1. The cloud publishes each committed incident summary once into the zone; peers spread it with `gossip::Gossip`, over Wahiba's peer endpoint, to subscribers taken from Omar's directory.
+- **Why.** The spec and the lecture describe a push ("pushed a notice, with no asking"). Push meets the latency a zone alert needs; pull's period would add to every update. Catch-up after offline belongs to Part K, so it is not built twice.
+- **Consequences.** Coverage is probabilistic (D341): a peer nobody picks misses the update, and a peer that was offline misses what was pushed meanwhile. Both are covered by Part K's store-and-forward and reconnect, not here.
+- **Where.** `src/gossip.rs`; the wiring in `client.rs` and the cloud's publish are PR 2 (`part-i-gossip`).
+- **How we check it.** Unit tests in `gossip.rs`; scenario 6 and the coverage measure in PR 2.
+- **Report notes.** Contrast with group communication (D210): there one sender drives a message to a known group; here subscribers get what concerns them, and peers carry it, not the cloud.
+
+### D341 · Fan-out 3 and a hop limit of 8, measured first
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core (constants; config keys in PR 2, D348) · **Decided by:** Yahia Kilany, on the agent's recommendation, twice: first k = 3 and h = 6, then h = 8 once the core measured it
+- **Context.** Each peer that gets a new update forwards it to `k` subscribers, and a copy crosses at most `h` links. The plan suggested k = 3 and h = 4. Noor's scale cells are 100, 1,000 and 5,000 users per PC, so about 50, 500 and 2,500 subscribers per zone over 6 zones.
+- **Options considered.**
+  1. *k = 3, h = 4 (the plan).* At most 3 + 9 + 27 + 81 = 120 peers: it cannot cover a 500-peer zone at all.
+  2. *k = 3, h = 6.* Chosen first, on the bound of 1,092 peers.
+  3. *k = 3, h = 8 (chosen).*
+  4. *k = 4, h = 6.* Best coverage at 50 and 500, most sends.
+  5. *h from the zone's size, `ceil(log_k N) + 2`.* Adapts, but the publisher needs `N`, and it is harder to state as a bound.
+- **Measured** with the core itself (a lossless zone, one publishing peer, copies delivered in send order, 100 updates per cell):
+
+  | Zone | k=3, h=4 | k=3, h=6 | **k=3, h=8** | k=4, h=6 | k=2, h=6 |
+  |------|----------|----------|--------------|----------|----------|
+  | 50 | 83% | 95% | **95%** | 98% | 72% |
+  | 500 | 21% | 76% | **93%** | 97% | 21% |
+  | 2,500 | 5% | 33% | **85%** | 79% | 5% |
+  | Sends per update, 500 | 115 | 709 | **1,349** | 1,698 | 116 |
+
+- **Decision.** `DEFAULT_FANOUT = 3`, `DEFAULT_HOP_LIMIT = 8`.
+- **Why.** The bound `k + k² + … + k^h` overstates the reach badly, because random picks overlap; h = 6 reached only 76% of a 500-peer zone. Raising h costs sends only along paths that still find someone new, so h = 8 buys 93% at 500 for 2.7 sends per peer reached, less than raising k. No setting reaches everyone: forward-once push gossip misses a peer that no one picks, about e^-k of them (5% at k = 3, 2% at k = 4), which is the textbook result for this scheme.
+- **Consequences.** Coverage below 100% is expected and measured, not a bug; Part K's store-and-forward and reconnect catch-up cover it. The cloud may later publish to more than `k` first targets if the lab shows it is needed (PR 2). The theoretical bound with these values is 9,840 peers.
+- **Where.** `gossip::{DEFAULT_FANOUT, DEFAULT_HOP_LIMIT, GossipConfig::reach_bound}`; test `a_zone_of_fifty_is_mostly_covered_with_bounded_cost`.
+- **How we check it.** The unit test asserts at least 92% mean coverage of a 50-peer zone, every run at least 40 of 49, and at most `k` sends per peer that has the update. The report sweeps k ∈ {2, 3, 4} and h ∈ {4, 6, 8} on the lab PCs.
+- **Report notes.** The table above is the overhead-against-coverage trade-off, and the reason the plan's h = 4 was changed. State the e^-k miss rate.
+
+### D342 · The seen-cache keeps the highest version per item
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** An incident's summary changes over its life (planned, assigned, resolved), and the peer envelope (H) carries an update ID and a version. Duplicate suppression needs a key.
+- **Options considered.**
+  1. *Item ID plus version (chosen).* Keep the highest version per item; the same version is a duplicate, an older one is stale, a newer one spreads and replaces it.
+  2. *A fresh ID per publish.* A set of IDs, simplest, but an older version that arrives late still spreads and overwrites a newer one where it lands.
+  3. *A hash of the payload.* No IDs needed, but a hash per message, and versions are never ordered.
+- **Decision.** Option 1. `Receipt::Duplicate` for the same version, `Receipt::Older` for an older one; neither is delivered or forwarded.
+- **Why.** Old versions are suppressed for free, and it is the same "a newer version exists" rule Part K uses to drop obsolete pending updates, so the two parts share one rule.
+- **Consequences.** Versions must only grow per item, and every publisher of an item must number them the same way. Where an incident's version comes from is settled in PR 2, with the envelope (H).
+- **Where.** `gossip::SeenCache`, `Gossip::receive`.
+- **How we check it.** Tests `same_version_is_a_duplicate_and_is_not_forwarded`, `a_newer_version_spreads_and_an_older_one_is_dropped`.
+- **Report notes.** Duplicate rate = `duplicates / delivered`; stale copies are counted apart (`older`).
+
+### D343 · The seen-cache holds 10,000 items or 300 s, oldest forgotten first
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core (constants; config keys in PR 2, D348) · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** A peer runs for hours, so the cache must be bounded. An entry must outlive every copy still in flight: live gossip ends in well under a second, but Part K's store-and-forward is planned to hold a copy up to 5 minutes. At Phase 1's rates (thousands of reports a second over 6 zones) 10,000 entries fill in about 20 s.
+- **Options considered.**
+  1. *10,000 items or 300 s (chosen).*
+  2. *10,000 items or 60 s (the plan's example).* A copy held longer than 60 s spreads again, though only as far as its hop count allows.
+  3. *100,000 items or 300 s.* Fewest evictions, up to about 8 MB per program, and there are 10 programs per PC.
+- **Decision.** Option 1. An item is forgotten when it is older than `DEFAULT_SEEN_MAX_AGE_MS` (300,000 ms) since its current version was seen, or when the cache passes `DEFAULT_SEEN_CAP` (10,000), oldest first. A newer version moves the item to the back.
+- **Why.** The age matches Part K's retention, and 10,000 entries is under 1 MB. Under heavy load the count binds first, and the report measures how often a duplicate gets past an evicted entry.
+- **Consequences.** A late copy of a forgotten item is delivered again as new; its hop count still bounds how far it goes. A clock that goes back forgets nothing, it does not crash.
+- **Where.** `gossip::SeenCache::{expire, record}`, `GossipStats::{evicted, expired}`.
+- **How we check it.** Tests `the_cache_forgets_the_oldest_past_its_cap`, `a_newer_version_moves_the_item_to_the_back`, `the_cache_forgets_by_age`.
+- **Report notes.** Justify the bounds with the measured update rate per zone from the lab runs.
+
+### D344 · Targets are picked by hash ranking, never the sender, the origin or itself
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** Each peer picks `k` of the zone's subscribers. The core has no randomness, so runs repeat and tests are exact.
+- **Options considered.**
+  1. *Hash ranking (chosen).* Rank candidates by FNV-1a of (item, version, this peer, candidate), mixed with `state::sample_mix`, and take the top `k`, as rendezvous hashing does.
+  2. *A seeded RNG from the caller.* Truly random, also repeatable, but tests depend on the RNG's stream, and a seed shared by mistake makes peers pick alike.
+  3. *The first `k` by ID.* Every peer picks the same low IDs, so coverage collapses and those peers carry the load. Only a baseline.
+- **Decision.** Option 1, in `gossip::pick_targets`. Integers are hashed little-endian, so a ranking is the same on every machine. Repeats in the list count once, and the list's order does not matter. The peer itself, the peer it heard from and the origin are left out.
+- **Why.** No RNG and repeatable, yet each peer and each update gets its own targets, so it behaves like random gossip. FNV-1a is already the digest's hash (D31).
+- **Consequences.** The ranking is fixed per (item, version, peer): a peer that resends the same version picks the same targets. `pick_targets` is public so the cloud's single publish picks its first targets by the same rule.
+- **Where.** `gossip::{pick_targets, rank, Fnv}`.
+- **How we check it.** Tests `targets_repeat_and_still_differ_by_peer_and_update`, `targets_spread_evenly_over_the_zone` (every peer picked within ±17% of the mean), `never_back_to_the_sender_the_origin_or_itself`.
+- **Report notes.** How "no broadcast storm" is guaranteed: never back, never a seen copy, at most `k` per peer, at most `h` links.
+
+### D345 · The gossip core is generic over peer and item IDs
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** The peer envelope (H) and the directory (G) were not merged when the core was written, and whether a gossip peer is a user (`UserId`) or a client program (one peer endpoint holding many users) is for H and G to settle.
+- **Options considered.**
+  1. *`Gossip<P, I>` over any `Ord + Copy + Hash` peer and item ID (chosen).*
+  2. *Fixed local types (`UserId`, `RequestId`).* Simpler signatures, but it guesses H's answer.
+  3. *Wait for H's envelope.* No mapping, but the work waits until at least 2026-11-25.
+- **Decision.** Option 1. `Rumor<P, I>` is what the core needs from an envelope: item, version, origin and hops. No change to `proto.rs`.
+- **Why.** The core can merge on day 1 as the plan intends, and fits either answer on peers.
+- **Consequences.** PR 2 fixes `P` and `I` and maps the envelope to `Rumor`.
+- **Where.** `gossip::{Gossip, Rumor}`.
+- **How we check it.** The tests use `u32` peers and `u64` items.
+- **Report notes.** None beyond the design section.
+
+### D346 · The hop count is the links travelled; a copy is forwarded while it is below the limit
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** The spec's bounded forwarding needs a hop count on each copy. "TTL" already means `Incident.ttl_ms` in this project (D143), and `docs/architecture.md` section 13 asks to keep the meanings apart.
+- **Options considered.**
+  1. *Hops travelled, counting up (chosen).* The publisher's sends carry 1; a peer forwards with one more only while the copy's hops are below `hop_limit`.
+  2. *A budget counting down, as IP's TTL.* The publisher could set a limit per update, but it reads as a second TTL.
+- **Decision.** Option 1. A copy received at the limit is delivered but not forwarded (`GossipStats::hop_limited`). A copy carrying more than the limit, from a peer with another setting, is treated the same way.
+- **Why.** Every peer applies its own limit, and "hops" cannot be mistaken for the incident TTL.
+- **Consequences.** All peers should run the same `hop_limit`; one config file does that (D348).
+- **Where.** `Gossip::accept`, `Forward::hops`.
+- **How we check it.** Tests `at_the_hop_limit_it_is_delivered_but_not_forwarded`, `the_hop_limit_bounds_the_reach`.
+- **Report notes.** The hop count is the Phase 2 TTL of the spec, under another name on purpose.
+
+### D347 · The core counts what the report measures; events come with the wiring
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** Part I measures the duplicate rate, the forwarding overhead and coverage. Events live in the shared `metrics.rs`.
+- **Options considered.**
+  1. *Counters in the core now, events in PR 2 (chosen).*
+  2. *Events in `metrics.rs` now.* Field names fixed early for Noor, but a shared file changes before anything emits them.
+- **Decision.** `GossipStats { published, received, delivered, duplicates, older, sent, hop_limited, evicted, expired }`. PR 2 adds `metrics::Event` lines for them.
+- **Why.** The core stays in one owner's file, and the names are settled when they are first written to a log.
+- **Consequences.** Duplicate rate = `duplicates / delivered`; forwarding overhead = `sent` over all peers per update; coverage = peers that delivered over the zone's subscribers.
+- **Where.** `gossip::GossipStats`.
+- **How we check it.** Every unit test checks the counters it touches; the flood test checks `sent = delivered + duplicates`.
+- **Report notes.** These three ratios are the Part I figures.
+
+### D348 · The gossip bounds become config keys in PR 2
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Accepted · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** The report sweeps fan-out and hop limit, so they must be config keys eventually. `config.rs` is Part A's.
+- **Options considered.**
+  1. *In PR 2, with the wiring (chosen).* PR 1 keeps the defaults as constants in `gossip.rs`.
+  2. *In PR 1.* The keys would exist with nothing reading them, and the PR would touch Part A's file and both configs.
+- **Decision.** PR 2 adds a `[gossip]` section with `fanout`, `hop_limit`, `seen_cap` and `seen_max_age_ms`, to `config.rs`, `config/local.toml`, `config/lab.example.toml` and `docs/protocol.md`, validated by `GossipConfig::validate`.
+- **Why.** A key is added when something reads it, and PR 1 stays in its owner's file.
+- **Consequences.** Until PR 2 the values are only the constants.
+- **Where.** `gossip::GossipConfig`; later `config.rs`.
+- **How we check it.** PR 2's config tests.
+- **Report notes.** None.
+
+### D349 · The planner uses Phase 2 resources beside the synthetic responders
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Accepted (PR 3, `part-i-planner-phase2`) · **Decided by:** Yahia Kilany, on the agent's recommendation
+- **Context.** The spec's planner combines severity, age, distance, resource availability and capability. Phase 2 makes resources real: Part J's offers and online volunteer responders from Part G's directory. Phase 1's planner plans over the synthetic campus only.
+- **Options considered.**
+  1. *Beside them (chosen).* Both lists are passed in.
+  2. *Replace them.* Truer to the spec, but every Phase 1 cell and scenario would need offers to run.
+  3. *A config switch (synthetic, Phase 2, both).* Three paths to test, and it would default to both anyway.
+- **Decision.** Option 1. The planner stays deterministic and gets its inputs passed in; availability from offers feeds `Plan.priority`'s availability term (D148).
+- **Why.** Phase 1's scenarios 1–4 and 9 and its experiments must still run unchanged for Noor's regression check.
+- **Consequences.** PR 3 needs Part J's offers and Part G's directory merged first.
+- **Where.** `planner.rs`, with Part E's review.
+- **How we check it.** PR 3's planner tests, and Phase 1's experiments re-run.
+- **Report notes.** How the planner's inputs grew in Phase 2.
 
 ### Notes on older entries
 

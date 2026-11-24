@@ -2132,7 +2132,7 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   leader duty would go against the table in section 2 (D69, D163).
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
 - **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
-  duplicate suppression and bounded forwarding (D131). Lecture 9 places it in Phase 2, because it needs a publish step
+  duplicate suppression and bounded forwarding (D131). The dissemination core is built (section 13.2, D340–D348); its wiring is next. Lecture 9 places it in Phase 2, because it needs a publish step
   and discovery, so it is in the design here and not in Phase 1's build (D209). Reporting does not need it; it exists to
   tell others in a zone. The difference from group communication: there the sender drives one message to many; here
   providers publish, interested parties subscribe, and they are pushed a notice when something concerns them.
@@ -2163,6 +2163,36 @@ sequenceDiagram
     Note over M: outbox_flushed: reconcile_us
 ```
 
+### 13.2 Zone gossip: the dissemination core (built in the core, Part I, D340–D348)
+
+`src/gossip.rs` holds the rules by which a zone's peers spread an update; the wiring to the peer endpoint and the cloud's
+single publish come next (PR 2, `part-i-gossip`). A peer that gets a version it has not seen hands it to the application and
+sends it to `k = 3` subscribers of the zone, picked by hash ranking, never itself, the peer it heard from or the origin. A copy
+carries the links it has crossed and is forwarded only below the hop limit, 8. The seen-cache keeps the highest version per item,
+up to 10,000 items or 300 s, so a duplicate or an older version is dropped there. Measured with the core, this reaches about 95%
+of a 50-peer zone, 93% of 500 and 85% of 2,500; forward-once push gossip misses about e^-k of the peers, which Part K's
+store-and-forward covers (D341).
+
+```mermaid
+sequenceDiagram
+    participant C as Cloud, after a plan commits
+    participant A as Peer A
+    participant B as Peer B
+    participant D as Peer D
+    participant E as Peer E
+    C->>A: summary k1-42 v2, hops 1 (PR 2)
+    Note over A: new version: deliver, pick k targets
+    A->>B: k1-42 v2, hops 2
+    A->>D: k1-42 v2, hops 2
+    Note over B: new: deliver, forward, never back to A
+    B->>D: k1-42 v2, hops 3
+    Note over D: same version already seen: duplicate, dropped
+    B->>E: k1-42 v2, hops 3
+    Note over E: at the hop limit 8 a copy is delivered and not forwarded
+```
+
+The subscription list, the peer endpoint and the cloud's publish are **planned** (G, H, and Part I's PR 2).
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid
@@ -2190,7 +2220,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219, D220 and D222 to D228, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209).
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Its dissemination core is built (D340–D348); the wiring is next.
 - **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
   report must state that.
 - **Lab results.** Nothing has run on the six PCs; see [runbook.md](runbook.md). Every number in these docs is from tests or from
