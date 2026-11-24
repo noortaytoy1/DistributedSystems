@@ -357,7 +357,19 @@ rounds a number above 2^53.
 | `POST /api/load/stop` | none | `{ok, stopping}` |
 | `GET /api/load` | none | `{ok, running_users, running_programs, rows:[{client_id, pid, users, think_ms, pattern, state, exit_code, summary}]}`; state is running, stopping, finished, stopped or failed |
 
-There are no zone routes, because publish-subscribe is Phase 2 (D209).
+Phase 2 panels (Part L, D437–D440):
+
+| Route | Parameters | Answer |
+|-------|------------|--------|
+| `GET /api/offline` | none | `{ok, offline, queued, held_updates, reconciled:null}` |
+| `POST /api/offline/set` | `on` = `true` or `false` | the same; with `false` it waits for the outbox and `reconciled` is `{sent, answered, expired, failed, took_ms}` (D438) |
+| `GET /api/directory` | `zone` or `capability`, exactly one | `{ok, records:[{user, role, zone, peer_addr, capabilities}], log_index, latency_us}`; 502 `{ok:false, error}` if every node refused, as all do until Part G (D437) |
+| `POST /api/zone/follow` | `zone` | joins user 1,000,000 + zone of this page, which subscribes it to the zone; answers as `GET /api/zone/updates`; 502 if the join is refused (D439) |
+| `GET /api/zone/updates` | none | `{ok, followed:[zones], updates:[{id, from, zone, hops, version, kind, text, received_at_ms}]}`, newest 50 |
+| `GET /api/conflicts` | none | `{ok, built:false, items:[], note}` until Part J merges (D440) |
+
+`POST /api/report` made while offline answers `{ok, queued:true, request, zone, severity, needs, who, valid_for_s}` (D438). The
+Phase 1 zone routes stay gone (D209); following a zone is the publish-subscribe of Part I.
 
 Constants in `bin/frontend.rs`, not config keys, because no experiment varies them: request head 8 KiB, 5 s to send it,
 64 connections, status 800 ms per node, 1000 running users, 1500 offered reports a second, 200 ms least think time,

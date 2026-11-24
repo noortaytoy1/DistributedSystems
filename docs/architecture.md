@@ -2331,6 +2331,29 @@ stateDiagram-v2
     Acting --> [*]: run ends
 ```
 
+### 13.3 The client page's Phase 2 panels (built, Part L, D437–D440)
+
+The page on each client PC gets four panels, all through `MeshClient`:
+
+- **Offline switch:** takes the page's own client offline (Part K). A report made meanwhile shows QUEUED; coming back
+  sends the outbox and shows what happened.
+- **Directory:** asks by zone or capability (Part H) and shows one answer with the log index it was read at. Every
+  node refuses until Part G's directory merges.
+- **Zone updates:** follows a zone by joining a user of the page there, which subscribes the program (Part I), and
+  shows the newest 50 updates with their hops.
+- **Conflicts:** says it waits for Part J.
+
+```mermaid
+flowchart LR
+    B[Browser] -->|HTTP on this PC| F[frontend]
+    F -->|go_offline / go_online| M[MeshClient]
+    F -->|discover| M
+    F -->|join user 1,000,000+z| M
+    M -->|presence calls| C[Cloud nodes]
+    P[Other programs] -->|zone updates, P2P| M
+    M -->|take_peer_updates| F
+```
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid

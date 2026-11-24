@@ -25,11 +25,14 @@
 //! - **The page (`frontend.html`).** One embedded file with plain JavaScript that writes through
 //!   `textContent` only and has no outside links, because the lab network may have no internet.
 //!
-//! There is no panel for following a zone: that is publish-subscribe, which is Phase 2.
+//! - **Phase 2 panels (Part L, D437 to D440).** An offline switch for this page's client (Part K);
+//!   the directory, asked by zone or capability (Part H, answering `rejected` until Part G's directory
+//!   merges); zone updates, which this page receives by joining a user in the zone it follows (Part
+//!   I); and conflicts, which wait for Part J.
 //!
-//! Owner: F (client and scale).
+//! Owner: F (client and scale); the Phase 2 panels: L.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -42,10 +45,11 @@ use futures::future::join_all;
 use rescuemesh::campus;
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{EventLog, now_ms};
-use rescuemesh::middleware::{ClientError, MeshClient, Submitted, control};
+use rescuemesh::middleware::{ClientError, Delivery, MeshClient, Submitted, control};
 use rescuemesh::proto::{
     Capability, ClientId, ControlReply, ControlRequest, Incident, IncidentStatus, NodeStatus,
-    Responder, ResponderId, UserId, ZoneId,
+    P2pBody, P2pEnvelope, PresenceRecord, PresenceRole, RequestId, Responder, ResponderId, UserId,
+    ZoneId,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -106,6 +110,12 @@ const MAX_SUMMARY_BYTES: usize = 4096;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const TERM_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Zone updates the page keeps, newest first (D439).
+const MAX_ZONE_UPDATES: usize = 50;
+/// The user this page joins to follow zone `z` is this plus `z` (D439): far above the user numbers
+/// a person types or the load box gives, so it never shares a record with them.
+const FOLLOW_USER_BASE: u32 = 1_000_000;
+
 const PAGE: &str = include_str!("frontend.html");
 
 /// Every path this program answers, and its one method.
@@ -117,6 +127,12 @@ const ROUTES: &[(&str, &str)] = &[
     ("/api/load", "GET"),
     ("/api/load/start", "POST"),
     ("/api/load/stop", "POST"),
+    ("/api/offline", "GET"),
+    ("/api/offline/set", "POST"),
+    ("/api/directory", "GET"),
+    ("/api/zone/follow", "POST"),
+    ("/api/zone/updates", "GET"),
+    ("/api/conflicts", "GET"),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -194,6 +210,12 @@ struct App {
     responders: BTreeMap<ResponderId, Responder>,
     loadgen: PathBuf,
     load: Arc<Mutex<LoadBox>>,
+    /// Zone updates other programs delivered to this one, newest first (D439).
+    updates: Arc<Mutex<VecDeque<Value>>>,
+    /// The zones this page follows.
+    followed: Mutex<BTreeSet<ZoneId>>,
+    /// Reads the P2P inbox into `updates`; ended at shutdown.
+    inbox: tokio::task::JoinHandle<()>,
 }
 
 impl App {
@@ -210,6 +232,8 @@ impl App {
             .into_iter()
             .map(|r| (r.id, r))
             .collect();
+        let updates: Arc<Mutex<VecDeque<Value>>> = Arc::default();
+        let inbox = tokio::spawn(keep_updates(client.take_peer_updates(), updates.clone()));
         Self {
             config,
             config_path,
@@ -218,11 +242,15 @@ impl App {
             responders,
             loadgen,
             load: Arc::default(),
+            updates,
+            followed: Mutex::default(),
+            inbox,
         }
     }
 
     /// End every program. Runs after the last connection is gone.
     async fn shutdown(&self) {
+        self.inbox.abort();
         let mut tasks = {
             let mut load = lock(&self.load);
             load.stop_all();
@@ -517,6 +545,15 @@ async fn route(app: &App, request: &Request) -> Response {
             .map(|()| Response::json(200, &lock(&app.load).to_json())),
         "/api/load/start" => load_start(app, &query),
         "/api/load/stop" => query.only(&[]).map(|()| load_stop(app)),
+        "/api/offline" => match query.only(&[]) {
+            Ok(()) => Ok(offline_state(app, None).await),
+            Err(refused) => Err(refused),
+        },
+        "/api/offline/set" => offline_set(app, &query).await,
+        "/api/directory" => directory(app, &query).await,
+        "/api/zone/follow" => zone_follow(app, &query).await,
+        "/api/zone/updates" => query.only(&[]).map(|()| zone_updates(app)),
+        "/api/conflicts" => query.only(&[]).map(|()| conflicts()),
         _ => Ok(Response::error(404, "no such path")),
     };
     answered.unwrap_or_else(|refused| refused)
@@ -663,12 +700,14 @@ async fn report(app: &App, query: &Query<'_>) -> Result<Response, Response> {
         return Err(Response::error(500, "could not draw a place in that zone"));
     };
     // One click is one submit: the middleware copies it to the nodes and retries it. Never resent
-    // from here, because a new ID would be a second incident.
-    match app.client.submit(incident).await {
-        Ok(done) => Ok(Response::json(
+    // from here, because a new ID would be a second incident. Offline, it waits in the outbox under
+    // its ID and goes out when the switch is turned back (D400, D438).
+    match app.client.submit_or_queue(incident).await {
+        Ok(Delivery::Answered(done)) => Ok(Response::json(
             200,
             &report_json(&done, &form, &app.responders),
         )),
+        Ok(Delivery::Queued(id)) => Ok(Response::json(200, &queued_json(id, &form))),
         Err(ClientError::GaveUp { attempts }) => Ok(Response::json(
             504,
             &json!({
@@ -724,6 +763,243 @@ fn report_json(
         "who": form.who,
         "valid_for_s": form.valid_for_s,
     })
+}
+
+/// The card for a report made while offline: it has an ID and nothing else yet (D438).
+fn queued_json(id: RequestId, form: &ReportForm) -> Value {
+    json!({
+        "ok": true,
+        "queued": true,
+        "request": id.to_string(),
+        "zone": form.zone,
+        "severity": form.severity,
+        "needs": capability_name(&form.needs),
+        "who": form.who,
+        "valid_for_s": form.valid_for_s,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 2 panels (Part L, D437 to D440)
+// ---------------------------------------------------------------------------------------------
+
+/// The offline switch's state, and what the last reconnection did if there was one (D438).
+async fn offline_state(app: &App, reconciled: Option<Value>) -> Response {
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "offline": app.client.is_offline(),
+            "queued": app.client.queued().await,
+            "held_updates": app.client.held_updates(),
+            "reconciled": reconciled,
+        }),
+    )
+}
+
+/// `on=true` takes this page's client offline; `on=false` brings it back and sends its outbox,
+/// answering when the outbox is sent (D438). Load programs started here are separate programs and
+/// stay as they are.
+async fn offline_set(app: &App, query: &Query<'_>) -> Result<Response, Response> {
+    query.only(&["on"])?;
+    match query.get("on") {
+        Some("true") => {
+            app.client.go_offline();
+            Ok(offline_state(app, None).await)
+        }
+        Some("false") => match app.client.go_online().await {
+            Ok(done) => {
+                let reconciled = json!({
+                    "sent": done.sent,
+                    "answered": done.answered,
+                    "expired": done.expired,
+                    "failed": done.failed,
+                    "took_ms": u64::try_from(done.took.as_millis()).unwrap_or(u64::MAX),
+                });
+                Ok(offline_state(app, Some(reconciled)).await)
+            }
+            Err(e) => Ok(Response::error(
+                502,
+                format!("Back online, but the outbox failed: {e}"),
+            )),
+        },
+        _ => Err(Response::error(400, "on must be true or false")),
+    }
+}
+
+fn record_json(record: &PresenceRecord) -> Value {
+    json!({
+        "user": record.user.to_string(),
+        "role": format!("{:?}", record.role),
+        "zone": record.zone,
+        "peer_addr": record.peer_addr,
+        "capabilities": record.capabilities.iter().map(capability_name).collect::<Vec<_>>(),
+    })
+}
+
+/// Who is online in a zone or with a capability, as the directory answers (D437). The answer is
+/// from whichever node answered first, labelled with the log index it read at.
+async fn directory(app: &App, query: &Query<'_>) -> Result<Response, Response> {
+    query.only(&["zone", "capability"])?;
+    let zone: Option<ZoneId> = query.number("zone")?;
+    let capability = query
+        .get("capability")
+        .map(|name| {
+            Capability::ALL
+                .into_iter()
+                .find(|c| capability_name(c) == name)
+                .ok_or_else(|| Response::error(400, format!("unknown capability {name}")))
+        })
+        .transpose()?;
+    let found = match (zone, capability) {
+        (Some(zone), None) if zone < app.config.campus.zones => {
+            app.client.discover_zone(zone).await
+        }
+        (Some(_), None) => {
+            return Err(Response::error(
+                400,
+                format!("zone must be below {}", app.config.campus.zones),
+            ));
+        }
+        (None, Some(capability)) => app.client.discover_capability(capability).await,
+        _ => {
+            return Err(Response::error(
+                400,
+                "give a zone or a capability, not both",
+            ));
+        }
+    };
+    match found {
+        Ok(found) => Ok(Response::json(
+            200,
+            &json!({
+                "ok": true,
+                "records": found.records.iter().map(record_json).collect::<Vec<_>>(),
+                "log_index": found.log_index,
+                "latency_us": u64::try_from(found.latency.as_micros()).unwrap_or(u64::MAX),
+            }),
+        )),
+        Err(e) => Ok(Response::error(
+            502,
+            format!("The directory did not answer: {e}"),
+        )),
+    }
+}
+
+/// Follow a zone: join a user of this page in it, which subscribes this program to the zone's
+/// updates (D359, D439). Until Part G's directory merges every node refuses the join.
+async fn zone_follow(app: &App, query: &Query<'_>) -> Result<Response, Response> {
+    query.only(&["zone"])?;
+    let zone: ZoneId = query.required_number("zone")?;
+    if zone >= app.config.campus.zones {
+        return Err(Response::error(
+            400,
+            format!("zone must be below {}", app.config.campus.zones),
+        ));
+    }
+    let user = UserId {
+        client: app.client_id,
+        user: FOLLOW_USER_BASE + u32::from(zone),
+    };
+    match app
+        .client
+        .join(user, PresenceRole::Ordinary, zone, Vec::new())
+        .await
+    {
+        Ok(_) => {
+            lock(&app.followed).insert(zone);
+            Ok(zone_updates(app))
+        }
+        Err(e) => Ok(Response::error(
+            502,
+            format!("Could not follow zone {zone}: {e}"),
+        )),
+    }
+}
+
+fn zone_updates(app: &App) -> Response {
+    let followed: Vec<ZoneId> = lock(&app.followed).iter().copied().collect();
+    let updates: Vec<Value> = lock(&app.updates).iter().cloned().collect();
+    Response::json(
+        200,
+        &json!({ "ok": true, "followed": followed, "updates": updates }),
+    )
+}
+
+/// One received update as the page shows it.
+fn update_json(update: &P2pEnvelope, received_at_ms: u64) -> Value {
+    let (kind, text) = match &update.body {
+        P2pBody::IncidentSummary(i) => (
+            "incident",
+            format!(
+                "Incident {}: {:?}, severity {}, needs {}",
+                i.incident,
+                i.category,
+                i.severity,
+                capability_name(&i.needs)
+            ),
+        ),
+        P2pBody::ResourceOffer(o) => (
+            "offer",
+            format!(
+                "{} offered by user {}",
+                capability_name(&o.capability),
+                o.provider
+            ),
+        ),
+        P2pBody::AssignmentUpdate(a) => (
+            "assignment",
+            match a.responder {
+                Some(r) => format!(
+                    "Incident {}: responder {r}, priority {}",
+                    a.incident, a.priority
+                ),
+                None => format!(
+                    "Incident {}: nobody free, priority {}",
+                    a.incident, a.priority
+                ),
+            },
+        ),
+    };
+    json!({
+        "id": update.id.to_string(),
+        "from": update.from.to_string(),
+        "zone": update.zone,
+        "hops": update.hops,
+        "version": update.version,
+        "kind": kind,
+        "text": text,
+        "received_at_ms": received_at_ms,
+    })
+}
+
+/// Keeps the newest [`MAX_ZONE_UPDATES`] updates this program receives (D439).
+async fn keep_updates(
+    inbox: Option<tokio::sync::mpsc::Receiver<P2pEnvelope>>,
+    kept: Arc<Mutex<VecDeque<Value>>>,
+) {
+    let Some(mut inbox) = inbox else {
+        return;
+    };
+    while let Some(update) = inbox.recv().await {
+        let mut kept = lock(&kept);
+        kept.push_front(update_json(&update, now_ms()));
+        kept.truncate(MAX_ZONE_UPDATES);
+    }
+}
+
+/// Items in the reconciliation state come from Part J's claims, which are not merged (D440).
+// TODO(L): list the reconciliation state when Part J merges.
+fn conflicts() -> Response {
+    Response::json(
+        200,
+        &json!({
+            "ok": true,
+            "built": false,
+            "items": [],
+            "note": "Conflicts come from Part J's claims, which are not merged yet.",
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1681,11 +1957,16 @@ mod tests {
             "Valid for",
             "unreachable",
             "Local program not answering",
+            "offline-panel",
+            "directory-panel",
+            "zones-panel",
+            "conflicts-panel",
+            "QUEUED",
         ] {
             assert!(PAGE.contains(needed), "the page must have {needed}");
         }
-        // Publish-subscribe is Phase 2, and every API the page uses now exists.
-        for gone in ["zones-panel", "/api/zones", "not available yet"] {
+        // The Phase 1 zone panel's API is gone, and every API the page uses exists (D439).
+        for gone in ["/api/zones", "not available yet"] {
             assert!(!PAGE.contains(gone), "the page must not have {gone}");
         }
     }
@@ -1870,6 +2151,130 @@ mod tests {
                 .all(|n| n.ctx.consensus.status().leader.is_some() && n.ctx.status().responders > 0)
         })
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn phase2_panels_refuse_bad_values_and_say_what_is_not_built() {
+        let page = start_page(dead_config(), no_program()).await;
+        for target in [
+            "/api/directory",
+            "/api/directory?zone=1&capability=Medical",
+            "/api/directory?zone=6",
+            "/api/directory?capability=Wizard",
+            "/api/directory?zone=1&node=2",
+        ] {
+            let (status, body) = http(page.addr, "GET", target).await;
+            assert_eq!(status, 400, "{target}: {body}");
+        }
+        for target in [
+            "/api/offline/set",
+            "/api/offline/set?on=yes",
+            "/api/zone/follow",
+            "/api/zone/follow?zone=6",
+        ] {
+            let (status, body) = http(page.addr, "POST", target).await;
+            assert_eq!(status, 400, "{target}: {body}");
+        }
+        let (status, conflicts) = http(page.addr, "GET", "/api/conflicts").await;
+        assert_eq!(status, 200);
+        assert_eq!(conflicts["built"], false);
+        let (_, updates) = http(page.addr, "GET", "/api/zone/updates").await;
+        assert_eq!(updates["followed"], json!([]));
+        page.end().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn offline_a_report_is_queued_and_coming_back_sends_it() {
+        let cluster = TestCluster::start(3).await;
+        ready(&cluster).await;
+        let page = start_page(cluster.config.clone(), no_program()).await;
+
+        let (status, state) = http(page.addr, "POST", "/api/offline/set?on=true").await;
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["offline"], true);
+        let (status, card) = http(
+            page.addr,
+            "POST",
+            "/api/report?zone=1&severity=3&needs=Fire&who=4",
+        )
+        .await;
+        assert_eq!(status, 200, "{card}");
+        assert_eq!(card["queued"], true);
+        let request = card["request"].as_str().unwrap().to_string();
+        let (_, state) = http(page.addr, "GET", "/api/offline").await;
+        assert_eq!(state["queued"], 1);
+
+        let (status, state) = http(page.addr, "POST", "/api/offline/set?on=false").await;
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["offline"], false);
+        assert_eq!(state["queued"], 0);
+        assert_eq!(state["reconciled"]["answered"], 1);
+        // The queued report reached the cloud under the ID the card showed.
+        let (client, seq) = request.split_once('-').unwrap();
+        let id = RequestId {
+            client: client.parse().unwrap(),
+            seq: seq.parse().unwrap(),
+        };
+        wait_until(PATIENCE, "the queued report on node 1", || {
+            cluster.node(1).ctx.state.with(|s| s.result(&id).is_some())
+        })
+        .await;
+        page.end().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn with_no_directory_yet_the_panels_say_so() {
+        let cluster = TestCluster::start(3).await;
+        ready(&cluster).await;
+        let page = start_page(cluster.config.clone(), no_program()).await;
+        let (status, found) = http(page.addr, "GET", "/api/directory?zone=1").await;
+        assert_eq!(status, 502, "{found}");
+        assert!(
+            found["error"].as_str().unwrap().contains("refused"),
+            "{found}"
+        );
+        let (status, follow) = http(page.addr, "POST", "/api/zone/follow?zone=1").await;
+        assert_eq!(status, 502, "{follow}");
+        let (_, updates) = http(page.addr, "GET", "/api/zone/updates").await;
+        assert_eq!(
+            updates["followed"],
+            json!([]),
+            "a refused join follows nothing"
+        );
+        page.end().await;
+    }
+
+    #[test]
+    fn a_received_update_reads_as_one_line() {
+        use rescuemesh::proto::{IncidentSummary, Point, UpdateId};
+        let update = P2pEnvelope {
+            id: UpdateId { origin: 4, seq: 9 },
+            from: UserId { client: 4, user: 2 },
+            to: None,
+            zone: 3,
+            version: 1,
+            created_at_ms: 0,
+            hops: 2,
+            max_hops: 7,
+            body: P2pBody::IncidentSummary(IncidentSummary {
+                incident: RequestId { client: 4, seq: 77 },
+                category: Category::LabIncident,
+                severity: 4,
+                zone: 3,
+                location: Point { x: 1, y: 2 },
+                needs: Capability::Fire,
+                reported_at_ms: 0,
+            }),
+        };
+        let shown = update_json(&update, 5);
+        assert_eq!(shown["kind"], "incident");
+        assert_eq!(shown["zone"], 3);
+        assert_eq!(shown["hops"], 2);
+        let text = shown["text"].as_str().unwrap();
+        assert!(
+            text.contains("4-77") && text.contains("severity 4") && text.contains("LabIncident"),
+            "{text}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

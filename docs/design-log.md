@@ -362,6 +362,10 @@ table below in sync.
 | D404 | The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer | K | Implemented |
 | D405 | At most 10,000 queued reports; past that a new one is refused | K | Implemented |
 | D406 | Offline events, and loadgen's `--offline-at-s` and `--offline-for-s` | K | Implemented |
+| D437 | The page's directory panel asks by zone or capability, one answer labelled with its log index | L | Implemented |
+| D438 | The page's offline switch takes its own client offline; reports queue and the card says so | L | Implemented |
+| D439 | The page follows a zone by joining a user of its own there, and keeps the newest 50 updates | L | Implemented |
+| D440 | The page's conflicts panel says it waits for Part J | L | Implemented |
 | D407 | The sender holds a peer update that cannot get through: `send_peer_or_hold` | K | Implemented |
 | D408 | Retention: 100 per peer, 10,000 in all, oldest first, and 300 s from when the update was made | K | Implemented |
 | D409 | Obsolete: a newer version of the same subject replaces an older one; a run-out offer is dropped | K | Implemented |
@@ -10867,6 +10871,63 @@ them on the six PCs.
 - **Where.** `bin/loadgen.rs::{phase2_call, Shared, presence_outcome, peer_outcome, drain_peer_updates}`.
 - **How we check it.** `outcomes_name_what_happened_and_no_directory_reads_as_rejected`, `a_peer_comes_from_the_last_discovery_or_not_at_all`, `only_responders_and_providers_offer_a_capability`. By hand on three local nodes, 20 users for 70 s: 941 reports answered, one 10 s outage with all 196 queued reports answered after it, and every presence call `rejected`, as expected without Part G.
 - **Report notes.** The full list of outcome names goes with the methodology.
+
+### D437 · The page's directory panel asks by zone or capability, one answer labelled with its log index
+
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** Demo scenario 5 shows the directory. The plan asks for "the same answer from all three nodes side by side". The page may only use `MeshClient` and `middleware::control` (D211, `tests/layers.rs`), and `MeshClient::discover` asks every node and returns the first answer, without saying which node (D321). Part G's directory is not merged, so today every node refuses.
+- **Options considered.**
+  1. *One answer, labelled with the log index it was read at (chosen).* What the middleware offers now.
+  2. *Side by side, one query per node.* Needs a per-node directory read, a `ControlRequest` or a `MeshClient` call for one node: a contract change for Parts G and H.
+  3. *Wait for Part G.* No panel to rehearse with.
+- **Decision.** Option 1: `GET /api/directory?zone=` or `?capability=`, exactly one, listing user, role, zone, capabilities and peer address, with the log index and the latency. A refusal shows the nodes' reason.
+- **Why.** It needs no contract change and works as soon as Part G merges. For "the same on all three", the node table's digests already compare the nodes' whole state, which includes the directory once Part G puts it in `CloudState`.
+- **Consequences.** A per-node view is left for when Part G adds a per-node read; the panel then gets three columns. Until Part G merges the panel shows "refused by every node".
+- **Where.** `bin/frontend.rs::directory`, `frontend.html` (directory panel).
+- **How we check it.** `phase2_panels_refuse_bad_values_and_say_what_is_not_built`, `with_no_directory_yet_the_panels_say_so`. In a browser on three local nodes: the panel showed the nodes' refusal.
+- **Report notes.** Scenario 5's "same on all nodes" is shown by the digests until a per-node read exists.
+
+### D438 · The page's offline switch takes its own client offline; reports queue and the card says so
+
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** Part K's switch is per `MeshClient` (D402). D400 left the page on `submit` until Part L added a toggle, and D413 left scenario 7's peer case to a test until then.
+- **Options considered.**
+  1. *Switch this page's own client; reports go through `submit_or_queue` (chosen).*
+  2. *Also switch the load programs started from the page.* They are separate processes; reaching them needs a new control path into loadgen.
+- **Decision.** `POST /api/offline/set?on=true|false` and `GET /api/offline`. Offline, a report's card says QUEUED with its request ID. Coming back waits for the outbox and shows sent, answered, expired, no answer and the time, Part K's reconciliation delay. The panel also shows queued reports and held peer updates.
+- **Why.** Scenario 7 on screen, with the same code the load programs use, and no new control path.
+- **Consequences.** Load programs go offline only through their own flags or `[workload]` (D406, D432).
+- **Where.** `bin/frontend.rs::{offline_state, offline_set, queued_json}`, `frontend.html` (offline panel, the QUEUED card).
+- **How we check it.** `offline_a_report_is_queued_and_coming_back_sends_it`: the card's ID reaches the cloud after coming back. In a browser on three local nodes: one report queued, then "sent 1, answered 1, expired 0, no answer 0, in 68 ms".
+- **Report notes.** Scenario 7 from the page.
+
+### D439 · The page follows a zone by joining a user of its own there, and keeps the newest 50 updates
+
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** Part I subscribes a program to the zones of its joined users (D359) and hands the application what is new through `take_peer_updates` (D360). The Phase 1 zone panel (D204, D209) read a route the cloud never got.
+- **Options considered.**
+  1. *Join user 1,000,000 + z of this page in zone z, and keep the newest 50 updates received (chosen).*
+  2. *A subscribe call without a user.* Part I has none; it would be a change to Part I.
+- **Decision.** `POST /api/zone/follow?zone=` and `GET /api/zone/updates`. The user number is far above what a person types or the load box gives. A task reads the inbox into a list of 50, newest first, showing kind, text, sender, zone and hops. A refused join follows nothing and says why.
+- **Why.** Uses Part I's subscription as built, and shows the hop count that bounded forwarding is about.
+- **Consequences.** Until Part G merges every join is refused, so nothing is followed.
+- **Where.** `bin/frontend.rs::{zone_follow, zone_updates, keep_updates, update_json}`, `frontend.html` (zone updates panel).
+- **How we check it.** `a_received_update_reads_as_one_line`, `with_no_directory_yet_the_panels_say_so`; the page test's list of needed panels.
+- **Report notes.** Scenario 6 (the zone flood) from the page once Part G merges.
+
+### D440 · The page's conflicts panel says it waits for Part J
+
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Context.** Scenario 8 shows items in the reconciliation state, which is Part J's and not merged.
+- **Options considered.**
+  1. *A route and panel now that answer `built: false` with a note, and a `TODO(L)` (chosen).*
+  2. *No panel until Part J.* The page's layout and route test would change late.
+- **Decision.** `GET /api/conflicts` answers `{ok, built:false, items:[], note}`; the panel shows the note.
+- **Why.** The page is complete in shape, and nothing pretends to be measured.
+- **Consequences.** When Part J merges, only `conflicts()` and the panel's list change.
+- **Where.** `bin/frontend.rs::conflicts`, `frontend.html` (conflicts panel).
+- **How we check it.** `phase2_panels_refuse_bad_values_and_say_what_is_not_built`.
+- **Report notes.** None until Part J.
 
 ### D441 · The lifecycle's offers, claims and releases are Part J's real calls
 

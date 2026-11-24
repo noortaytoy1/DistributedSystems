@@ -193,6 +193,46 @@ tr.stale td { color: var(--muted); }
     </div>
   </section>
 
+  <section id="offline-panel" aria-label="Offline switch">
+    <h2>Offline switch</h2>
+    <p class="small">Takes this page's client offline: reports wait in its outbox and go out, with their own IDs, when it is back.</p>
+    <button id="offline-toggle" type="button">Go offline</button>
+    <div id="offline-state" class="small line"></div>
+    <div id="offline-result" class="small line"></div>
+  </section>
+
+  <section id="directory-panel" aria-label="Directory">
+    <h2>Directory</h2>
+    <form id="directory-form">
+      <label>Zone <select id="directory-zone"></select></label>
+      <label>or capability <select id="directory-capability"></select></label>
+      <button id="directory-ask" type="submit">Ask</button>
+    </form>
+    <div id="directory-line" class="small line"></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>User</th><th>Role</th><th>Zone</th><th>Capabilities</th><th>Peer address</th></tr></thead>
+        <tbody id="directory-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="zones-panel" aria-label="Zone updates">
+    <h2>Zone updates</h2>
+    <form id="follow-form">
+      <label>Zone <select id="follow-zone"></select></label>
+      <button id="follow-send" type="submit">Follow</button>
+    </form>
+    <div id="follow-line" class="small line"></div>
+    <div id="zone-updates" class="scroll"></div>
+  </section>
+
+  <section id="conflicts-panel" aria-label="Conflicts">
+    <h2>Conflicts</h2>
+    <div id="conflicts-line" class="small line"></div>
+    <div id="conflicts-list" class="scroll"></div>
+  </section>
+
 </main>
 
 <script>
@@ -202,6 +242,7 @@ const STATUS_TIMEOUT_MS = 2000;
 const STATUS_PAUSE_MS = 500;
 const UNREACHABLE_AFTER_MS = 3000;
 const LOAD_POLL_MS = 1000;
+const CONFLICTS_POLL_MS = 5000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -255,6 +296,12 @@ function renderCard(r) {
   const card = el("article", "card");
   if (!r.ok) {
     card.append(el("div", "banner red", r.error));
+    return card;
+  }
+  if (r.queued) {
+    card.append(el("div", "banner amber", "QUEUED: offline, it goes out when the client is back"));
+    card.append(el("p", "", "Request " + r.request + ", kept in the outbox"));
+    card.append(el("p", "muted small", "Zone " + r.zone + ", severity " + r.severity + ", " + r.needs + ", from user " + r.who + ", valid for " + r.valid_for_s + " s"));
     return card;
   }
   if (r.provisional) {
@@ -463,6 +510,118 @@ async function stopLoad() {
   }
 }
 
+// --- offline switch
+
+let offline = false;
+
+function renderOffline(data) {
+  offline = data.offline;
+  $("offline-toggle").textContent = offline ? "Come back online" : "Go offline";
+  $("offline-state").textContent = (offline ? "OFFLINE. " : "Online. ") + plural(data.queued, "report") + " in the outbox, "
+    + plural(data.held_updates, "peer update") + " held.";
+  if (data.reconciled) {
+    const r = data.reconciled;
+    $("offline-result").textContent = "Back: sent " + r.sent + ", answered " + r.answered + ", expired " + r.expired
+      + ", no answer " + r.failed + ", in " + r.took_ms + " ms.";
+  }
+}
+
+async function pollOffline() {
+  try {
+    const data = await call("GET", "/api/offline", null, STATUS_TIMEOUT_MS);
+    if (data.ok) renderOffline(data);
+  } catch (error) {
+    // The local banner already says the program is not answering.
+  } finally {
+    setTimeout(pollOffline, LOAD_POLL_MS);
+  }
+}
+
+async function toggleOffline() {
+  $("offline-toggle").disabled = true;
+  $("offline-result").textContent = offline ? "Coming back and sending the outbox..." : "";
+  try {
+    const data = await call("POST", "/api/offline/set", { on: offline ? "false" : "true" });
+    if (data.ok) renderOffline(data); else $("offline-result").textContent = data.error;
+  } catch (error) {
+    $("offline-result").textContent = "Local program not answering.";
+  } finally {
+    $("offline-toggle").disabled = false;
+  }
+}
+
+// --- directory
+
+async function askDirectory(event) {
+  event.preventDefault();
+  const params = $("directory-capability").value
+    ? { capability: $("directory-capability").value }
+    : { zone: $("directory-zone").value };
+  $("directory-line").textContent = "Asking every node...";
+  try {
+    const data = await call("GET", "/api/directory", params);
+    if (!data.ok) {
+      $("directory-line").textContent = data.error;
+      $("directory-body").replaceChildren();
+      return;
+    }
+    $("directory-line").textContent = plural(data.records.length, "user") + " online, read at log index " + data.log_index
+      + ", in " + (data.latency_us / 1000).toFixed(1) + " ms.";
+    $("directory-body").replaceChildren(...data.records.map((r) => {
+      const row = el("tr");
+      for (const value of [r.user, r.role, r.zone, r.capabilities.join(", ") || "-", r.peer_addr]) row.append(el("td", "", value));
+      return row;
+    }));
+  } catch (error) {
+    $("directory-line").textContent = "Local program not answering.";
+  }
+}
+
+// --- zone updates
+
+async function followZone(event) {
+  event.preventDefault();
+  $("follow-line").textContent = "Joining a user in zone " + $("follow-zone").value + "...";
+  try {
+    const data = await call("POST", "/api/zone/follow", { zone: $("follow-zone").value });
+    if (data.ok) renderUpdates(data); else $("follow-line").textContent = data.error;
+  } catch (error) {
+    $("follow-line").textContent = "Local program not answering.";
+  }
+}
+
+function renderUpdates(data) {
+  $("follow-line").textContent = data.followed.length
+    ? "Following zone " + data.followed.join(", ") + ". " + plural(data.updates.length, "update") + " kept, newest first."
+    : "Not following a zone.";
+  $("zone-updates").replaceChildren(...data.updates.map((u) => el("p", "small",
+    "Zone " + u.zone + ", " + u.kind + ": " + u.text + " (from user " + u.from + ", " + plural(u.hops, "hop") + ")")));
+}
+
+async function pollUpdates() {
+  try {
+    const data = await call("GET", "/api/zone/updates", null, STATUS_TIMEOUT_MS);
+    if (data.ok && data.followed.length) renderUpdates(data);
+  } catch (error) {
+    // The local banner already says so.
+  } finally {
+    setTimeout(pollUpdates, LOAD_POLL_MS);
+  }
+}
+
+// --- conflicts
+
+async function pollConflicts() {
+  try {
+    const data = await call("GET", "/api/conflicts", null, STATUS_TIMEOUT_MS);
+    $("conflicts-line").textContent = data.built ? plural(data.items.length, "item") + " in the reconciliation state." : data.note;
+  } catch (error) {
+    // The local banner already says so.
+  } finally {
+    setTimeout(pollConflicts, CONFLICTS_POLL_MS);
+  }
+}
+
 // --- start
 
 async function start() {
@@ -504,8 +663,18 @@ async function start() {
   $("load-form").addEventListener("submit", startLoad);
   $("load-stop").addEventListener("click", stopLoad);
 
+  setOptions($("directory-zone"), zones);
+  setOptions($("directory-capability"), [["", "(by zone)"], ...info.capabilities.map((c) => [c, c])]);
+  setOptions($("follow-zone"), zones);
+  $("offline-toggle").addEventListener("click", toggleOffline);
+  $("directory-form").addEventListener("submit", askDirectory);
+  $("follow-form").addEventListener("submit", followZone);
+
   pollStatus();
   pollLoad();
+  pollOffline();
+  pollUpdates();
+  pollConflicts();
 }
 
 start();

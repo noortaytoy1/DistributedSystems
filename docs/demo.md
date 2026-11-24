@@ -326,8 +326,11 @@ clock (D143). `outbox_flushed.reconcile_us` is the offline reconciliation delay.
 `--ttl-ms 3000`: reports made early in the outage come back `expired`, refused by the cloud and on record, not dropped by the client
 (D403). On one PC: `offline: queued 103, sent 103, answered 72, expired 31, failed 0, reconciled in 436.3 ms, still queued 0`.
 
-**Peer updates held for an offline peer.** Until Part L's page has the offline toggle, show it with the test that drives two real
-client programs, on one machine:
+**From the page (D438).** On a client PC's page, press **Go offline** in the offline panel, send a report (its card says
+QUEUED with its ID), then **Come back online**: the panel shows sent, answered, expired and the time it took.
+
+**Peer updates held for an offline peer.** The page switches only its own client, so show this with the test that drives two
+real client programs, on one machine:
 
 ```bash
 cargo test --release --test store_forward -- --nocapture
