@@ -107,3 +107,18 @@ port_max = 20999
 # One peer message is tried up to `tries` times, `try_ms` each, with the same update ID (D339).
 try_ms = 500
 tries = 3
+
+[gossip]
+# Zone publish-subscribe among client programs (Phase 2, Part I, D364). Every key is optional.
+# A program sends each new zone update to `fanout` programs of the zone (D345).
+fanout = 3
+# The max_hops an origin puts on an update, and the most any program obeys: a copy crosses at most
+# hop_cap + 1 links (D345, D346).
+hop_cap = 7
+# Each seen-cache holds at most seen_cap entries, each for seen_max_age_ms (D344).
+seen_cap = 10000
+seen_max_age_ms = 300000
+# A zone's list of programs is asked for again at most this often (D358).
+refresh_ms = 10000
+# Gossip sends in flight at once per program; past it the gossip task waits (D363).
+max_in_flight = 256

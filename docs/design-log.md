@@ -385,11 +385,25 @@ table below in sync.
 | D347 | Targets by hash ranking; never itself, the sender or the origin | I | Implemented in the core, the sender is open (D354) |
 | D348 | Only subscribed programs forward zone messages; direct messages are never forwarded | I, with H | Implemented in the core |
 | D349 | Obsolete and unsubscribed copies are acked `Refused`, with a fixed reason | I, with H | Implemented in the core, the wire path is open (D353) |
-| D350 | PR 1 is the pure core and its counters; events and config keys come with the wiring | I | Implemented, keys and events accepted |
-| D351 | How the cloud publishes into a zone, with no `ClientId` of its own | I, with H | Open |
+| D350 | PR 1 is the pure core and its counters; events and config keys come with the wiring | I | Implemented |
+| D351 | How the cloud publishes into a zone, with no `ClientId` of its own: the reporter publishes | I, with H | Implemented |
 | D352 | The planner uses Phase 2 resources beside the synthetic responders | I, with E | Accepted |
-| D353 | Whether gossip's outcome reaches the sender's ack | I, with H | Open |
-| D354 | How the wiring learns which program a copy came from | I, with H | Open |
+| D353 | Whether gossip's outcome reaches the sender's ack: no, counted at the receiver | I, with H | Implemented |
+| D354 | How the wiring learns which program a copy came from: the origin stands in | I, with H | Implemented, to be measured |
+| D355 | A committed answer is published as its summary at version 1 and its assignment at the commit's log index | I | Implemented |
+| D356 | Only committed answers are published, Expired included | I | Implemented |
+| D357 | A zone's programs come from `discover`, one per program, and Part G is asked to spread zone answers over programs | I, with G | Implemented, request to G proposed |
+| D358 | Each zone's list is cached and asked for again at most every 10 s | I | Implemented |
+| D359 | A program subscribes to the zones its joined users are in | I, with H | Implemented |
+| D360 | Gossip is always on, between the P2P inbox and `take_peer_updates` | I, with H and F | Implemented |
+| D361 | The agent lives in `gossip.rs`, below the pure core | I | Implemented |
+| D362 | Copies go out through `send_peer`, concurrently; `send_peer_or_hold` once Part K's #39 merges | I, with K | Implemented, switch planned |
+| D363 | At most 256 gossip sends in flight; past that the gossip task waits | I | Implemented |
+| D364 | An optional `[gossip]` section with six keys | I, with A | Implemented |
+| D365 | Four gossip events | I, with L | Implemented |
+| D366 | The publish starts inside `submit`, in the background | I, with F | Implemented |
+| D367 | `gossip_published` is logged even with no targets | I, with L | Implemented |
+| D368 | Tests against stub nodes, and an explicit list of what changes later | I | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -400,7 +414,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built. D351 (who publishes into a zone), D353 (gossip's outcome in the ack) and D354 (the sending program) are open, for Part I's `part-i-gossip` to settle.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carries a request to Part G, and D368 lists what Part I still changes later.
 
 ---
 
@@ -9341,7 +9355,7 @@ them on the six PCs.
 
 ### D350 · PR 1 is the pure core and its counters; events and config keys come with the wiring
 
-- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented (PR 1); the keys and events are Accepted for PR 2 ·
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented (the keys and events in `part-i-gossip`, as D364 and D365) ·
   **Decided by:** Yahia Kilany, on the agent's recommendation (grill, 2026-11-24)
 - **Context.** The report sweeps k and `max_hops`, so they must become config keys; Part I measures the duplicate rate,
   the forwarding overhead and coverage, so they must become events. `config.rs` is Part A's and `metrics.rs` is shared.
@@ -9364,8 +9378,8 @@ them on the six PCs.
 
 ### D351 · How the cloud publishes into a zone, with no `ClientId` of its own
 
-- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`) · **Decided by:** nobody yet;
-  raised by the agent during the grill of 2026-11-24
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24); raised by the agent during the grill of 2026-11-24
 - **Context.** The plan has the cloud push one incident summary into the zone when a plan commits. But `UpdateId.origin` is
   a `ClientId` (D315), `from` is a `UserId`, and the cloud nodes have neither; `Gossip::publish` requires the origin to
   be the publishing program. The version per incident must also come from somewhere every publisher agrees on (D342).
@@ -9378,8 +9392,16 @@ them on the six PCs.
   3. *Add an origin kind to `UpdateId` or the envelope.* Clear, but a contract change with Wahiba's review.
 - **Recommendation.** Option 1 for PR 2, since it needs no contract change and keeps the cloud out of the data path (D69,
   section 13); measure how often the reporter is gone.
-- **Where.** PR 2, `part-i-gossip`.
-- **How we check it.** Decided before PR 2's code is written.
+- **Decision.** Option 1. The program that reported the incident publishes it into the incident's zone as origin, once its
+  report's answer is committed (D366). "The cloud publishes once" becomes "once per committed answer, by the reporter". What
+  is published is D355, which answers D356.
+- **Why.** No contract change, the cloud stays out of the data path, and the reporter already holds the committed answer:
+  publishing it costs the cloud nothing. Options 2 and 3 both need a P2P endpoint on the nodes, which are Parts A and C's.
+- **Consequences.** A report answered while its program goes offline is published only if the program is back before the
+  send gives up (D362); a provisional answer is never published, so a report that ends provisional is not spread even after
+  its replay commits (D356).
+- **Where.** `client.rs::MeshClient::finished` hands the result to `gossip::GossipAgent::publish`; `Run::publish`.
+- **How we check it.** `tests/gossip.rs::a_committed_report_reaches_every_program_of_a_five_program_zone` checks the origin.
 - **Report notes.** Who publishes, and why.
 
 ### D352 · The planner uses Phase 2 resources beside the synthetic responders
@@ -9403,8 +9425,8 @@ them on the six PCs.
 
 ### D353 · Whether gossip's outcome reaches the sender's ack
 
-- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`, with Wahiba) · **Decided by:**
-  nobody yet; raised by the agent when #37 merged under this PR, 2026-11-24
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24); raised by the agent when #37 merged under PR #38
 - **Context.** D349 maps gossip's outcomes to `P2pAck`, including `Refused("obsolete")` and `Refused("not subscribed")`. Part
   H's endpoint (`p2p.rs`, D460, D461) answers `deliver` itself as soon as the update ID is new and the inbox has room, and
   only then hands the envelope on. Gossip's outcome comes too late for the reply.
@@ -9417,14 +9439,20 @@ them on the six PCs.
      endpoint's tasks behind a lock.
   3. *A second message back.* No: a reply already exists, and a new message is a contract change.
 - **Recommendation.** Option 1: it needs nobody else's file, and the report counts at the receiver anyway (D350).
-- **Where.** PR 2, `part-i-gossip`; `p2p.rs` only if option 2.
-- **How we check it.** Decided before PR 2's code is written.
+- **Decision.** Option 1. `p2p.rs` is unchanged. The sender sees only the endpoint's ack; every outcome gossip reaches is
+  logged at the receiver as `gossip_received.outcome` (`new`, `duplicate`, `obsolete`, `not_subscribed`, D365).
+  `Receipt::ack` stays as a tested helper with no caller on the wire.
+- **Why.** Nobody else's file changes, and the report reads the outcomes where they land anyway (D350).
+- **Consequences.** A sender cannot tell an obsolete or unsubscribed copy from a new one, so it cannot stop sending to a
+  program that left the zone until its zone list refreshes (D358).
+- **Where.** `gossip::Run::arrived`, `Event::GossipReceived`.
+- **How we check it.** `tests/gossip.rs::a_stale_directory_does_not_pull_another_zone_into_the_flood`.
 - **Report notes.** Where each outcome is counted.
 
 ### D354 · How the wiring learns which program a copy came from
 
-- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Open (settle in `part-i-gossip`, with Wahiba) · **Decided by:**
-  nobody yet; raised by the agent when #37 merged under this PR, 2026-11-24
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented (option 1, to be measured) · **Decided by:** Yahia
+  Kilany, on the agent's recommendation (grill of `part-i-gossip`, 2026-11-24); raised by the agent when #37 merged under PR #38
 - **Context.** D347 never sends a copy back to the program it came from, so `Gossip::receive` takes the sender. The envelope
   names only the origin (`from`, `id.origin`, D315), and the endpoint's inbox (D460) hands on the envelope alone. The
   transport knows the sender's socket address, not its `ClientId`.
@@ -9437,8 +9465,14 @@ them on the six PCs.
      entry, `docs/protocol.md` and every owner who sends or receives it (H, K).
 - **Recommendation.** Option 1 first, and measure the extra duplicates on the lab zones; move to option 3 only if the
   duplicate rate shows it matters. In a 5-program zone almost every copy is a duplicate anyway (D345).
-- **Where.** PR 2, `part-i-gossip`; `p2p.rs` or `proto.rs` only if option 2 or 3.
-- **How we check it.** Decided before PR 2's code is written; the duplicate rate in the lab.
+- **Decision.** Option 1. The agent passes `envelope.id.origin` as the sender. A copy can go back to the program that
+  just forwarded it; the endpoint answers it `Duplicate`.
+- **Why.** No change to anyone else's file or the contract. In the lab's ~5-program zones most copies are duplicates anyway
+  (D345), so the extra is small, and the lab's duplicate rate shows whether it matters.
+- **Consequences.** The duplicate rate is a little higher than the core's simulation, which excludes the true sender. If it
+  matters, option 3 is the fix, with H's and K's review. Marked `TODO(I)` in `Run::arrived`.
+- **Where.** `gossip::Run::arrived`.
+- **How we check it.** The duplicate rate in the lab (`p2p_received` with `outcome` `duplicate`, per delivered update).
 - **Report notes.** What "never back to the sender" costs to guarantee.
 
 ### D407 · The sender holds a peer update that cannot get through: `send_peer_or_hold`
@@ -9513,6 +9547,294 @@ them on the six PCs.
 - **Where.** `metrics.rs`.
 - **How we check it.** Logged in the tests' code paths; the analysis reads them in Part L's cells.
 - **Report notes.** Pending updates kept, delivered and dropped by reason; delivery delay after a return.
+
+### D355 · A committed answer is published as its summary at version 1 and its assignment at the commit's log index
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** D351 has the reporter publish when its answer is committed. `CommittedResult` holds the incident, the plan,
+  `assigned_at_ms` and the Raft `log_index`. Versions must only grow per subject and every publisher must number a subject
+  the same way (D342).
+- **Options considered.**
+  1. *Summary and assignment (chosen).* Two zone updates, the two subjects of D343.
+  2. *Summary only.* Half the traffic, but subscribers never learn who was sent, and the zone panel cannot show it.
+  3. *Assignment only.* Carries the responder but not the category, place or severity.
+- **Decision.** Option 1, in `gossip::published_bodies`. `IncidentSummary` at `version = 1`, because a report's facts never
+  change. `AssignmentUpdate { incident, responder, priority, assigned_at_ms }` at `version = log_index`. Both from
+  `incident.owner`, into `incident.zone`, with `max_hops = [gossip] hop_cap`.
+- **Why.** The log index only grows and is the same on every node, so it orders assignments without comparing clocks,
+  and a retry's answer carries the same index, so it is dropped as obsolete instead of spreading twice.
+- **Consequences.** Two updates per committed report, twice the gossip traffic. A reassignment would need a new commit to
+  spread, which today only a new report makes.
+- **Where.** `gossip::{published_bodies, Run::publish}`.
+- **How we check it.** `tests/gossip.rs::{a_committed_report_reaches_every_program_of_a_five_program_zone,
+  a_repeated_answer_is_not_spread_again}`; the second was seen to fail with the version check weakened to `<`.
+- **Report notes.** Why the log index is the version: one counter every node agrees on, no clocks.
+
+### D356 · Only committed answers are published, Expired included
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** A submit can end `Done`, `Expired` (too old to plan, committed with nobody sent, D143) or `Provisional` (a
+  lone node's answer, D120, D123), and a retry gets the same answer again.
+- **Options considered.**
+  1. *Committed only, Expired included (chosen).*
+  2. *Committed and provisional.* Faster news during a fault, but a provisional answer can change on replay (D122), and the
+     envelope has no flag to say so.
+  3. *Committed, not Expired.* Less traffic, but subscribers never hear of reports that were too old.
+- **Decision.** Option 1: whenever `Submitted.committed` is `Some`. An Expired answer is published with `responder: None`.
+- **Why.** Commit, then tell, as the architecture rule says for replies; an Expired answer is committed like any result
+  (D143), and telling the zone nobody is coming is news too.
+- **Consequences.** During degraded mode nothing is spread until the cloud commits again, and a report that ended
+  provisional is not spread after its replay commits, because its program never sees that commit.
+- **Where.** `client.rs::MeshClient::finished`.
+- **How we check it.** The tests' stub answers `Done`; the rule is one `if let Some` on the committed result.
+- **Report notes.** Gossip follows commit-then-reply.
+
+### D357 · A zone's programs come from `discover`, one per program, and Part G is asked to spread zone answers over programs
+
+- **Date:** 2026-11-24 · **Part:** I, with G · **Status:** Implemented on the client; the request to G is Proposed ·
+  **Decided by:** Yahia Kilany, on the agent's recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** `discover` returns at most 16 user records (D321), and one program holds many users (D319). A lab zone has
+  hundreds of users over about 5 programs (D341). If Part G returned, say, the lowest user IDs, every program would get the
+  same 16 users from one or two programs, and coverage would collapse.
+- **Options considered.**
+  1. *`discover` for the zone, collapsed to one address per program, and a request to Omar (chosen).*
+  2. *A `distinct_programs` flag in `PresenceQuery`.* Explicit, but a contract change needing G's and H's review.
+  3. *Use what `discover` gives.* No coordination; coverage then depends on G's ordering.
+- **Decision.** Option 1. `gossip::discover_programs` asks for `{ zone: Some(z), capability: None, limit: 16 }` and keeps
+  the first peer address per `ClientId`. **Request to Part G (Omar):** for a query with a zone, return at most one record
+  per program before any second record of a program, so 16 records cover up to 16 programs. That is a choice inside G's code,
+  with no change to `proto.rs`.
+- **Why.** Part G is not built, so agreeing the order now costs nothing; in a 5-program zone it covers everyone.
+- **Consequences.** A zone of more than 16 programs is seen 16 at a time; each program may see a different 16 if G varies
+  its choice. Until G exists, real nodes answer `Rejected` (D325) and every list is empty (D367). Marked `TODO(I)`.
+- **Where.** `gossip::discover_programs`.
+- **How we check it.** The stub node in `tests/gossip.rs` answers from registered records; a test with real nodes after G.
+- **Report notes.** How the publish-subscribe membership is learned, and its 16-record view.
+
+### D358 · Each zone's list is cached and asked for again at most every 10 s
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** Each `discover` goes to every node with the report's retries (D327). Forwarding happens for every arriving
+  update.
+- **Options considered.**
+  1. *Cache per zone, refresh at most every `refresh_ms` = 10,000 (chosen).*
+  2. *Ask on every publish and forward.* Always fresh, but every hop costs the cloud a call to all three nodes.
+  3. *Ask once at join.* Never learns of programs that start later.
+- **Decision.** Option 1. The first use of a zone waits for the directory, at most `refresh_ms`; after that the agent
+  answers from the cache and starts a background refresh once the list is older than `refresh_ms`. A failed answer keeps
+  the old list and is tried again after `refresh_ms`. Each answer is logged as `gossip_zone_refreshed`.
+- **Why.** Forwarding never waits on the cloud after the first time, which keeps the cloud out of the data path; 10 s is
+  short beside a program's life and a lease.
+- **Consequences.** A program that joined in the last 10 s may be missed; Part K's held sends cover a peer that is away, not
+  one that is unknown. The first update in a zone can wait up to 10 s for a directory that does not answer.
+- **Where.** `gossip::Run::{programs_of, refreshed}`, `[gossip] refresh_ms`.
+- **How we check it.** `tests/gossip.rs`, which counts the stub's `discover` calls.
+- **Report notes.** Freshness of the zone view against cloud load.
+
+### D359 · A program subscribes to the zones its joined users are in
+
+- **Date:** 2026-11-24 · **Part:** I, with H · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** The plan makes the subscription part of the presence record. `PresenceRecord` has one zone per user, and the
+  presence agent keeps the joined users privately.
+- **Options considered.**
+  1. *Zones of its joined users (chosen),* through a read-only accessor in `presence.rs`.
+  2. *Explicit `subscribe(zone)` calls.* The directory would not know who subscribes, so nobody would send to them.
+  3. *Several zones per user in `PresenceRecord`.* Truest to "one or more zones", but a contract change with G and H.
+- **Decision.** Option 1. `Presence::zones()` returns the zones of the joined users; `join`, `move_zone` and `leave` change
+  it. The agent reads it for every arriving zone update.
+- **Why.** One source of truth: the directory lists exactly the programs that will forward.
+- **Consequences.** A program with no joined user subscribes to nothing, so loadgen today forwards nothing; a user follows
+  only its own zone. Wahiba reviews the accessor.
+- **Where.** `presence.rs::Presence::zones`, `gossip::Run::arrived`.
+- **How we check it.** `tests/gossip.rs::a_stale_directory_does_not_pull_another_zone_into_the_flood`; it was seen to fail
+  with the check removed.
+- **Report notes.** What a subscription is in this system.
+
+### D360 · Gossip is always on, between the P2P inbox and `take_peer_updates`
+
+- **Date:** 2026-11-24 · **Part:** I, with H and F · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** `MeshClient::take_peer_updates` handed the application the raw inbox (D460). Gossip must see every arriving
+  update first to forward it.
+- **Options considered.**
+  1. *Always on in `MeshClient` (chosen).*
+  2. *Opt-in, `start_gossip()`.* Phase 1 paths untouched, but two modes, and a program that forgets breaks the zone for
+     everyone.
+- **Decision.** Option 1. `MeshClient::new` starts `GossipAgent`, which takes the inbox. `take_peer_updates()` keeps its
+  signature and now hands over what gossip found new: direct messages, and zone updates of subscribed zones, already
+  forwarded. Its channel holds 1,024 (`p2p::INBOX_CAPACITY`); past that, or with nobody reading, an update is not handed
+  over but is still forwarded.
+- **Why.** The application makes no new call, and a program that never reads, like loadgen today, cannot stop the zone's
+  forwarding.
+- **Consequences.** A zone update for a zone with no joined user no longer reaches the application. `tests/p2p.rs` still
+  passes, 10 runs in a row. Wahiba and Noor review the change in meaning.
+- **Where.** `gossip::GossipAgent`, `client.rs::{MeshClient::new, take_peer_updates}`.
+- **How we check it.** `tests/gossip.rs`, `tests/p2p.rs`, `tests/presence.rs`, each 10 runs in a row green.
+- **Report notes.** Where gossip sits in the client middleware.
+
+### D361 · The agent lives in `gossip.rs`, below the pure core
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** The agent is a tokio task with a cache and sends; the core is pure.
+- **Options considered.** In `gossip.rs`, below the core (chosen); or a new `src/zone.rs`, which keeps `gossip.rs`
+  strictly pure but adds a file to the ownership table.
+- **Decision.** One file. The core's functions still touch no network, clock or randomness; only `GossipAgent` and `Run`
+  do, and the core's unit tests stay pure.
+- **Why.** It matches the plan's file list and the ownership table: `gossip.rs` is Part I's.
+- **Consequences.** None beyond a longer file.
+- **Where.** `src/gossip.rs`.
+- **How we check it.** The core's 21 unit tests run with no runtime.
+- **Report notes.** None.
+
+### D362 · Copies go out through `send_peer`, concurrently; `send_peer_or_hold` once Part K's #39 merges
+
+- **Date:** 2026-11-24 · **Part:** I, with K · **Status:** Implemented (the switch is planned) · **Decided by:** Yahia
+  Kilany, on the agent's recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** `send_peer` tries 3 × 500 ms and gives up (D339). Aabed's open #39 adds `send_peer_or_hold`, which keeps an
+  undeliverable update and sends it later, up to 300 s.
+- **Options considered.**
+  1. *`send_peer` now, the held send after #39 (chosen).*
+  2. *Wait for #39.* Better coverage from the first version, but this PR waits on another review.
+  3. *Never hold.* A peer that was away misses everything, against D340's plan that Part K covers it.
+- **Decision.** Option 1. Each copy is a task of its own, so a dead peer (1.5 s) never delays the next update. A send that
+  gets no ack, or is refused (`busy`), is logged as `gossip_send_failed` with the reason. Marked `TODO(I)`.
+- **Why.** The switch is one line once #39 is on `main`.
+- **Consequences.** Until then a peer away for more than 1.5 s misses what was pushed meanwhile.
+- **Where.** `gossip::Run::send_copies`.
+- **How we check it.** `tests/gossip.rs::a_dead_peer_does_not_stop_the_rest_of_the_zone`.
+- **Report notes.** How gossip and store-and-forward meet.
+
+### D363 · At most 256 gossip sends in flight; past that the gossip task waits
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** At Phase 1's rates a program can publish hundreds of updates a second, times k = 3, and a dead peer holds a
+  send for 1.5 s.
+- **Options considered.**
+  1. *256, then wait (chosen).*
+  2. *256, then drop and count.* Never slows the task; coverage falls under load instead of latency rising.
+  3. *No limit.* Thousands of tasks under a burst toward a dead peer; against the rule that every wait is bounded.
+- **Decision.** Option 1, a `tokio::sync::Semaphore` of `[gossip] max_in_flight` (256). The task waits for a slot, so its
+  inbox fills and the endpoint answers `busy`, the back-pressure of D460.
+- **Why.** Memory stays bounded and nothing is dropped silently; 256 matches the stub cache (D463).
+- **Consequences.** Under overload, gossip slows its senders rather than losing updates.
+- **Where.** `gossip::Run::send_copies`, `[gossip] max_in_flight`.
+- **How we check it.** By construction; the lab's load cells show whether it binds.
+- **Report notes.** Back-pressure on the gossip path.
+
+### D364 · An optional `[gossip]` section with six keys
+
+- **Date:** 2026-11-24 · **Part:** I, with A · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** The report sweeps k and `max_hops` (D345); D350 put the keys in this PR. `config.rs` is Part A's.
+- **Options considered.** Optional with defaults, as `[p2p]` is (chosen); or a required section, which would make every
+  existing config fail to load.
+- **Decision.** `config::GossipSettings`: `fanout` (3), `hop_cap` (7), `seen_cap` (10000), `seen_max_age_ms` (300000),
+  `refresh_ms` (10000), `max_in_flight` (256). Every key is optional; unknown keys are refused. `Config::validate` refuses
+  0 for all but `hop_cap`. Written out in `config/local.toml` and `config/lab.example.toml`.
+- **Why.** Old configs keep working, and the values are in the files for anyone running a sweep to see.
+- **Consequences.** Part A reviews the change to `config.rs`.
+- **Where.** `config.rs::GossipSettings`, both config files, `docs/protocol.md`.
+- **How we check it.** `config::tests::gossip_keys_are_optional_and_validated`; the existing test that loads both files.
+- **Report notes.** The sweep's knobs.
+
+### D365 · Four gossip events
+
+- **Date:** 2026-11-24 · **Part:** I, with L · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** The report needs the duplicate rate, the forwarding overhead, coverage and the time to reach the zone.
+  Repeats the endpoint drops are already in `p2p_received` (D464).
+- **Options considered.**
+  1. *Four events, with `age_ms` (chosen).*
+  2. *The same without `age_ms`.* No cross-machine clock at all, but no gossip latency from the lab.
+  3. *Counters every 10 s.* Small logs, but no per-update coverage.
+- **Decision.** `gossip_published { update, zone, kind, version, targets }`; `gossip_received { update, zone, kind, hops,
+  outcome, forwarded, age_ms }`, with `outcome` one of `new`, `duplicate`, `obsolete`, `not_subscribed`;
+  `gossip_send_failed { update, to_addr, reason }`; `gossip_zone_refreshed { zone, programs, ok, latency_us }`. `kind` is
+  `summary`, `assignment` or `offer`.
+- **Why.** Coverage = programs logging `new` per update over the zone's programs; overhead = copies sent per update, from
+  `forwarded` and `targets`; duplicate rate = `p2p_received` duplicates per `new`. `age_ms` is this machine's clock minus
+  the origin's `created_at_ms`, so it is listed in `analysis/README.md` as a cross-machine figure (D233); `hops` is the
+  clock-free measure of how far.
+- **Consequences.** Field names are fixed once Noor's scripts read them. `GossipStats` is not logged: the events carry
+  everything it counts.
+- **Where.** `metrics.rs::Event::{GossipPublished, GossipReceived, GossipSendFailed, GossipZoneRefreshed}`.
+- **How we check it.** The events are written by the paths `tests/gossip.rs` runs.
+- **Report notes.** The Part I figures and how each is read.
+
+### D366 · The publish starts inside `submit`, in the background
+
+- **Date:** 2026-11-24 · **Part:** I, with F · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** `Incident` carries its owner and zone, so the published updates can be built from the committed answer.
+- **Options considered.** Inside `submit` and the outbox flush, in the background (chosen); or an explicit
+  `publish_incident` call, which puts gossip knowledge in the application layer.
+- **Decision.** `MeshClient::finished`, which every committed answer passes through, hands the result to
+  `GossipAgent::publish`, a `try_send` into a queue of 4,096 (`AGENT_QUEUE`). Past that the answer is not published, so
+  `submit` never waits on gossip.
+- **Why.** The middleware rule: the application makes one `submit` call and `MeshClient` does the rest (D211).
+- **Consequences.** Under a burst beyond 4,096 waiting answers some are not published; logged at `debug` only. Every
+  program that gets a committed answer now also sends one `discover` per zone to every node, at most every 10 s (D358),
+  whether or not Part G's directory exists: `tests/client.rs::a_cancel_does_not_stop_the_nodes_work_and_is_counted`
+  counted only the report's 3 requests and now expects 3 + 3 requests and 1 + 3 answers, exactly (decided by Yahia Kilany,
+  2026-11-24, as the fix for that test rather than a change to the code). The owner
+  need not have joined: publishing needs only the zone's list.
+- **Where.** `client.rs::MeshClient::finished`, `gossip::GossipAgent::publish`.
+- **How we check it.** `tests/gossip.rs`: every test publishes through `submit`.
+- **Report notes.** Middleware and application stay apart.
+
+### D367 · `gossip_published` is logged even with no targets
+
+- **Date:** 2026-11-24 · **Part:** I, with L · **Status:** Implemented · **Decided by:** Yahia Kilany, against the agent's
+  recommendation to skip it quietly (grill of `part-i-gossip`, 2026-11-24)
+- **Context.** Until Part G exists, real nodes reject `discover`, so every zone list is empty and nothing is sent, while
+  Phase 1 runs commit thousands of reports a second.
+- **Options considered.**
+  1. *Skip quietly and count it* (the agent's recommendation). Phase 1 logs unchanged.
+  2. *Log `gossip_published` with `targets` 0 (chosen).*
+  3. *A `[gossip] enabled` switch for Phase 1 cells.*
+- **Decision.** Option 2: every publish is logged, with `targets` 0 when the zone's list is empty.
+- **Why.** Every publish is visible in the log, so an analysis can see how many went nowhere and why.
+- **Consequences.** Phase 1 runs gain two JSONL lines per committed report (summary and assignment), which changes log sizes
+  and may change throughput slightly in Noor's regression check; `analyze.py`'s memory per run grows with it (about 1.7 KB
+  a line, `analysis/README.md`). `gossip_zone_refreshed` with `ok = false` shows why the list is empty.
+- **Where.** `gossip::Run::publish`.
+- **How we check it.** The Phase 1 regression runs; compare log size and throughput with a run before this PR.
+- **Report notes.** State the extra log lines beside any Phase 1 figure re-run after this PR.
+
+### D368 · Tests against stub nodes, and an explicit list of what changes later
+
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany (grill of `part-i-gossip`,
+  2026-11-24), adding the explicit list to the agent's recommendation
+- **Context.** Real nodes cannot answer `discover` until Part G exists (D325); #39 is not merged.
+- **Options considered.** Stub nodes, no loadgen wiring (recommended); also wire loadgen (Parts L's and F's files, and it
+  could do nothing before G).
+- **Decision.** `tests/gossip.rs` runs real `MeshClient` programs with real peer endpoints and one stub node that keeps the
+  registered records, answers `discover` from them and answers every report as committed. Five tests: a 5-program zone is
+  covered; a stale directory does not pull another zone in; a repeated answer is not spread again; a dead peer does not
+  stop the rest; with no directory a report is still answered and nothing is sent. **What changes later** (items 1 to 3
+  are marked `TODO(I)` in the code):
+  1. Part G's zone answers spread over programs (D357), then a test against a real three-node cloud
+     (`tests/gossip.rs`).
+  2. `send_peer_or_hold` in `Run::send_copies` once #39 merges (D362).
+  3. The true sender of each copy, if the lab's duplicate rate shows it matters (D354, `Run::arrived`).
+  4. The planner's Phase 2 inputs, `part-i-planner-phase2` (D352).
+  5. Not Part I's: gossip in loadgen and the zone panel (Part L).
+- **Why.** The client side can be proved now; the list keeps the stand-ins from being forgotten.
+- **Consequences.** Until item 1, gossip does nothing on a real cluster.
+- **Where.** `tests/gossip.rs`; `grep -rn "TODO(I)" src tests`.
+- **How we check it.** 10 runs in a row green; two mutants (the version check weakened, the subscription check removed)
+  each fail a test. The dead-peer test first had 5 live programs and the dead one, a zone of 6, and failed once in 60 runs:
+  a live program nobody picked, the miss D345 expects. It now has 5 programs in all, the dead one included, because with
+  k = 3 a zone of at most k + 2 programs is always covered: the publisher reaches all but one, and each of its targets sends
+  to every program but itself and the origin.
+- **Report notes.** Test plan for Part I. Coverage is certain for zones of at most k + 2 programs, which is the lab's size
+  (D341), and probabilistic above it.
 
 ### Notes on older entries
 
