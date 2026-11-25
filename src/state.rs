@@ -16,6 +16,11 @@
 //!   same digest at the same index applied the same log and hold the same state.
 //! - **Status.** An incident's status is worked out when someone reads it, from the result and the
 //!   hold (D142). The caller passes the time in; nothing here looks at a clock.
+//! - **Phase 2 rows (D491-D496).** Online volunteers and resource offers get rows in the responder
+//!   table from `phase2::FIRST_PHASE2_ID` up, made as their presence and offer commands apply
+//!   (`phase2.rs`). Every Phase 1 read of the table stops below that ID, so Phase 1 is unchanged;
+//!   the Phase 2 rows are read through their own functions, and a row may be sent only while its
+//!   source is live at the directory's log clock and, for an offer, a unit is left.
 //!
 //! Owner: A (Raft and replication).
 
@@ -25,12 +30,14 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::claims::{ClaimAttempt, Claims};
+use crate::config::CampusConfig;
 use crate::discovery::Directory;
+use crate::phase2::{FIRST_PHASE2_ID, Phase2Rows, Source, is_phase2};
 use crate::planner;
 use crate::proto::{
     Command, CommandGroup, CommittedResult, IncidentQuery, IncidentStatus, IncidentView,
-    MAX_INCIDENT_ROWS, NodeId, Outcome, Plan, RequestId, Responder, ResponderId, ResultProposal,
-    StaleReason,
+    MAX_INCIDENT_ROWS, NodeId, Outcome, Plan, PresenceRole, RequestId, Responder, ResponderId,
+    ResultProposal, StaleReason, ZoneId,
 };
 
 /// A hold as it was made, for a node to follow the holds without scanning for them (D253).
@@ -77,6 +84,11 @@ pub struct CloudState {
     directory: Directory,
     /// Resource offers and claims, Part J's state machine on the same log (D69, D370).
     claims: Claims,
+    /// Which responder rows are online volunteers and offer units (Part I, D491).
+    phase2: Phase2Rows,
+    /// The campus's zone count, from the config, for a volunteer's zone centre (D492, D499). Not
+    /// replicated: every node reads the same config file. `None` means the config default.
+    campus_zones: Option<ZoneId>,
     /// Log index of the last command applied (internal Raft entries are not counted).
     last_index: u64,
     digest: u64,
@@ -85,6 +97,21 @@ pub struct CloudState {
 impl CloudState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the campus's zone count from the config (D499). The node does this once at start, and
+    /// keeps it across a reset or a snapshot.
+    pub fn set_campus_zones(&mut self, zones: ZoneId) {
+        self.campus_zones = Some(zones);
+    }
+
+    pub fn campus_zones(&self) -> Option<ZoneId> {
+        self.campus_zones
+    }
+
+    fn zones(&self) -> ZoneId {
+        self.campus_zones
+            .unwrap_or_else(|| CampusConfig::default().zones)
     }
 
     /// Apply one committed log entry: its commands in order, each seeing what the one before it
@@ -119,7 +146,9 @@ impl CloudState {
                 Outcome::Applied
             }
             Command::PresenceRegister { record, lease } => {
-                Outcome::Presence(self.directory.register(index, record, lease))
+                let outcome = self.directory.register(index, record, lease);
+                self.sync_volunteer(record.user);
+                Outcome::Presence(outcome)
             }
             Command::PresenceRenew {
                 user,
@@ -130,14 +159,25 @@ impl CloudState {
                 user,
                 incarnation,
                 at_ms,
-            } => Outcome::Presence(
-                self.directory
-                    .deregister(index, *user, *incarnation, *at_ms),
-            ),
-            Command::PresenceTick { at_ms } => {
-                Outcome::Presence(self.directory.tick(index, *at_ms))
+            } => {
+                let outcome = self
+                    .directory
+                    .deregister(index, *user, *incarnation, *at_ms);
+                self.sync_volunteer(*user);
+                Outcome::Presence(outcome)
             }
-            Command::OfferResource { offer } => Outcome::Claim(self.claims.offer(index, offer)),
+            Command::PresenceTick { at_ms } => {
+                let outcome = self.directory.tick(index, *at_ms);
+                self.sweep_phase2();
+                Outcome::Presence(outcome)
+            }
+            Command::OfferResource { offer } => {
+                let outcome = self.claims.offer(index, offer);
+                if let Some(offer) = self.claims.offer_at(&offer.id) {
+                    self.phase2.sync_offer(&mut self.responders, offer);
+                }
+                Outcome::Claim(outcome)
+            }
             Command::ClaimResource {
                 resource,
                 claimant,
@@ -153,7 +193,9 @@ impl CloudState {
                     speculative: *speculative,
                     at_ms: *at_ms,
                 };
-                Outcome::Claim(self.claims.claim(index, clock_ms, attempt))
+                // The planner's holds on this offer's units count against its capacity too (D494).
+                let reserved = self.phase2.held_units(&self.responders, resource);
+                Outcome::Claim(self.claims.claim_beside(index, clock_ms, attempt, reserved))
             }
             Command::ReleaseClaim {
                 resource,
@@ -191,7 +233,8 @@ impl CloudState {
                         reason: StaleReason::UnknownResponder,
                     };
                 }
-                Some(slot) => slot.held_by.is_some(),
+                // A Phase 2 row whose source went, or an offer with no unit left, is taken too.
+                Some(slot) => slot.held_by.is_some() || !self.phase2_takeable(responder),
             };
             if held {
                 // Taken while this plan travelled through the log. Choosing again here is the same
@@ -230,26 +273,235 @@ impl CloudState {
     /// (D253). Where the part starts depends only on the request, so every node chooses the same.
     fn pick_again(&self, p: &ResultProposal) -> Plan {
         let age_ms = p.assigned_at_ms.saturating_sub(p.incident.reported_at_ms);
-        let top = self.responders.last_key_value().map_or(0, |(id, _)| *id);
+        // The campus part stops below the Phase 2 rows, which have their own (D496).
+        let top = self
+            .responders
+            .range(..FIRST_PHASE2_ID)
+            .next_back()
+            .map_or(0, |(id, _)| *id);
         let salt = sample_mix(p.request.client) ^ sample_mix(p.request.seq.rotate_left(17));
-        let start = if self.responders.len() <= REPICK_LOOKS_AT {
+        let start = if self.responder_count() <= REPICK_LOOKS_AT {
             0
         } else {
             ResponderId::try_from(salt % (u64::from(top) + 1)).unwrap_or(0)
         };
         let looking_at = |count: usize| {
             self.responders
-                .range(start..)
+                .range(start..FIRST_PHASE2_ID)
                 .chain(self.responders.range(..start))
                 .take(count)
                 .filter(|(_, slot)| slot.held_by.is_none())
                 .map(|(_, slot)| &slot.responder)
         };
-        let plan = planner::pick(&p.incident, looking_at(REPICK_LOOKS_AT), age_ms);
+        // Phase 2 rows are looked at in their own part, with the same salt (D496). With none, the
+        // choice is Phase 1's, made the same way.
+        let phase2 = self.free_phase2_part(salt, REPICK_LOOKS_AT, REPICK_LOOKS_AT);
+        if self.phase2.is_empty() {
+            let plan = planner::pick(&p.incident, looking_at(REPICK_LOOKS_AT), age_ms);
+            if plan.responder.is_some() {
+                return plan;
+            }
+            return planner::pick(&p.incident, looking_at(REPICK_LOOKS_WIDE), age_ms);
+        }
+        let near: Vec<Responder> = looking_at(REPICK_LOOKS_AT)
+            .cloned()
+            .chain(phase2.iter().cloned())
+            .collect();
+        let plan = planner::pick(&p.incident, near.iter(), age_ms);
         if plan.responder.is_some() {
             return plan;
         }
-        planner::pick(&p.incident, looking_at(REPICK_LOOKS_WIDE), age_ms)
+        let wide: Vec<Responder> = looking_at(REPICK_LOOKS_WIDE)
+            .cloned()
+            .chain(self.free_phase2_part(salt, REPICK_LOOKS_WIDE, REPICK_LOOKS_WIDE))
+            .collect();
+        planner::pick(&p.incident, wide.iter(), age_ms)
+    }
+
+    /// Bring a volunteer's row in line with its directory record (D493).
+    fn sync_volunteer(&mut self, user: crate::proto::UserId) {
+        let zones = self.zones();
+        let record = self.directory.entry(&user).map(|entry| &entry.record);
+        self.phase2
+            .sync_volunteer(&mut self.responders, user, record, zones);
+    }
+
+    /// Remove the Phase 2 rows whose source is gone and that nobody holds (D495): a volunteer
+    /// with no record left, or one no longer a volunteer (a late record can still renew, so it
+    /// keeps its row), and an offer past its end. On each
+    /// `PresenceTick`, the command that moves the log clock when nothing else does, so a renewal
+    /// costs no scan.
+    fn sweep_phase2(&mut self) {
+        let (directory, claims) = (&self.directory, &self.claims);
+        let gone = |source: &Source| match source {
+            Source::Volunteer { user, .. } => directory
+                .entry(user)
+                .is_none_or(|entry| entry.record.role != PresenceRole::VolunteerResponder),
+            Source::Offer { .. } => !source_live(directory, claims, source),
+        };
+        self.phase2.sweep(&mut self.responders, gone);
+    }
+
+    /// Whether a plan may hold Phase 2 row `id` now: its source is live and, for an offer, a unit
+    /// is left once the planner's holds and the claims are counted (D494, D495). Always true for a
+    /// synthetic row.
+    fn phase2_takeable(&self, id: ResponderId) -> bool {
+        let Some(source) = self.phase2.source(id) else {
+            return !is_phase2(id);
+        };
+        if !source_live(&self.directory, &self.claims, source) {
+            return false;
+        }
+        match source {
+            Source::Volunteer { .. } => true,
+            Source::Offer { resource } => self.offer_units_left(resource) > 0,
+        }
+    }
+
+    /// Units of an offer nobody holds or claims (D494).
+    fn offer_units_left(&self, resource: &crate::proto::ResourceId) -> u32 {
+        let Some(offer) = self.claims.offer_at(resource) else {
+            return 0;
+        };
+        let used = self
+            .claims
+            .claimed(resource)
+            .saturating_add(self.phase2.held_units(&self.responders, resource));
+        offer.capacity.saturating_sub(used)
+    }
+
+    /// Whether Phase 2 row `id` may be planned with now: free, its source live and, for an offer,
+    /// among the first free units the capacity leaves, so the planner never sees more units than
+    /// there are (D494).
+    fn phase2_free(&self, id: ResponderId, slot: &ResponderSlot) -> bool {
+        if slot.held_by.is_some() {
+            return false;
+        }
+        let Some(source) = self.phase2.source(id) else {
+            return false;
+        };
+        if !source_live(&self.directory, &self.claims, source) {
+            return false;
+        }
+        match source {
+            Source::Volunteer { .. } => true,
+            Source::Offer { resource } => {
+                let left = self.offer_units_left(resource) as usize;
+                self.phase2
+                    .offer_rows(resource)
+                    .iter()
+                    .filter(|row| {
+                        self.responders
+                            .get(row)
+                            .is_some_and(|slot| slot.held_by.is_none())
+                    })
+                    .position(|row| *row == id)
+                    .is_some_and(|rank| rank < left)
+            }
+        }
+    }
+
+    /// The Phase 2 rows a plan may send now, as the planner's entries (one per capability for a
+    /// volunteer, D493), from their own part of the table (D496): all of them below `sample_from`
+    /// rows, else `looks_at` rows in a row from where `salt` lands, as `free_responders_part` does
+    /// for the campus.
+    pub fn free_phase2_part(
+        &self,
+        salt: u64,
+        sample_from: usize,
+        looks_at: usize,
+    ) -> Vec<Responder> {
+        self.phase2_part(salt, sample_from, looks_at)
+            .filter(|(id, slot)| self.phase2_free(*id, slot))
+            .flat_map(|(_, slot)| self.phase2.entries(slot))
+            .collect()
+    }
+
+    /// The same part, held or not but live, for a lone node, whose own table takes over the holds
+    /// (D124, D262). An offer gives the units its claims leave.
+    pub fn phase2_part_for_lone(
+        &self,
+        salt: u64,
+        sample_from: usize,
+        looks_at: usize,
+    ) -> Vec<Responder> {
+        self.phase2_part(salt, sample_from, looks_at)
+            .filter(|(id, _)| {
+                self.phase2.source(*id).is_some_and(|source| match source {
+                    Source::Volunteer { .. } => source_live(&self.directory, &self.claims, source),
+                    Source::Offer { resource } => {
+                        source_live(&self.directory, &self.claims, source)
+                            && self.claims.offer_at(resource).is_some_and(|offer| {
+                                let left =
+                                    offer.capacity.saturating_sub(self.claims.claimed(resource));
+                                self.phase2
+                                    .offer_rows(resource)
+                                    .iter()
+                                    .position(|row| row == id)
+                                    .is_some_and(|rank| rank < left as usize)
+                            })
+                    }
+                })
+            })
+            .flat_map(|(_, slot)| self.phase2.entries(slot))
+            .collect()
+    }
+
+    fn phase2_part(
+        &self,
+        salt: u64,
+        sample_from: usize,
+        looks_at: usize,
+    ) -> Box<dyn Iterator<Item = (ResponderId, &ResponderSlot)> + '_> {
+        let rows = self.responders.range(FIRST_PHASE2_ID..);
+        if self.phase2.len() < sample_from {
+            return Box::new(rows.map(|(id, slot)| (*id, slot)));
+        }
+        let Some((top, _)) = self.responders.last_key_value() else {
+            return Box::new(std::iter::empty());
+        };
+        let span = u64::from(*top - FIRST_PHASE2_ID) + 1;
+        let start = FIRST_PHASE2_ID + ResponderId::try_from(salt % span).unwrap_or(0);
+        Box::new(
+            self.responders
+                .range(start..)
+                .chain(self.responders.range(FIRST_PHASE2_ID..start))
+                .take(looks_at)
+                .map(|(id, slot)| (*id, slot)),
+        )
+    }
+
+    /// Which Phase 2 rows there are (D491).
+    pub fn phase2(&self) -> &Phase2Rows {
+        &self.phase2
+    }
+
+    /// Phase 2 rows by kind, for `phase2_rows` (D497).
+    pub fn phase2_counts(&self) -> Phase2Counts {
+        let mut counts = Phase2Counts::default();
+        for (id, source) in self.phase2.sources() {
+            let live = source_live(&self.directory, &self.claims, source);
+            let held = self
+                .responders
+                .get(&id)
+                .is_some_and(|slot| slot.held_by.is_some());
+            let (rows, lives, helds) = match source {
+                Source::Volunteer { .. } => (
+                    &mut counts.volunteers,
+                    &mut counts.volunteers_live,
+                    &mut counts.volunteers_held,
+                ),
+                Source::Offer { .. } => (
+                    &mut counts.offer_units,
+                    &mut counts.offer_units_live,
+                    &mut counts.offer_units_held,
+                ),
+            };
+            *rows += 1;
+            *lives += usize::from(live);
+            *helds += usize::from(held);
+        }
+        counts
     }
 
     /// How many holds have been made.
@@ -338,22 +590,25 @@ impl CloudState {
         self.responders.get(&id)
     }
 
+    /// The campus's responders, without the Phase 2 rows (D496): the campus registers itself
+    /// while this is 0, and Phase 1's sampling counts by it.
     pub fn responder_count(&self) -> usize {
-        self.responders.len()
+        self.responders.len() - self.phase2.len()
     }
 
-    /// Every responder, held or not, in ID order.
+    /// Every campus responder, held or not, in ID order.
     pub fn responders(&self) -> Vec<Responder> {
         self.responders
-            .values()
-            .map(|s| s.responder.clone())
+            .range(..FIRST_PHASE2_ID)
+            .map(|(_, s)| s.responder.clone())
             .collect()
     }
 
-    /// Responders not held by any request, in ID order.
+    /// Campus responders not held by any request, in ID order.
     pub fn free_responders(&self) -> Vec<Responder> {
         self.responders
-            .values()
+            .range(..FIRST_PHASE2_ID)
+            .map(|(_, s)| s)
             .filter(|s| s.held_by.is_none())
             .map(|s| s.responder.clone())
             .collect()
@@ -364,12 +619,12 @@ impl CloudState {
     /// responder, and the cost is the part and not the table. Zones and skills go round with the ID,
     /// so a run of IDs covers them evenly.
     pub fn free_responders_part(&self, salt: u64, looks_at: usize) -> Vec<Responder> {
-        let Some((top, _)) = self.responders.last_key_value() else {
+        let Some((top, _)) = self.responders.range(..FIRST_PHASE2_ID).next_back() else {
             return Vec::new();
         };
         let start = ResponderId::try_from(salt % (u64::from(*top) + 1)).unwrap_or(0);
         self.responders
-            .range(start..)
+            .range(start..FIRST_PHASE2_ID)
             .chain(self.responders.range(..start))
             .take(looks_at)
             .filter(|(_, slot)| slot.held_by.is_none())
@@ -380,12 +635,12 @@ impl CloudState {
     /// The same part of the table, held or not: for a lone node, whose own table takes over the
     /// holds (D124, D262).
     pub fn responders_part(&self, salt: u64, looks_at: usize) -> Vec<Responder> {
-        let Some((top, _)) = self.responders.last_key_value() else {
+        let Some((top, _)) = self.responders.range(..FIRST_PHASE2_ID).next_back() else {
             return Vec::new();
         };
         let start = ResponderId::try_from(salt % (u64::from(*top) + 1)).unwrap_or(0);
         self.responders
-            .range(start..)
+            .range(start..FIRST_PHASE2_ID)
             .chain(self.responders.range(..start))
             .take(looks_at)
             .map(|(_, slot)| slot.responder.clone())
@@ -425,6 +680,31 @@ impl CloudState {
     /// Hash chain over every applied command; see the module docs.
     pub fn digest(&self) -> u64 {
         self.digest
+    }
+}
+
+/// Phase 2 rows by kind, live and held, for `phase2_rows` (D497).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Phase2Counts {
+    pub volunteers: usize,
+    pub volunteers_live: usize,
+    pub volunteers_held: usize,
+    pub offer_units: usize,
+    pub offer_units_live: usize,
+    pub offer_units_held: usize,
+}
+
+/// Whether a Phase 2 row's source is there at the directory's log clock (D495): a live volunteer
+/// record, or an offer whose `available_until_ms` the clock has not reached, the rule claims use.
+fn source_live(directory: &Directory, claims: &Claims, source: &Source) -> bool {
+    let clock_ms = directory.clock_ms();
+    match source {
+        Source::Volunteer { user, .. } => directory.entry(user).is_some_and(|entry| {
+            entry.is_live(clock_ms) && entry.record.role == PresenceRole::VolunteerResponder
+        }),
+        Source::Offer { resource } => claims
+            .offer_at(resource)
+            .is_some_and(|offer| offer.available_until_ms > clock_ms),
     }
 }
 

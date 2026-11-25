@@ -374,6 +374,16 @@ table below in sync.
 | D416 | Reconnection is checked end to end against Part G's directory | K, with G and H | Implemented |
 | D417 | No cloud catch-up for zone updates missed offline; peers' held copies cover 300 s | K, with I and G | Decided |
 | D490 | An offer's subject is its `ResourceId`, in gossip and in held updates | I, with K and J | Implemented, amends D343 |
+| D491 | Phase 2 resources are rows of the responder table, from ID 2^31 up | I, with E and A | Implemented (carries out D352) |
+| D492 | A volunteer is placed at its zone's centre | I, with E and G | Implemented |
+| D493 | A volunteer is one row with every capability it lists | I, with E | Implemented |
+| D494 | An offer is one row per unit, and planner holds and claims share its capacity | I, with J | Implemented |
+| D495 | A gone resource is hidden, its holds are kept, and it is removed once free | I, with G and J | Implemented |
+| D496 | The planner looks at campus rows and Phase 2 rows in two parts, with one salt | I, with E, A and C | Implemented |
+| D497 | Events `phase2_assigned` and `phase2_rows` | I | Implemented |
+| D498 | Tests: unit tests, a Phase 1 guard, and one real-node test | I | Implemented |
+| D499 | The campus's zone count is given to the state from the config | I, with A | Implemented |
+| D500 | What PR 3 leaves for the people around a Phase 2 assignment: notice, display, load | I, with H, F and L | Open |
 | D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
 | D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
 | D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
@@ -422,7 +432,7 @@ table below in sync.
 | D349 | Obsolete and unsubscribed copies are acked `Refused`, with a fixed reason | I, with H | Implemented in the core, the wire path is open (D353) |
 | D350 | PR 1 is the pure core and its counters; events and config keys come with the wiring | I | Implemented |
 | D351 | How the cloud publishes into a zone, with no `ClientId` of its own: the reporter publishes | I, with H | Implemented |
-| D352 | The planner uses Phase 2 resources beside the synthetic responders | I, with E | Accepted |
+| D352 | The planner uses Phase 2 resources beside the synthetic responders | I, with E | Implemented by D491–D499 |
 | D353 | Whether gossip's outcome reaches the sender's ack: no, counted at the receiver | I, with H | Implemented |
 | D354 | How the wiring learns which program a copy came from: the origin stands in | I, with H | Implemented, to be measured |
 | D355 | A committed answer is published as its summary at version 1 and its assignment at the commit's log index | I | Implemented |
@@ -450,7 +460,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts. D368 listed what Part I changes later, and D369 records what is done: one `TODO(I)` is left (D354). Part I's next ID block is D490–D519 (D490). D280 to D295 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts. D368 listed what Part I changes later, and D369 records what is done: one `TODO(I)` is left (D354). Part I's next ID block is D490–D519 (D490); the planner's Phase 2 inputs, D352, are carried out by D491–D499. D500 is Open: telling a volunteer it was sent, showing a Phase 2 row by name, and loadgen making volunteers and offers. D280 to D295 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
 
 ---
 
@@ -9797,7 +9807,7 @@ them on the six PCs.
 
 ### D352 · The planner uses Phase 2 resources beside the synthetic responders
 
-- **Date:** 2026-11-24 · **Part:** I, with E · **Status:** Accepted (PR 3, `part-i-planner-phase2`) · **Decided by:** Yahia
+- **Date:** 2026-11-24 · **Part:** I, with E · **Status:** Implemented by D491–D499 (`part-i-planner-phase2`) · **Decided by:** Yahia
   Kilany, on the agent's recommendation (grill of PR #34, 2026-11-24, carried forward)
 - **Context.** The spec's planner combines severity, age, distance, resource availability and capability. Phase 2 makes
   resources real: Part J's offers and online volunteer responders from Part G's directory. Phase 1's planner plans over
@@ -10737,6 +10747,293 @@ them on the six PCs.
   obsolete, a newer version is new); `offline::tests::offers_are_subjects_by_their_id`, which fails with the old key.
 - **Report notes.** One identity per resource across the log, gossip and held updates.
 
+### D491 · Phase 2 resources are rows of the responder table, from ID 2^31 up
+
+- **Date:** 2026-11-25 · **Part:** I, with E and A · **Status:** Implemented (carries out D352) · **Decided by:** Yahia
+  Kilany, on the agent's recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** D352 has the planner use online volunteers (Part G's directory) and resource offers (Part J's claims)
+  beside the synthetic campus. But a plan can only send a `ResponderId`, a number in the replicated responder table, and
+  volunteers are `UserId`s and offers `ResourceId`s with a capacity. Everything after the plan reads `plan.responder`: the
+  hold at apply, `ReleaseResponder`, the choice made again at apply (D241), an incident's status (D142), gossip's
+  `AssignmentUpdate` (D355), degraded mode (D120) and the metrics, about 40 places in parts A, C, E, F, I and K.
+- **Options considered.**
+  1. *Rows in the table (chosen).* When the state applies a volunteer's `PresenceRegister` or an `OfferResource`, it gives
+     the resource rows in the same table, with IDs from a reserved range, and keeps which row is whose. `Plan` and
+     `proto.rs` do not change.
+  2. *A new field in `Plan`* (`phase2: Option<Volunteer | Offer>`). `proto.rs` changes and every owner reviews; every
+     `responder.is_none()` that means "nobody sent" must check the new field too.
+  3. *`Plan.responder` becomes an enum* (`Synthetic`, `Volunteer`, `Offer`). The cleanest model and the largest change:
+     every call site across six parts, ten days before the deadline.
+  4. *Priority only.* Phase 2 resources only count in priority's availability term and are never sent: tiny, but short of
+     D352 ("both lists are passed in") and of the plan ("responders can be online volunteers").
+- **Decision.** Option 1. IDs start at `phase2::FIRST_PHASE2_ID` = 2^31 and are minted in log order from a counter in the
+  state, so every node gives a resource the same ID; a user or a resource keeps its rows for as long as it has any. The
+  bookkeeping (who each row is, the minting, making and freeing rows) is a new pure file, `src/phase2.rs`, owned by Part I;
+  `CloudState` holds one `Phase2Rows` beside the table and calls it as it applies the presence and offer commands, the same
+  way it holds Part G's `Directory` and Part J's `Claims`. `Claims::claim_beside` is added for D494.
+- **Why.** The table already does everything a Phase 2 resource needs once it is sent: commit-then-reply, first commit wins,
+  one hold per row, release after the service time, the choice made again at apply, status on read. Reusing it means no
+  new path that could disagree with the old one, and no change to the wire.
+- **Consequences.** `CloudState`'s serialized form gains `phase2` and `campus_zones`, so a snapshot from an older build does
+  not load: wipe `data/raft` on every machine when this lands (AGENTS.md, "Same build everywhere"). The campus registers
+  itself while `responder_count()` is 0, so that count, and every Phase 1 read, now stops below 2^31 (D496). The 2^31 IDs
+  can run out only after 2^31 rows were ever made; then a new resource is simply not planned with.
+- **Where.** `src/phase2.rs`; `state.rs` (`apply`, `commit_result`, `pick_again`, the reads); `claims.rs`
+  (`claim_beside`); `node/service.rs` and `node/degraded.rs` (`free_for_plan`).
+- **How we check it.** `phase2::tests` (19 tests) and `tests/planner_phase2.rs` on three real nodes.
+- **Report notes.** How the planner's inputs grew in Phase 2 without a new message: Phase 2 resources are more rows of the
+  same replicated table, so the Phase 1 guarantees hold for them unchanged.
+
+### D492 · A volunteer is placed at its zone's centre
+
+- **Date:** 2026-11-25 · **Part:** I, with E and G · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** The planner scores a responder by Manhattan distance (D49, D101). A volunteer's `PresenceRecord` names a zone
+  and no position (D319).
+- **Options considered.**
+  1. *The zone's centre (chosen)*, from `campus.rs`'s grid: the corner plus 250 m each way.
+  2. *A location in the presence record.* Exact, but it changes `proto.rs`, Part G's and H's register path and the size of a
+     `discover` answer, which must fit one datagram (D321).
+  3. *Zone only, distance 0.* A volunteer would always beat a campus responder in the same zone, which skews Phase 2's
+     experiments.
+- **Decision.** Option 1: `campus::zone_centre(zones, zone)`.
+- **Why.** No contract change, and it is honest for a rough location: a volunteer in the incident's zone still wins over
+  other zones through the 200 m penalty, and is at most 500 m (Manhattan) from any point of its zone.
+- **Consequences.** A known limitation for the report: a volunteer's distance, and so its `cost` and priority's distance
+  term, can be off by up to 500 m. The zone count comes from the config (D499).
+- **Where.** `campus.rs::zone_centre`, `phase2.rs::Phase2Rows::sync_volunteer`.
+- **How we check it.** `phase2::tests::a_volunteer_gets_one_row_at_its_zone_centre_with_every_skill`.
+- **Report notes.** One line under the planner's limitations.
+
+### D493 · A volunteer is one row with every capability it lists
+
+- **Date:** 2026-11-25 · **Part:** I, with E · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation, after asking that every capability of a volunteer be considered and whether that would make the count of
+  free responders wrong (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** A presence record lists several capabilities; a `Responder` has exactly one.
+- **Options considered.**
+  1. *One row, every capability (chosen).* The row stores them all; the free list gives the planner one entry per
+     capability, all with the row's ID and next to each other.
+  2. *One row per capability, with linked holds.* Every hold, release and choice at apply in `state.rs` would follow the
+     links: more code in Part A's file, more to test.
+  3. *The lowest capability only.* Simplest, but the other skills would count only through the severe or old fallback.
+- **Decision.** Option 1. Capabilities are sorted and deduplicated; the row's own `Responder` carries the first. The
+  planner's availability term counts distinct IDs, not entries.
+- **Why.** A person can be sent to one place at a time, so one row and one hold; every skill is still matched. The count
+  stays exact: the stored table has one row per volunteer, and the only list with repeats is the planner's throwaway input,
+  where `planner::distinct_ids` counts each run of one ID once. Campus IDs never repeat, so for Phase 1 the count is the
+  list's length, as before. `pick_again` looks at a number of rows and expands them afterwards, so its count is in rows.
+- **Consequences.** Entries of one volunteer must stay next to each other in any list given to the planner; the state's
+  lists and the executor's join keep that. The pick's tie-break by lowest ID cannot pick between a volunteer's entries,
+  and does not need to: they are the same person.
+- **Where.** `phase2.rs::Phase2Rows::entries`, `planner.rs::distinct_ids`.
+- **How we check it.** `phase2::tests::a_volunteer_with_three_skills_counts_as_one_free_responder`,
+  `every_skill_is_matched_and_one_hold_takes_the_person`, `planner::tests::one_volunteers_entries_count_as_one_free_responder`.
+- **Report notes.** How one person with several skills fits a planner built for one skill per responder.
+
+### D494 · An offer is one row per unit, and planner holds and claims share its capacity
+
+- **Date:** 2026-11-25 · **Part:** I, with J · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** An offer has a capacity (D374), and Part J's claims already take units of it. A plan that sends an offer takes
+  a unit too. The units in use must never pass the capacity, from either side.
+- **Options considered.**
+  1. *One row per unit, a shared count (chosen).* A unit row is free only while planner holds plus claimed units are below
+     the capacity, and `Claims` counts the planner's holds when it decides a claim.
+  2. *The same rows, with `claims.rs` left alone.* A claim made after a planner hold would not see it, so the two together
+     could pass the capacity.
+  3. *A plan's send becomes a claim.* One accounting, but claims allow one per claimant per resource, so two reports by one
+     user would collide, and `claims.rs` would need a new kind of claimant.
+  4. *One row per offer.* A five-unit offer would serve one incident at a time.
+- **Decision.** Option 1. An offer gets `min(capacity, 16)` rows (`phase2::MAX_OFFER_UNITS`), where the offer is and with its
+  capability. The free list offers only as many unit rows as `capacity - claimed - held` leaves, oldest first; at apply, a
+  plan holding a unit is taken (chosen again, D241) if no unit is left. `CloudState` passes the planner's held units to
+  `Claims::claim_beside`, which counts them like other claimants' units. A re-offer with a new capacity adds rows, or drops
+  free ones; a held row stays until it is released.
+- **Why.** Each side checks the other's use in log order, so neither can over-commit, and the hold keeps D241's and
+  `ReleaseResponder`'s rules. The cap keeps an offer of a million units from adding a million rows on every node.
+- **Consequences.** A one-line change in Part J's file (`claim_beside`, with `claim` calling it with 0), so Ahmed reviews. A
+  resolve in the challenger's favour (D378) frees as many units as it adds, so it cannot pass the capacity either. Units
+  above 16 still count for claims, but the planner sends at most 16 at once.
+- **Where.** `phase2.rs::Phase2Rows::sync_offer`, `state.rs` (`offer_units_left`, `phase2_free`, `phase2_takeable`, the
+  `ClaimResource` arm), `claims.rs::Claims::claim_beside`.
+- **How we check it.** `phase2::tests::claims_leave_the_planner_only_the_units_left`,
+  `the_planners_holds_leave_claims_only_the_units_left`, `an_offer_gets_one_row_per_unit_up_to_the_cap`,
+  `a_lowered_capacity_drops_free_units_and_keeps_held_ones`; `tests/planner_phase2.rs`, where a claim after the planner
+  took the only unit is refused.
+- **Report notes.** The planner and the claims are two users of one capacity, kept consistent by the log's order: the
+  "nontrivial distributed-consistency problem" reaches the planner too.
+
+### D495 · A gone resource is hidden, its holds are kept, and it is removed once free
+
+- **Date:** 2026-11-25 · **Part:** I, with G and J · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** A volunteer's lease can end (D285) and an offer's `available_until_ms` can pass (D379). A row might be held
+  when that happens.
+- **Options considered.**
+  1. *Hide when gone, keep holds, remove once gone and free (chosen).*
+  2. *Hide, never remove.* The table and the state grow with every volunteer that ever joined, and the scans slow down.
+  3. *Drop the holds at once.* Truer for a volunteer who left, but an assignment could then vanish, a new case for clients
+     and gossip.
+- **Decision.** Option 1. A row may be sent only while its source is live at the directory's log clock, the clock claims
+  already use (D371): a `Live` record whose role is still `VolunteerResponder`, or an offer whose `available_until_ms` is
+  above the clock. A hold already made stays until its normal release (D39, D111), like a responder already on its way.
+  Rows are removed when gone and free: a volunteer's at once when its record is deregistered or stops being a volunteer,
+  and on each `PresenceTick` a sweep removes every row whose volunteer has no record left, or whose offer has ended. A
+  late record (lease over, grace not, D285) keeps its row, because it can still renew. A plan whose row went while it
+  travelled through the log is chosen again at apply (D241).
+- **Why.** The same lazy rule as the directory and the claims: nothing watches a timer, every node decides at the same log
+  position. Sweeping on `PresenceTick`, the command that moves the clock when nothing else does, keeps a renewal free of
+  any scan.
+- **Consequences.** A row of a gone source can stay in the table until the next tick, and a held one until its release;
+  neither can be sent. The grill's summary said "the apply that moves the log clock"; the sweep runs on `PresenceTick`
+  only, with targeted removal on register and deregister, for the reason above.
+- **Where.** `state.rs` (`source_live`, `sweep_phase2`, `sync_volunteer`), `phase2.rs::Phase2Rows::sweep`.
+- **How we check it.** `phase2::tests::a_volunteer_whose_lease_ended_is_hidden_and_a_tick_removes_it_once_free`,
+  `a_plan_for_a_volunteer_who_left_is_chosen_again`, `an_expired_offer_is_hidden_and_removed_once_free`,
+  `registering_again_updates_the_same_row_and_becoming_ordinary_frees_it`.
+- **Report notes.** One rule for time in all three state machines: the directory's log clock.
+
+### D496 · The planner looks at campus rows and Phase 2 rows in two parts, with one salt
+
+- **Date:** 2026-11-25 · **Part:** I, with E, A and C · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** With 256 or more responders, a plan looks at a run of 512 rows starting at `salt mod (top ID + 1)` (D238,
+  D253), so that plans running at once look at different rows. With Phase 2 IDs from 2^31 up, the top ID would be about
+  2^31 and nearly every start would land in the empty gap between the campus and the Phase 2 rows: all plans would look at
+  the same rows, and D238 would be lost.
+- **Options considered.**
+  1. *Two parts (chosen).* The campus is sampled exactly as now, over IDs below 2^31; Phase 2 rows get their own part by
+     the same rule and the same salt (all of them below 256 rows, else a run of 512 from where the salt lands in their
+     range). The planner gets both lists joined.
+  2. *The campus part plus every Phase 2 row.* Planning cost and the time under the state lock would grow with every
+     volunteer and unit.
+  3. *Phase 2 IDs right after the campus.* One part would do, but Phase 1's parts change as soon as one volunteer joins,
+     and the campus could never grow.
+- **Decision.** Option 1, in the executor (`service::free_for_plan`), at apply (`pick_again`, 256 then 4,096 rows for each
+  part) and in degraded mode (`phase2_part_for_lone`, through the lone node's own table, D124, D262). Every Phase 1 read
+  (`responder_count`, `responders`, `free_responders`, `free_responders_part`, `responders_part`) stops below 2^31. With no
+  Phase 2 rows, `pick_again` takes Phase 1's path unchanged.
+- **Why.** Phase 1 stays exactly as it was, which Noor's regression check needs (D352), and Phase 2's cost stays bounded at
+  scale.
+- **Consequences.** A plan can now see up to 512 campus rows plus 512 Phase 2 rows (more entries for multi-skilled
+  volunteers). In degraded mode an offer gives the units its claims leave; the lone node's table then tracks its own
+  holds, and the replay through Raft checks the capacity again at apply.
+- **Where.** `state.rs` (`free_phase2_part`, `phase2_part`, `phase2_part_for_lone`, `pick_again`, the Phase 1 reads),
+  `node/service.rs`, `node/degraded.rs`.
+- **How we check it.** `phase2::tests::many_rows_are_sampled_in_their_own_part_and_never_in_the_campus_part`,
+  `a_plan_whose_campus_responder_was_taken_can_go_to_a_volunteer`, and the Phase 1 guard (D498).
+- **Report notes.** A sampling detail that would have silently undone D238; worth a sentence.
+
+### D497 · Events `phase2_assigned` and `phase2_rows`
+
+- **Date:** 2026-11-25 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's recommendation
+  (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** The report needs how often Phase 2 resources are sent, and how many there are over a run.
+- **Options considered.**
+  1. *Two node events (chosen).*
+  2. *Only the ID range.* `client_done` does not carry the responder, so the client event would need a field, and volunteers
+     and offers could not be told apart.
+  3. *Nothing in this PR.* The report's section on the planner's Phase 2 inputs would have no numbers.
+- **Decision.** `phase2_assigned { request, responder, kind, source }`, logged by the executor when its own `CommitResult`
+  commits (not a duplicate) with a Phase 2 row; `kind` is `volunteer` or `offer`, `source` the user (`client/user`) or the
+  resource (`provider/seq`). And once a second, from the loop that logs `claims_state`, `phase2_rows { last_applied,
+  volunteers, volunteers_live, volunteers_held, offer_units, offer_units_live, offer_units_held }`.
+- **Why.** The share of incidents served by Phase 2 resources is `phase2_assigned` over committed results; `phase2_rows`
+  shows supply and use over time. Both are on one node's clock: no figure compares two machines.
+- **Consequences.** The grill's summary said "at each checkpoint"; the event is logged once a second, like `claims_state`
+  and `directory_state`, which is what the plots read. A result that a lone node's replay commits is not logged as
+  `phase2_assigned`; `phase2_rows`' held counts still include it.
+- **Where.** `metrics.rs`, `node/service.rs::log_phase2`, `node/claims.rs::spawn_report`, `state.rs::phase2_counts`.
+- **How we check it.** `phase2::tests::counts_split_by_kind_live_and_held`, `the_source_names_the_user_or_the_resource`.
+- **Report notes.** The Phase 2 planner figure: share of incidents served by volunteers and by offers.
+
+### D498 · Tests: unit tests, a Phase 1 guard, and one real-node test
+
+- **Date:** 2026-11-25 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany ("add unit tests and real node
+  tests"), on the agent's recommendation, after asking how long the real-node test would take (grill of
+  `part-i-planner-phase2`, 2026-11-25)
+- **Context.** AGENTS.md wants the deterministic core tested thoroughly, and D352 wants Phase 1 unchanged.
+- **Options considered.** Unit tests plus one real-node test (chosen); unit tests only, which never runs the directory and
+  claims through a real executor; real-node tests only, which leaves the core without thorough unit tests. For expiry: in
+  unit tests only (chosen), since waiting out a lease on real nodes adds seconds and a timing-sensitive step.
+- **Decision.** `phase2::tests` covers rows made, mapped back and placed; every skill matched and one hold for the person;
+  counts of distinct IDs; roles without a row; updates and frees; late and gone with the log clock set directly; units
+  shared with claims both ways; the unit cap and a lowered capacity; applying twice equals once; the two parts; a choice
+  at apply that goes to a volunteer; counts; a snapshot round trip. A Phase 1 guard,
+  `a_phase1_log_gives_what_it_gave_before_phase2_rows`, pins the digest, outcomes and table parts of a 600-responder,
+  400-report Phase 1 log to the values `main` gave at `eb8e549`. `tests/planner_phase2.rs` runs three real nodes with no
+  campus responders: a volunteer joins through the directory, a provider offers one unit, a Rescue report gets the
+  volunteer by its second skill, a Fire report gets the unit, a second Fire report gets nobody, a claim on the used unit is
+  refused, and every node holds both rows.
+- **Why.** About 0.5 s for the real-node test, as the gossip and claims ones; everything time-based is in unit tests.
+- **Consequences.** None beyond the tests.
+- **Where.** `src/phase2.rs` (tests), `src/planner.rs` (tests), `tests/planner_phase2.rs`.
+- **How we check it.** `cargo test`; `tests/planner_phase2.rs` 10 runs in a row green.
+- **Report notes.** How we know Phase 1 is unchanged: the pinned guard.
+
+### D499 · The campus's zone count is given to the state from the config
+
+- **Date:** 2026-11-25 · **Part:** I, with A · **Status:** Implemented · **Decided by:** Yahia Kilany, on the agent's
+  recommendation (grill of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** A zone's centre (D492) depends on the campus's zone count, which sets the grid's columns (D97). The replicated
+  state did not know it.
+- **Options considered.**
+  1. *Given at start, from the config (chosen).* An input passed in, like the time: every machine reads the same config
+     file (AGENTS.md), so every node computes the same centre.
+  2. *Worked out from the campus table* (highest zone plus 1). Wrong when the campus has fewer responders than zones, and
+     undefined with none.
+  3. *In the log*, as a field of `RegisterResponders`. Exact and replicated, but a `proto.rs` change and a wire change.
+- **Decision.** Option 1. `raft::Consensus::start` calls `StateReader::set_campus_zones(config.campus.zones)`; a reset
+  (D261) and an installed snapshot keep the node's own value. A state built without it, as in unit tests, uses
+  `CampusConfig::default().zones` (6).
+- **Why.** No contract change, and it stays deterministic as long as the config is the same everywhere, which the
+  deployment already requires.
+- **Consequences.** A wrongly copied config with another zone count would place volunteers differently on one node; the
+  wrong zone count would already break the campus there (D97), and the state digest would show the split.
+- **Where.** `state.rs` (`campus_zones`, `set_campus_zones`), `raft/store.rs`, `raft/mod.rs`.
+- **How we check it.** `phase2::tests::a_volunteer_gets_one_row_at_its_zone_centre_with_every_skill`.
+- **Report notes.** None beyond D492.
+
+### D500 · What PR 3 leaves for the people around a Phase 2 assignment
+
+- **Date:** 2026-11-25 · **Part:** I, with H, F and L · **Status:** Open · **Decided by:** nobody yet; logged as Open by Yahia
+  Kilany, on the agent's recommendation (review of `part-i-planner-phase2`, 2026-11-25)
+- **Context.** PR 3 (D491–D499) makes the planner send online volunteers and offer units, and the cloud keeps the holds
+  right. What happens around it is not built: the planner decides, but nobody outside the cloud learns much. Three gaps,
+  found in the review of PR 3, are kept in one entry because they come from the same choice, keeping `Plan` and the wire
+  unchanged (D491); each can be settled on its own.
+- **Gap 1: a volunteer is not told it was sent.** The volunteer's program hears nothing; only the reporter's answer and
+  its zone's gossip carry the row ID.
+  1. *A direct P2P notice (recommended).* The reporter, which publishes the assignment already (D351), also sends one
+     direct `P2pEnvelope` to the volunteer's peer address, found in the directory. Needs a new `P2pBody` variant (a
+     `proto.rs` change, Wahiba's and Aabed's review) and the row's `UserId` on the client side (gap 2).
+  2. *The volunteer polls its own assignments* through a new `IncidentQuery` kind: no push, but a `ClientRpc` change.
+  3. *Nothing.* The demo shows the cloud's choice only.
+- **Gap 2: a Phase 2 row shows as a bare number.** Gossip's `AssignmentUpdate`, the frontend card and `ctl incidents` show
+  the `ResponderId` from 2^31 up, with no zone, skill or user: the frontend's `responder_fields` looks it up in the campus
+  list from the config and finds nothing, and shows nulls (no crash).
+  1. *An optional `phase2_source` in `IncidentView` and `CommittedResult`'s readers (recommended)*, filled from
+     `Phase2Rows::source` when the node reads a result: the frontend and `ctl` show "volunteer 7/1" or "offer 8/1". A
+     `proto.rs` change for `IncidentView` only; `Plan` stays as it is.
+  2. *Put it in `Plan`.* Every reader gets it, but this is D491's option 2, which was rejected.
+  3. *Leave it.* The analysis can still join `phase2_assigned` (D497) with the results by request ID.
+- **Gap 3: loadgen makes no volunteers or offers.** Phase 2's load runs plan over the campus only, so no experiment
+  exercises D491–D499 yet.
+  1. *Loadgen options for volunteers and offers per program (recommended)*, in Part L's Phase 2 workload, with the counts
+     in the experiment configs: a share of the users join as volunteers, and some programs offer resources.
+  2. *A separate scenario script* for the demo only: shows it once, measures nothing.
+- **Decision.** None yet. PR 3 ships without these; each gap is settled by whoever builds it, after a grill.
+- **Why.** Gaps 1 and 2 change `proto.rs` and other parts' files, and gap 3 is Part L's workload. Keeping them out of PR 3
+  keeps it to the planner and the state, reviewable by Aabed and Ahmed; writing them down keeps them from being lost.
+- **Consequences.** Until gap 3 is settled, the report's Phase 2 planner figures (D497) come from tests and hand-made runs
+  only. Until gap 1 is, scenario demos show the assignment on the reporter's card, not on the volunteer's program.
+- **Where.** Not built. It would touch `proto.rs` (gaps 1, 2), `gossip.rs` or `client.rs` (gap 1), `bin/frontend.rs` and
+  `bin/ctl.rs` (gap 2), and `bin/loadgen.rs`, `experiments/` (gap 3).
+- **How we check it.** Each gap's PR adds its own test; this entry moves to its new status then.
+- **Report notes.** Under limitations of Phase 2's planner: the cloud decides with volunteers and offers, but telling them,
+  and loading the system with them, come later.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
@@ -10744,6 +11041,8 @@ These add to older entries without changing their text. An entry can have more t
 | Entry | Note |
 |-------|------|
 | D409 | An offer's subject is now its `ResourceId`, as in gossip (D490); the rule is otherwise unchanged |
+| D352 | Carried out by D491–D499 in `part-i-planner-phase2`: Phase 2 resources are rows of the responder table, so `Plan` and the wire are unchanged; availability counts them (D493) |
+| D373 | The planner reads offers from the committed claims state (D494), not from the gossiped `P2pBody::ResourceOffer`, which stays an announcement for peers: the planner runs on the cloud, where the log is |
 | D1 | Its title and context say "coordinator". D163 says what that role is: it orders the log and decides nothing else |
 | D6 | UDP is back for reports, as first planned, now through tarpc. Three unicasts and first reply wins stand (D167) |
 | D8 | "Committed and applied" holds for the winner's answer only on the leader. D232 gives the rule in full |

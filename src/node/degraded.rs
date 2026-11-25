@@ -189,19 +189,28 @@ pub async fn plan(ctx: &NodeContext, req: &ClientRequest) -> Result<Plan, PlanEr
 /// What a lone node chooses from: a part of the table, as for any plan (D238, D253), unless nobody
 /// free in it has the skill. Copying the whole table for each report held a lone node to about 2,700
 /// answers a second with 60,000 responders (D262).
+///
+/// Online volunteers and offer units come after the campus, from their own part (D496), and go
+/// through the lone node's table the same way.
 fn free_for_plan(ctx: &NodeContext, req: &ClientRequest, attempt: u32) -> Vec<Responder> {
     let now = Instant::now();
-    let part = ctx.state.with(|s| {
-        (s.responder_count() >= SAMPLE_FROM_RESPONDERS)
-            .then(|| s.responders_part(plan_salt(req, attempt), PLAN_LOOKS_AT))
+    let salt = plan_salt(req, attempt);
+    let (part, phase2) = ctx.state.with(|s| {
+        (
+            (s.responder_count() >= SAMPLE_FROM_RESPONDERS)
+                .then(|| s.responders_part(salt, PLAN_LOOKS_AT)),
+            s.phase2_part_for_lone(salt, SAMPLE_FROM_RESPONDERS, PLAN_LOOKS_AT),
+        )
     });
-    if let Some(part) = part {
+    if let Some(mut part) = part {
+        part.extend(phase2.iter().cloned());
         let free = lock(&ctx.degraded.table).free(part, now);
         if free.iter().any(|r| r.capability == req.incident.needs) {
             return free;
         }
     }
-    let all = ctx.state.with(|s| s.responders());
+    let mut all = ctx.state.with(|s| s.responders());
+    all.extend(phase2);
     lock(&ctx.degraded.table).free(all, now)
 }
 

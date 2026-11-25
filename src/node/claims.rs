@@ -225,7 +225,7 @@ pub(super) fn proposer(members: &[u64], resource: ResourceId) -> Option<u64> {
     members.get((hash % members.len() as u64) as usize).copied()
 }
 
-/// Logs `claims_state` once a second (D380).
+/// Logs `claims_state` and Part I's `phase2_rows` once a second (D380, D497).
 pub(super) fn spawn_report(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
     let ctx = ctx.clone();
     tokio::spawn(async move {
@@ -246,6 +246,20 @@ pub(super) fn spawn_report(ctx: &Arc<NodeContext>) -> JoinHandle<()> {
                 }
             });
             ctx.log.log(event);
+            // Part I's rows for the same resources, and the volunteers beside them (D497).
+            let rows = ctx.state.with(|s| {
+                let c = s.phase2_counts();
+                Event::Phase2Rows {
+                    last_applied: s.last_index(),
+                    volunteers: c.volunteers,
+                    volunteers_live: c.volunteers_live,
+                    volunteers_held: c.volunteers_held,
+                    offer_units: c.offer_units,
+                    offer_units_live: c.offer_units_live,
+                    offer_units_held: c.offer_units_held,
+                }
+            });
+            ctx.log.log(rows);
         }
     })
 }

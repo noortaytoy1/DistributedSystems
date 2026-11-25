@@ -321,6 +321,28 @@ pub enum Event {
         running: usize,
     },
 
+    // --- the planner's Phase 2 inputs (I)
+    /// The executor committed a result that sends an online volunteer or an offer unit (D497).
+    /// `kind` is `volunteer` or `offer`; `source` is the user (`client/user`) or the resource
+    /// (`provider/seq`).
+    Phase2Assigned {
+        request: RequestId,
+        responder: ResponderId,
+        kind: &'static str,
+        source: String,
+    },
+    /// Once a second: the Phase 2 rows of the responder table, all of them, those whose source is
+    /// live at the log clock, and those held (D497).
+    Phase2Rows {
+        last_applied: u64,
+        volunteers: usize,
+        volunteers_live: usize,
+        volunteers_held: usize,
+        offer_units: usize,
+        offer_units_live: usize,
+        offer_units_held: usize,
+    },
+
     // --- responders (E)
     /// This node proposed freeing `responder` after its service time (D39, D111). `backup` is
     /// true if the executor should have done it first and has not.

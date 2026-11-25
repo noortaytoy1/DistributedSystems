@@ -220,8 +220,8 @@ D209), and the planner has to start using what Phase 2 makes real: offered resou
 4. *Planner input.* Should Phase 2 resources replace the synthetic responders or sit beside them? **Recommendation:**
    beside them, so all of Phase 1's experiments and scenarios still run unchanged.
 
-**Files:** `src/gossip.rs` (new), `src/planner.rs`, `src/campus.rs`, the client side of forwarding (with Wahiba, in
-`client.rs`), `tests/gossip.rs`.
+**Files:** `src/gossip.rs` (new), `src/phase2.rs` (new, the planner's Phase 2 rows, D491), `src/planner.rs`,
+`src/campus.rs`, the client side of forwarding (with Wahiba, in `client.rs`), `tests/gossip.rs`, `tests/planner_phase2.rs`.
 
 **Measures:**
 - **duplicate-message rate:** duplicates received per delivered update;

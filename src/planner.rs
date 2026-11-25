@@ -28,6 +28,11 @@
 //!
 //! The planner has no clock: the node passes the incident's age in as an argument (D95).
 //!
+//! Phase 2 (D491, D493): the free list can hold online volunteers and offer units beside the
+//! campus, as rows with IDs from `phase2::FIRST_PHASE2_ID`. A volunteer with several capabilities
+//! comes as one entry per capability, all with its ID and next to each other, so the pick looks at
+//! every skill and availability counts IDs, not entries: one person is one free responder.
+//!
 //! `CostKnob::extra_work` adds simulated CPU load (D96): each unit runs [`ROUNDS_PER_UNIT`] rounds
 //! of an integer mixing function. It never changes the plan. 0 means only the regular work.
 //!
@@ -113,7 +118,7 @@ pub fn pick<'a>(
         severity: incident.severity,
         age_ms,
         distance_m: responder.map(|_| cost),
-        free_responders: free.count(),
+        free_responders: distinct_ids(free),
         needed_capability_free,
     }
     .points();
@@ -166,6 +171,14 @@ impl Urgency {
         };
         severity + age + distance + availability + capability
     }
+}
+
+/// How many responders `free` holds: entries in a row with the same ID are one volunteer's
+/// capabilities, so they count once (D493). Campus IDs never repeat, so for Phase 1 this is the
+/// length, as before.
+fn distinct_ids<'a>(free: impl Iterator<Item = &'a Responder>) -> usize {
+    let mut last = None;
+    free.filter(|r| last.replace(r.id) != Some(r.id)).count()
 }
 
 fn capped(points: u64, cap: u32) -> u32 {
@@ -521,6 +534,29 @@ mod tests {
         assert_eq!(points(Some(1_000)), MAX_DISTANCE_POINTS);
         assert_eq!(points(Some(2_500)), MAX_DISTANCE_POINTS);
         assert_eq!(points(None), MAX_DISTANCE_POINTS);
+    }
+
+    #[test]
+    fn one_volunteers_entries_count_as_one_free_responder() {
+        // A Phase 2 volunteer with three skills comes as three entries with one ID (D493).
+        let volunteer = |capability| responder(1 << 31, 0, 100, 0, capability);
+        let three = [
+            volunteer(Capability::Medical),
+            volunteer(Capability::Fire),
+            volunteer(Capability::Rescue),
+        ];
+        let inc = incident(0, 0, 0, 2, Capability::Fire);
+        assert_eq!(
+            plan0(&inc, &three),
+            plan0(&inc, &[volunteer(Capability::Fire)]),
+            "same pick and the availability of one free responder"
+        );
+        // Campus IDs never repeat, so the count is the length, as before.
+        let campus = [
+            responder(1, 0, 100, 0, Capability::Fire),
+            responder(2, 0, 100, 0, Capability::Fire),
+        ];
+        assert_eq!(distinct_ids(campus.iter()), 2);
     }
 
     #[test]

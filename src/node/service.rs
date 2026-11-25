@@ -24,6 +24,7 @@ use tokio::time::Instant;
 
 use crate::metrics::{Event, now_ms};
 use crate::middleware::{Decision, NodeContext, Overloaded, ReplyTx, decide_executor, degraded};
+use crate::phase2::is_phase2;
 use crate::planner::{self, CostKnob};
 use crate::proto::{
     ClientReply, ClientRequest, Command, CommittedResult, Outcome, Plan, ProposeError, ReplyBody,
@@ -45,18 +46,45 @@ pub(super) const PLAN_LOOKS_AT: usize = 512;
 /// running at once from one list pick the same responder, and all but the first go stale. So each
 /// plan of each attempt looks at its own part. If that part has nobody with the skill the report
 /// needs, the plan gets the whole list, so sampling never changes who can be sent (D238).
+///
+/// Online volunteers and offer units come after the campus, from their own part of the table with
+/// the same salt and the same sizes (D352, D496). With none, the list is Phase 1's.
 fn free_for_plan(ctx: &NodeContext, req: &ClientRequest, plan: u32) -> Vec<Responder> {
+    let salt = plan_salt(req, plan);
     ctx.state.with(|s| {
-        if s.responder_count() < SAMPLE_FROM_RESPONDERS {
-            return s.free_responders();
-        }
-        let part = s.free_responders_part(plan_salt(req, plan), PLAN_LOOKS_AT);
-        if part.iter().any(|r| r.capability == req.incident.needs) {
-            part
-        } else {
+        let mut free = if s.responder_count() < SAMPLE_FROM_RESPONDERS {
             s.free_responders()
-        }
+        } else {
+            let part = s.free_responders_part(salt, PLAN_LOOKS_AT);
+            if part.iter().any(|r| r.capability == req.incident.needs) {
+                part
+            } else {
+                s.free_responders()
+            }
+        };
+        free.extend(s.free_phase2_part(salt, SAMPLE_FROM_RESPONDERS, PLAN_LOOKS_AT));
+        free
     })
+}
+
+/// Log `phase2_assigned` if the committed result sends an online volunteer or an offer unit (D497).
+fn log_phase2(ctx: &NodeContext, done: &CommittedResult) {
+    let Some(responder) = done.plan.responder.filter(|id| is_phase2(*id)) else {
+        return;
+    };
+    let source = ctx.state.with(|s| {
+        s.phase2()
+            .source(responder)
+            .map(|src| (src.kind(), src.name()))
+    });
+    if let Some((kind, source)) = source {
+        ctx.log.log(Event::Phase2Assigned {
+            request: done.request,
+            responder,
+            kind,
+            source,
+        });
+    }
 }
 
 /// Where in the table one plan of one attempt starts to look.
@@ -139,7 +167,11 @@ async fn execute(ctx: &NodeContext, req: &ClientRequest) -> Result<CommittedResu
             .send_ordered(Command::CommitResult(proposal))
             .await?
         {
-            Outcome::Committed(done) | Outcome::Duplicate(done) => return Ok(done),
+            Outcome::Committed(done) => {
+                log_phase2(ctx, &done);
+                return Ok(done);
+            }
+            Outcome::Duplicate(done) => return Ok(done),
             Outcome::Stale { .. } => continue,
             other => return Err(ExecuteError::Unexpected(other.kind())),
         }

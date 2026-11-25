@@ -85,9 +85,20 @@ impl StateReader {
         outcomes
     }
 
-    /// Forget everything, for a node that must take the log from the start again (D261).
+    /// Forget everything, for a node that must take the log from the start again (D261). The
+    /// campus's zone count comes from the config, not the log, so it stays (D499).
     pub(crate) fn reset(&self) {
-        *self.write() = CloudState::new();
+        let mut state = self.write();
+        let zones = state.campus_zones();
+        *state = CloudState::new();
+        if let Some(zones) = zones {
+            state.set_campus_zones(zones);
+        }
+    }
+
+    /// The campus's zone count from this node's config, for a volunteer's zone centre (D499).
+    pub fn set_campus_zones(&self, zones: crate::proto::ZoneId) {
+        self.write().set_campus_zones(zones);
     }
 
     /// Apply one command with no log behind it, for a test that needs a state to read.
@@ -415,8 +426,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> StorageResult<()> {
         let data = snapshot.into_inner();
-        let state: CloudState = bincode::deserialize(&data)
+        let mut state: CloudState = bincode::deserialize(&data)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        // This node's own config, not the sender's copy of it (D499).
+        if let Some(zones) = self.state.with(CloudState::campus_zones) {
+            state.set_campus_zones(zones);
+        }
         *self.state.write() = state;
         self.last_applied = meta.last_log_id;
         self.last_membership = meta.last_membership.clone();
