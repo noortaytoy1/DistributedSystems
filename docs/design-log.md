@@ -373,6 +373,7 @@ table below in sync.
 | D415 | Zone gossip copies that cannot get through are held by Part K's store-and-forward | K, with I | Implemented, amends D362 |
 | D416 | Reconnection is checked end to end against Part G's directory | K, with G and H | Implemented |
 | D417 | No cloud catch-up for zone updates missed offline; peers' held copies cover 300 s | K, with I and G | Decided |
+| D490 | An offer's subject is its `ResourceId`, in gossip and in held updates | I, with K and J | Implemented, amends D343 |
 | D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
 | D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
 | D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
@@ -412,7 +413,7 @@ table below in sync.
 | D340 | Zone updates are pushed peer to peer | I | Accepted, core built |
 | D341 | A gossip peer is a client program, not a user | I, with H and G | Implemented in the core |
 | D342 | Two duplicate checks: the update ID, then the subject's highest version | I | Implemented in the core |
-| D343 | A subject is the kind of update and its natural key | I, with J | Implemented in the core |
+| D343 | A subject is the kind of update and its natural key | I, with J | Implemented in the core, amended by D490 |
 | D344 | Each seen-cache holds 10,000 entries or 300 s, oldest forgotten first | I | Implemented in the core |
 | D345 | Fan-out 3 and `max_hops` 7, measured | I | Implemented in the core |
 | D346 | Every program caps the hops it obeys at the shared value | I, with H | Implemented in the core |
@@ -426,7 +427,7 @@ table below in sync.
 | D354 | How the wiring learns which program a copy came from: the origin stands in | I, with H | Implemented, to be measured |
 | D355 | A committed answer is published as its summary at version 1 and its assignment at the commit's log index | I | Implemented |
 | D356 | Only committed answers are published, Expired included | I | Implemented |
-| D357 | A zone's programs come from `discover`, one per program, and Part G is asked to spread zone answers over programs | I, with G | Implemented, request to G proposed |
+| D357 | A zone's programs come from `discover`, one per program, and Part G is asked to spread zone answers over programs | I, with G | Implemented, request accepted by D288 |
 | D358 | Each zone's list is cached and asked for again at most every 10 s | I | Implemented |
 | D359 | A program subscribes to the zones its joined users are in | I, with H | Implemented |
 | D360 | Gossip is always on, between the P2P inbox and `take_peer_updates` | I, with H and F | Implemented |
@@ -437,7 +438,8 @@ table below in sync.
 | D365 | Four gossip events | I, with L | Implemented |
 | D366 | The publish starts inside `submit`, in the background | I, with F | Implemented |
 | D367 | `gossip_published` is logged even with no targets | I, with L | Implemented |
-| D368 | Tests against stub nodes, and an explicit list of what changes later | I | Implemented |
+| D368 | Tests against stub nodes, and an explicit list of what changes later | I | Implemented, amended by D369 |
+| D369 | PR 2's leftovers: the directory makes one marker obsolete, a real-cloud test, one marker kept | I, with G and K | Implemented, amends D368 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -448,7 +450,7 @@ asks the person to decide with the options and recommendation listed in the entr
 the agent on the instruction not to be asked again, and are marked for the team to confirm. Most of D134 to D208, D214,
 D215, D219 and D220 were decided the same way, on Noor's instruction of 2026-11-03 to finish without more questions; each entry
 says who decided, and Noor can overrule any of them. No question in this log is waiting for the instructor: D213
-closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts, and D368 lists what Part I still changes later. D280 to D295 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
+closes the ones older entries left. D216 lists Noor's decisions and what is built. D351, D353 and D354 were settled in `part-i-gossip`; D357 carried a request to Part G, which D288 accepts. D368 listed what Part I changes later, and D369 records what is done: one `TODO(I)` is left (D354). Part I's next ID block is D490–D519 (D490). D280 to D295 (Part G) were taken on the agent's recommendation without a grill, on Omar's instruction, for the team to review against the class notes when Phase 2 is done.
 
 ---
 
@@ -9561,7 +9563,7 @@ them on the six PCs.
 
 ### D343 · A subject is the kind of update and its natural key
 
-- **Date:** 2026-11-24 · **Part:** I, with J · **Status:** Implemented in the core · **Decided by:** Yahia Kilany, on the
+- **Date:** 2026-11-24 · **Part:** I, with J · **Status:** Implemented in the core, amended by D490 · **Decided by:** Yahia Kilany, on the
   agent's recommendation (grill, 2026-11-24)
 - **Context.** D318 leaves "the same subject" to each kind. It decides which updates replace each other.
 - **Options considered.**
@@ -9982,7 +9984,7 @@ them on the six PCs.
 
 ### D357 · A zone's programs come from `discover`, one per program, and Part G is asked to spread zone answers over programs
 
-- **Date:** 2026-11-24 · **Part:** I, with G · **Status:** Implemented on the client; the request to G is Proposed ·
+- **Date:** 2026-11-24 · **Part:** I, with G · **Status:** Implemented; the request to G accepted by D288 ·
   **Decided by:** Yahia Kilany, on the agent's recommendation (grill of `part-i-gossip`, 2026-11-24)
 - **Context.** `discover` returns at most 16 user records (D321), and one program holds many users (D319). A lab zone has
   hundreds of users over about 5 programs (D341). If Part G returned, say, the lowest user IDs, every program would get the
@@ -10198,7 +10200,7 @@ them on the six PCs.
 
 ### D368 · Tests against stub nodes, and an explicit list of what changes later
 
-- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented · **Decided by:** Yahia Kilany (grill of `part-i-gossip`,
+- **Date:** 2026-11-24 · **Part:** I · **Status:** Implemented, amended by D369 · **Decided by:** Yahia Kilany (grill of `part-i-gossip`,
   2026-11-24), adding the explicit list to the agent's recommendation
 - **Context.** Real nodes cannot answer `discover` until Part G exists (D325); #39 is not merged.
 - **Options considered.** Stub nodes, no loadgen wiring (recommended); also wire loadgen (Parts L's and F's files, and it
@@ -10265,6 +10267,37 @@ them on the six PCs.
 - **How we check it.** Rehearsal on the six lab PCs (integration day, 2026-12-02).
 - **Report notes.** One PC: 116 reports queued in 5 s, all answered after reconnecting, reconciled in 522 ms; with `--ttl-ms 3000`,
   31 of 103 refused as expired, on record.
+
+### D369 · PR 2's leftovers: the directory makes one marker obsolete, a real-cloud test, one marker kept
+
+- **Date:** 2026-11-25 · **Part:** I, with G and K · **Status:** Implemented, amends D368 · **Decided by:** Yahia Kilany,
+  on the agent's recommendation (grill of `part-i-gossip-followup`, 2026-11-25)
+- **Context.** D368 listed what PR 2 left to change later, three items of it marked `TODO(I)`. Since then Part G's
+  directory merged and accepted D357 (D288: a zone answer gives one record per program first), and Part K switched gossip's
+  failed sends to held ones (D415, amending D362). Several docs still said "until Part G".
+- **Options considered.**
+  1. *For the real-cloud test:* one end-to-end test (chosen); the same plus a program leaving and the 10 s refresh, slower
+     and more timing-bound; or only the zone list against the directory, with no real report.
+  2. *For the marker on the true sender (D354):* keep it (chosen), because nothing has run on the lab and D354 said the
+     duplicate rate there decides; resolve it as "won't do" now; or do it now, through `p2p.rs` or a `via` field in
+     `proto.rs`, bigger than this PR and not shown to be needed.
+- **Decision.**
+  1. The marker above `gossip::discover_programs` is removed: D288 does what it waited for. The module comment, the D357
+     and D368 statuses, and `docs/architecture.md` sections 13.3 and 14 say so.
+  2. `tests/gossip.rs::a_real_cloud_report_reaches_its_zone_through_the_real_directory`: three real nodes in one process,
+     five programs join one user each in zone 2 through the real directory, the test waits until every node holds the five,
+     and one program submits a real report. Each of the other four gets the summary and the assignment; the assignment's
+     version is the commit's `log_index`, its responder the real plan's, and the origin the reporter. The marker at the top
+     of `tests/gossip.rs` is resolved.
+  3. The marker in `Run::arrived` (D354) stays, on purpose.
+- **Why.** The stub-node tests prove the client side; this one proves D351, D355, D357 and D359 together on the real path,
+  which only became possible with Part G.
+- **Consequences.** D368's line "until item 1, gossip does nothing on a real cluster" no longer holds: on a real cluster
+  gossip works for programs whose users joined. Loadgen joins none yet (Part L), so load runs still publish to nobody
+  (D367). One `TODO(I)` is left.
+- **Where.** `src/gossip.rs`, `tests/gossip.rs`, `docs/architecture.md` sections 13.3 and 14.
+- **How we check it.** The new test, with the whole `gossip` suite 10 runs in a row green.
+- **Report notes.** The end-to-end evidence for zone publish-subscribe: real directory, real commit, peers carrying it.
 
 ### D370 · Resource offers and claims are a new pure `src/claims.rs`
 
@@ -10677,12 +10710,40 @@ them on the six PCs.
 - **How we check it.** Stated as a limit in the report.
 - **Report notes.** A deliberate limit, with the alternative and its cost.
 
+### D490 · An offer's subject is its `ResourceId`, in gossip and in held updates
+
+- **Date:** 2026-11-25 · **Part:** I, with K and J · **Status:** Implemented, amends D343 · **Decided by:** Yahia Kilany, on
+  the agent's recommendation (grill of `part-i-gossip-followup`, 2026-11-25). Part I's block D340–D369 ran out at D369, so by
+  D267's rule Part I takes the next free block, D490–D519, from this PR.
+- **Context.** D343 keyed an offer's versions by (provider, capability), and said Part J might change the key. Part J then
+  gave every offer its own `ResourceId { provider, seq }` (D372). Part K's held updates copy the subject rule into
+  `offline.rs` (D409). With the old key, two offers of the same capability from one provider, for example two medical kits,
+  would hide each other: the second would be dropped as obsolete in gossip and in held updates. Nothing gossips offers yet
+  (D373), so nothing was lost.
+- **Options considered.**
+  1. *`ResourceId`, in both files (chosen).* Each offer has its own versions, and gossip and held updates keep one rule.
+  2. *`ResourceId` in `gossip.rs` only.* Stays in Part I's files, but the two rules disagree.
+  3. *Leave it, as Open for PR 3.* No harm today, but the bug waits for the first offer that is gossiped.
+  For `offline.rs`: change only the key (chosen), or replace its private enum with `gossip::Subject`, a bigger rewrite of
+  Part K's code that would tie it to Part I's.
+- **Decision.** `gossip::Subject::Offer(ResourceId)`, from `o.id`. In `offline.rs` the private `Subject::Offer` takes a
+  `ResourceId` too; nothing else there changes.
+- **Why.** The offer's ID is Part J's identity for it (D372), the same on every channel, and one rule for both parts is what
+  D409 intended.
+- **Consequences.** A provider that changes an offer must give the new version under the same `ResourceId`. Aabed reviews the
+  one-line change in his file.
+- **Where.** `gossip.rs::Subject`, `offline.rs::Subject`.
+- **How we check it.** `gossip::tests::subjects_keep_kinds_apart` (two Fire offers of one provider are both new, a repeat is
+  obsolete, a newer version is new); `offline::tests::offers_are_subjects_by_their_id`, which fails with the old key.
+- **Report notes.** One identity per resource across the log, gossip and held updates.
+
 ### Notes on older entries
 
 These add to older entries without changing their text. An entry can have more than one row. Rows that earlier lanes had left inside the index table moved here.
 
 | Entry | Note |
 |-------|------|
+| D409 | An offer's subject is now its `ResourceId`, as in gossip (D490); the rule is otherwise unchanged |
 | D1 | Its title and context say "coordinator". D163 says what that role is: it orders the log and decides nothing else |
 | D6 | UDP is back for reports, as first planned, now through tarpc. Three unicasts and first reply wins stand (D167) |
 | D8 | "Committed and applied" holds for the winner's answer only on the leader. D232 gives the rule in full |

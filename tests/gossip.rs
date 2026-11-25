@@ -1,12 +1,11 @@
-//! Part I: zone gossip between real client programs (Phase 2, D351–D368). Each program has a real
-//! peer endpoint; one stub node stands in for the cloud, because Part G's directory is not built yet
-//! (D325). The stub keeps the registered presence records, answers `discover` from them and answers
-//! every report with a committed result, so what is checked is the programs' side: a committed
-//! report reaches the whole zone, a stale directory does not pull in other zones, a repeated answer
-//! is not spread twice, a dead peer does not stop the rest, a subscriber that was offline gets its
-//! copies on return (Part K, D415), and with no directory nothing is sent.
-//!
-//! TODO(I): once Part G lands, add a test against a real three-node cloud (D368).
+//! Part I: zone gossip between real client programs (Phase 2, D351–D369). Each program has a real
+//! peer endpoint. Most tests use one stub node for the cloud, which keeps the registered presence
+//! records, answers `discover` from them and answers every report with a committed result, so what
+//! is checked is the programs' side: a committed report reaches the whole zone, a stale directory
+//! does not pull in other zones, a repeated answer is not spread twice, a dead peer does not stop
+//! the rest, a subscriber that was offline gets its copies on return (Part K, D415), and with no
+//! directory nothing is sent. One test runs the whole path on three real nodes with Part G's
+//! directory (D369).
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -16,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::wait_until;
+use common::{TestCluster, wait_until};
 use rescuemesh::client::MeshClient;
 use rescuemesh::config::{ClusterConfig, Config, NodeAddr};
 use rescuemesh::metrics::{EventLog, now_ms};
@@ -444,4 +443,64 @@ async fn with_no_directory_a_report_is_still_answered_and_nothing_is_sent() {
     // Waiting a little is the only way to see that nothing happens.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(publisher.p2p_counts().tx_datagrams, 0);
+}
+
+/// The whole path on three real nodes (D369): users join through Part G's directory, a real report
+/// is planned and committed, and the reporter's zone gets its summary and assignment peer to peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_real_cloud_report_reaches_its_zone_through_the_real_directory() {
+    let cluster = TestCluster::start_with(3, |c| {
+        c.p2p.port_min = 0;
+        c.p2p.try_ms = 100;
+        c.timers.client_retry_ms = 300;
+        c.timers.client_retry_max_ms = 600;
+    })
+    .await;
+    wait_until(WAIT, "a leader on every node", || {
+        cluster
+            .nodes
+            .iter()
+            .all(|n| n.ctx.consensus.status().leader.is_some())
+    })
+    .await;
+    let (publisher, _own) = program(51, ZONE, &cluster.config).await;
+    let mut others = Vec::new();
+    for client in 52..=55 {
+        others.push(program(client, ZONE, &cluster.config).await);
+    }
+    // Every node's directory holds all five, so whichever node answers the discover lists them all.
+    wait_until(WAIT, "the five users live on every node", || {
+        cluster
+            .nodes
+            .iter()
+            .all(|n| n.ctx.state.with(|s| s.directory().live_count()) == 5)
+    })
+    .await;
+
+    let answer = publisher.submit(incident(51, 3)).await.unwrap();
+    let committed = answer.committed.expect("a committed answer");
+
+    for (_, updates) in &mut others {
+        let got = take(updates, 2).await;
+        assert_eq!(kinds(&got), ["assignment", "summary"]);
+        for u in &got {
+            assert_eq!(u.id.origin, 51, "the reporter publishes (D351)");
+            match &u.body {
+                P2pBody::IncidentSummary(s) => assert_eq!(s.incident, committed.request),
+                P2pBody::AssignmentUpdate(a) => {
+                    assert_eq!(a.incident, committed.request);
+                    assert_eq!(
+                        a.responder, committed.plan.responder,
+                        "the real plan's responder"
+                    );
+                    assert_eq!(
+                        u.version, committed.log_index,
+                        "the real commit's index (D355)"
+                    );
+                }
+                P2pBody::ResourceOffer(_) => panic!("no offers here"),
+            }
+        }
+    }
+    cluster.shutdown().await;
 }

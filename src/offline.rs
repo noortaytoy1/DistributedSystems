@@ -44,8 +44,7 @@ use crate::client::Submitted;
 use crate::metrics::{Event, EventLog, now_ms};
 use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::proto::{
-    Capability, ClientId, Incident, P2pAck, P2pBody, P2pEnvelope, RequestId, ResourceId, UpdateId,
-    UserId,
+    ClientId, Incident, P2pAck, P2pBody, P2pEnvelope, RequestId, ResourceId, UpdateId, UserId,
 };
 
 /// Most reports an outbox holds; past it a new report is refused (D405).
@@ -342,14 +341,15 @@ pub struct HeldDrop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Subject {
     Incident(RequestId),
-    Offer(UserId, Capability),
+    /// One offer, by its ID (D372), the same key as zone gossip's (D490).
+    Offer(ResourceId),
 }
 
 fn subject(envelope: &P2pEnvelope) -> Subject {
     match &envelope.body {
         P2pBody::IncidentSummary(s) => Subject::Incident(s.incident),
         P2pBody::AssignmentUpdate(a) => Subject::Incident(a.incident),
-        P2pBody::ResourceOffer(o) => Subject::Offer(o.provider, o.capability),
+        P2pBody::ResourceOffer(o) => Subject::Offer(o.id),
     }
 }
 
@@ -655,7 +655,7 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::proto::{
-        AssignmentUpdate, Category, IncidentSummary, Point, ResourceId, ResourceOffer,
+        AssignmentUpdate, Capability, Category, IncidentSummary, Point, ResourceId, ResourceOffer,
     };
 
     fn queued(seq: u64) -> Queued {
@@ -848,6 +848,29 @@ mod tests {
         held.hold("p", update(5, 1, assignment), T0);
         assert_eq!(ids(&held, "p"), vec![2, 4, 5]);
         assert_eq!(held.len(), 3);
+    }
+
+    #[test]
+    fn offers_are_subjects_by_their_id() {
+        // One provider's two Medical offers are two subjects (D490), so neither replaces the other;
+        // a newer version of the same offer still does.
+        let medical = |seq| match offer(T0 + 60_000) {
+            P2pBody::ResourceOffer(o) => P2pBody::ResourceOffer(ResourceOffer {
+                id: ResourceId { provider: 7, seq },
+                ..o
+            }),
+            other => other,
+        };
+        let mut held = HeldUpdates::default();
+        assert!(held.hold("p", update(1, 1, medical(0)), T0).is_empty());
+        assert!(held.hold("p", update(2, 1, medical(1)), T0).is_empty());
+        assert_eq!(ids(&held, "p"), vec![1, 2]);
+        let dropped = held.hold("p", update(3, 2, medical(0)), T0);
+        assert_eq!(
+            (dropped[0].update.seq, dropped[0].reason),
+            (1, Dropped::Obsolete)
+        );
+        assert_eq!(ids(&held, "p"), vec![2, 3]);
     }
 
     #[test]
