@@ -1,5 +1,5 @@
-//! Offline operation on a client (Phase 2, Part K, D400–D406): the reports a user makes while the
-//! client is cut off, kept until it is back.
+//! Offline operation on a client (Phase 2, Part K, D400–D417): what a user makes while the client
+//! is cut off, kept until it is back, and what other peers hold for it meanwhile.
 //!
 //! - **The switch (D402).** Going offline closes a [`FaultGate`](crate::node::transport::FaultGate)
 //!   inside every one of the client's sockets, as the node's fault gate does: nothing leaves and
@@ -21,7 +21,11 @@
 //!   [`HOLD_TOTAL`] in all, oldest dropped first, and [`HOLD_FOR_MS`] from when the update was made,
 //!   the time receivers remember IDs, so a late resend is still only a duplicate. A newer version
 //!   of the same subject replaces an older one, and an offer whose time has run out is dropped as
-//!   obsolete.
+//!   obsolete. Zone gossip sends its copies the same way, so a subscriber that is briefly away gets
+//!   them on return (D415).
+//! - **Claims made offline (D414).** Part J's claims queue is a second outbox of the same kind,
+//!   `claims-client-<id>.jsonl`, so a queued claim survives a restart too, and one that gets no
+//!   answer on reconnect stays queued instead of being lost.
 //!
 //! File reads and writes go through `tokio::fs`, so they never block the runtime.
 //!
@@ -32,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
@@ -39,7 +44,8 @@ use crate::client::Submitted;
 use crate::metrics::{Event, EventLog, now_ms};
 use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::proto::{
-    Capability, ClientId, Incident, P2pAck, P2pBody, P2pEnvelope, RequestId, UpdateId, UserId,
+    Capability, ClientId, Incident, P2pAck, P2pBody, P2pEnvelope, RequestId, ResourceId, UpdateId,
+    UserId,
 };
 
 /// Most reports an outbox holds; past it a new report is refused (D405).
@@ -81,10 +87,38 @@ pub struct Reconciled {
     pub took: Duration,
 }
 
-/// Why a report could not be queued.
+/// A resource claim made while offline (Part J's `claim_resource_or_queue`), kept in the claims
+/// outbox and resent as speculative on reconnect (D377, D414).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedClaim {
+    pub resource: ResourceId,
+    pub claimant: UserId,
+    pub quantity: u32,
+    /// The claimant's own clock when it first tried, carried to the command for the reconciliation
+    /// report (D376).
+    pub at_ms: u64,
+}
+
+/// What one flush of the claims outbox did (D414). Every answer is on record, so it leaves the
+/// outbox; a claim with no answer stays for the next reconnect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClaimsReconciled {
+    pub sent: usize,
+    /// Granted.
+    pub claimed: usize,
+    /// Did not fit, so it opened a reconciliation entry for the offer's owner (D376).
+    pub reconciling: usize,
+    /// Any other answer: refused, or the resource is unknown or gone.
+    pub other: usize,
+    /// No answer; still queued.
+    pub failed: usize,
+    pub took: Duration,
+}
+
+/// Why an update could not be queued.
 #[derive(Debug, thiserror::Error)]
 pub enum OutboxError {
-    #[error("the outbox is full ({cap} reports)")]
+    #[error("the outbox is full ({cap} entries)")]
     Full { cap: usize },
     #[error("cannot write the outbox file {path}: {source}")]
     Write {
@@ -93,21 +127,40 @@ pub enum OutboxError {
     },
 }
 
-/// The reports a client made while offline, oldest first. Safe to share: every method takes `&self`.
-pub struct Outbox {
+/// What a client made while offline, oldest first, one JSON line each in its file: reports by
+/// default, or claims (D401, D414). Safe to share: every method takes `&self`.
+pub struct Outbox<T = Queued> {
     path: Option<PathBuf>,
     cap: usize,
-    state: tokio::sync::Mutex<State>,
+    state: tokio::sync::Mutex<State<T>>,
 }
 
-#[derive(Default)]
-struct State {
+struct State<T> {
     /// False until the file has been read, which happens on first use, inside the runtime.
     loaded: bool,
-    entries: Vec<Queued>,
+    entries: Vec<T>,
 }
 
 impl Outbox {
+    /// Where client `client` keeps its reports: next to its event logs, or nowhere.
+    pub fn path_for(dir: Option<&Path>, client: ClientId) -> Option<PathBuf> {
+        dir.map(|dir| dir.join(format!("outbox-client-{client}.jsonl")))
+    }
+
+    /// Take out the reports that reached the cloud, and rewrite the file with the rest.
+    pub async fn remove(&self, delivered: &BTreeSet<RequestId>) -> Result<(), OutboxError> {
+        self.retain(|q| !delivered.contains(&q.id)).await
+    }
+}
+
+impl Outbox<QueuedClaim> {
+    /// Where client `client` keeps its claims, beside its reports (D414).
+    pub fn claims_path_for(dir: Option<&Path>, client: ClientId) -> Option<PathBuf> {
+        dir.map(|dir| dir.join(format!("claims-client-{client}.jsonl")))
+    }
+}
+
+impl<T: Clone + Serialize + DeserializeOwned> Outbox<T> {
     /// An outbox kept in `path`, or in memory only for `None`.
     pub fn new(path: Option<PathBuf>) -> Self {
         Self::with_cap(path, OUTBOX_CAP)
@@ -117,17 +170,15 @@ impl Outbox {
         Self {
             path,
             cap,
-            state: tokio::sync::Mutex::new(State::default()),
+            state: tokio::sync::Mutex::new(State {
+                loaded: false,
+                entries: Vec::new(),
+            }),
         }
     }
 
-    /// Where client `client` keeps its outbox: next to its event logs, or nowhere.
-    pub fn path_for(dir: Option<&Path>, client: ClientId) -> Option<PathBuf> {
-        dir.map(|dir| dir.join(format!("outbox-client-{client}.jsonl")))
-    }
-
-    /// Add a report at the end, and to the file before returning.
-    pub async fn push(&self, queued: Queued) -> Result<(), OutboxError> {
+    /// Add an entry at the end, and to the file before returning.
+    pub async fn push(&self, queued: T) -> Result<(), OutboxError> {
         let mut state = self.loaded().await;
         if state.entries.len() >= self.cap {
             return Err(OutboxError::Full { cap: self.cap });
@@ -144,8 +195,8 @@ impl Outbox {
         Ok(())
     }
 
-    /// Every waiting report, oldest first.
-    pub async fn entries(&self) -> Vec<Queued> {
+    /// Every waiting entry, oldest first.
+    pub async fn entries(&self) -> Vec<T> {
         self.loaded().await.entries.clone()
     }
 
@@ -157,10 +208,10 @@ impl Outbox {
         self.len().await == 0
     }
 
-    /// Take out the reports that reached the cloud, and rewrite the file with the rest.
-    pub async fn remove(&self, delivered: &BTreeSet<RequestId>) -> Result<(), OutboxError> {
+    /// Keep only the entries `keep` says yes to, and rewrite the file with them.
+    pub async fn retain(&self, keep: impl FnMut(&T) -> bool) -> Result<(), OutboxError> {
         let mut state = self.loaded().await;
-        state.entries.retain(|q| !delivered.contains(&q.id));
+        state.entries.retain(keep);
         match &self.path {
             Some(path) => {
                 rewrite(path, &state.entries)
@@ -176,7 +227,7 @@ impl Outbox {
 
     /// The state, read from the file the first time. A line that does not parse is skipped with a
     /// warning: one torn write must not lose the rest.
-    async fn loaded(&self) -> tokio::sync::MutexGuard<'_, State> {
+    async fn loaded(&self) -> tokio::sync::MutexGuard<'_, State<T>> {
         let mut state = self.state.lock().await;
         if !state.loaded {
             state.loaded = true;
@@ -188,7 +239,7 @@ impl Outbox {
     }
 }
 
-async fn read(path: &Path) -> Vec<Queued> {
+async fn read<T: DeserializeOwned>(path: &Path) -> Vec<T> {
     let text = match tokio::fs::read_to_string(path).await {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -209,13 +260,13 @@ async fn read(path: &Path) -> Vec<Queued> {
         .collect()
 }
 
-fn line(queued: &Queued) -> String {
-    let mut line = serde_json::to_string(queued).expect("a queued report always serializes");
+fn line<T: Serialize>(queued: &T) -> String {
+    let mut line = serde_json::to_string(queued).expect("a queued entry always serializes");
     line.push('\n');
     line
 }
 
-async fn append(path: &Path, queued: &Queued) -> std::io::Result<()> {
+async fn append<T: Serialize>(path: &Path, queued: &T) -> std::io::Result<()> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -226,7 +277,7 @@ async fn append(path: &Path, queued: &Queued) -> std::io::Result<()> {
 }
 
 /// Written to a temporary file and renamed over the old one, so a crash leaves one or the other.
-async fn rewrite(path: &Path, entries: &[Queued]) -> std::io::Result<()> {
+async fn rewrite<T: Serialize>(path: &Path, entries: &[T]) -> std::io::Result<()> {
     let text: String = entries.iter().map(line).collect();
     let tmp = path.with_extension("jsonl.tmp");
     tokio::fs::write(&tmp, text).await?;
@@ -634,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_full_outbox_refuses_and_keeps_what_it_has() {
-        let outbox = Outbox::with_cap(None, 2);
+        let outbox = Outbox::<Queued>::with_cap(None, 2);
         outbox.push(queued(1)).await.expect("room");
         outbox.push(queued(2)).await.expect("room");
         assert!(matches!(
@@ -647,13 +698,13 @@ mod tests {
     #[tokio::test]
     async fn the_file_survives_a_restart_and_keeps_the_order() {
         let path = temp_path("restart.jsonl");
-        let first = Outbox::new(Some(path.clone()));
+        let first = Outbox::<Queued>::new(Some(path.clone()));
         for seq in 1..=3 {
             first.push(queued(seq)).await.expect("written");
         }
         drop(first);
 
-        let second = Outbox::new(Some(path.clone()));
+        let second = Outbox::<Queued>::new(Some(path.clone()));
         assert_eq!(
             second.entries().await,
             vec![queued(1), queued(2), queued(3)]
@@ -663,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn removing_delivered_reports_rewrites_the_file() {
         let path = temp_path("remove.jsonl");
-        let outbox = Outbox::new(Some(path.clone()));
+        let outbox = Outbox::<Queued>::new(Some(path.clone()));
         for seq in 1..=3 {
             outbox.push(queued(seq)).await.expect("written");
         }
@@ -671,7 +722,7 @@ mod tests {
         outbox.remove(&delivered).await.expect("rewritten");
         assert_eq!(outbox.entries().await, vec![queued(2)]);
 
-        let reread = Outbox::new(Some(path));
+        let reread = Outbox::<Queued>::new(Some(path));
         assert_eq!(reread.entries().await, vec![queued(2)]);
     }
 
@@ -680,7 +731,7 @@ mod tests {
         let path = temp_path("damaged.jsonl");
         let good = line(&queued(1)) + "{not json\n" + &line(&queued(2));
         std::fs::write(&path, good).expect("written");
-        let outbox = Outbox::new(Some(path));
+        let outbox = Outbox::<Queued>::new(Some(path));
         assert_eq!(outbox.entries().await, vec![queued(1), queued(2)]);
     }
 
@@ -691,6 +742,31 @@ mod tests {
             Some(PathBuf::from("runs/a/outbox-client-4.jsonl"))
         );
         assert_eq!(Outbox::path_for(None, 4), None);
+    }
+
+    #[tokio::test]
+    async fn queued_claims_have_their_own_file_and_survive_a_restart() {
+        let path = temp_path("claims.jsonl");
+        let claim = QueuedClaim {
+            resource: ResourceId {
+                provider: 3,
+                seq: 1,
+            },
+            claimant: UserId { client: 7, user: 0 },
+            quantity: 2,
+            at_ms: 1_000,
+        };
+        let first = Outbox::<QueuedClaim>::new(Some(path.clone()));
+        first.push(claim).await.expect("written");
+        drop(first);
+        let second = Outbox::<QueuedClaim>::new(Some(path));
+        assert_eq!(second.entries().await, vec![claim]);
+        second.retain(|_| false).await.expect("rewritten");
+        assert!(second.is_empty().await);
+        assert_eq!(
+            Outbox::claims_path_for(Some(Path::new("runs/a")), 4),
+            Some(PathBuf::from("runs/a/claims-client-4.jsonl"))
+        );
     }
 
     // --- store-and-forward ---

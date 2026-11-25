@@ -128,9 +128,9 @@ async fn a_speculative_conflict_is_surfaced_and_the_owner_resolves_it_for_the_ch
         delivery,
         rescuemesh::client::ClaimDelivery::Queued
     ));
-    assert_eq!(challenger.pending_claims(), 1);
+    assert_eq!(challenger.pending_claims().await, 1);
     challenger.go_online().await.unwrap();
-    assert_eq!(challenger.pending_claims(), 0);
+    assert_eq!(challenger.pending_claims().await, 0);
 
     // The conflict is now a visible reconciliation entry, not a silent refusal, and the
     // incumbent still holds the resource until the owner says otherwise.

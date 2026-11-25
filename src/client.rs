@@ -57,7 +57,8 @@ use crate::node::datagram::MAX_CALL_DEADLINE;
 use crate::node::transport::{FaultGate, connect_client, datagram_client, gated_datagram_client};
 use crate::node::usage;
 use crate::offline::{
-    self, Delivery, FLUSH_IN_FLIGHT, Forwarder, Outbox, OutboxError, PeerSend, Queued, Reconciled,
+    self, ClaimsReconciled, Delivery, FLUSH_IN_FLIGHT, Forwarder, Outbox, OutboxError, PeerSend,
+    Queued, QueuedClaim, Reconciled,
 };
 use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::presence::{self, Discovered, Presence, PresenceError};
@@ -164,19 +165,12 @@ pub enum ClaimError {
 pub enum ClaimDelivery {
     /// The client was online and a node answered.
     Answered(ClaimReply),
-    /// The client was offline, so the claim waits to be resent as speculative on reconnect.
+    /// The client was offline, so the claim waits in the claims outbox to be resent as
+    /// speculative on reconnect (D377, D414).
     Queued,
-}
-
-/// A claim first attempted while offline, resent with `speculative: true` on reconnect (D377).
-#[derive(Debug, Clone, Copy)]
-struct PendingClaim {
-    resource: ResourceId,
-    claimant: UserId,
-    quantity: u32,
-    /// This client's own clock when it first tried: carried through to the eventual command, for
-    /// the reconciliation report (D376).
-    at_ms: u64,
+    /// Offline, and the claim could not be queued either: the claims outbox is full or its file
+    /// cannot be written. Nothing was kept (D414).
+    NotQueued(String),
 }
 
 /// A request that got a reply.
@@ -233,9 +227,8 @@ pub struct MeshClient {
     /// When this client last went offline, while it is.
     offline_since: std::sync::Mutex<Option<Instant>>,
     /// Claims first attempted while offline, resent as speculative on reconnect (Part J, D377).
-    /// In memory only: a crash mid-outage drops them, unlike Aabed's incident outbox, which is a
-    /// deliberate simplification outside Part J's scope.
-    pending_claims: std::sync::Mutex<Vec<PendingClaim>>,
+    /// A second outbox of the reports' kind, so they survive a restart too (Part K, D414).
+    claims_outbox: Outbox<QueuedClaim>,
     /// Each stub's dispatch and the reporter. Dropped with the client, which aborts them.
     _tasks: JoinSet<()>,
 }
@@ -306,6 +299,7 @@ impl MeshClient {
             id,
             config.gossip,
             peer.clone(),
+            forwarder.clone(),
             presence.clone(),
             inbox,
             log.clone(),
@@ -331,7 +325,7 @@ impl MeshClient {
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
-            pending_claims: std::sync::Mutex::new(Vec::new()),
+            claims_outbox: Outbox::new(Outbox::claims_path_for(config.metrics.dir.as_deref(), id)),
             _tasks: tasks,
         }
     }
@@ -514,8 +508,11 @@ impl MeshClient {
             });
         }
         let reports = self.flush_outbox().await;
-        // Then the claims queued while offline, as speculative (Part J, D377).
-        self.flush_pending_claims().await;
+        // Then the claims queued while offline, as speculative (Part J, D377). What gets no
+        // answer stays queued, and the flush logs its own counts (D414).
+        if let Err(e) = self.flush_pending_claims().await {
+            tracing::warn!("rewriting the claims outbox failed: {e}");
+        }
         // Then the updates held for peers (D410); those still away wait for the timer.
         self.redeliver_held().await;
         reports
@@ -665,16 +662,19 @@ impl MeshClient {
                 return ClaimDelivery::Answered(reply);
             }
         }
-        self.pending_claims
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(PendingClaim {
-                resource,
-                claimant,
-                quantity,
-                at_ms,
-            });
-        ClaimDelivery::Queued
+        let queued = QueuedClaim {
+            resource,
+            claimant,
+            quantity,
+            at_ms,
+        };
+        match self.claims_outbox.push(queued).await {
+            Ok(()) => {
+                self.log.log(Event::ClaimQueued { resource, claimant });
+                ClaimDelivery::Queued
+            }
+            Err(e) => ClaimDelivery::NotQueued(e.to_string()),
+        }
     }
 
     async fn claim_resource_now(
@@ -723,25 +723,26 @@ impl MeshClient {
     }
 
     /// Claims queued while offline, waiting to be resent.
-    pub fn pending_claims(&self) -> usize {
-        self.pending_claims
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
+    pub async fn pending_claims(&self) -> usize {
+        self.claims_outbox.len().await
     }
 
-    /// Resend every claim queued while offline, as speculative, oldest first (D377). Called from
-    /// [`go_online`](Self::go_online); a claim with no answer is dropped, same as a lost online
-    /// claim would be: the caller that queued it is gone, so nothing re-reads the result.
-    async fn flush_pending_claims(&self) {
-        let pending = std::mem::take(
-            &mut *self
-                .pending_claims
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()),
-        );
+    /// Resend every claim queued while offline, as speculative, oldest first and one at a time,
+    /// so their order in the log is the order they were made (D377). Called from
+    /// [`go_online`](Self::go_online). Every answer is on record, so the claim leaves the outbox;
+    /// one with no answer stays for the next reconnect instead of being lost (D414). A `Command`
+    /// is idempotent, so a resend of a claim the cloud already took is harmless.
+    pub async fn flush_pending_claims(&self) -> Result<ClaimsReconciled, ClientError> {
+        let pending = self.claims_outbox.entries().await;
+        if pending.is_empty() {
+            return Ok(ClaimsReconciled::default());
+        }
+        let started = Instant::now();
+        let mut done = ClaimsReconciled::default();
+        let mut answered = Vec::new();
         for claim in pending {
-            let _ = self
+            done.sent += 1;
+            let reply = self
                 .claim_resource_now(
                     claim.resource,
                     claim.claimant,
@@ -750,7 +751,30 @@ impl MeshClient {
                     claim.at_ms,
                 )
                 .await;
+            match reply {
+                Ok(ClaimReply::Claimed { .. }) => done.claimed += 1,
+                Ok(ClaimReply::Reconciling { .. }) => done.reconciling += 1,
+                Ok(_) => done.other += 1,
+                Err(_) => {
+                    done.failed += 1;
+                    continue;
+                }
+            }
+            answered.push(claim);
         }
+        done.took = started.elapsed();
+        self.claims_outbox
+            .retain(|claim| !answered.contains(claim))
+            .await?;
+        self.log.log(Event::ClaimsFlushed {
+            sent: done.sent,
+            claimed: done.claimed,
+            reconciling: done.reconciling,
+            other: done.other,
+            failed: done.failed,
+            reconcile_us: done.took.as_micros() as u64,
+        });
+        Ok(done)
     }
 
     /// Fire one claims call to every node and take the first real answer. Exactly one node

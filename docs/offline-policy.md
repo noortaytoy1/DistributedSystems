@@ -25,18 +25,21 @@ cable. It is the same mechanism as the cloud nodes' fault gate in Phase 1 (D13, 
 | Send a peer update (`send_peer_or_hold`) | **Allowed** | `PeerSend::Held`: held by the sender and delivered later | D407 |
 | Send a peer update (`send_peer`) | Refused at once | `PeerError::Offline` | D338 |
 | Join, leave, move zone, discover | Refused at once | A presence error. Lease renewals pause | D329 |
-| Claim a resource or task | **Not built yet** | Part J (Ahmed). The intended rule: allowed but **speculative**; a claim that loses goes to the visible reconciliation state | plan §6, §7 |
+| Claim a resource (`claim_resource_or_queue`) | **Allowed, speculative** | `ClaimDelivery::Queued`: kept in the claims outbox and resent marked speculative. One that no longer fits opens a visible reconciliation entry for the offer's owner, instead of being refused | D376, D377, D414 |
+| Claim a resource (`claim_resource`) | Refused at once | `ClaimError::Offline` | D377 |
 | Change another user's item | Never | No such operation exists, online or offline | plan §7 |
 
-So offline, a user can only **add** things: new reports and new peer updates. Nothing made offline can change or overrule what
-someone else did, which is why no offline action needs a conflict rule beyond "first commit wins" (D27).
+So offline, a user can only **add** things: new reports, new peer updates and new claims. A report or an update cannot overrule
+what someone else did, so "first commit wins" (D27) settles them. A claim can conflict with someone else's, which is why it is
+marked speculative and a conflict is surfaced to the offer's owner, never silently dropped (D376, D378).
 
 ## 3. What is kept, where, and for how long
 
 | What | Kept by | Where | Limit | When the limit is hit | Entry |
 |---|---|---|---|---|---|
 | Reports made offline | The client itself | `<metrics.dir>/outbox-client-<id>.jsonl`, one JSON line each, so it survives a restart; memory only without a metrics directory | 10,000 reports | A new report is refused with `OutboxError::Full`; the queued ones are kept | D401, D405 |
-| Peer updates that could not be delivered | The sender | Memory | 100 per peer, 10,000 in all, 300 s from when the update was made | The oldest is dropped (`peer_update_dropped`, reason `limit` or `age`) | D407, D408 |
+| Claims made offline | The client itself | `<metrics.dir>/claims-client-<id>.jsonl`, the same way, so they survive a restart | 10,000 claims | A new claim gets `ClaimDelivery::NotQueued`; the queued ones are kept | D414 |
+| Peer updates that could not be delivered, zone gossip copies included | The sender | Memory | 100 per peer, 10,000 in all, 300 s from when the update was made | The oldest is dropped (`peer_update_dropped`, reason `limit` or `age`) | D407, D408 |
 
 **Why 300 s:** receivers remember the IDs of updates they have taken for 300 s (`p2p::SEEN_FOR`, D461), and so does Part I's gossip
 (D344). A held update is never resent after that, so a late resend can always be recognised as a duplicate.
@@ -56,15 +59,18 @@ someone else did, which is why no offline action needs a conflict rule beyond "f
 When `go_online` opens the gate:
 
 1. **Presence.** Every user the program had joined registers again straight away, with the same incarnation, because the program did
-   not restart (Part H, D329). *The cloud's directory is Part G's and not built yet, so for now every node refuses these calls.*
+   not restart (Part H, D329). If its lease ran out meanwhile, Part G's directory had let the record go; it is live and found
+   again after this one registration (D416).
 2. **The outbox.** Every queued report is sent, oldest first, 16 at a time, each **with the ID it was given when it was made**
    (D403, D404). A report the cloud already recorded, for example one sent just before the cut, is answered from that record and never
    planned twice. An answered or expired report leaves the outbox; one with no answer stays for the next reconnect.
-3. **Held peer updates.** One redelivery round at once, then every `client_retry_ms` (2 s) on a timer, oldest first per peer. A peer
+3. **Claims.** Every claim made offline is resent marked speculative, one at a time in the order they were made. Any answer
+   takes it out of the claims outbox; one with no answer stays (D414).
+4. **Held peer updates.** One redelivery round at once, then every `client_retry_ms` (2 s) on a timer, oldest first per peer. A peer
    that is still away is skipped after one failure per round. Every resend carries the same update ID, so it is at most a `Duplicate`
    at the receiver (D410, D315).
-4. **Missed zone updates.** *Not built yet:* the returning peer asks for what it missed in its zones. It needs Part G's directory and
-   Part I's gossip wiring.
+5. **Missed zone updates.** The zone gossip copies other programs could not deliver while this one was away were held by them, and
+   arrive with their next redelivery round, for outages up to 300 s (D415). There is no catch-up from the cloud past that (D417).
 
 ## 6. Why nothing is applied twice
 
@@ -75,9 +81,10 @@ When `go_online` opens the gate:
 
 ## 7. What can be lost, stated plainly
 
-- A program that goes away **for good** loses what it holds for peers: they are kept in memory, by the sender only (D407). Reports in
-  the outbox survive a restart with the same client ID.
-- A peer away for more than **300 s** misses updates held for it.
+- A program that goes away **for good** loses what it holds for peers: they are kept in memory, by the sender only (D407). Reports
+  and claims in its outboxes survive a restart with the same client ID (D401, D414).
+- A peer away for more than **300 s** misses updates held for it, zone updates included; there is no catch-up from the cloud
+  (D417). Those incidents are all still on record in the cloud.
 - Past **10,000** queued reports, new ones are refused, and the user is told.
 - A report that waited too long is refused as expired, on record.
 - A report sent just before the cut may be planned while the client is away. Its answer is lost on the way, but the resend gets the
@@ -93,6 +100,7 @@ Client events, each with a unix-microsecond timestamp, on the client's own clock
 | `outbox_queued`, `outbox_sent { outcome, waited_ms }` | Each report from queued to answered |
 | `outbox_flushed { sent, answered, expired, failed, reconcile_us }` | **The offline reconciliation delay** the spec asks for |
 | `peer_update_held`, `peer_update_forwarded { since_made_ms }`, `peer_update_dropped { reason }` | Pending updates kept, delivered and dropped, by reason |
+| `claim_queued`, `claims_flushed { claimed, reconciling, other, failed, reconcile_us }` | Claims made offline, and how many conflicted on return |
 
 **Tried on one PC** (main at `105d0f6`, `config/local.toml`, 5 users at a 200 ms think time, offline for 5 s): 116
 reports queued, all 116 answered after reconnecting, none expired or failed, reconciled in **522 ms**. Every queued report was on all
@@ -102,8 +110,6 @@ three nodes with the same `log_index`, its `age_ms` showing the 5 s it waited. T
 
 | Piece | Waits on |
 |---|---|
-| Offline claims and the visible reconciliation state | Part J (Ahmed) |
-| Presence on reconnect, end to end | Part G's directory (Omar); the client half is done (D329) |
-| Catching up on missed zone updates | Part G and Part I's wiring (Yahia) |
-| A second holder for peer updates, so they survive the sender going away | Part G's directory, to name a zone peer (D407) |
+| A second holder for peer updates, so they survive the sender going away | Possible now that Part G's directory names zone peers; not planned (D407) |
+| Catch-up from the cloud for zone updates missed past 300 s | Left out on purpose (D417) |
 | The web page's offline toggle | Part L (Noor) |
