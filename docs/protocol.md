@@ -170,6 +170,10 @@ yields none. Results of one group share a `log_index` (D133).
 | `PresenceRenew { user, incarnation, lease }` | extends the lease of a live or late record at this incarnation (D285) | `Presence(Renewed)` or `Presence(Unknown)` |
 | `PresenceDeregister { user, incarnation, at_ms }` | removes the record if it is at this incarnation | `Presence(Deregistered)` or `Presence(Unknown)` |
 | `PresenceTick { at_ms }` | moves the directory's log clock and drops what ran out of grace (D281) | `Presence(Ticked { expired })` |
+| `OfferResource { offer }` | records the offer, or replaces the provider's own offer at the same ID (D371) | `Claim(Offered { capacity })` |
+| `ClaimResource { resource, claimant, quantity, speculative, at_ms }` | claims `quantity` units, up to the offer's capacity, in log order (D374, D376) | `Claim(Claimed { token })`, `Claim(Refused { available })`, `Claim(Reconciling { token })` or `Claim(Unknown)` |
+| `ReleaseClaim { resource, claimant, token }` | gives up the claim held under `token`; a stale token is a no-op (D375) | `Claim(Released)` or `Claim(StaleRelease)` |
+| `ResolveReconciliation { resource, resolver, token, winner }` | settles the entry named `token`, only if `resolver` is the offer's owner (D378) | `Claim(Resolved { winner })`, `Claim(NotOwner)` or `Claim(Unknown)` |
 
 **The presence directory's clock (D281).** Every presence command carries the proposing node's wall-clock time (`at_ms`, in
 `PresenceLease` for register and renew). The directory keeps the highest one applied as its log clock and never moves it back.
@@ -508,3 +512,51 @@ The pure core and the agent in `src/gossip.rs`. No new message: zone updates are
 | Sends | `send_peer` (3 × 500 ms), concurrent, at most `max_in_flight`; past it the gossip task waits (D362, D363) |
 | Events | `gossip_published { update, zone, kind, version, targets }`, `gossip_received { update, zone, kind, hops, outcome, forwarded, age_ms }`, `gossip_send_failed { update, to_addr, reason }`, `gossip_zone_refreshed { zone, programs, ok, latency_us }` (D365). `age_ms` compares the origin's clock with the receiver's |
 | Config | `[gossip] fanout` (3), `hop_cap` (7), `seen_cap` (10000), `seen_max_age_ms` (300000), `refresh_ms` (10000), `max_in_flight` (256); all optional (D364) |
+
+## Resource offers and claims (Phase 2, Part J, D370–D381)
+
+A third state machine on the shared log, beside the presence directory, in `src/claims.rs`; its four commands are in the Raft
+log table above (D370, D371). No new config section: a claim's lease is its offer's own `available_until_ms`, judged against
+the presence directory's own log clock (`Directory::clock_ms`), not a second tick (D371, D379).
+
+**How a node answers (`node/claims.rs`).** As the presence directory: a node that is not serving stays quiet. A write is
+proposed by one node only, the member of its view at `sample_mix(sample_mix(resource.provider) ^ resource.seq) mod size`;
+the others stay quiet (D376). The proposer commits, then replies from the outcome, trimmed to what a caller needs:
+`Offered`/`Claimed`/`Reconciling`/`Released`/`Resolved` carry their `log_index` (and `token` where one exists); `Refused`,
+`StaleRelease` and `NotOwner` become `Refused(reason)`; `Unknown` becomes `Rejected(reason)` (D371, D375, D378). Node events:
+`resource_offered { resource, provider, capability, zone, capacity, available_until_ms, log_index, latency_us }` for each
+`offer_resource` committed; `claim_write { resource, claimant, quantity, kind, outcome, speculative, log_index, latency_us }`
+for each `claim_resource` or `release_claim` committed, `kind` being `claim` or `release`; `claim_conflict { resource,
+claimant, kind, log_index }` alongside a `Refused` (`kind: online_refused`) or `Reconciling` (`kind:
+reconciliation_opened`) outcome; `reconciliation_resolved { resource, challenger, winner, wait_ms, log_index }` for each
+`resolve_reconciliation` committed, `wait_ms` from the challenger's own clock when it first tried to the resolving node's
+clock. Once a second each node logs `claims_state { last_applied, digest, offers, reconciling, claimed, refused, resolved
+}`, `digest` being the claims' own (D380).
+
+**Claims calls**, four new `ClientRpc` methods sent to every node like `submit` and the presence calls. They are client
+traffic too: a silenced node drops them (D324, D375).
+
+| Method | Reply | What it is |
+|--------|-------|------------|
+| `offer_resource(ResourceOffer)` | `ClaimReply` | Record the offer, or replace this provider's own offer at the same ID (D371) |
+| `claim_resource(resource, claimant, quantity, speculative, at_ms)` | `ClaimReply` | Claim `quantity` units, up to capacity; `speculative` marks a claim first made offline (D376, D377) |
+| `release_claim(resource, claimant, token)` | `ClaimReply` | Give up the claim held under `token` (D375) |
+| `resolve_reconciliation(resource, resolver, token, winner)` | `ClaimReply` | Settle the entry, as the offer's owner (D378) |
+
+| Type | Fields |
+|------|--------|
+| `ResourceId` | `provider: ClientId`, `seq: u64`, minted by the offering client, no coordination needed (D372) |
+| `ResourceOffer` | `id`, `provider`, `capability`, `zone`, `location`, `capacity`, `available_until_ms` (D371, D374, D379) |
+| `ReconciliationWinner` | `Challenger` (evicts enough incumbents, most recently accepted first) or `Incumbents` (closes the entry, changing nothing) (D378) |
+| `ClaimReply` | `Offered { log_index }`, `Claimed { token, log_index }`, `Reconciling { token, log_index }`, `Released { log_index }`, `Resolved { log_index }`, `Refused(reason)`, `Rejected(reason)` |
+
+**The client side** (`src/client.rs`, `MeshClient`). `offer_resource`, `claim_resource`, `release_claim` and
+`resolve_reconciliation` each fire once to every node and take the first real answer; exactly one node ever answers, so this
+is one round, not `submit`'s retry budget (D376). `claim_resource` fails at once with `Offline` while the client is offline;
+`claim_resource_or_queue` instead keeps the claim in a small in-memory queue (`MeshClient::pending_claims`, Part J's own,
+not Aabed's incident outbox) and resends it with `speculative: true` on `go_online`, right after the incident outbox flush
+(D377).
+
+Demo scenario 8 (`tests/claims.rs`): an online claimant takes a one-capacity resource; a second claimant goes offline,
+queues its claim, and reconnects, surfacing a reconciliation entry instead of a silent refusal; the resource's owner
+resolves it for the challenger.

@@ -340,6 +340,36 @@ remember IDs (D408).
 **If asked what is lost:** read section 7 of the policy. **If asked about claims made offline:** Part J, and the rule is speculative
 with a visible reconciliation state (section 2).
 
+## Spec scenario 8. Conflicting claim (Part J, D370–D381)
+
+*Two clients claim the same resource under an injected delay or disconnection; show the system detecting the conflict and
+resolving it, or surfacing it.* No `ctl` or loadgen surface exists yet for offers and claims (a scope cut this PR, D371's
+entry): the scenario runs as a test against a real three-node cluster.
+
+**On one machine, with real nodes:**
+
+```bash
+cargo test --release --test claims -- --nocapture
+```
+
+Three cases, one per test: an offer claimed then released; an online claim that loses a capacity race, refused at once; and
+the deliberate conflict the spec asks for, `a_speculative_conflict_is_surfaced_and_the_owner_resolves_it_for_the_challenger`.
+
+**Walk through the third test as the demo.** A provider offers a resource of capacity 1. An incumbent claims it online and
+gets it. A second claimant (the challenger) goes offline (`MeshClient::go_offline`, Aabed's switch), tries to claim the same
+resource while offline (`claim_resource_or_queue`, queued client-side, Part J's own queue), then reconnects
+(`go_online`). The queued claim is resent marked `speculative`, and because it would now go over capacity it does not get a
+silent refusal: it opens a reconciliation entry instead, visible in every node's applied `Claims` state
+(`s.claims().reconciling_on(&resource)`). The resource's owner settles it, naming the challenger
+(`resolve_reconciliation(..., ReconciliationWinner::Challenger)`): the incumbent's claim is evicted and the challenger holds
+the resource under a fresh fencing token.
+
+**Say how it works:** claims are a third state machine on the shared log (D370), the same pattern as Part G's presence
+directory. A claim's fencing token is the log index it was accepted at (D375), confirming the note on D69. First in log
+order wins; the difference between the online and the offline case is not the log rule, it is whether the loser already
+acted on a belief the log had not confirmed yet (D376). Measured: `claim_conflict`'s `kind` for the conflict count and
+type, `reconciliation_resolved.wait_ms` for how long the item sat in reconciliation (D380).
+
 ## Questions to be ready for
 
 Every answer here comes from the spec, the class notes or the recordings, and nothing is left open (D213).
@@ -360,6 +390,13 @@ Every answer here comes from the spec, the class notes or the recordings, and no
 - **"Where is publish-subscribe?"** Phase 2, as Lecture 9 says: it needs a publish step and a discovery service. It is in the design, in
   `docs/architecture.md` section 13. We first chose to build a small one, then the lecture settled it (D209). So the page has no zone panel.
   Reporting does not need it; it exists to tell others in a zone.
+- **"Why fencing tokens and log order, not vector clocks or a quorum confirmation, for claims?"** The log already gives every node one
+  order everyone agrees on, with no second vote: reusing it costs nothing a quorum confirmation would also cost, since a claim still has
+  to pass through the same Raft commit to be answered at all (D375, confirming the note on D69). Vector clocks would tell us two claims
+  are concurrent, not which one should win, so we would still need a tie-break rule on top, and that rule may as well be the log we
+  already have. The limit: this only orders claims the log actually sees. A claim a client made and acted on entirely offline, before
+  it ever reaches a node, is invisible to the log until it is replayed, which is exactly why a speculative claim gets a reconciliation
+  entry instead of a flat answer, and why the demo's conflict needs a person, not just the log, to settle it (D376, D378).
 - **"Why tarpc?"** See D176 for the comparison with Java RMI, CORBA and Sun RPC/XDR, and D177 for the semantics.
 - **"Why UDP, when the notes say don't go this low?"** See D178. Noor's decision was UDP from clients to machines. Call IDs, matching and deadlines stay tarpc's, retries stay in the middleware, and the adapter holds no RPC logic.
 - **"What ends the call on a node that lost the bid?"** See D169. The node stays quiet, and the client's cancel ends it. A client that never cancels was the worst variant in the rows.
