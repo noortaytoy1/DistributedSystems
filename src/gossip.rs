@@ -969,7 +969,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use crate::proto::{Category, Point, RequestId, ResourceOffer};
+    use crate::proto::{Category, Point, RequestId, ResourceId, ResourceOffer};
 
     const ZONE: u16 = 2;
 
@@ -1142,10 +1142,12 @@ mod tests {
         let offer = |seq, capability| {
             let mut o = update(1, seq, 0, 1);
             o.body = P2pBody::ResourceOffer(ResourceOffer {
+                id: ResourceId { provider: 1, seq },
                 provider: UserId { client: 1, user: 4 },
                 capability,
                 zone: ZONE,
                 location: Point { x: 0, y: 0 },
+                capacity: 1,
                 available_until_ms: 0,
             });
             o

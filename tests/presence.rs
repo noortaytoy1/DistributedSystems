@@ -106,6 +106,45 @@ impl ClientRpc for Stub {
             },
         }
     }
+
+    // Claims (Part J) are not under test here; this stub never answers them.
+    async fn offer_resource(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceOffer,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn claim_resource(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u32,
+        _: bool,
+        _: u64,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn release_claim(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u64,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn resolve_reconciliation(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u64,
+        _: rescuemesh::proto::ReconciliationWinner,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
 }
 
 /// Start `n` stub nodes and a config that points at them, with fast retries.
