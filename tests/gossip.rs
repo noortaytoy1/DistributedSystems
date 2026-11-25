@@ -3,7 +3,8 @@
 //! (D325). The stub keeps the registered presence records, answers `discover` from them and answers
 //! every report with a committed result, so what is checked is the programs' side: a committed
 //! report reaches the whole zone, a stale directory does not pull in other zones, a repeated answer
-//! is not spread twice, a dead peer does not stop the rest, and with no directory nothing is sent.
+//! is not spread twice, a dead peer does not stop the rest, a subscriber that was offline gets its
+//! copies on return (Part K, D415), and with no directory nothing is sent.
 //!
 //! TODO(I): once Part G lands, add a test against a real three-node cloud (D368).
 #![allow(clippy::unwrap_used)]
@@ -395,6 +396,36 @@ async fn a_dead_peer_does_not_stop_the_rest_of_the_zone() {
     for (_, updates) in &mut others {
         assert_eq!(kinds(&take(updates, 2).await), ["assignment", "summary"]);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subscriber_that_was_offline_gets_the_zone_updates_on_return() {
+    let (_dir, config) = cloud().await;
+    let (publisher, _own) = program(51, ZONE, &config).await;
+    let (away, mut updates) = program(52, ZONE, &config).await;
+
+    away.go_offline();
+    publisher.submit(incident(51, 3)).await.unwrap();
+    // Neither copy gets through, so the publisher holds both for the subscriber (D415).
+    wait_until(WAIT, "the publisher to hold both copies", || {
+        publisher.held_updates() == 2
+    })
+    .await;
+    assert!(
+        updates.try_recv().is_err(),
+        "nothing reaches an offline program"
+    );
+
+    // Back online, the publisher's next redelivery round sends them (D410).
+    away.go_online().await.unwrap();
+    assert_eq!(
+        kinds(&take(&mut updates, 2).await),
+        ["assignment", "summary"]
+    );
+    wait_until(WAIT, "the publisher to let them go", || {
+        publisher.held_updates() == 0
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

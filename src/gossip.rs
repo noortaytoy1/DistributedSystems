@@ -44,8 +44,9 @@
 //! (D357, D358). The program subscribes to the zones of its joined users (D359). Copies go out
 //! through `send_peer`, concurrently and at most `max_in_flight` at once (D362, D363).
 //!
-//! Until Part G's directory and Part K's held sends land, some of this is a stand-in, marked
-//! `TODO(I)` where it must change (D368).
+//! Copies that cannot get through, because the target is briefly away or busy, go through Part
+//! K's store-and-forward and are sent again later (D415). Until Part G's directory lands, some of
+//! this is a stand-in, marked `TODO(I)` where it must change (D368).
 //!
 //! Owner: I (zone publish-subscribe).
 
@@ -62,7 +63,8 @@ use tokio::time::Instant;
 
 use crate::config::GossipSettings;
 use crate::metrics::{Event, EventLog, now_ms};
-use crate::p2p::{Delivered, INBOX_CAPACITY, PeerLink};
+use crate::offline::Forwarder;
+use crate::p2p::{Delivered, INBOX_CAPACITY, PeerError, PeerLink};
 use crate::presence::Presence;
 use crate::proto::{
     AssignmentUpdate, Capability, ClientId, CommittedResult, IncidentId, IncidentSummary,
@@ -676,6 +678,7 @@ impl GossipAgent {
         me: ClientId,
         settings: GossipSettings,
         peer: Arc<PeerLink>,
+        forwarder: Arc<Forwarder>,
         presence: Arc<Presence>,
         inbox: mpsc::Receiver<P2pEnvelope>,
         log: EventLog,
@@ -687,6 +690,7 @@ impl GossipAgent {
                 me,
                 settings,
                 peer,
+                forwarder,
                 presence,
                 out: out_tx,
                 log,
@@ -731,6 +735,9 @@ struct Run {
     me: ClientId,
     settings: GossipSettings,
     peer: Arc<PeerLink>,
+    /// Part K's store-and-forward: a copy that cannot get through now is held and tried again
+    /// (D362, D415).
+    forwarder: Arc<Forwarder>,
     presence: Arc<Presence>,
     out: mpsc::Sender<P2pEnvelope>,
     log: EventLog,
@@ -863,17 +870,30 @@ impl Run {
                 return;
             };
             let copy = forward.copy_of(envelope);
-            let (peer, log) = (self.peer.clone(), self.log.clone());
+            let (peer, forwarder, log) =
+                (self.peer.clone(), self.forwarder.clone(), self.log.clone());
             self.sends.spawn(async move {
-                // TODO(I): use Part K's `send_peer_or_hold` once #39 merges, so a peer that is
-                // briefly away gets the copy later (D362).
+                // A peer that is briefly away, or busy, gets the copy later through Part K's
+                // store-and-forward, held for at most 300 s, as long as receivers remember IDs
+                // (D362, D408, D415). Any other refusal is final and only logged.
                 let update = copy.id;
-                let reason = match peer.send_peer(&addr, copy).await {
+                let reason = match peer.send_peer(&addr, copy.clone()).await {
+                    Ok(Delivered {
+                        ack: P2pAck::Refused(reason),
+                        ..
+                    }) if reason == "busy" => {
+                        forwarder.hold(&addr, copy, &log);
+                        None
+                    }
                     Ok(Delivered {
                         ack: P2pAck::Refused(reason),
                         ..
                     }) => Some(reason),
                     Ok(_) => None,
+                    Err(PeerError::Offline | PeerError::GaveUp { .. }) => {
+                        forwarder.hold(&addr, copy, &log);
+                        None
+                    }
                     Err(e) => Some(e.to_string()),
                 };
                 if let Some(reason) = reason {

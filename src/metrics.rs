@@ -422,6 +422,21 @@ pub enum Event {
         failed: usize,
         reconcile_us: u64,
     },
+    /// A resource claim made while offline went into the claims outbox (D414).
+    ClaimQueued {
+        resource: ResourceId,
+        claimant: UserId,
+    },
+    /// One flush of the claims outbox ended: `reconciling` claims did not fit and opened a
+    /// reconciliation entry; `failed` got no answer and stay queued (D414).
+    ClaimsFlushed {
+        sent: usize,
+        claimed: usize,
+        reconciling: usize,
+        other: usize,
+        failed: usize,
+        reconcile_us: u64,
+    },
     /// A peer update that could not get through is held by its sender, `held` in all now (D407).
     PeerUpdateHeld {
         update: UpdateId,

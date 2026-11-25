@@ -2149,7 +2149,7 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   section 13.5): a claim first made offline is marked speculative and, if it would go over capacity, opens a
   reconciliation entry rather than a silent refusal.
 
-### 13.1 An offline client and its outbox (built, Part K, D400–D413)
+### 13.1 An offline client and its outbox (built, Part K, D400–D417)
 
 The written policy, what is allowed offline, what is kept and for how long, and what can be lost, is
 [offline-policy.md](offline-policy.md) (D412).
@@ -2158,7 +2158,10 @@ The written policy, what is allowed offline, what is kept and for how long, and 
 made meanwhile through `submit_or_queue` gets its ID at once and waits in the outbox, a JSON Lines file next to the
 event logs. `go_online` opens the gate and sends the outbox, 16 at a time, each with its own ID, so a report the
 cloud already recorded is answered from the record. A report too old by then is refused by the cloud, on record.
-Reconnection with discovery is the next Part K PR, once Part G's directory is built.
+Claims made offline go in a second outbox of the same kind, `claims-client-<id>.jsonl`, and are resent as speculative,
+one at a time, kept until answered (D414). Zone gossip copies to an absent subscriber are held like any peer update
+(D415). A returning client's users are registered again and found in Part G's directory (D416). There is no catch-up
+from the cloud for zone updates missed past 300 s (D417).
 
 **Store-and-forward for peers (built, D407–D411).** `send_peer_or_hold` holds a peer update that cannot get
 through, because this program or the peer is offline, or the peer's inbox is full. The sender keeps it, at most

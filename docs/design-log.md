@@ -350,7 +350,7 @@ table below in sync.
 | D374 | Counted claims against an offer's capacity; a claim is refused only once the total would go over it | J | Implemented |
 | D375 | Fencing tokens are the log index a claim was accepted at; a release or resolve naming the wrong one is a no-op | J | Implemented |
 | D376 | First in log order wins; an online over-capacity claim is refused at once, a speculative one opens a reconciliation entry | J | Implemented |
-| D377 | A claim first made offline is queued client-side in a new Part J queue, not Aabed's incident outbox, and resent speculative on reconnect | J, with K | Implemented |
+| D377 | A claim first made offline is queued client-side in a new Part J queue, not Aabed's incident outbox, and resent speculative on reconnect | J, with K | Implemented, amended by D414 |
 | D378 | A reconciliation entry is resolved only by the offer's own owner, naming the challenger or the incumbents; otherwise it is dropped once the offer expires | J | Implemented |
 | D379 | A claim's lease is its offer's own `available_until_ms`; no second lease-duration config key | J | Implemented |
 | D380 | Five claims events: `resource_offered`, `claim_write`, `claim_conflict`, `reconciliation_resolved`, `claims_state` | J, with L | Implemented |
@@ -369,6 +369,10 @@ table below in sync.
 | D411 | Events `peer_update_held`, `peer_update_forwarded` and `peer_update_dropped` | K | Implemented |
 | D412 | Offline, a user may only add: new reports and new peer updates | K | Implemented |
 | D413 | Demo scenario 7 uses loadgen's outage and the store-and-forward test, until the page has a toggle | K | Implemented |
+| D414 | Claims made offline go in a second outbox of the reports' kind: on disk, and kept until answered | K, with J | Implemented, amends D377 |
+| D415 | Zone gossip copies that cannot get through are held by Part K's store-and-forward | K, with I | Implemented, amends D362 |
+| D416 | Reconnection is checked end to end against Part G's directory | K, with G and H | Implemented |
+| D417 | No cloud catch-up for zone updates missed offline; peers' held copies cover 300 s | K, with I and G | Decided |
 | D310 | Part H's first PR is the contract: the peer envelope and the client's presence calls | H, with G | Implemented (contract) |
 | D311 | The client's peer endpoint opens its socket in `node/transport.rs`: a named exception to the sockets rule | H, with C | Decided, built in `part-h-p2p` |
 | D312 | Peers talk UDP with tarpc, like clients and the cloud | H | Decided, built in `part-h-p2p` |
@@ -427,7 +431,7 @@ table below in sync.
 | D359 | A program subscribes to the zones its joined users are in | I, with H | Implemented |
 | D360 | Gossip is always on, between the P2P inbox and `take_peer_updates` | I, with H and F | Implemented |
 | D361 | The agent lives in `gossip.rs`, below the pure core | I | Implemented |
-| D362 | Copies go out through `send_peer`, concurrently; `send_peer_or_hold` once Part K's #39 merges | I, with K | Implemented, switch planned |
+| D362 | Copies go out through `send_peer`, concurrently; `send_peer_or_hold` once Part K's #39 merges | I, with K | Implemented, amended by D415 |
 | D363 | At most 256 gossip sends in flight; past that the gossip task waits | I | Implemented |
 | D364 | An optional `[gossip]` section with six keys | I, with A | Implemented |
 | D365 | Four gossip events | I, with L | Implemented |
@@ -10078,7 +10082,7 @@ them on the six PCs.
 
 ### D362 · Copies go out through `send_peer`, concurrently; `send_peer_or_hold` once Part K's #39 merges
 
-- **Date:** 2026-11-24 · **Part:** I, with K · **Status:** Implemented (the switch is planned) · **Decided by:** Yahia
+- **Date:** 2026-11-24 · **Part:** I, with K · **Status:** Implemented, amended by D415 (the switch is made) · **Decided by:** Yahia
   Kilany, on the agent's recommendation (grill of `part-i-gossip`, 2026-11-24)
 - **Context.** `send_peer` tries 3 × 500 ms and gives up (D339). Aabed's open #39 adds `send_peer_or_hold`, which keeps an
   undeliverable update and sends it later, up to 300 s.
@@ -10473,7 +10477,7 @@ them on the six PCs.
 
 ### D377 · A claim made offline is queued client-side in a new Part J queue
 
-- **Date:** 2026-11-25 · **Part:** J, with K · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+- **Date:** 2026-11-25 · **Part:** J, with K · **Status:** Implemented, amended by D414 · **Decided by:** Ahmed Abdeen (grill of
   `part-j-claims`, 2026-11-25), on the agent's recommendation
 - **Context.** D376's `speculative` flag has to come from somewhere: the client has to remember that a claim was
   first attempted while offline, and resend it as speculative once it reconnects. Aabed's `src/offline.rs` already
@@ -10615,6 +10619,63 @@ them on the six PCs.
 - **Where.** Branch `part-j-claims`.
 - **How we check it.** The PR this entry ships with names every D370-D381 ID it adds.
 - **Report notes.** None beyond noting, if asked at the demo, why Part J shipped as one PR against the plan's three.
+
+### D414 · Claims made offline go in a second outbox of the reports' kind: on disk, and kept until answered
+
+- **Date:** 2026-11-25 · **Part:** K, with J · **Status:** Implemented, amends D377 · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** D377 (Part J) queued offline claims in memory and dropped any claim that got no answer on reconnect, and left it to Part K whether the two offline queues should merge. A restart mid-outage, or a flush while the cloud was unreachable, lost the claim without telling anyone.
+- **Options considered.**
+  1. *One generic outbox, holding reports or claims, each kind in its own file (chosen).* `Outbox<T>`, with `claims-client-<id>.jsonl` beside `outbox-client-<id>.jsonl`.
+  2. *One file holding both kinds.* A tagged line per entry; one flush loop, but the two flushes have different rules (reports 16 at a time, claims one at a time in order).
+  3. *Leave D377 as it is.* Claims lost on a restart or a failed flush.
+- **Decision.** `Outbox` becomes `Outbox<T = Queued>`; Part J's `PendingClaim` becomes `offline::QueuedClaim` in `Outbox<QueuedClaim>`. `claim_resource_or_queue` writes the claim to disk before answering `Queued`, or answers the new `ClaimDelivery::NotQueued(reason)` if it cannot. `flush_pending_claims` is public, sends one claim at a time in the order they were made, removes every claim that got any answer, keeps those with none, and returns `ClaimsReconciled`. Events `claim_queued` and `claims_flushed`.
+- **Why.** One mechanism instead of two, the persistence D377 named as missing, and no silent loss: a claim leaves only with an answer on record. One at a time keeps their log order the order they were made, which matters when two claims compete for the same capacity.
+- **Consequences.** `pending_claims()` is now `async`. Two identical claims made in the same millisecond are removed together when either is answered.
+- **Where.** `offline.rs::{Outbox, QueuedClaim, ClaimsReconciled}`, `client.rs::{claim_resource_or_queue, flush_pending_claims}`, `metrics.rs`.
+- **How we check it.** `tests/reconnect.rs`: claims survive a restart and reach the cloud; a claim with no answer stays queued. Mutants that keep claims in memory or drop unanswered ones each fail a test. `tests/claims.rs` still passes.
+- **Report notes.** Offline claims are as durable as offline reports.
+
+### D415 · Zone gossip copies that cannot get through are held by Part K's store-and-forward
+
+- **Date:** 2026-11-25 · **Part:** K, with I · **Status:** Implemented, amends D362 · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** D362 sent gossip copies through `send_peer` and planned the switch to `send_peer_or_hold` once #39 merged (`TODO(I)`). A subscriber that was offline when an update spread missed it.
+- **Options considered.**
+  1. *Hold on `Offline`, `GaveUp` or a `busy` ack, exactly as `send_peer_or_hold` does (chosen).*
+  2. *Hold every failure.* A `not subscribed` or `obsolete` refusal is final; holding it would resend it for 300 s for nothing.
+- **Decision.** The gossip agent gets the program's `Forwarder`. A copy that cannot get through now is held and goes out with the next redelivery round (D410); any other refusal is logged as before (`gossip_send_failed`).
+- **Why.** A program back within 300 s gets the zone updates it missed, from the peers that tried to send them, with no new message and no cloud in the path.
+- **Consequences.** A program that is gone for good is retried by each sender for 300 s, one try per round per peer. The `TODO(I)` for this switch is resolved.
+- **Where.** `gossip.rs::{Run::send_copies, GossipAgent::start}`, `client.rs::MeshClient::new`.
+- **How we check it.** `tests/gossip.rs::a_subscriber_that_was_offline_gets_the_zone_updates_on_return`; a mutant that drops instead of holding fails it.
+- **Report notes.** Missed zone updates on reconnect, within the retention window.
+
+### D416 · Reconnection is checked end to end against Part G's directory
+
+- **Date:** 2026-11-25 · **Part:** K, with G and H · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** Part H's agent registers every joined user again on `go_online` (D329), but no test showed it against the real directory, where a lease runs out while the client is away.
+- **Options considered.**
+  1. *A multi-node test with short leases (chosen).*
+  2. *Rely on Part G's and Part H's own tests.* Neither covers the two together across an outage.
+- **Decision.** `tests/reconnect.rs::a_returning_client_is_found_again_after_its_lease_ran_out`: a 600 ms lease with 300 ms of grace; the user is live on every node, the client goes offline, the record goes on every node, the client comes back, and the user is live and found again with the same peer address. No code change.
+- **Why.** The reconnection order in `docs/offline-policy.md` section 5 is now shown, not only described.
+- **Consequences.** None.
+- **Where.** `tests/reconnect.rs`.
+- **How we check it.** The test, 10 runs in a row.
+- **Report notes.** Presence after an outage: found again within one registration after reconnecting.
+
+### D417 · No cloud catch-up for zone updates missed offline; peers' held copies cover 300 s
+
+- **Date:** 2026-11-25 · **Part:** K, with I and G · **Status:** Decided · **Decided by:** the agent, on its recommendation, on Aabed Elghadban's instruction to take every recommendation for Part K and review them all after Phase 2 (2026-11-21)
+- **Context.** A program that was offline longer than any peer holds copies (300 s, D408) misses the zone updates of that time. The cloud has every committed incident, but `IncidentQuery` asks only by ID or by client.
+- **Options considered.**
+  1. *No catch-up from the cloud (chosen).* The held copies cover outages up to 300 s; later updates arrive as they happen.
+  2. *A new `IncidentQuery::InZones { zones, since_ms }` the client asks on reconnect.* Complete, but a contract change (`proto.rs`) needing every sender's and receiver's owner to review, a new read on the nodes, and the cloud back in the data path for P2P content, ten days before the deadline.
+- **Decision.** Option 1. `docs/offline-policy.md` states the limit.
+- **Why.** The spec asks for best effort and for the cloud to stay out of the P2P data path; held copies are both. Nothing a user made is lost by this: it concerns other users' updates, which are all still on record in the cloud.
+- **Consequences.** An outage past 300 s misses the zone notices of that time. If the lab results or the instructor ask for it, option 2 is the change, and this entry is superseded.
+- **Where.** `docs/offline-policy.md` sections 5 and 7.
+- **How we check it.** Stated as a limit in the report.
+- **Report notes.** A deliberate limit, with the alternative and its cost.
 
 ### Notes on older entries
 
