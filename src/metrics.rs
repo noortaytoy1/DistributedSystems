@@ -20,7 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::proto::{
-    Capability, NodeId, PeerBody, RaftRpc, RequestId, ResponderId, UpdateId, UserId, ZoneId,
+    Capability, NodeId, PeerBody, RaftRpc, ReconciliationWinner, RequestId, ResourceId,
+    ResponderId, UpdateId, UserId, ZoneId,
 };
 
 /// Wall-clock time in unix microseconds. Use it for event timestamps only; measure durations
@@ -596,6 +597,65 @@ pub enum Event {
         cpu_busy_ticks: Option<u64>,
         cpu_total_ticks: Option<u64>,
         mem_available_kb: Option<u64>,
+    },
+
+    // --- resource offers and claims (Phase 2, Part J, D370-D380)
+    /// This node's proposal recorded, or replaced, the offer at `resource`, with `capacity` units
+    /// (D371). `latency_us` runs from the call arriving to the commit.
+    ResourceOffered {
+        resource: ResourceId,
+        provider: UserId,
+        capability: Capability,
+        zone: ZoneId,
+        capacity: u32,
+        available_until_ms: u64,
+        log_index: u64,
+        latency_us: u64,
+    },
+    /// A claim or release this node proposed was committed. `kind` is `claim` or `release`;
+    /// `outcome` is the `ClaimOutcome`'s kind, for example `resource_claimed` or
+    /// `resource_claim_refused` (D374-D376). `latency_us` runs from the call arriving to the
+    /// commit.
+    ClaimWrite {
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        kind: &'static str,
+        outcome: &'static str,
+        speculative: bool,
+        log_index: u64,
+        latency_us: u64,
+    },
+    /// A claim on `resource` did not simply get in: `kind` is `online_refused` (an online
+    /// claimant's over-capacity claim, answered at once) or `reconciliation_opened` (a
+    /// speculative one, surfaced instead) (D376).
+    ClaimConflict {
+        resource: ResourceId,
+        claimant: UserId,
+        kind: &'static str,
+        log_index: u64,
+    },
+    /// A reconciliation entry on `resource` was settled, naming `winner`. `wait_ms` is from the
+    /// challenger's own clock when it first tried to the resolving node's clock: an approximation
+    /// across two machines' clocks, like the presence lease clock, not a latency measurement
+    /// (D378, D380).
+    ReconciliationResolved {
+        resource: ResourceId,
+        challenger: UserId,
+        winner: ReconciliationWinner,
+        wait_ms: u64,
+        log_index: u64,
+    },
+    /// Once a second: the claims state's size, its digest and its counters, for the plots and to
+    /// compare nodes at the same index (D380).
+    ClaimsState {
+        last_applied: u64,
+        digest: u64,
+        offers: usize,
+        reconciling: usize,
+        claimed: u64,
+        refused: u64,
+        resolved: u64,
     },
 }
 

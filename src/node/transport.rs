@@ -52,11 +52,11 @@ use crate::config::ClusterConfig;
 use crate::metrics::{Event, EventLog, MessageCounters, MsgKind, UdpCounters};
 use crate::node::squeeze::{expand, squeeze};
 use crate::proto::{
-    self, Bid, ClientReply, ClientRequest, ClientRpc, ClientRpcClient, ClientRpcRequest,
-    ClientRpcResponse, Command, ControlReply, ControlRequest, DiscoverReply, FaultBid,
-    IncidentQuery, NodeId, P2pRpc, P2pRpcClient, P2pRpcRequest, P2pRpcResponse, PeerBody,
+    self, Bid, ClaimReply, ClientReply, ClientRequest, ClientRpc, ClientRpcClient,
+    ClientRpcRequest, ClientRpcResponse, Command, ControlReply, ControlRequest, DiscoverReply,
+    FaultBid, IncidentQuery, NodeId, P2pRpc, P2pRpcClient, P2pRpcRequest, P2pRpcResponse, PeerBody,
     PeerEnvelope, PeerReply, PeerRpc, PeerRpcClient, PresenceQuery, PresenceRecord, PresenceReply,
-    RaftRpc, Term, UserId,
+    RaftRpc, ReconciliationWinner, ResourceId, ResourceOffer, Term, UserId,
 };
 
 /// Drops all traffic while set. Cheap to clone; clones share the flag.
@@ -842,6 +842,60 @@ pub enum PresenceAnswer {
 pub type PresenceHandler =
     Arc<dyn Fn(PresenceCall) -> BoxFuture<'static, Option<PresenceAnswer>> + Send + Sync>;
 
+/// One claims call as the claims service takes it (Part J, D371-D378).
+#[derive(Debug, Clone)]
+pub enum ClaimCall {
+    Offer(ResourceOffer),
+    Claim {
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        speculative: bool,
+        at_ms: u64,
+    },
+    Release {
+        resource: ResourceId,
+        claimant: UserId,
+        token: u64,
+    },
+    Resolve {
+        resource: ResourceId,
+        resolver: UserId,
+        token: u64,
+        winner: ReconciliationWinner,
+    },
+}
+
+impl ClaimCall {
+    pub fn resource(&self) -> ResourceId {
+        match self {
+            ClaimCall::Offer(offer) => offer.id,
+            ClaimCall::Claim { resource, .. }
+            | ClaimCall::Release { resource, .. }
+            | ClaimCall::Resolve { resource, .. } => *resource,
+        }
+    }
+
+    /// The user this call is about: the claimant for a claim or release, the provider for an
+    /// offer, the resolver for a resolve.
+    pub fn claimant(&self) -> UserId {
+        match self {
+            ClaimCall::Offer(offer) => offer.provider,
+            ClaimCall::Claim { claimant, .. } | ClaimCall::Release { claimant, .. } => *claimant,
+            ClaimCall::Resolve { resolver, .. } => *resolver,
+        }
+    }
+}
+
+/// What the claims service answers: one reply type, since every claims call takes a `ClaimReply`.
+#[derive(Debug, Clone)]
+pub struct ClaimAnswer(pub ClaimReply);
+
+/// Handles one claims call. `None` keeps the call open with nothing said, as for a presence call
+/// from a node that is not the one to answer (D36, D376).
+pub type ClaimHandler =
+    Arc<dyn Fn(ClaimCall) -> BoxFuture<'static, Option<ClaimAnswer>> + Send + Sync>;
+
 /// The server side of [`ClientRpc`].
 #[derive(Clone)]
 pub struct ClientServer {
@@ -850,6 +904,7 @@ pub struct ClientServer {
     on_request: RequestHandler,
     on_control: ControlHandler,
     on_presence: PresenceHandler,
+    on_claims: ClaimHandler,
 }
 
 impl ClientServer {
@@ -859,6 +914,7 @@ impl ClientServer {
         on_request: RequestHandler,
         on_control: ControlHandler,
         on_presence: PresenceHandler,
+        on_claims: ClaimHandler,
     ) -> Self {
         Self {
             gate,
@@ -866,6 +922,7 @@ impl ClientServer {
             on_request,
             on_control,
             on_presence,
+            on_claims,
         }
     }
 }
@@ -951,6 +1008,64 @@ impl ClientRpc for ClientServer {
             PresenceAnswer::Reply(_) => std::future::pending().await,
         }
     }
+
+    // Claims are client traffic too: a silenced node stays quiet, as for `submit` and presence
+    // (D324, D375). The claims service (Part J, `node/claims.rs`) decides the rest.
+
+    async fn offer_resource(self, _: tarpc::context::Context, offer: ResourceOffer) -> ClaimReply {
+        self.claims(ClaimCall::Offer(offer)).await
+    }
+
+    async fn claim_resource(
+        self,
+        _: tarpc::context::Context,
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        speculative: bool,
+        at_ms: u64,
+    ) -> ClaimReply {
+        self.claims(ClaimCall::Claim {
+            resource,
+            claimant,
+            quantity,
+            speculative,
+            at_ms,
+        })
+        .await
+    }
+
+    async fn release_claim(
+        self,
+        _: tarpc::context::Context,
+        resource: ResourceId,
+        claimant: UserId,
+        token: u64,
+    ) -> ClaimReply {
+        self.claims(ClaimCall::Release {
+            resource,
+            claimant,
+            token,
+        })
+        .await
+    }
+
+    async fn resolve_reconciliation(
+        self,
+        _: tarpc::context::Context,
+        resource: ResourceId,
+        resolver: UserId,
+        token: u64,
+        winner: ReconciliationWinner,
+    ) -> ClaimReply {
+        self.claims(ClaimCall::Resolve {
+            resource,
+            resolver,
+            token,
+            winner,
+        })
+        .await
+    }
 }
 
 impl ClientServer {
@@ -965,6 +1080,18 @@ impl ClientServer {
         match work.await {
             // The gate can have closed while the work ran.
             Ok(Some(answer)) if !self.gate.is_silenced() => answer,
+            _ => std::future::pending().await,
+        }
+    }
+
+    /// Run one claims call through the claims service, in its own task, as [`presence`](Self::presence).
+    async fn claims(&self, call: ClaimCall) -> ClaimReply {
+        if self.gate.is_silenced() {
+            return std::future::pending().await;
+        }
+        let work = tokio::spawn((self.on_claims)(call));
+        match work.await {
+            Ok(Some(answer)) if !self.gate.is_silenced() => answer.0,
             _ => std::future::pending().await,
         }
     }
