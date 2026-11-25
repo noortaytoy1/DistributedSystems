@@ -62,9 +62,10 @@ use crate::offline::{
 use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::presence::{self, Discovered, Presence, PresenceError};
 use crate::proto::{
-    Capability, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
+    Capability, ClaimReply, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
     ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, P2pAck,
-    P2pBody, P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReplyBody, RequestId, UserId, ZoneId,
+    P2pBody, P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReconciliationWinner, ReplyBody,
+    RequestId, ResourceId, ResourceOffer, UserId, ZoneId,
 };
 
 /// Each wait varies by up to this share, in percent, so retries do not arrive together.
@@ -148,6 +149,36 @@ pub enum ClientError {
     Outbox(#[from] OutboxError),
 }
 
+/// Why a claims call did not get an answer (Part J, D371-D378).
+#[derive(Debug, thiserror::Error)]
+pub enum ClaimError {
+    /// The client is offline: nothing was sent. `claim_resource_or_queue` queues a claim instead.
+    #[error("the client is offline")]
+    Offline,
+    #[error("no answer within the call budget")]
+    Timeout,
+}
+
+/// What became of a claim handed to [`MeshClient::claim_resource_or_queue`].
+#[derive(Debug, Clone)]
+pub enum ClaimDelivery {
+    /// The client was online and a node answered.
+    Answered(ClaimReply),
+    /// The client was offline, so the claim waits to be resent as speculative on reconnect.
+    Queued,
+}
+
+/// A claim first attempted while offline, resent with `speculative: true` on reconnect (D377).
+#[derive(Debug, Clone, Copy)]
+struct PendingClaim {
+    resource: ResourceId,
+    claimant: UserId,
+    quantity: u32,
+    /// This client's own clock when it first tried: carried through to the eventual command, for
+    /// the reconciliation report (D376).
+    at_ms: u64,
+}
+
 /// A request that got a reply.
 #[derive(Debug, Clone)]
 pub struct Submitted {
@@ -201,6 +232,10 @@ pub struct MeshClient {
     outbox: Outbox,
     /// When this client last went offline, while it is.
     offline_since: std::sync::Mutex<Option<Instant>>,
+    /// Claims first attempted while offline, resent as speculative on reconnect (Part J, D377).
+    /// In memory only: a crash mid-outage drops them, unlike Aabed's incident outbox, which is a
+    /// deliberate simplification outside Part J's scope.
+    pending_claims: std::sync::Mutex<Vec<PendingClaim>>,
     /// Each stub's dispatch and the reporter. Dropped with the client, which aborts them.
     _tasks: JoinSet<()>,
 }
@@ -296,6 +331,7 @@ impl MeshClient {
             gate,
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
+            pending_claims: std::sync::Mutex::new(Vec::new()),
             _tasks: tasks,
         }
     }
@@ -478,6 +514,8 @@ impl MeshClient {
             });
         }
         let reports = self.flush_outbox().await;
+        // Then the claims queued while offline, as speculative (Part J, D377).
+        self.flush_pending_claims().await;
         // Then the updates held for peers (D410); those still away wait for the timer.
         self.redeliver_held().await;
         reports
@@ -579,6 +617,175 @@ impl MeshClient {
     /// What this client's sockets have done so far.
     pub fn udp_counts(&self) -> UdpCounts {
         self.counters.snapshot()
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Resource offers and claims (Phase 2, Part J, D371-D378)
+    // -----------------------------------------------------------------------------------------
+
+    /// Record an offer, or replace this provider's own offer at the same ID with new terms
+    /// (D371). Sent to every node; exactly one proposes it, so this returns its answer.
+    pub async fn offer_resource(&self, offer: ResourceOffer) -> Result<ClaimReply, ClaimError> {
+        self.claims_call(|node, ctx| {
+            let offer = offer.clone();
+            async move { node.offer_resource(ctx, offer).await }
+        })
+        .await
+    }
+
+    /// Claim `quantity` units of `resource`, online. Fails at once with [`ClaimError::Offline`]
+    /// while offline: see [`claim_resource_or_queue`](Self::claim_resource_or_queue).
+    pub async fn claim_resource(
+        &self,
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+    ) -> Result<ClaimReply, ClaimError> {
+        if self.is_offline() {
+            return Err(ClaimError::Offline);
+        }
+        self.claim_resource_now(resource, claimant, quantity, false, now_ms())
+            .await
+    }
+
+    /// As [`claim_resource`](Self::claim_resource), but while offline the claim is kept and
+    /// resent as speculative on reconnect (D376, D377), instead of failing.
+    pub async fn claim_resource_or_queue(
+        &self,
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+    ) -> ClaimDelivery {
+        let at_ms = now_ms();
+        if !self.is_offline() {
+            if let Ok(reply) = self
+                .claim_resource_now(resource, claimant, quantity, false, at_ms)
+                .await
+            {
+                return ClaimDelivery::Answered(reply);
+            }
+        }
+        self.pending_claims
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(PendingClaim {
+                resource,
+                claimant,
+                quantity,
+                at_ms,
+            });
+        ClaimDelivery::Queued
+    }
+
+    async fn claim_resource_now(
+        &self,
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        speculative: bool,
+        at_ms: u64,
+    ) -> Result<ClaimReply, ClaimError> {
+        self.claims_call(|node, ctx| async move {
+            node.claim_resource(ctx, resource, claimant, quantity, speculative, at_ms)
+                .await
+        })
+        .await
+    }
+
+    /// Give up the claim on `resource` held under `token`, the log index it was accepted at
+    /// (D375).
+    pub async fn release_claim(
+        &self,
+        resource: ResourceId,
+        claimant: UserId,
+        token: u64,
+    ) -> Result<ClaimReply, ClaimError> {
+        self.claims_call(|node, ctx| async move {
+            node.release_claim(ctx, resource, claimant, token).await
+        })
+        .await
+    }
+
+    /// Settle the reconciliation entry named `token` on `resource`, as the offer's own owner
+    /// (D378).
+    pub async fn resolve_reconciliation(
+        &self,
+        resource: ResourceId,
+        resolver: UserId,
+        token: u64,
+        winner: ReconciliationWinner,
+    ) -> Result<ClaimReply, ClaimError> {
+        self.claims_call(|node, ctx| async move {
+            node.resolve_reconciliation(ctx, resource, resolver, token, winner)
+                .await
+        })
+        .await
+    }
+
+    /// Claims queued while offline, waiting to be resent.
+    pub fn pending_claims(&self) -> usize {
+        self.pending_claims
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
+    }
+
+    /// Resend every claim queued while offline, as speculative, oldest first (D377). Called from
+    /// [`go_online`](Self::go_online); a claim with no answer is dropped, same as a lost online
+    /// claim would be: the caller that queued it is gone, so nothing re-reads the result.
+    async fn flush_pending_claims(&self) {
+        let pending = std::mem::take(
+            &mut *self
+                .pending_claims
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        for claim in pending {
+            let _ = self
+                .claim_resource_now(
+                    claim.resource,
+                    claim.claimant,
+                    claim.quantity,
+                    true,
+                    claim.at_ms,
+                )
+                .await;
+        }
+    }
+
+    /// Fire one claims call to every node and take the first real answer. Exactly one node
+    /// proposes it (D376); the others never answer, so this is one round, not a retry loop: a
+    /// `Command` is idempotent, so the caller may simply call again after a timeout.
+    async fn claims_call<F>(
+        &self,
+        make: impl Fn(ClientRpcClient, tarpc::context::Context) -> F,
+    ) -> Result<ClaimReply, ClaimError>
+    where
+        F: Future<Output = Result<ClaimReply, RpcError>>,
+    {
+        if self.is_offline() {
+            return Err(ClaimError::Offline);
+        }
+        let deadline = Instant::now() + self.call_budget;
+        let mut ctx = tarpc::context::current();
+        ctx.deadline = deadline.into();
+        let mut calls = FuturesUnordered::new();
+        for node in &self.nodes {
+            calls.push(make(node.clone(), ctx));
+        }
+        let wait = tokio::time::sleep(self.call_budget);
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                biased;
+                Some(result) = calls.next(), if !calls.is_empty() => {
+                    if let Ok(reply) = result {
+                        return Ok(reply);
+                    }
+                }
+                _ = &mut wait => return Err(ClaimError::Timeout),
+            }
+        }
     }
 
     /// Submit an incident and wait for the first reply. Latency counts from now. This is the one
