@@ -396,7 +396,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Capability, Point, ResourceOffer};
+    use crate::proto::{Capability, Point, ResourceId, ResourceOffer};
 
     fn envelope(origin: ClientId, seq: u64, to: Option<UserId>) -> P2pEnvelope {
         P2pEnvelope {
@@ -412,6 +412,10 @@ mod tests {
             hops: 0,
             max_hops: 4,
             body: P2pBody::ResourceOffer(ResourceOffer {
+                id: ResourceId {
+                    provider: origin,
+                    seq: 0,
+                },
                 provider: UserId {
                     client: origin,
                     user: 0,
@@ -419,6 +423,7 @@ mod tests {
                 capability: Capability::Medical,
                 zone: 1,
                 location: Point { x: 0, y: 0 },
+                capacity: 1,
                 available_until_ms: 0,
             }),
         }

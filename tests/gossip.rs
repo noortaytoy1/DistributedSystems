@@ -127,6 +127,45 @@ impl ClientRpc for Stub {
             log_index: 1,
         }
     }
+
+    // Claims (Part J) are not under test here; this stub never answers them.
+    async fn offer_resource(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceOffer,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn claim_resource(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u32,
+        _: bool,
+        _: u64,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn release_claim(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u64,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
+    async fn resolve_reconciliation(
+        self,
+        _: tarpc::context::Context,
+        _: rescuemesh::proto::ResourceId,
+        _: UserId,
+        _: u64,
+        _: rescuemesh::proto::ReconciliationWinner,
+    ) -> rescuemesh::proto::ClaimReply {
+        std::future::pending().await
+    }
 }
 
 /// One stub node and a config pointing at it, with fast retries and any free peer port.

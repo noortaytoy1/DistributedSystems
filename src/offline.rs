@@ -603,7 +603,9 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{AssignmentUpdate, Category, IncidentSummary, Point, ResourceOffer};
+    use crate::proto::{
+        AssignmentUpdate, Category, IncidentSummary, Point, ResourceId, ResourceOffer,
+    };
 
     fn queued(seq: u64) -> Queued {
         Queued {
@@ -726,10 +728,15 @@ mod tests {
 
     fn offer(until_ms: u64) -> P2pBody {
         P2pBody::ResourceOffer(ResourceOffer {
+            id: ResourceId {
+                provider: 7,
+                seq: 0,
+            },
             provider: UserId { client: 7, user: 0 },
             capability: Capability::Medical,
             zone: 1,
             location: Point { x: 0, y: 0 },
+            capacity: 1,
             available_until_ms: until_ms,
         })
     }
