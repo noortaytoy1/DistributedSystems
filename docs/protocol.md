@@ -500,7 +500,7 @@ Every peer message and the largest `discover` answer fit one 1,400-byte datagram
 | Events | `p2p_listening { addr }`, `p2p_sent { update, to_addr, ack, tries, latency_us }`, `p2p_received { update, from, hops, outcome }` (D464) |
 | Config | `[p2p] port_min`, `port_max`, `try_ms`, `tries` |
 
-## Zone gossip (Phase 2, Part I, D340–D368)
+## Zone gossip (Phase 2, Part I, D340–D369, D490)
 
 The pure core and the agent in `src/gossip.rs`. No new message: zone updates are `P2pEnvelope`s with `to: None`, sent with
 `deliver` like any peer update. `take_peer_updates()` now hands over what gossip found new (D360), not the raw inbox.
@@ -511,8 +511,9 @@ The pure core and the agent in `src/gossip.rs`. No new message: zone updates are
 | What | `IncidentSummary` at `version` 1, and `AssignmentUpdate` at `version` = the commit's `log_index` (D355); `max_hops` = `[gossip] hop_cap` |
 | Forwarding | A program with a joined user in the zone forwards a new zone update to `fanout` programs of the zone while `hops < min(max_hops, hop_cap)`, never to itself or the origin (D345–D348, D354, D359) |
 | Dropped | A seen update ID (the endpoint answers `Duplicate`, D461); a version at most the subject's highest (`obsolete`); a zone this program has no user in (`not_subscribed`). The last two are acked `Accepted` by the endpoint and counted at the receiver (D342, D348, D353) |
-| Zone list | `discover` for the zone, one address per program, at most 16 records (D321); asked for on first use (waiting at most `refresh_ms`), then again in the background once older than `refresh_ms`. A failed answer keeps the old list (D357, D358) |
-| Sends | `send_peer` (3 × 500 ms), concurrent, at most `max_in_flight`; past it the gossip task waits (D362, D363) |
+| Zone list | `discover` for the zone, one address per program, at most 16 records (D321), one per program before any program's second (D288); asked for on first use (waiting at most `refresh_ms`), then again in the background once older than `refresh_ms`. A failed answer keeps the old list (D357, D358) |
+| Sends | `send_peer` (3 × 500 ms), concurrent, at most `max_in_flight`; past it the gossip task waits (D362, D363). A copy that gets no ack, finds the program offline, or is answered `busy` is held by Part K's store-and-forward and sent again (D415) |
+| Subjects | Versions count per summary (incident), assignment (incident) or offer (`ResourceId`, D490) (D343) |
 | Events | `gossip_published { update, zone, kind, version, targets }`, `gossip_received { update, zone, kind, hops, outcome, forwarded, age_ms }`, `gossip_send_failed { update, to_addr, reason }`, `gossip_zone_refreshed { zone, programs, ok, latency_us }` (D365). `age_ms` compares the origin's clock with the receiver's |
 | Config | `[gossip] fanout` (3), `hop_cap` (7), `seen_cap` (10000), `seen_max_age_ms` (300000), `refresh_ms` (10000), `max_in_flight` (256); all optional (D364) |
 

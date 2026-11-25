@@ -79,7 +79,7 @@ Section 13 lists the hooks we leave for them (D69, D209).
 | Clients send to the cloud over UDP                         | `submit` through tarpc on a small UDP adapter; `ctl` on tarpc over TCP. Noor's decision, reverses D17 | built; **only on loopback so far: real switches and network cards are untested, and no run has had the buffer raised** | D167, D168, D170, D171 |
 | A failure is chosen by an election among the nodes         | Every 30 to 60 s the three nodes draw numbers, and the highest goes silent for 1 to 20 s. A node missing any of the 3 numbers does nothing. No leader involved. `config/lab.example.toml` ships its timers never firing, and its comments say how to turn it on | built | D158–D162, D165 |
 | A simple frontend, and many user processes                 | A web page on each client PC; 10 real `loadgen` programs share each PC's users | built | D181, D182, D197 |
-| Publish-subscribe                                          | Phase 2, by Lecture 9. Zone gossip is built in `src/gossip.rs` and runs in every client program; the zone lists come from Part G's directory (sections 13.3, 13.4) | built; directory built (G) | D131, D209, D340–D368, D288 |
+| Publish-subscribe                                          | Phase 2, by Lecture 9. Zone gossip is built in `src/gossip.rs` and runs in every client program; the zone lists come from Part G's directory (sections 13.3, 13.4) | built; directory built (G) | D131, D209, D340–D369, D288, D490 |
 
 ### Rotating rounds: no elected node (built, D249)
 
@@ -2135,8 +2135,8 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   reinvented.
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
 - **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
-  duplicate suppression and bounded forwarding (D131). Zone gossip is built (section 13.3, D340–D368); its zone lists
-  wait on Part G's directory. Lecture 9 places it in Phase 2, because it needs a publish step
+  duplicate suppression and bounded forwarding (D131). Zone gossip is built (section 13.3, D340–D369, D490), with its zone lists
+  from Part G's directory. Lecture 9 places it in Phase 2, because it needs a publish step
   and discovery, so it is in the design here and not in Phase 1's build (D209). Reporting does not need it; it exists to
   tell others in a zone. The difference from group communication: there the sender drives one message to many; here
   providers publish, interested parties subscribe, and they are pushed a notice when something concerns them.
@@ -2226,13 +2226,13 @@ sequenceDiagram
     B-->>A: P2pAck Accepted, the round trip is the delivery latency
 ```
 
-### 13.3 Zone gossip (core and agent built, against stub nodes until Part G, Part I, D340–D368)
+### 13.3 Zone gossip (built, with Part G's directory, Part I, D340–D369, D490)
 
 `src/gossip.rs` holds the rules by which a zone's programs spread an update (the pure core) and the agent that runs them in
 every client program. A gossip peer is a client program, not a user (D341). A program with a user joined in the zone that gets
 an update it has not seen hands it to the application and sends it to `k = 3` programs of the zone, picked by hash ranking,
 never itself or the origin (D347, D354). Two checks drop copies: an update ID seen before is a duplicate, and a version at
-most the highest seen for its subject (incident, assignment, or provider and capability) is obsolete (D342, D343). Both caches
+most the highest seen for its subject (incident, assignment, or the offer's `ResourceId`) is obsolete (D342, D343, D490). Both caches
 hold 10,000 entries or 300 s (D344). The origin sends with `hops = 0` and `max_hops = 7`; a program forwards while
 `hops < min(max_hops, 7)` (D316, D345, D346). A program with no user in the zone drops the copy, and a direct message is never
 forwarded (D348). Part H's endpoint (`p2p.rs`) answers each `deliver` and drops repeated update IDs before gossip sees an
@@ -2246,9 +2246,10 @@ assignment at the commit's log index (D355), Expired answers included and provis
 none of it, and still answers before anything is published.
 
 **Where the zone's programs come from.** `discover` for the zone, collapsed to one address per program, cached and asked for
-again at most every 10 s; a failed answer keeps the old list (D357, D358). Until Part G's directory exists, real nodes answer
-`Rejected` (D325), so on a real cluster every list is empty and a publish goes to nobody, logged with `targets` 0 (D367). The
-tests use a stub node.
+again at most every 10 s; a failed answer keeps the old list (D357, D358). Part G's directory answers a zone query with one
+record per program before any program's second (D288), so 16 records reach up to 16 programs. A program with no joined user
+is in no list, so until loadgen joins its users (Part L) a load run's publishes go to nobody, logged with `targets` 0 (D367).
+`tests/gossip.rs` runs the path on three real nodes and, for the edge cases, on a stub node (D369).
 
 **Components in one program.**
 
@@ -2301,11 +2302,10 @@ sequenceDiagram
     Note over N: no user in zone 2: dropped, gossip_received not_subscribed
 ```
 
-**Built and planned.** Built: the core, the agent, the `[gossip]` keys, the four events, `tests/gossip.rs` against a stub
-node. Planned, each marked `TODO(I)` in the code (D368): the zone lists from Part G's directory, spread over programs (D357);
-`send_peer_or_hold` once Part K's #39 merges (D362); a test with a real cloud after Part G; the sender of each copy if the lab
-shows the extra duplicates matter (D354); the planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into
-loadgen and the zone panel is Part L's.
+**Built and planned.** Built: the core, the agent, the `[gossip]` keys, the four events, held copies through Part K's
+store-and-forward (D415), zone lists from Part G's directory (D288), and `tests/gossip.rs` on three real nodes and on a stub
+node (D369). Planned: the sender of each copy if the lab shows the extra duplicates matter, the one `TODO(I)` left (D354); the
+planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into loadgen and the zone panel is Part L's.
 
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
@@ -2457,7 +2457,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219, D220 and D222 to D228, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built (D340–D368); its zone lists wait on Part G's directory. Resource claims are built (Part J, section 13.5, D370–D381); the planner reading resource availability from Part I's gossip (D373) and a `ctl` surface for claims both wait on later PRs.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built with Part G's directory (D340–D369, D490); loadgen does not join its users yet, so load runs publish to nobody (Part L). Resource claims are built (Part J, section 13.5, D370–D381); the planner reading resource availability from Part I's gossip (D373) and a `ctl` surface for claims both wait on later PRs.
 - **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
   report must state that.
 - **Lab results.** Nothing has run on the six PCs; see [runbook.md](runbook.md). Every number in these docs is from tests or from

@@ -40,13 +40,15 @@
 //! the new ones and hands them to the application through `MeshClient::take_peer_updates`. When a
 //! report's answer is committed, `MeshClient` hands it here and the agent publishes the incident's
 //! summary and assignment into its zone as origin (D351, D355, D356, D366). A zone's programs come
-//! from `discover_zone`, one per program, cached and asked for again at most every `refresh_ms`
-//! (D357, D358). The program subscribes to the zones of its joined users (D359). Copies go out
+//! from Part G's directory, which answers a zone query with one record per program first (D288),
+//! kept as one address per program, cached and asked for again at most every `refresh_ms` (D357,
+//! D358). The program subscribes to the zones of its joined users (D359). Copies go out
 //! through `send_peer`, concurrently and at most `max_in_flight` at once (D362, D363).
 //!
 //! Copies that cannot get through, because the target is briefly away or busy, go through Part
-//! K's store-and-forward and are sent again later (D415). Until Part G's directory lands, some of
-//! this is a stand-in, marked `TODO(I)` where it must change (D368).
+//! K's store-and-forward and are sent again later (D415). One stand-in is left, marked `TODO(I)`:
+//! the origin passed as the sender of each copy, until the lab shows whether it matters (D354,
+//! D369).
 //!
 //! Owner: I (zone publish-subscribe).
 
@@ -67,8 +69,8 @@ use crate::offline::Forwarder;
 use crate::p2p::{Delivered, INBOX_CAPACITY, PeerError, PeerLink};
 use crate::presence::Presence;
 use crate::proto::{
-    AssignmentUpdate, Capability, ClientId, CommittedResult, IncidentId, IncidentSummary,
-    MAX_DISCOVER_RECORDS, P2pAck, P2pBody, P2pEnvelope, PresenceQuery, UpdateId, UserId, ZoneId,
+    AssignmentUpdate, ClientId, CommittedResult, IncidentId, IncidentSummary, MAX_DISCOVER_RECORDS,
+    P2pAck, P2pBody, P2pEnvelope, PresenceQuery, ResourceId, UpdateId, ZoneId,
 };
 
 /// Programs each program sends a new zone update to (D345).
@@ -173,9 +175,9 @@ impl GossipConfig {
 pub enum Subject {
     Incident(IncidentId),
     Assignment(IncidentId),
-    /// One provider's offer of one capability. Part J may change this key when it extends
-    /// `ResourceOffer`.
-    Offer(UserId, Capability),
+    /// One offer, by the ID its provider gave it (D372, D490). Two offers of the same capability
+    /// from one provider are two subjects.
+    Offer(ResourceId),
 }
 
 impl Subject {
@@ -184,7 +186,7 @@ impl Subject {
         match body {
             P2pBody::IncidentSummary(s) => Self::Incident(s.incident),
             P2pBody::AssignmentUpdate(a) => Self::Assignment(a.incident),
-            P2pBody::ResourceOffer(o) => Self::Offer(o.provider, o.capability),
+            P2pBody::ResourceOffer(o) => Self::Offer(o.id),
         }
     }
 }
@@ -960,9 +962,8 @@ impl Run {
 }
 
 /// Ask the directory for `zone` and keep one peer address per program (D357). At most 16 records
-/// come back (D321).
-// TODO(I): Part G's directory answers a zone query with records spread over programs, as D357
-// asks Omar; until then, real nodes answer `Rejected` (D325) and every list stays empty.
+/// come back (D321), one per program before any program's second (D288), so a list reaches up to
+/// 16 programs.
 async fn discover_programs(presence: Arc<Presence>, zone: ZoneId) -> Refreshed {
     let started = Instant::now();
     let answer = presence
@@ -989,7 +990,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use crate::proto::{Category, Point, RequestId, ResourceId, ResourceOffer};
+    use crate::proto::{Capability, Category, Point, RequestId, ResourceOffer, UserId};
 
     const ZONE: u16 = 2;
 
@@ -1158,11 +1159,15 @@ mod tests {
             assigned_at_ms: 0,
         });
         new(g.receive(&a, 1, true, 1, &subs));
-        // Offers are per provider and capability.
-        let offer = |seq, capability| {
-            let mut o = update(1, seq, 0, 1);
+        // An offer is its own subject, by its ID (D490): one provider's two Fire offers are two
+        // subjects, and only a repeat of the same offer at the same or an older version is obsolete.
+        let offer = |update_seq, resource_seq, capability, version| {
+            let mut o = update(1, update_seq, 0, version);
             o.body = P2pBody::ResourceOffer(ResourceOffer {
-                id: ResourceId { provider: 1, seq },
+                id: ResourceId {
+                    provider: 1,
+                    seq: resource_seq,
+                },
                 provider: UserId { client: 1, user: 4 },
                 capability,
                 zone: ZONE,
@@ -1172,12 +1177,13 @@ mod tests {
             });
             o
         };
-        new(g.receive(&offer(3, Capability::Fire), 1, true, 2, &subs));
-        new(g.receive(&offer(4, Capability::Medical), 1, true, 3, &subs));
+        new(g.receive(&offer(3, 1, Capability::Fire, 1), 1, true, 2, &subs));
+        new(g.receive(&offer(4, 2, Capability::Fire, 1), 1, true, 3, &subs));
         assert_eq!(
-            g.receive(&offer(5, Capability::Fire), 1, true, 4, &subs),
+            g.receive(&offer(5, 1, Capability::Fire, 1), 1, true, 4, &subs),
             Receipt::Obsolete
         );
+        new(g.receive(&offer(6, 1, Capability::Fire, 2), 1, true, 5, &subs));
     }
 
     #[test]
