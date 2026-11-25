@@ -343,6 +343,18 @@ table below in sync.
 | D293 | Presence-table convergence: each node's own wait from the call to the change showing, the slowest of three | G, with L | Implemented |
 | D294 | A `directory_state` report each second, with the directory's own digest | G, with L | Implemented |
 | D295 | `ctl discover` asks every node side by side; the analysis gains the discovery metrics | G, with C and L | Implemented |
+| D370 | Resource offers and claims are a new pure `src/claims.rs`, a second state machine on the shared log beside `discovery.rs` | J, with A | Implemented |
+| D371 | Claims judge expiry against the presence directory's log clock; `OfferResource` is idempotent like every other command | J, with G | Implemented |
+| D372 | `ResourceId{provider: ClientId, seq: u64}`, minted by the offering client | J | Implemented |
+| D373 | Two offer channels: `Command::OfferResource` is authoritative; `P2pBody::ResourceOffer` stays Part I's zone announcement | J, with I | Implemented |
+| D374 | Counted claims against an offer's capacity; a claim is refused only once the total would go over it | J | Implemented |
+| D375 | Fencing tokens are the log index a claim was accepted at; a release or resolve naming the wrong one is a no-op | J | Implemented |
+| D376 | First in log order wins; an online over-capacity claim is refused at once, a speculative one opens a reconciliation entry | J | Implemented |
+| D377 | A claim first made offline is queued client-side in a new Part J queue, not Aabed's incident outbox, and resent speculative on reconnect | J, with K | Implemented |
+| D378 | A reconciliation entry is resolved only by the offer's own owner, naming the challenger or the incumbents; otherwise it is dropped once the offer expires | J | Implemented |
+| D379 | A claim's lease is its offer's own `available_until_ms`; no second lease-duration config key | J | Implemented |
+| D380 | Five claims events: `resource_offered`, `claim_write`, `claim_conflict`, `reconciliation_resolved`, `claims_state` | J, with L | Implemented |
+| D381 | Part J is built as one vertical slice on one branch and PR, not the plan's three-PR sequence | J | Implemented |
 | D400 | A report made offline: `submit_or_queue`, and `submit` fails at once | K | Implemented |
 | D401 | The outbox: one JSON line per report next to the event logs, memory if there is no directory | K | Implemented |
 | D402 | Offline is a gate inside the client's sockets, like the node's fault gate | K | Implemented |
@@ -10249,6 +10261,360 @@ them on the six PCs.
 - **How we check it.** Rehearsal on the six lab PCs (integration day, 2026-12-02).
 - **Report notes.** One PC: 116 reports queued in 5 s, all answered after reconnecting, reconciled in 522 ms; with `--ttl-ms 3000`,
   31 of 103 refused as expired, on record.
+
+### D370 · Resource offers and claims are a new pure `src/claims.rs`
+
+- **Date:** 2026-11-25 · **Part:** J, with A · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** Phase 2 gives Part J resource offers, leases and claims, with fencing tokens and a visible
+  reconciliation state (`docs/phase2-plan.md` section 6). The state has to be replicated, deterministic, and every
+  node must reach it the same way, as every other part of `CloudState` does. Part G had already answered the same
+  question for the presence directory.
+- **Options considered.**
+  1. *A new pure `src/claims.rs`, a `Claims` struct `CloudState` holds as a field and dispatches commands to, mirroring
+     `src/discovery.rs` exactly (chosen).* Keeps `state.rs` thin, follows the precedent Omar already set and the
+     team already reviewed once, and keeps the claims logic easy to unit-test on its own, with no network, clock or
+     randomness (the architecture's determinism rule).
+  2. *Fold claims handling directly into `CloudState::apply`, inline with `commit_result` and `release`.* Less
+     indirection, but `state.rs` is Part A's file and grows to mix every part's state in one place; the plan itself
+     says this choice needs Omar's sign-off, and Omar was not in this session to co-decide it.
+- **Decision.** Option 1. `CloudState` (`src/state.rs`) gains a `claims: Claims` field, dispatches
+  `Command::OfferResource`/`ClaimResource`/`ReleaseClaim`/`ResolveReconciliation` to it in `apply`, and exposes it
+  through `CloudState::claims()`, the same shape as `directory()`.
+- **Why.** One mechanism, not two: Part G already proved the "second state machine on the shared log" pattern works
+  and is reviewable. A second, inline copy of the same idea inside `state.rs` would cost a review from Part A for no
+  benefit over reusing the pattern.
+- **Consequences.** `tests/layers.rs`'s `CLOUD_FILES`/`CLOUD_MAY_NAME` allowlists, which enforce the
+  application/middleware boundary (D156, D211), gain `src/claims.rs` and `src/node/claims.rs`, the same way they
+  already named `src/discovery.rs` and `src/node/directory.rs`. This PR touches `src/state.rs` (Part A) and
+  `src/node/mod.rs` (Part A, the handler hook) outside Part J's own files, and needs Noor's review on the PR
+  (AGENTS.md, "One owner per file").
+- **Where.** `src/claims.rs`, `src/state.rs` (`CloudState::claims`, `CloudState::apply`), `tests/layers.rs`.
+- **How we check it.** `cargo test --lib claims`: 12 unit tests against `Claims` alone, no network or node. `tests/
+  layers.rs::application_files_stay_above_the_group`.
+- **Report notes.** Cite alongside D289 (Part G's `Directory`) as the pattern for a second state machine on one
+  Raft log: two independent examples the report can point to.
+
+### D371 · Claims judge expiry against the presence directory's clock; offers are idempotent commands
+
+- **Date:** 2026-11-25 · **Part:** J, with G · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** A claim has to run out eventually, with every node agreeing on when, the same problem D281 solved
+  for presence leases. The phase2-plan brief says claims should expire "on the same log-round clock Omar picks."
+- **Options considered.**
+  1. *Reuse `Directory::clock_ms()` (chosen).* It is already a public getter on Part G's `Directory`, advanced by
+     `Command::PresenceTick`. `CloudState::apply` reads it and passes it into `Claims::claim` as a plain `u64`
+     argument, so `claims.rs` stays pure and untouched by how the clock actually advances.
+  2. *A second `Command::ClaimsTick`, with its own background proposer task in `node/claims.rs`.* Gives Part J a
+     clock with no coupling to Part G, but duplicates a whole mechanism (a tick command, a proposer, a
+     lowest-member rule) for the same wall-clock value Part G already carries forward, for no behavioural
+     difference.
+- **Decision.** Option 1. `CloudState::apply` calls `self.directory.clock_ms()` before dispatching a
+  `Command::ClaimResource`, and `Claims::claim` takes it as its `clock_ms` parameter; `OfferResource` needs no
+  clock at all, since an offer's own `available_until_ms` is compared against `clock_ms` only when a claim is
+  attempted, not when the offer is recorded.
+- **Why.** The phase2-plan brief asks for exactly this; it also means a claim can run out with no claims traffic at
+  all, as long as presence traffic (or any other command) keeps the shared clock moving, the same way presence
+  leases already do.
+- **Consequences.** Claims expiry is coupled to Part G's directory: if the directory never ticks (no presence
+  traffic and no `PresenceTick`), a claim's apparent expiry only catches up the next time `clock_ms` advances. This
+  is the same lazy-expiry behaviour the presence directory already accepts for its own grace period, so it is not a
+  new risk, only a shared one.
+- **Where.** `src/claims.rs` (`Claims::claim`'s `clock_ms` parameter), `src/state.rs` (`CloudState::apply`'s
+  `Command::ClaimResource` arm).
+- **How we check it.** `claims::tests::a_claim_on_an_expired_offer_is_unknown`.
+- **Report notes.** A second example of one log clock serving two independent state machines (D281 for presence,
+  here for claims), worth a sentence next to D370 in the consistency-model section.
+
+### D372 · `ResourceId{provider, seq}`, minted by the offering client
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** `src/proto.rs` already stubbed `ResourceOffer` (D318's P2P body) with no ID field, noting "Part J
+  owns leases and claims, and adds to this." An offer needs a globally unique ID before it can be claimed or
+  referenced in a fencing token.
+- **Options considered.**
+  1. *`ResourceId{provider: ClientId, seq: u64}`, chosen by the offering client itself (chosen).* Exactly mirrors
+     `RequestId` and `UpdateId`, both already in `proto.rs`. No coordination is needed because client IDs are
+     already unique by construction (D113), so a client's own per-client counter is enough.
+  2. *Server-assigned, from the log index the offer command commits at.* Removes the client's own choice entirely,
+     but a provider cannot name "its" offer in a later command (to update or withdraw it) until the first commit's
+     reply comes back, which is awkward for a provider that wants to offer-then-immediately-update.
+- **Decision.** Option 1. `ResourceId` is `Copy`, `Hash`, `Ord`, with a `Display` of `"{provider}~{seq}"`, the same
+  shape as `RequestId`'s `"{client}-{seq}"`.
+- **Why.** Reusing an established ID pattern needs no new coordination mechanism and keeps every ID in `proto.rs`
+  legible the same way.
+- **Consequences.** None beyond the one established pattern; no `FromStr` was added, since no `ctl` subcommand
+  parses one from the command line yet (a scope cut, not an oversight: Part J added no `ctl` surface this PR).
+- **Where.** `src/proto.rs` (`ResourceId`, next to `ResourceOffer`).
+- **How we check it.** `proto::tests::presence_commands_and_outcomes_round_trip`-style serialization is exercised
+  indirectly by every `claims::tests` case; `ResourceId`'s `Display` has no dedicated test, matching `UpdateId`'s.
+- **Report notes.** One line: the ID scheme follows D113's "client IDs need no coordination" all the way down to
+  resources, the same way it already does for requests and peer updates.
+
+### D373 · Two offer channels: the cloud command is authoritative, the P2P gossip stays an announcement
+
+- **Date:** 2026-11-25 · **Part:** J, with I · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** `P2pBody::ResourceOffer` already exists for Part I's zone gossip, so the planner can see offers
+  without asking the cloud (phase2-plan section 6: "resource availability comes from Ahmed's offers"). Claims need
+  fencing tokens and a log-ordered conflict rule, which only the replicated log can give.
+- **Options considered.**
+  1. *Two channels: `Command::OfferResource` committed through the log is authoritative for claims; `P2pBody::
+     ResourceOffer` stays a zone-gossip announcement of the same struct, for the planner's zone-local view, never a
+     second place a claim could be decided (chosen).*
+  2. *Gossip only, no cloud command.* Drops fencing tokens, log-ordered conflict resolution and the reconciliation
+     state entirely: two peers could both believe they hold the same resource with no way to tell who is right,
+     which is exactly the "nontrivial distributed-consistency problem" the spec and C4 ask Part J to solve.
+- **Decision.** Option 1. `ResourceOffer` (now carrying `id` and `capacity`) is the one struct both channels use:
+  `Command::OfferResource` for the cloud's committed copy, `P2pBody::ResourceOffer` unchanged as Part I's gossip
+  payload.
+- **Why.** The spec's consistency requirement can only be met by something ordered on the shared log; the gossip
+  channel already exists for a different purpose (the planner's zone view) and keeping it as an announcement, not a
+  second source of truth, avoids two disagreeing copies of "what is available."
+- **Consequences.** A provider that offers a resource must call `offer_resource` against the cloud and separately
+  rely on Part I's existing gossip path if it wants the offer to reach the zone's planner; this PR does not wire the
+  two together (Part I's planner-reads-offers work is its own `TODO(I)`, D352).
+- **Where.** `src/proto.rs` (`ResourceOffer`, `Command::OfferResource`, `P2pBody::ResourceOffer` unchanged).
+- **How we check it.** `proto::tests::the_largest_peer_update_and_discover_answer_fit_one_datagram` still exercises
+  the gossip `ResourceOffer` with its new fields at their largest values.
+- **Report notes.** Worth a sentence on why claims could not simply ride on Part I's existing gossip: fencing and
+  conflict order need one log, not three independently-updated peers.
+
+### D374 · Counted claims against an offer's capacity
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** The phase2-plan brief asks directly: "Can a resource with capacity 3 be claimed by three clients?"
+  Resource offers carry a quantity or capacity (the spec's own wording), so the claim rule has to use it.
+- **Options considered.**
+  1. *Counted claims, conflict only over capacity (chosen, the brief's own recommendation).* `Claims::claim` sums
+     the quantity already held against a resource (this claimant's own hold excepted) and grants a new claim if the
+     sum stays at or under capacity.
+  2. *Exclusive: one claimant at a time, any second claim is a conflict regardless of capacity.* Simpler, but makes
+     a capacity field pointless and ignores the spec's own wording about quantity.
+- **Decision.** Option 1. `Command::ClaimResource` carries `quantity: u32`; `Claims::claim` refuses (online) or
+  reconciles (speculative) only once `held + quantity > capacity`.
+- **Why.** The spec and the brief both expect quantities, and counted claims are the only option that uses them.
+- **Consequences.** A claimant can hold at most one active claim per resource (a second claim from the same
+  claimant replaces, not adds to, its first): kept deliberately simple, since nothing in the spec asks one claimant
+  to split a resource across several claims of its own.
+- **Where.** `src/claims.rs` (`Claims::held_by_others`, `Claims::claim`).
+- **How we check it.** `claims::tests::claims_up_to_capacity_are_all_granted`,
+  `claims::tests::re_claiming_by_the_same_claimant_does_not_double_count`.
+- **Report notes.** The measured "claim latency" and "conflict count" (phase2-plan's measures) both come from this
+  rule's two outcomes, refused or granted.
+
+### D375 · Fencing tokens are the log index a claim was accepted at
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented, confirms the note on D69 · **Decided by:** Ahmed
+  Abdeen, following D69's note and the phase2-plan brief ("leases with fencing tokens, where the token is the
+  claim's position in the shared log"), on the agent's recommendation
+- **Context.** D69's note already anticipated this ("if claims ever become leases, the token is the commit's log
+  position. The leader issues nothing, because that would be a new duty against the table in D163"). The brief asks
+  for a release or write carrying an older token to be refused.
+- **Options considered.** The brief and D69 already settle the value (the log index), leaving only how to check it:
+  1. *A fencing token is the `Outcome`'s own log index, stored with the active claim; `ReleaseClaim` and
+     `ResolveReconciliation` carry the token they believe is current, and a mismatch is a no-op, not an error
+     (chosen).* No node, including the leader, "issues" anything: the token falls out of where Raft placed the
+     command, matching D163's rule that the leader orders the log and decides nothing else.
+  2. *A separate counter per resource, incremented by whichever node proposes a claim.* Would need every node to
+     agree on the counter's value before a counter exists, which is exactly what the log index already gives for
+     free; this adds a mechanism with no benefit over option 1.
+- **Decision.** Option 1. `ClaimEntry.token` is the log index `Claims::claim` was called at when it granted the
+  claim; `Claims::release` and `Claims::resolve` compare the caller's token to that value and return `StaleRelease`
+  (a no-op) on a mismatch, the same idempotent-no-op shape `ReleaseResponder` already uses for a responder no
+  longer held by the releasing request.
+- **Why.** D163 already settled that the leader orders the log and decides nothing else; minting a token from
+  anywhere but the log position itself would be a new decision the leader makes, which the architecture forbids.
+- **Consequences.** A claims call must also be listed in `ClientRpc`'s fault-gate note (D324) as client traffic that
+  the gate drops while silenced, the same as `submit` and the four presence calls.
+- **Where.** `src/claims.rs` (`ClaimEntry.token`, `Claims::release`, `Claims::resolve`), `src/proto.rs`
+  (`ClientRpc`'s updated fault-gate doc comment).
+- **How we check it.** `claims::tests::release_with_the_right_token_frees_capacity`,
+  `claims::tests::release_with_a_stale_token_is_a_no_op`.
+- **Report notes.** Cite D69 and D163 together: the fencing scheme is a direct consequence of "no coordinator,"
+  not a separate mechanism bolted on.
+
+### D376 · First in log order wins; an online conflict is refused, a speculative one is reconciled
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** The spec asks for "at least one deliberate conflict, detected and resolved or surfaced." Two clients
+  can both believe they claimed the same resource when one was delayed or disconnected.
+- **Options considered.**
+  1. *First in log order wins. An online claimant that loses gets an immediate `Refused` answer; a claimant whose
+     claim is marked `speculative` (first attempted offline) instead opens a reconciliation entry rather than being
+     silently refused, since it already acted on believing it held the resource (chosen, the brief's own
+     recommendation).*
+  2. *Always reconciliation, even for an online claimant.* Gives every online client a worse experience (no
+     immediate answer) for a case that has no speculative action to protect, since an online client never acted on
+     a belief the log had not yet confirmed.
+- **Decision.** Option 1. `Claims::claim` checks capacity once in log order (the order `apply` already runs
+  commands in); the losing claim is `Refused` if not `speculative`, or opens/joins a `Reconciling` entry if it is.
+  Writes are proposed by the member of the node's view the resource hashes to (`node/claims::proposer`, the same
+  `sample_mix`-based scheme Part G's `directory::proposer` already uses for users), so the answer always comes from
+  one commit, not three independent opinions.
+- **Why.** Raft's log order is already the one thing every node agrees on without a vote; reusing it for "who wins"
+  needs no second consensus round. Routing writes by a hash of the resource, not a fixed leader, spreads proposing
+  load the same way Part G already does for presence writes.
+- **Consequences.** A claims call from a client goes to all three nodes, but only one answers; the other two never
+  reply, so `MeshClient::claims_call` is a single round with no retry loop, unlike `submit`'s multi-attempt budget:
+  a `Command` is idempotent, so a caller that times out may simply call again. This is a deliberate scope cut, not
+  an oversight, decided under the instruction to stop asking and build.
+- **Where.** `src/claims.rs` (`Claims::claim`), `src/node/claims.rs` (`proposer`, `proposes_for`), `src/client.rs`
+  (`MeshClient::claims_call`).
+- **How we check it.** `claims::tests::an_online_claim_over_capacity_is_refused_with_whats_left`,
+  `claims::tests::a_speculative_claim_over_capacity_opens_reconciliation_instead_of_refusing`,
+  `node::claims::tests::every_resource_has_one_proposer_and_resources_spread_over_the_members`,
+  `tests/claims.rs::an_online_claim_over_capacity_is_refused`.
+- **Report notes.** The demo-8 scenario and the "number and type of conflicts" measure both read off this rule's
+  two branches: `claim_conflict`'s `kind` field is `online_refused` or `reconciliation_opened`.
+
+### D377 · A claim made offline is queued client-side in a new Part J queue
+
+- **Date:** 2026-11-25 · **Part:** J, with K · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** D376's `speculative` flag has to come from somewhere: the client has to remember that a claim was
+  first attempted while offline, and resend it as speculative once it reconnects. Aabed's `src/offline.rs` already
+  has an `Outbox` that does exactly this shape of thing, but only for incident reports (`Queued{id, incident,
+  queued_at_ms}`).
+- **Options considered.**
+  1. *A new, Part J-owned, in-memory queue (`PendingClaim`, a `Vec` behind a `Mutex` on `MeshClient`), flushed from
+     `go_online` after the incident outbox (chosen).* No change to Aabed's file, so no cross-part review needed on
+     this PR; it does duplicate the "queue while offline, flush on reconnect" shape `Outbox` already has, in a
+     smaller, unpersisted form.
+  2. *Generalise `Queued`/`Delivery` in `offline.rs` to hold either an incident or a claim, reusing the same queue,
+     file and flush loop.* No duplicated mechanism, and gets the incident outbox's crash-resilience (one JSON line
+     per entry) for free, but touches Aabed's file and needs his review, and he was not in this session to
+     co-decide it.
+- **Decision.** Option 1. `MeshClient` gains `pending_claims: Mutex<Vec<PendingClaim>>`; `claim_resource_or_queue`
+  pushes to it when offline and returns `ClaimDelivery::Queued`; `go_online` calls the new `flush_pending_claims`,
+  which resends each with `speculative: true` and its original `at_ms`, right after `flush_outbox`.
+- **Why.** Keeping this PR inside Part J's own files, reviewable by Noor (Part J's review pair) without needing
+  Aabed in the room, was worth the small duplication; the two queues can be unified later if Part K's owner agrees.
+- **Consequences.** Unlike the incident outbox, a pending claim is not persisted to disk: a program crash mid-outage
+  drops any queued claims. This is a deliberate scope cut (claims are not the spec's offline-report mechanism, and
+  the brief's demo scenario 8 only needs a delay or disconnection, not a crash) rather than an oversight, and should
+  be revisited with Part K if the report's offline-reconciliation measurements need it to survive a restart.
+- **Where.** `src/client.rs` (`PendingClaim`, `MeshClient::pending_claims` field, `claim_resource_or_queue`,
+  `flush_pending_claims`, the `go_online` hook).
+- **How we check it.** `tests/claims.rs::a_speculative_conflict_is_surfaced_and_the_owner_resolves_it_for_the_challenger`
+  drives this exact path: `go_offline`, `claim_resource_or_queue`, `go_online`, and checks the queue is empty and a
+  reconciliation entry exists.
+- **Report notes.** Flag for Part K's reviewer (Aabed) and Part J's (Noor): whether the two offline queues should
+  merge is an open question for the team, not settled by this PR.
+
+### D378 · A reconciliation entry is resolved only by the offer's own owner
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** The brief recommends: "the resource owner, or expiry of the lease; resolved by a new `Command` that
+  names the winner." A reconciliation entry has two sides to settle: who gets the resource, and who gets to decide.
+- **Options considered.**
+  1. *`Command::ResolveReconciliation{resource, resolver, token, winner}`, accepted only when `resolver` equals the
+     offer's own `provider`, naming `ReconciliationWinner::Challenger` (evict enough incumbents, most recently
+     accepted first, to make room, then grant the challenger a fresh token) or `::Incumbents` (close the entry,
+     changing nothing). An entry nobody resolves is simply not found once the offer's own `available_until_ms`
+     passes, the same lazy-expiry style the presence directory already uses for its grace period (chosen, the
+     brief's own recommendation).*
+  2. *First claimant to show up online wins automatically, no resolve command at all.* Removes the owner's say
+     entirely, which does not match the spec's "surfaced" wording: the point of a reconciliation entry is that a
+     person looks at it, not that the system picks for them.
+- **Decision.** Option 1. The authorization check is a plain equality on self-reported `UserId`s, the same trust
+  model `PresenceDeregister`'s `{user, incarnation}` check already uses: this system has no cryptographic identity
+  anywhere, so adding one here would be a new, inconsistent exception.
+- **Why.** The brief's own recommendation already balances "a person decides" against "an entry does not linger
+  forever if nobody does."
+- **Consequences.** Naming the challenger always fits: a challenger's quantity can never exceed the offer's own
+  capacity by construction (it was rejected as over-capacity only relative to the capacity, never above it alone),
+  so evicting incumbents most-recently-accepted-first always frees enough room.
+- **Where.** `src/claims.rs` (`Claims::resolve`, `Claims::make_room`), `src/proto.rs`
+  (`Command::ResolveReconciliation`, `ReconciliationWinner`, `ClaimOutcome::NotOwner`).
+- **How we check it.** `claims::tests::resolve_for_incumbents_closes_the_entry_and_changes_nothing`,
+  `claims::tests::resolve_for_the_challenger_evicts_the_incumbent_and_grants_it`,
+  `claims::tests::resolve_from_someone_other_than_the_owner_is_refused`,
+  `tests/claims.rs::a_speculative_conflict_is_surfaced_and_the_owner_resolves_it_for_the_challenger`.
+- **Report notes.** The "time an item spends in the reconciliation state" measure (phase2-plan) is
+  `reconciliation_resolved`'s `wait_ms`, from the challenger's own clock at `opened_at_ms` to the resolving node's
+  clock: an approximation across two machines, flagged in its own doc comment, the same caveat D281's lease clock
+  already carries.
+
+### D379 · A claim's lease is its offer's own `available_until_ms`
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** Something has to decide when a granted claim runs out. `ResourceOffer` already carries
+  `available_until_ms`, an absolute expiry the provider sets.
+- **Options considered.**
+  1. *Reuse the offer's own `available_until_ms`: a claim lives until that time or an explicit release (chosen).*
+     No new config key, and nothing to keep in sync between two numbers that would otherwise have to agree.
+  2. *A new `[resources] default_lease_ms` config key, each claim getting its own `at_ms + lease_ms` window,
+     independent of the offer's expiry, mirroring `PresenceSettings.lease_ms`.* More flexible (a claim could outlive
+     or undercut the offer's own window) but adds a config knob and a second expiry concept for no requirement that
+     asks for it.
+- **Decision.** Option 1.
+- **Why.** Nothing in the spec or the brief asks for a claim to expire on a different schedule than the resource
+  itself; a second number would only be a place for the two to disagree.
+- **Consequences.** A provider that wants claims to run out sooner than the offer's own window has only one lever:
+  re-offer with a shorter `available_until_ms`. Acceptable: no requirement asks for finer control.
+- **Where.** `src/claims.rs` (`Claims::claim`'s `offer.available_until_ms <= clock_ms` check).
+- **How we check it.** `claims::tests::a_claim_on_an_expired_offer_is_unknown`.
+- **Report notes.** One sentence on why Part J added no new config section, unlike Part G's `[presence]`.
+
+### D380 · Five claims events
+
+- **Date:** 2026-11-25 · **Part:** J, with L · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** The phase2-plan's measures for Part J are "number and type of conflicts, claim latency, time an item
+  spends in the reconciliation state." Field names become the analysis's contract once a script reads them
+  (AGENTS.md).
+- **Options considered.** The agent proposed names mirroring the existing `DirectoryQuery`/`DirectoryWrite`/
+  `DirectorySeen`/`DirectoryState` convention, and the person confirmed them as proposed rather than asking for
+  changes:
+  1. `ResourceOffered{resource, provider, capability, zone, capacity, available_until_ms, log_index, latency_us}`.
+  2. `ClaimWrite{resource, claimant, quantity, kind, outcome, speculative, log_index, latency_us}` (`kind` is
+     `claim` or `release`; `outcome` is the `ClaimOutcome`'s own kind string).
+  3. `ClaimConflict{resource, claimant, kind, log_index}` (`kind` is `online_refused` or
+     `reconciliation_opened`).
+  4. `ReconciliationResolved{resource, challenger, winner, wait_ms, log_index}`.
+  5. `ClaimsState{last_applied, digest, offers, reconciling, claimed, refused, resolved}`, once a second, mirroring
+     `DirectoryState`.
+- **Decision.** All five, as proposed, added to `metrics::Event`.
+- **Why.** Reusing the established naming convention means the analysis scripts' existing pattern for reading
+  Part G's directory events carries over to Part J's with no new parsing rules.
+- **Consequences.** No `ClaimQueued`-style event was added for a claim entering the offline queue (D377): the
+  brief's three measures do not ask for it, and the event list stays only as large as the measures need. If a later
+  PR needs to see queueing specifically, that is a new decision, not an omission in this one.
+- **Where.** `src/metrics.rs` (`Event::ResourceOffered`, `::ClaimWrite`, `::ClaimConflict`,
+  `::ReconciliationResolved`, `::ClaimsState`), `src/node/claims.rs` (`log_write`, `spawn_report`).
+- **How we check it.** Exercised indirectly by `tests/claims.rs`'s three tests; no dedicated JSONL-parsing test, the
+  same as the rest of `metrics::Event`'s variants.
+- **Report notes.** `analysis/analyze.py` will need the three measures' field names when Part L (Noor) wires the
+  Phase 2 analysis; cite this entry's field names directly rather than re-deriving them from the code.
+
+### D381 · Part J is built as one vertical slice, one branch and PR
+
+- **Date:** 2026-11-25 · **Part:** J · **Status:** Implemented · **Decided by:** Ahmed Abdeen (grill of
+  `part-j-claims`, 2026-11-25), on the agent's recommendation
+- **Context.** The phase2-plan lists three PRs for Part J: `part-j-claims-contract` (the `Command` messages alone,
+  by 2026-11-25), `part-j-claims` (leases, fencing, conflicts, tests) and `part-j-conflict-demo` (the deliberate
+  conflict scenario). Building in one session raised whether to follow that exact split.
+- **Options considered.**
+  1. *One branch, `part-j-claims`, with the full vertical slice (proto, `claims.rs`, the node and client wiring,
+     metrics, tests, the demo-8 scenario, and this log) in one PR (chosen).*
+  2. *Follow the plan's three-PR sequence, stopping after the contract PR this session and leaving the rest to
+     follow-up sessions.*
+- **Decision.** Option 1.
+- **Why.** The whole slice was buildable in one sitting and a single coherent PR is easier to review as one design
+  than three PRs that each only make sense once the next one lands; nothing in the contract (the `Command`
+  messages) turned out to need an independent review gate before the rest could be written.
+- **Consequences.** The contract PR's 2026-11-25 deadline (phase2-plan, "Tuesday, November 25") is met by this PR
+  landing whole, not by a thinner contract-only PR landing first. Parts that build on Part J's commands (Ahmed's own
+  Part L review pair, Noor) see the finished shape at once rather than the contract first.
+- **Where.** Branch `part-j-claims`.
+- **How we check it.** The PR this entry ships with names every D370-D381 ID it adds.
+- **Report notes.** None beyond noting, if asked at the demo, why Part J shipped as one PR against the plan's three.
 
 ### Notes on older entries
 

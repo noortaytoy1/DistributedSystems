@@ -2130,7 +2130,9 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   protocol for copying the log (D69). Built (Part G, section 13.4, D280 to D292): four presence commands, a lease clock
   carried in the commands rather than read at apply (D281), and a live, late and gone record (D285).
 - **Leases with fencing tokens** for the node that plans: the token is the result's log position, so a stale holder's late write is rejected. The leader issues nothing new, because a new
-  leader duty would go against the table in section 2 (D69, D163).
+  leader duty would go against the table in section 2 (D69, D163). Built for resources too (Part J, section
+  13.5, D370–D381): a claim's token is the log index it was accepted at, the same rule, confirmed rather than
+  reinvented.
 - **P2P links** in the client; the cloud leaves the data path after discovery (D69).
 - **Zone publish-subscribe** among peers: a peer subscribes to incident updates for its zones, with
   duplicate suppression and bounded forwarding (D131). Zone gossip is built (section 13.3, D340–D368); its zone lists
@@ -2138,8 +2140,14 @@ Who builds each part of Phase 2, and in what order, is in [phase2-plan.md](phase
   and discovery, so it is in the design here and not in Phase 1's build (D209). Reporting does not need it; it exists to
   tell others in a zone. The difference from group communication: there the sender drives one message to many; here
   providers publish, interested parties subscribe, and they are pushed a notice when something concerns them.
+- **Resource offers and claims**, the spec's own "nontrivial distributed-consistency problem": offers and claims
+  as commands on the shared log, counted against capacity, with a visible reconciliation state instead of a silent
+  decision for a conflict a claimant already acted on while offline (D149). Built (Part J, section 13.5,
+  D370–D381).
 - **Speculative actions and conflicts** for offline clients can build on degraded mode's labelled answers
-  and on the rule that the first plan to become final wins (D120, D122).
+  and on the rule that the first plan to become final wins (D120, D122). Built for resource claims (Part J,
+  section 13.5): a claim first made offline is marked speculative and, if it would go over capacity, opens a
+  reconciliation entry rather than a silent refusal.
 
 ### 13.1 An offline client and its outbox (built, Part K, D400–D413)
 
@@ -2369,6 +2377,76 @@ Measured (D293 to D295): discovery latency on the client and on the node, write 
 convergence as each node's own wait from a register or deregister arriving to it showing locally, the slowest of the three. `ctl
 discover` asks all three nodes side by side for demo scenario 5.
 
+### 13.5 Resource offers and claims (built, Part J, D370–D381)
+
+Resource offers and claims are a third state machine on the same log (D370), beside the presence directory: `src/claims.rs`
+holds a pure `Claims`, and `CloudState` applies four commands to it (`OfferResource`, `ClaimResource`, `ReleaseClaim`,
+`ResolveReconciliation`), so every node holds the same claims and the state digest covers them. Nothing in it reads a clock;
+expiry is judged against the presence directory's own log clock, passed in as a plain argument, so claims need no second tick
+of their own (D371). A resource offer carries a capacity, and claims on it are counted: a claim is granted up to that capacity,
+in log order (D374, D376). Like a presence write, one node per resource proposes a claims write, chosen by hashing the resource
+over the view (D376), and the others stay quiet (D36).
+
+A claim's **fencing token** is the log index it was accepted at (D375), confirming the note on D69: no node, including the
+leader, issues it, because the token only reflects where Raft already placed the command. A release or a resolve naming the
+wrong token is a no-op, the same shape `ReleaseResponder` already uses for a hold no longer held by the releasing request.
+
+```mermaid
+sequenceDiagram
+    participant Pr as Provider
+    participant N1 as Node 1, the resource's proposer
+    participant N2 as Node 2
+    participant Inc as Incumbent claimant
+    participant Ch as Challenger claimant (reconnecting)
+    Pr->>N1: offer_resource(offer), to every node (D371)
+    Note over N1,N2: hash(resource) over the view picks node 1 (D376)
+    N1->>N1: Command::OfferResource, through the shared log
+    N1-->>Pr: Offered(log_index)
+    Inc->>N1: claim_resource(resource, 1 unit), online
+    N1-->>Inc: Claimed(token, log_index)
+    Note over Ch: offline since before the claim; queued client-side, not Aabed's outbox (D377)
+    Ch->>N1: claim_resource(resource, 1 unit, speculative=true), on reconnect
+    Note over N1: over capacity; speculative, so a reconciliation entry opens instead of a refusal (D376)
+    N1-->>Ch: Reconciling(token, log_index)
+    Pr->>N1: resolve_reconciliation(resource, token, Challenger), as the offer's owner (D378)
+    N1->>N1: evicts the incumbent, grants the challenger a fresh token
+    N1-->>Pr: Resolved(log_index)
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Offered: "OfferResource"
+    Offered --> Offered: "OfferResource again, same ID (idempotent, D371)"
+    Offered --> Claimed: "ClaimResource, online, fits capacity"
+    Claimed --> Claimed: "ClaimResource, a different claimant, still fits"
+    Claimed --> Offered: "ReleaseClaim, correct token"
+    Claimed --> Reconciling: "ClaimResource, speculative, over capacity"
+    Reconciling --> Claimed: "ResolveReconciliation: Challenger (evicts enough incumbents)"
+    Reconciling --> Claimed: "ResolveReconciliation: Incumbents (closes the entry)"
+    Reconciling --> Reconciling: "the offer has not expired yet; nobody resolved"
+    Offered --> [*]: "the offer's available_until_ms passes the log clock (lazy, D379)"
+    Claimed --> [*]: "the offer's available_until_ms passes the log clock"
+    Reconciling --> [*]: "the offer's available_until_ms passes the log clock"
+```
+
+| Spec case | What claims does | Test |
+|-----------|-------------------|------|
+| Resource offers: ID, owner, type, quantity, availability, location, expiry | `ResourceOffer`'s fields; `ResourceId` minted by the provider like every other ID (D372) | `claims::tests::offering_twice_leaves_one_record` |
+| Leases with fencing tokens | A claim's token is its log index; a stale release or resolve is a no-op (D375) | `claims::tests::release_with_a_stale_token_is_a_no_op` |
+| Two clients, delayed or disconnected, both believe they claimed the same resource | First in log order wins; the loser is refused online, or reconciled if speculative (D376) | `claims::tests::a_speculative_claim_over_capacity_opens_reconciliation_instead_of_refusing` |
+| A claim made offline that conflicts is surfaced, not silently accepted or dropped | A visible reconciliation entry, settled only by the offer's owner (D377, D378) | `tests/claims.rs::a_speculative_conflict_is_surfaced_and_the_owner_resolves_it_for_the_challenger` |
+| Can a capacity-3 resource be claimed by three clients? | Yes, counted claims; a conflict only once the total would go over capacity (D374) | `claims::tests::claims_up_to_capacity_are_all_granted` |
+
+Measured (D380): `claim_conflict`'s `kind` (`online_refused` or `reconciliation_opened`) for the conflict count and type,
+`claim_write`'s `latency_us` for claim latency, and `reconciliation_resolved`'s `wait_ms` for time in reconciliation.
+Demo scenario 8 drives exactly the online-refusal and speculative-reconciliation paths above, under Aabed's offline switch
+(D402).
+
+**Left out on purpose.** The P2P `ResourceOffer` gossip announcement (Part I, D373) is not wired to this state yet: Part I's
+planner reading resource availability from it is its own `TODO(I)` (D352), not Part J's. The offline claims queue is
+in-memory only, unlike Aabed's incident outbox (D377): a crash mid-outage drops a queued claim. No `ctl` subcommand reads
+claims state yet.
+
 ## 14. What remains
 
 No design decision in Phase 1's code is `Open`, and nothing waits on anyone's answer: the spec, the class notes and the
@@ -2376,7 +2454,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219, D220 and D222 to D228, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built (D340–D368); its zone lists wait on Part G's directory.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built (D340–D368); its zone lists wait on Part G's directory. Resource claims are built (Part J, section 13.5, D370–D381); the planner reading resource availability from Part I's gossip (D373) and a `ctl` surface for claims both wait on later PRs.
 - **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
   report must state that.
 - **Lab results.** Nothing has run on the six PCs; see [runbook.md](runbook.md). Every number in these docs is from tests or from
