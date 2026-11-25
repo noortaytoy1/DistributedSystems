@@ -1,5 +1,6 @@
-//! Replicated state machine: incidents, responders, results and duplicate detection, and the presence
-//! directory, which lives in `discovery.rs` and is applied from here (D289).
+//! Replicated state machine: incidents, responders, results and duplicate detection, the presence
+//! directory in `discovery.rs` (D289), and the resource claims in `claims.rs` (D370), both applied
+//! from here.
 //!
 //! Every node applies the same committed commands in the same order, so this code must be
 //! deterministic: no clock, no randomness, no network, no `HashMap` iteration.
@@ -23,6 +24,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use crate::claims::{ClaimAttempt, Claims};
 use crate::discovery::Directory;
 use crate::planner;
 use crate::proto::{
@@ -73,6 +75,8 @@ pub struct CloudState {
     counters: Counters,
     /// The presence directory, Part G's state machine on the same log (D69, D289).
     directory: Directory,
+    /// Resource offers and claims, Part J's state machine on the same log (D69, D370).
+    claims: Claims,
     /// Log index of the last command applied (internal Raft entries are not counted).
     last_index: u64,
     digest: u64,
@@ -133,6 +137,38 @@ impl CloudState {
             Command::PresenceTick { at_ms } => {
                 Outcome::Presence(self.directory.tick(index, *at_ms))
             }
+            Command::OfferResource { offer } => Outcome::Claim(self.claims.offer(index, offer)),
+            Command::ClaimResource {
+                resource,
+                claimant,
+                quantity,
+                speculative,
+                at_ms,
+            } => {
+                let clock_ms = self.directory.clock_ms();
+                let attempt = ClaimAttempt {
+                    resource: *resource,
+                    claimant: *claimant,
+                    quantity: *quantity,
+                    speculative: *speculative,
+                    at_ms: *at_ms,
+                };
+                Outcome::Claim(self.claims.claim(index, clock_ms, attempt))
+            }
+            Command::ReleaseClaim {
+                resource,
+                claimant,
+                token,
+            } => Outcome::Claim(self.claims.release(index, *resource, *claimant, *token)),
+            Command::ResolveReconciliation {
+                resource,
+                resolver,
+                token,
+                winner,
+            } => Outcome::Claim(
+                self.claims
+                    .resolve(index, *resource, *resolver, *token, *winner),
+            ),
         };
         self.last_index = index;
         self.digest = chain(self.digest, index, cmd, &outcome);
@@ -374,6 +410,11 @@ impl CloudState {
     /// The presence directory (Part G, D289).
     pub fn directory(&self) -> &Directory {
         &self.directory
+    }
+
+    /// Resource offers and claims (Part J, D370).
+    pub fn claims(&self) -> &Claims {
+        &self.claims
     }
 
     /// Log index of the last applied command, 0 before the first.

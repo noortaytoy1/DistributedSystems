@@ -33,6 +33,7 @@
 
 pub mod bidding;
 pub mod campus;
+pub mod claims;
 pub mod client;
 pub mod config;
 pub mod discovery;

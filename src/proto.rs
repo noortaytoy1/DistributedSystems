@@ -268,6 +268,37 @@ pub enum Command {
     /// Move the directory's log clock to `at_ms` and drop what expired by then, so leases run out
     /// with no client traffic too (D281).
     PresenceTick { at_ms: u64 },
+    /// Record a resource offer, or replace the provider's own offer at this ID with new terms.
+    /// Applying the same offer twice leaves one record (D371).
+    OfferResource { offer: ResourceOffer },
+    /// Claim `quantity` units of `resource`, accepted up to the offer's capacity in log order
+    /// (D374). `speculative` marks a claim first made while the claimant's client was offline
+    /// (D377): an over-capacity speculative claim opens a reconciliation entry instead of a
+    /// refusal. `at_ms` is the claimant's clock when it first tried, carried through to show a
+    /// reconciliation entry's wait; the log order alone decides who it is (D376).
+    ClaimResource {
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        speculative: bool,
+        at_ms: u64,
+    },
+    /// Give up the claim on `resource` held under `token`, the log index it was accepted at. A
+    /// release whose token no longer matches the active claim is a no-op: already released, or
+    /// superseded by a later claim from the same claimant (D375).
+    ReleaseClaim {
+        resource: ResourceId,
+        claimant: UserId,
+        token: u64,
+    },
+    /// Settle the reconciliation entry named `token` on `resource`. Accepted only when `resolver`
+    /// is the offer's own owner; a stale `token` (the entry already closed) is a no-op (D378).
+    ResolveReconciliation {
+        resource: ResourceId,
+        resolver: UserId,
+        token: u64,
+        winner: ReconciliationWinner,
+    },
 }
 
 /// When a presence lease starts and how long it lasts, as the proposing node stamped it (D281,
@@ -295,6 +326,10 @@ impl Command {
             Command::PresenceRenew { .. } => "presence_renew",
             Command::PresenceDeregister { .. } => "presence_deregister",
             Command::PresenceTick { .. } => "presence_tick",
+            Command::OfferResource { .. } => "offer_resource",
+            Command::ClaimResource { .. } => "claim_resource",
+            Command::ReleaseClaim { .. } => "release_claim",
+            Command::ResolveReconciliation { .. } => "resolve_reconciliation",
         }
     }
 
@@ -306,7 +341,11 @@ impl Command {
             | Command::PresenceRegister { .. }
             | Command::PresenceRenew { .. }
             | Command::PresenceDeregister { .. }
-            | Command::PresenceTick { .. } => None,
+            | Command::PresenceTick { .. }
+            | Command::OfferResource { .. }
+            | Command::ClaimResource { .. }
+            | Command::ReleaseClaim { .. }
+            | Command::ResolveReconciliation { .. } => None,
         }
     }
 }
@@ -491,6 +530,8 @@ pub enum Outcome {
     Applied,
     /// What a presence command did to the directory (D283).
     Presence(PresenceOutcome),
+    /// What a resource/claims command did (D371-D378).
+    Claim(ClaimOutcome),
 }
 
 impl Outcome {
@@ -502,6 +543,7 @@ impl Outcome {
             Outcome::Stale { .. } => "stale",
             Outcome::Applied => "applied",
             Outcome::Presence(p) => p.kind(),
+            Outcome::Claim(c) => c.kind(),
         }
     }
 
@@ -510,6 +552,7 @@ impl Outcome {
         match self {
             Outcome::Committed(r) => Some(r.log_index),
             Outcome::Presence(p) => Some(p.log_index()),
+            Outcome::Claim(c) => Some(c.log_index()),
             Outcome::Duplicate(_) | Outcome::Stale { .. } | Outcome::Applied => None,
         }
     }
@@ -629,8 +672,9 @@ pub enum ReplyBody {
 /// `submit` is called on every node. A node that cannot answer never returns, so the caller's call
 /// stays open until it cancels or its deadline passes: a node says nothing to mean "not me" (D36).
 ///
-/// The fault gate drops `submit` and the four presence calls, which are client traffic (D324). The
-/// other methods are control and pass the gate (D23), so a method added here must decide which it is.
+/// The fault gate drops `submit`, the four presence calls and the four claims calls, all client
+/// traffic (D324, D375). The other methods are control and pass the gate (D23), so a method added
+/// here must decide which it is.
 #[tarpc::service]
 pub trait ClientRpc {
     async fn submit(request: ClientRequest) -> ClientReply;
@@ -651,6 +695,29 @@ pub trait ClientRpc {
     async fn deregister(user: UserId, incarnation: u64) -> PresenceReply;
     /// Who is online, filtered by zone and capability, read from this node's applied state (D321).
     async fn discover(query: PresenceQuery) -> DiscoverReply;
+    /// Record `offer`, or replace this provider's own offer at the same ID with new terms (D371).
+    /// Sent to every node, like `submit`.
+    async fn offer_resource(offer: ResourceOffer) -> ClaimReply;
+    /// Claim `quantity` units of `resource`. `speculative` marks a claim first made while the
+    /// claimant's client was offline (D376, D377); `at_ms` is the claimant's clock then.
+    async fn claim_resource(
+        resource: ResourceId,
+        claimant: UserId,
+        quantity: u32,
+        speculative: bool,
+        at_ms: u64,
+    ) -> ClaimReply;
+    /// Give up the claim on `resource` held under `token`, the log index it was accepted at
+    /// (D375).
+    async fn release_claim(resource: ResourceId, claimant: UserId, token: u64) -> ClaimReply;
+    /// Settle the reconciliation entry named `token` on `resource`, as the offer's own owner
+    /// (D378).
+    async fn resolve_reconciliation(
+        resource: ResourceId,
+        resolver: UserId,
+        token: u64,
+        winner: ReconciliationWinner,
+    ) -> ClaimReply;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -783,15 +850,132 @@ pub struct IncidentSummary {
     pub reported_at_ms: u64,
 }
 
-/// A user offers a resource. Part J (Ahmed) owns leases and claims, and adds to this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A resource offer's ID: the providing client mints it, like [`RequestId`] and [`UpdateId`]
+/// (D372). No coordination needed: client IDs are already unique (D113).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ResourceId {
+    pub provider: ClientId,
+    pub seq: u64,
+}
+
+impl fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}~{}", self.provider, self.seq)
+    }
+}
+
+/// A user offers a resource: what [`Command::OfferResource`] commits and what peers gossip
+/// (D371). The cloud's copy is authoritative for claims; [`P2pBody::ResourceOffer`] carries this
+/// same struct as a zone announcement for Part I's planner, never a second source of truth
+/// (D373).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResourceOffer {
+    pub id: ResourceId,
     pub provider: UserId,
     pub capability: Capability,
     pub zone: ZoneId,
     pub location: Point,
-    /// Unix milliseconds on the provider's clock.
+    /// How many units this offer makes available at once (D374).
+    pub capacity: u32,
+    /// Unix milliseconds on the provider's clock. A claim on this offer lives until this time or
+    /// an explicit release: one expiry, not a second lease duration to keep in sync (D379).
     pub available_until_ms: u64,
+}
+
+/// Who a reconciliation entry resolves to: the challenger's late claim, or the status quo
+/// (D378).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReconciliationWinner {
+    Challenger,
+    Incumbents,
+}
+
+/// What a claims command did, with the log index it applied at (D371-D378).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClaimOutcome {
+    /// The offer is recorded, or re-recorded with new terms, at this capacity.
+    Offered { capacity: u32, log_index: u64 },
+    /// The claim is granted. `token` is this command's log index: present it to release.
+    Claimed { token: u64, log_index: u64 },
+    /// Not granted: capacity was already taken. `available` is what was left.
+    Refused { available: u32, log_index: u64 },
+    /// A speculative claim that would not fit opened, or joined, this reconciliation entry.
+    /// `token` names the entry, for [`Command::ResolveReconciliation`].
+    Reconciling { token: u64, log_index: u64 },
+    /// The claim held under the given token is given up.
+    Released { log_index: u64 },
+    /// The token did not match the active claim: already released, or superseded by a later
+    /// claim from the same claimant.
+    StaleRelease { log_index: u64 },
+    /// The reconciliation entry is settled, with this winner. `challenger` and `opened_at_ms` (the
+    /// challenger's own clock when it first tried) are carried through for the report's
+    /// reconciliation-wait measure (D380).
+    Resolved {
+        winner: ReconciliationWinner,
+        challenger: UserId,
+        opened_at_ms: u64,
+        log_index: u64,
+    },
+    /// `resolver` was not the offer's owner, so the reconciliation entry is unchanged (D378).
+    NotOwner { log_index: u64 },
+    /// No offer, claim or reconciliation entry at that ID: unknown, or already gone.
+    Unknown { log_index: u64 },
+}
+
+impl ClaimOutcome {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ClaimOutcome::Offered { .. } => "resource_offered",
+            ClaimOutcome::Claimed { .. } => "resource_claimed",
+            ClaimOutcome::Refused { .. } => "resource_claim_refused",
+            ClaimOutcome::Reconciling { .. } => "resource_claim_reconciling",
+            ClaimOutcome::Released { .. } => "resource_claim_released",
+            ClaimOutcome::StaleRelease { .. } => "resource_claim_stale_release",
+            ClaimOutcome::Resolved { .. } => "resource_reconciliation_resolved",
+            ClaimOutcome::NotOwner { .. } => "resource_reconciliation_not_owner",
+            ClaimOutcome::Unknown { .. } => "resource_unknown",
+        }
+    }
+
+    pub fn log_index(&self) -> u64 {
+        match *self {
+            ClaimOutcome::Offered { log_index, .. }
+            | ClaimOutcome::Claimed { log_index, .. }
+            | ClaimOutcome::Refused { log_index, .. }
+            | ClaimOutcome::Reconciling { log_index, .. }
+            | ClaimOutcome::Released { log_index }
+            | ClaimOutcome::StaleRelease { log_index }
+            | ClaimOutcome::Resolved { log_index, .. }
+            | ClaimOutcome::NotOwner { log_index }
+            | ClaimOutcome::Unknown { log_index } => log_index,
+        }
+    }
+}
+
+/// What the client is told after a claims call: a trimmed [`ClaimOutcome`], the fields a caller
+/// needs and nothing internal-only (D371-D378).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClaimReply {
+    Offered {
+        log_index: u64,
+    },
+    Claimed {
+        token: u64,
+        log_index: u64,
+    },
+    Reconciling {
+        token: u64,
+        log_index: u64,
+    },
+    Released {
+        log_index: u64,
+    },
+    Resolved {
+        log_index: u64,
+    },
+    Refused(String),
+    /// The node will not handle it, with the reason: for example an unknown resource.
+    Rejected(String),
 }
 
 /// Who was sent to an incident, as the cloud committed it.
@@ -1528,10 +1712,15 @@ mod tests {
                 reported_at_ms: u64::MAX,
             }),
             P2pBody::ResourceOffer(ResourceOffer {
+                id: ResourceId {
+                    provider: u64::MAX,
+                    seq: u64::MAX,
+                },
                 provider: user,
                 capability: Capability::Rescue,
                 zone: ZoneId::MAX,
                 location: far,
+                capacity: u32::MAX,
                 available_until_ms: u64::MAX,
             }),
             P2pBody::AssignmentUpdate(AssignmentUpdate {
