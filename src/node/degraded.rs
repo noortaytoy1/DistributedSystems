@@ -379,7 +379,7 @@ async fn settle(ctx: &NodeContext, request: RequestId, provisional: Provisional)
                     entry.plan = plan.clone();
                 }
             }
-            Outcome::Applied | Outcome::Presence(_) => {
+            Outcome::Applied | Outcome::Presence(_) | Outcome::Claim(_) => {
                 tracing::warn!(%request, "unexpected outcome for a provisional result");
                 break;
             }

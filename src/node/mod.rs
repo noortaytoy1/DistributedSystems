@@ -10,6 +10,7 @@
 //! Owner: A (Raft and replication).
 
 pub mod bids;
+pub mod claims;
 pub mod cpu;
 pub mod datagram;
 pub mod degraded;
@@ -56,8 +57,8 @@ use faults::FaultElection;
 use group::CloudGroup;
 use heartbeat::Suspicion;
 use transport::{
-    ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet, PresenceHandler,
-    RequestHandler,
+    ClaimHandler, ClientPort, ClientServer, ControlHandler, FaultGate, PeerHandler, PeerSet,
+    PresenceHandler, RequestHandler,
 };
 use workers::WorkerPool;
 
@@ -280,6 +281,12 @@ pub async fn start_with(
         let ctx = ctx.clone();
         Arc::new(move |call| directory::handle(ctx.clone(), call).boxed())
     };
+    // The claims service (Part J, D376). As presence: the server runs each call in a task of its
+    // own.
+    let on_claims: ClaimHandler = {
+        let ctx = ctx.clone();
+        Arc::new(move |call| claims::handle(ctx.clone(), call).boxed())
+    };
     tasks.push(tokio::spawn(transport::serve_clients(
         client_port,
         ClientServer::new(
@@ -288,6 +295,7 @@ pub async fn start_with(
             on_request,
             on_control,
             on_presence,
+            on_claims,
         ),
         udp_counters.clone(),
     )));
@@ -302,6 +310,7 @@ pub async fn start_with(
     tasks.extend(step_aside::spawn(&ctx));
     tasks.push(directory::spawn_ticks(&ctx));
     tasks.push(directory::spawn_report(&ctx));
+    tasks.push(claims::spawn_report(&ctx));
 
     Ok(NodeHandle {
         ctx,

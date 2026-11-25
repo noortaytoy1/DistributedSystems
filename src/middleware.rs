@@ -55,6 +55,8 @@ pub use crate::node::group::{CloudGroup, View};
 pub use crate::node::transport::ReplyTx;
 // The presence service (Phase 2, Part G): one presence call and its answer (D290).
 pub use crate::node::transport::{PresenceAnswer, PresenceCall};
+// The claims service (Phase 2, Part J): one claims call and its answer (D376).
+pub use crate::node::transport::{ClaimAnswer, ClaimCall};
 pub use crate::node::workers::Overloaded;
 pub(crate) use crate::node::{Decision, decide_executor};
 pub use crate::node::{NodeContext, degraded};
