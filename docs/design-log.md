@@ -451,6 +451,9 @@ table below in sync.
 | D442 | The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming | L | Implemented, details D434 |
 | D445 | A user joins at its first slot, so a program's joins spread over one think time | L | Implemented, amends D430 |
 | D446 | Nine Phase 2 cells, users given per client PC, run with the generic runner | L | Implemented, implements D434 |
+| D447 | Phase 2 metrics: what each spec measurement is computed from | L | Implemented |
+| D448 | Phase 2 runs are analysed by a streaming pass that keeps analyze.py's meanings | L | Implemented |
+| D449 | The Phase 1 rerun is a `regress` mode of Phase 1's own runner, on repeats above 20 | L | Implemented, run on the final build |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10938,6 +10941,90 @@ them on the six PCs.
 - **Where.** `experiments/ph2*.toml`, `experiments/phase2.list`, `scripts/run-experiments.sh` (`users_per_pc`), `experiments/README.md`.
 - **How we check it.** `tests/experiment_cells.rs::the_phase2_list_holds_the_three_sweeps_and_only_they_run_the_lifecycle` (and the cell count, now 43); `tests/runner_script.rs::users_per_pc_gives_each_client_machine_that_many_users`, which fails on the runner before this change (it ran 30 users, the default).
 - **Report notes.** The cell table and the two-PC note go in the methodology.
+
+### D447 · Phase 2 metrics: what each spec measurement is computed from
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** The spec asks for P2P latency, the duplicate rate, forwarding overhead, coverage, reconciliation delay, pending updates, and the number and type of conflicts with claim latency (`docs/phase2-plan.md`, sections 3 to 8 and 11). Part L adds throughput with P2P on, and D435's proof that the cloud carries no P2P traffic. Only Part G's discovery and convergence figures were in `analysis/analyze.py`. Each part logs its own events (`src/metrics.rs`), and several spec words can be read more than one way in them. Any run with Part K's outbox files also crashed the analysis: a `claims-client-<id>.jsonl` line has no `ev`, and `udp_metrics` raised `KeyError`.
+- **Options considered.**
+  1. *Duplicate rate.* From `gossip_received.outcome` alone. Or the endpoint's duplicates (`p2p_received` with `duplicate`) plus gossip's, for the zone updates published in the measured time, matched by update ID (chosen). The endpoint answers a known ID before gossip sees the copy (D353), so the first reads about 0: 0 of 15,712 in the trial.
+  2. *Forwarding overhead.* The copies the gossip cores chose to send (the origin's `targets` plus every `forwarded`) per published update, D350's definition (chosen). Or `p2p_sent` lines per update, which adds store-and-forward's later tries (kept beside it). Or forwarded copies per new receipt.
+  3. *Coverage, over what.* The origin's zone list, a count capped at 16 (D321). Or every other program with a peer endpoint (chosen). Or the programs that ever got an update of the zone, which hides the ones gossip never reaches.
+  4. *Reconciliation delay.* The reports flush alone. Or per reconnect, from `client_online` to the end of the last flush in the same log, with the reports and claims parts beside it (chosen). Or that plus the held updates' resend, which has no end event.
+  5. *Time in the reconciliation state.* `reconciliation_resolved.wait_ms` only, which reads two clocks (D380). Or also the span from `reconciliation_opened` to `reconciliation_resolved` on the node that logged both, on one clock (chosen).
+  6. *D435's proof.* The node PCs' network cards only, which include Raft and miss the loopback. Or the nodes' client-port byte counters against the programs' cloud-socket counters, with P2P sends a second beside them (chosen; network cards kept too).
+  7. *Measured time.* Each line's own time in every log. Or the existing global `start_us` for what a program or node logs about itself, an end bound for byte rates, and matching by ID for anything across logs (chosen).
+- **Decision.** The chosen option of each, in six functions that give the same keys for every run, 0 or NaN when their events are missing:
+  - `p2p_metrics`: `p2p_latency_*_ms` over sends acked `accepted` or `duplicate`, on the sender's clock. Also `p2p_sent`, `p2p_delivered`, `p2p_duplicate`, `p2p_refused`, `p2p_failed` (ack `none`), `p2p_ack_share`, `p2p_retried_share`, `p2p_received`, `p2p_endpoints`.
+  - `gossip_metrics`: `gossip_duplicate_share` (duplicates over every copy that reached an endpoint), `gossip_duplicates_per_new` (D350), `gossip_copies_per_update`, `gossip_sends_per_update`, `gossip_reach_mean`, `gossip_coverage_share`, `gossip_full_coverage_share`, `gossip_hops_*`, `gossip_age_*_ms` (two clocks), outcome counts and `gossip_zone_programs_max`.
+  - `offline_metrics`: `reconcile_*_ms` and `reconcile_max_ms` per reconnect, `reconcile_reports_*_ms`, `reconcile_claims_*_ms`, `offline_*_ms`, outbox and claims-outbox counts, `outbox_wait_*_ms`, and `peer_updates_held`, `_forwarded`, `_dropped_<reason>` and `_held_at_end`.
+  - `claims_metrics`: `claim_conflicts_per_claim` (refused plus reconciling, over every claim write), conflicts by kind, outcome counts, `claim_*_ms`, `offer_*_ms`, `reconciliation_time_*_ms`, `reconciliation_wait_*_ms` (two clocks), `claims_digest_mismatches` at equal `last_applied`, and `claims_reconciling_at_end`.
+  - `workload_metrics`: `workload_done` summed over programs: `workload_<action>_<outcome>` for 29 main outcomes, `workload_other`, `workload_actions_per_s`, the clients' `workload_claim_refused_share`, and the roles and the cell's settings from `workload_started`.
+  - `cloud_bytes_metrics`: `cloud_udp_bytes_per_s`, `cloud_net_bytes_per_s`, `client_cloud_socket_bytes_per_s`, `cloud_udp_bytes_over_client`, `p2p_sends_per_s` and `p2p_tries_per_s`, each process's rate on its own clock over the measured time.
+  - `read_events` skips `outbox-*` and `claims-*` files.
+  - `clock_skew_metrics` counts each copy from its first send, because a report resent from the outbox keeps its ID and attempt (D404). Before this, one PC read 10.1 s of skew in the trial.
+  - `reconcile_max_ms` gets a `_worst_run` row.
+  - Three plots, placed by the last number in each cell's name: `ph2users_scale.png`, `ph2offline_reconciliation.png`, `ph2conflict_claims.png`.
+- **Why.**
+  - Each figure is taken where its events really land.
+  - Lines from two logs are matched by ID, so no clock difference picks them (D233).
+  - D350 already defines the duplicate rate and the overhead, so Part I's numbers and the report's agree.
+  - A share over every other program shows the 16-program cap on a zone list (D321) once a zone holds more programs than that; a share over the zone list would hide it.
+  - Byte counters at both ends of the cloud's client port prove D435 with what is logged.
+- **Consequences.**
+  - P2P bytes cannot be given; the peer sockets' counters are never logged. D435 rests on `cloud_udp_bytes_over_client` staying about 1 while `p2p_sends_per_s` grows.
+  - `gossip_coverage_share` reads low when programs have users in few zones. At 100 users per PC (10 a program over 6 zones), about one program-zone pair in six has no user.
+  - `claim_unknown` mixes a claim on an offer that ran out with one on an unknown offer, the spec's expired-lease refusal included. There is no client-side claim latency.
+  - loadgen resolves no reconciliation entry (D441), so `reconciliation_time_*` and `reconciliation_wait_*` are empty in experiment runs. `claims_reconciling_at_end` stands in, and it counts entries whose offer ran out, because nothing prunes them.
+  - `reconcile_*` leaves out the held peer updates sent after the flushes.
+  - `workload_register_ok` is about 0 after a warm-up.
+  - `analyze.py` still holds a run in memory, about 1.7 KB a line. The trial logged about 27 client lines per user per second (400 ms think time), so the 5,000-users-per-PC cells will need a streaming reader or far more memory than a lab PC has.
+- **Where.**
+  - `analysis/analyze.py`: `p2p_metrics`, `gossip_metrics`, `offline_metrics`, `claims_metrics`, `workload_metrics`, `cloud_bytes_metrics`, `read_events`, `clock_skew_metrics`, `sweep_series`, `plot_sweep`, `PHASE2_SWEEPS`, `analyse_run`, `clock_warnings`, `WORST_RUN_METRICS`.
+  - `analysis/test_analyze.py`: `ThePeerToPeerLink`, `ZoneGossip`, `OfflineOperation`, `OffersAndClaims`, `TheWorkload`, `TheCloudsBytes`, `APhase2Run`, `ThePhase2Sweeps`, and `HowFarApartTheClocksWere.test_a_report_sent_again_from_the_outbox_reads_no_skew`.
+  - `analysis/README.md`: the Phase 2 table, the outbox files, and the figures that read two clocks.
+- **How we check it.**
+  - 26 new tests, each failing on the old code; all 157 pass.
+  - On the local trial (3 nodes, 3 programs of 20 users, 75 s, one 10 s outage each) the claims figures match D441's hand counts:
+    - at the clients, 134 granted, 120 refused, 23 queued, 128 released;
+    - on the nodes, 120 `online_refused` and 12 `reconciliation_opened` conflicts, and 5 entries open at the end;
+    - 0 claims digest mismatches over 94 indexes.
+  - `cloud_udp_bytes_over_client` read 1.001.
+- **Report notes.**
+  - The Phase 2 table in `analysis/README.md` says which figure answers which measurement.
+  - Give `client_clock_skew_ms` beside `gossip_age_*` and `reconciliation_wait_*`.
+  - With only three programs, each first receiver forwards to the one program left, which the origin already reached. So the trial's 0.47 duplicate share reflects the small zone, not the lab's rate.
+
+### D448 · Phase 2 runs are analysed by a streaming pass that keeps analyze.py's meanings
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** `analyze.py` holds a whole run in memory, about 1.7 KB a line (D447). The first quick series of the nine Phase 2 cells on the six PCs wrote about 105 GB: at 1,000 users per client PC each program logs about 1.4 million lines in 75 s, 98% of them one per P2P copy (`p2p_sent`, `p2p_received`, `gossip_received`, held updates). Client PC 1 has 15 GB of memory.
+- **Options considered.**
+  1. *A second script that reads each log once, in parallel, keeps every other line for `analyze.py`'s own functions, and folds the per-copy lines into counters as it reads (chosen).*
+  2. *Log fewer P2P lines, or sample them, in the programs.* Changes Parts H and I's events after their merge, and loses the exact duplicate and overhead counts.
+  3. *Analyse on a machine with more memory.* There is none in the lab.
+- **Decision.** Option 1: `analysis/phase2_stream.py <root> --out DIR --jobs N`. It keeps the P2P, gossip and held-update figures' definitions exactly (it reuses `update_key`, `ratio`, `latency_metrics`, `endpoints` and the outcome tables), calls the rest of `analyze.py`'s functions unchanged, and writes the same `summary.csv` and figures. `peer_updates_held_at_end` is left out (NaN): it needs every held line in order.
+- **Why.** The numbers mean the same as `analyze.py`'s, with one pass over the disk and a run's non-P2P lines in memory.
+- **Consequences.** Fault-run figures (before, during and after a fault, failover, arrival peaks) are not computed: no Phase 2 cell has a fault. A Phase 1 run still goes through `analyze.py`.
+- **Where.** `analysis/phase2_stream.py`.
+- **How we check it.** On the local trial both scripts were run: of 309 figures in common, 307 are equal, one differs in the 16th digit, and one is the NaN above.
+- **Report notes.** Say the Phase 2 numbers come from one streaming pass with the same definitions.
+
+### D449 · The Phase 1 rerun is a `regress` mode of Phase 1's own runner, on repeats above 20
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented, run on the final build · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** The plan asks to re-run Phase 1's scenarios 1 to 4 and 9 on the final build to show Phase 2 broke nothing. The Phase 1 report's numbers came from `scripts/phase1/run-experiments.sh series` (open-loop rates, planning work 0 and 1000), not from the generic cells, so only that runner's cells compare. Its other modes reuse Phase 1's names and repeats, and a rerun into them would move Phase 1's run folders and overwrite the node PCs' full logs, the only full copy for the final build's runs.
+- **Options considered.**
+  1. *A `regress` mode: the report's cells at one or two loads each, `s0-10000`, `s1-12000`, `e1-steps`, `e2-skewfix`, `f1-5000`, `f0-10000`, `k0-10000`, twice, then `r1-3000` once, on repeats 21 and 22, with output under `LAB_OUT` (chosen).* About 49 minutes of lab time.
+  2. *`series 21` unchanged.* About 78 minutes, includes rates that need a quiet network, and names scenario 2's cells so the tables stay empty.
+  3. *The generic Phase 1 cells.* Not where the report's numbers came from.
+- **Decision.** Option 1. `LAB_OUT` defaults to `runs/exp8h`, so every other mode is unchanged; `regress` refuses repeats of 20 or less. Run it on the final build:
+  `LAB_TEST_AUTO=1 LAB_OUT=runs/p2regress setsid -w nohup bash scripts/phase1/run-experiments.sh regress "21 22" >runs/p2regress-console.out 2>&1 &`
+- **Why.** The same cells and fault lines as the report's, so `analysis/phase1/make_tables.py` rebuilds its tables beside the old ones, and no Phase 1 log is touched.
+- **Consequences.** Not run on 2026-11-26: the final build waits for the last Phase 2 merges (Part I's planner changes the saved state), and client PC 1's disk was nearly full after the Phase 2 series.
+- **Where.** `scripts/phase1/run-experiments.sh` (`OUT`, `regress_pass`, `regress`).
+- **How we check it.** `bash -n` and a dry run with the run steps stubbed, which printed the cells, repeats, faults and loads in this order.
+- **Report notes.** Compare with the Phase 1 report's tables for the same cells; the reference numbers are listed in the plan for this entry's run.
 
 ### Notes on older entries
 
