@@ -444,12 +444,13 @@ table below in sync.
 | D431 | Three roles by fixed share (80, 15, 5) and a per-role action mix | L | Implemented |
 | D432 | Random outages per program, drawn once a minute, through Part K's switch | L | Implemented |
 | D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented, amended by D436 and D441 |
-| D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Accepted |
+| D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Implemented by D446 |
 | D435 | P2P traffic runs between the client PCs only, and the cloud's bytes prove it | L | Accepted |
 | D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented, amended by D441 |
 | D441 | The lifecycle's offers, claims and releases are Part J's real calls | L, with J | Implemented, amends D433 and D436 |
 | D442 | The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming | L | Implemented, details D434 |
 | D445 | A user joins at its first slot, so a program's joins spread over one think time | L | Implemented, amends D430 |
+| D446 | Nine Phase 2 cells, users given per client PC, run with the generic runner | L | Implemented, implements D434 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10816,7 +10817,7 @@ them on the six PCs.
 
 ### D434 · Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles
 
-- **Date:** 2026-11-22 · **Part:** L · **Status:** Accepted · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented by D446 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** The spec asks for measurements as concurrent clients grow, for offline reconciliation and for conflicts. Phase 1's runner reads cells as config overlays (D63).
 - **Options considered.**
   1. *Three sweeps (chosen):* users per PC 100, 1,000 and 5,000 with the lifecycle on; offline share 0%, 10% and 30% through D432; an injected delay for the conflict rate. `quick` for tuning, `full` for the report.
@@ -10915,6 +10916,28 @@ them on the six PCs.
 - **Where.** `bin/loadgen.rs::lifecycle_user`.
 - **How we check it.** By hand on three local nodes: the directory's `directory_write` events of the joins spread over the first think time instead of landing within a few milliseconds.
 - **Report notes.** Say users join at their first slot.
+
+### D446 · Nine Phase 2 cells, users given per client PC, run with the generic runner
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented, implements D434 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** D434 accepted three sweeps. The cells must be config overlays for `scripts/run-experiments.sh` (D63), whose run line gives the total users over the client machines in the hosts file. On the lab, client PC 1's firewall drops the P2P port range (D336) and opening it needs `sudo`, which the runs must not wait for; clients 2 and 3 take it.
+- **Options considered.**
+  1. *Cells:* the three sweeps as nine cells sharing one body (chosen); a full grid of users × offline × delay, 27 cells and about 4 hours on `quick`; or one cell per sweep with the value passed in the environment, which the analysis could not tell apart.
+  2. *Users:* a run-line key `users_per_pc`, the users per client machine (chosen); totals for three machines, which mean another load per PC when a machine is left out; or a second hosts-dependent cell set.
+  3. *Runner:* the generic cell runner, `scripts/run-experiments.sh` (chosen), whose closed loop is how the lifecycle runs (D430); or Phase 1's runner, which drives open-loop rates and has no cells.
+  4. *The body:* as the top Phase 1 cells (planning work 1000, 3,000 responders so the pool is not what is measured, D219, no faults, a busy leader stays leader) plus the lifecycle, think time 1 s with random waits (chosen); or Phase 1's default body with 300 responders, which would cap assignments at the low end of the sweep.
+- **Decision.** The first option of each:
+  - `ph2users-100`, `ph2users-1000`, `ph2users-5000`: users per client PC.
+  - `ph2offline-0`, `ph2offline-10`, `ph2offline-30`: each program's chance per minute of a 20 s outage (D432), at 1,000 users per PC.
+  - `ph2conflict-0ms`, `ph2conflict-500ms`, `ph2conflict-2000ms`: `workload.claim_delay_ms` (D442), at 1,000 users per PC.
+  - `experiments/phase2.list` names them; `quick` and `full` keep Phase 1's timings (D63).
+  - The runner reads `users_per_pc=N` and gives each client machine in the hosts file N users; `users` stays as it was.
+  - A client PC whose firewall drops the P2P range is left out of the hosts file's client lines.
+- **Why.** Each sweep answers one question of the spec with the others held still, and `users_per_pc` keeps a cell's meaning when the number of client PCs changes.
+- **Consequences.** The full profile now has 43 cells; Phase 2 runs are started with the list. Runs on two client PCs carry two thirds of the users a three-PC run would, which the methodology states.
+- **Where.** `experiments/ph2*.toml`, `experiments/phase2.list`, `scripts/run-experiments.sh` (`users_per_pc`), `experiments/README.md`.
+- **How we check it.** `tests/experiment_cells.rs::the_phase2_list_holds_the_three_sweeps_and_only_they_run_the_lifecycle` (and the cell count, now 43); `tests/runner_script.rs::users_per_pc_gives_each_client_machine_that_many_users`, which fails on the runner before this change (it ran 30 users, the default).
+- **Report notes.** The cell table and the two-PC note go in the methodology.
 
 ### Notes on older entries
 
