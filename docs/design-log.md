@@ -460,6 +460,7 @@ table below in sync.
 | D447 | Phase 2 metrics: what each spec measurement is computed from | L | Implemented |
 | D448 | Phase 2 runs are analysed by a streaming pass that keeps analyze.py's meanings | L | Implemented |
 | D449 | The Phase 1 rerun is a `regress` mode of Phase 1's own runner, on repeats above 20 | L | Implemented, run on the final build |
+| D451 | `docs/demo.md` covers scenarios 6 and 9, the regression and the end-to-end session, pointed at the page | L | Implemented |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -11123,6 +11124,40 @@ them on the six PCs.
 - **Where.** `scripts/phase1/run-experiments.sh` (`OUT`, `regress_pass`, `regress`).
 - **How we check it.** `bash -n` and a dry run with the run steps stubbed, which printed the cells, repeats, faults and loads in this order.
 - **Report notes.** Compare with the Phase 1 report's tables for the same cells; the reference numbers are listed in the plan for this entry's run.
+
+### D451 · `docs/demo.md` covers scenarios 6 and 9, the regression and the end-to-end session, pointed at the page
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** The plan gives Part L `docs/demo.md` for scenarios 5 to 8 plus end to end, and scenario 9 with the rerun of scenarios 1 to 4 and 9 (`docs/phase2-plan.md` section 8). The script had scenarios 5, 7 and 8 from their owners. It had nothing for scenario 6, for scenario 9 with Phase 2 on, for the rerun, or for one session with every scenario. Its entries still pointed at things that were missing: loadgen's lifecycle (scenario 5), "no `ctl` or loadgen surface" (scenario 8), "the page has no zone panel" (Q&A). These now exist: the lifecycle with real calls (D430–D442), the page's four Phase 2 panels (D438, D439, D443, D444) and the Phase 2 cells (D434).
+- **Options considered.**
+  1. *Lifecycle users on the lab:* `[workload]` with `lifecycle = true` in the one `config/lab.toml`, copied to all six; the nodes ignore it (chosen). Or a second config file for the client PCs, which breaks AGENTS.md's one config file. Or a loadgen flag, which D430 turned down so that cells can set it.
+  2. *Showing the cloud out of the data path (scenario 6):* the test with three real nodes that checks their client-port counters, plus the page's Zone updates panel and two `grep` lines on the lab, plus the analysis's cloud bytes beside P2P messages (D435) (chosen). Or a live byte counter on the page, which needs a new route into the nodes' counters. Or the test alone.
+  3. *Scenario 9:* run the nine cells beforehand, `quick` to tune and `full` for the report, then show the results, as Phase 1's scene 7 does (chosen). Or run a cell live, which gives one point and no curve.
+  4. *The rerun of scenarios 1 to 4 and 9:* the Phase 1 runner's `series` on the final build, set beside the Phase 1 report's tables (chosen). Or the generic runner's Phase 1 cells, which the report's numbers did not come from. Or the test suite alone.
+  5. *The end-to-end session:* one walk through scenarios 1 to 9 in order on the lab, with lifecycle load running from the start, scenes 1 to 4 under it and 5 to 8 on the page (chosen). Or one session per scenario, which the plan does not ask for. Or a script that drives the session, with no time to build and rehearse it before 2026-12-02.
+- **Decision.** The first option of each. Teammates' entries keep their text; only stale pointers changed:
+  - Scenario 5: the loadgen command and the Who is online panel.
+  - Scenario 7: the Offline switch, with the store-and-forward test kept as the one-machine check.
+  - Scenario 8: the Conflicting claim panel, loadgen's offers and claims, and D414's claims outbox in place of Part J's in-memory queue.
+  - Q&A: the Zone updates panel.
+
+  New sections: spec scenario 6, spec scenario 9 with "Phase 1 still passes", and "End to end: every scenario in one session".
+- **Why.** Each scenario is shown where it is real: on the six PCs, with the page and the lifecycle load. A test on one machine checks that it holds, and the analysis gives the numbers. One config file is the lab's rule. Only the runner that made the Phase 1 numbers can be compared with them. The session follows the spec's table in order, so nothing is left out.
+- **Consequences.**
+  - With the lifecycle on, loadgen refuses `--rate`. The `--rate` control and the too-old scene need it off, and the session runs on the lifecycle's closed loop.
+  - Nothing new in the script has run on the lab. Integration day (2026-12-02) is the first rehearsal, and what prints there replaces the expected lines.
+  - The P2P, reconciliation and conflict figures are named by their events until Part L's analysis names them.
+  - The Phase 1 runner writes into `runs/exp8h` and moves an old run of the same name to `runs/old-hand/`, so Phase 1's logs are copied aside first.
+  - A change to a panel's labels must change `docs/demo.md` in the same PR.
+- **Where.** `docs/demo.md`: the Phase 2 header, spec scenarios 5 to 9, "Phase 1 still passes (scenarios 1 to 4 and 9)", "End to end: every scenario in one session (Part L)", and the Q&A on publish-subscribe.
+- **How we check it.** Every label, route, flag, key and printed line was read from the code, not run:
+  - the page on `part-l-demo-page` at `a4ba3ef`;
+  - loadgen on `part-l-workload` at `7e8d2ba`;
+  - the runners and `analyze.py` as on `main`;
+  - the Phase 2 cells as briefed for `part-l-experiments`, not yet on disk.
+
+  The rehearsal on the six PCs on integration day checks the rest.
+- **Report notes.** The end-to-end session is the evidence for "integrated end to end with the Phase 1 cloud" (plan section 11). The table of cells goes in the methodology section. The rerun goes beside the Phase 1 tables, stating D367's extra log lines.
 
 ### Notes on older entries
 
