@@ -443,10 +443,12 @@ table below in sync.
 | D430 | The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default | L | Implemented |
 | D431 | Three roles by fixed share (80, 15, 5) and a per-role action mix | L | Implemented |
 | D432 | Random outages per program, drawn once a minute, through Part K's switch | L | Implemented |
-| D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented, amended by D436 |
+| D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented, amended by D436 and D441 |
 | D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Accepted |
 | D435 | P2P traffic runs between the client PCs only, and the cloud's bytes prove it | L | Accepted |
-| D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented |
+| D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented, amended by D441 |
+| D441 | The lifecycle's offers, claims and releases are Part J's real calls | L, with J | Implemented, amends D433 and D436 |
+| D442 | The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming | L | Implemented, details D434 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10798,7 +10800,7 @@ them on the six PCs.
 
 ### D433 · Actions of parts not merged yet are stubs that send nothing and count as `stub`
 
-- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented, amended by D436 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented, amended by D436 and D441 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** The plan starts Part L's workload "from stubs where other parts are not merged yet". A stub must not produce a number that looks measured.
 - **Options considered.**
   1. *A stub returns at once, sends nothing, and is counted as `action:stub` (chosen).*
@@ -10841,7 +10843,7 @@ them on the six PCs.
 
 ### D436 · The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs
 
-- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented, amends D433 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-24)
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented, amends D433, amended by D441 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-24)
 - **Context.** Part H's presence agent and P2P link (D326–D339, D460–D465) and Part I's zone gossip (D340–D368) merged after D433. D465 leaves the P2P load in loadgen to Part L. Part G's directory is not merged, so every node answers presence calls with `Rejected` (D325). Part J is not merged.
 - **Options considered.**
   1. *Call the merged parts now, and count each outcome by name (chosen).* Until Part G merges, joins and discoveries count as `rejected`; the same code measures once it lands.
@@ -10860,6 +10862,43 @@ them on the six PCs.
 - **Where.** `bin/loadgen.rs::{phase2_call, Shared, presence_outcome, peer_outcome, drain_peer_updates}`.
 - **How we check it.** `outcomes_name_what_happened_and_no_directory_reads_as_rejected`, `a_peer_comes_from_the_last_discovery_or_not_at_all`, `only_responders_and_providers_offer_a_capability`. By hand on three local nodes, 20 users for 70 s: 941 reports answered, one 10 s outage with all 196 queued reports answered after it, and every presence call `rejected`, as expected without Part G.
 - **Report notes.** The full list of outcome names goes with the methodology.
+
+### D441 · The lifecycle's offers, claims and releases are Part J's real calls
+
+- **Date:** 2026-11-26 · **Part:** L, with J · **Status:** Implemented, amends D433 and D436 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** Part J merged (PR 45, D370–D381): `MeshClient` gained `offer_resource`, `claim_resource_or_queue`, `release_claim` and `resolve_reconciliation`; a claim lives until its offer's own `available_until_ms` (D379); an offer's ID is minted by its client (D372). Part G's directory merged too, so D436's presence calls now answer. D433's stubs and D436's `TODO(L)` were the last placeholders in the lifecycle.
+- **Options considered.**
+  1. *Offers:* one resource on offer per provider, renewed in place and replaced by a new one once half its time is left (chosen); a new resource on every offer action, so a provider has many live at once; or renew one resource for good.
+  2. *What a responder claims:* an offer its program has heard of, from its own providers or from a peer's `ResourceOffer` update (chosen); an ID worked out from a discovered provider's user ID, which only works because loadgen mints the IDs and would skip the P2P path; or only its own program's offers.
+  3. *Giving back:* a responder that holds a claim releases it the next time its row says claim (chosen); never release, and let claims end with their offer; or release after a fixed hold, a new timer per user.
+  4. *Reconciliation entries:* left to the offer's owner, none settled by loadgen (chosen); or a provider resolves every entry it learns of. Nothing tells a provider about one: the entry's token goes to the challenger, and the claims outbox's flush keeps its answers.
+- **Decision.** The first option of each:
+  - **Offer:** a provider offers `capacity` units (1 to 3, drawn once) of its one capability in its zone, at that zone's campus spot, for 60 s (`OFFER_FOR_MS`). Its next offer actions renew that resource, moved to its current zone, keeping the end time. With under half the time left it mints a new `ResourceId{provider: client, seq: user << 32 | n}`, so two users of one program never mint the same ID.
+  - **Claim:** a responder claims one unit of a heard offer that has not run out, through `claim_resource_or_queue`, so while offline the claim waits in Part J's claims outbox and goes out as speculative on reconnect (D377). A program keeps the newest 256 offers it heard of.
+  - **Release:** a new action, never drawn. A responder that holds a claim and draws claim releases it instead, with its token. Offline, it keeps the claim for later; any other end lets it go.
+  - **Peer send** from a provider carries its live offer, D373's announcement; with none live it counts `nothing_to_send`.
+  - **Outcome names:** `offered`, `renewed`, `claimed`, `refused` (an online conflict), `reconciling`, `queued`, `not_queued`, `released`, `rejected`, `offline`, `timeout`, `no_offer`, `nothing_held`.
+  - `ClaimDelivery` and `ClaimError` are exported from `middleware.rs`, the one door the layer test leaves loadgen (D211).
+- **Why.** These are the calls the plan lists for a provider and a responder, with no new timer and nothing loadgen-only in the cloud. Claiming what a program heard of keeps the P2P announcement in the path being measured. Keeping the end time on a renewal bounds what a lost release, or a claim resent from the outbox, can hold: one unit for at most 60 s.
+- **Consequences.** Online conflicts (`claim_conflict` with `online_refused`) come from responders racing for full offers. Reconciliation entries come from claims made offline; loadgen leaves them open, so they show in `claims_state.reconciling`. Scenario 8's resolution is shown on the demo page instead.
+- **Where.** `bin/loadgen.rs::{Life::next_offer, Life::next_action, HeardOffers, phase2_call, claim_outcome, claim_call_outcome, reply_outcome, drain_peer_updates}`, `middleware.rs`.
+- **How we check it.** Unit tests `a_responder_holding_a_claim_gives_it_back_before_claiming_again`, `a_provider_renews_its_offer_until_half_its_time_is_left_then_mints_a_new_one`, `heard_offers_keep_one_copy_each_the_newest_and_forget_those_run_out` and `claims_outcomes_name_what_happened`. By hand on three local nodes, three programs of 20 users, think time 400 ms, 75 s, one 10 s outage each: all 60 joins `ok`; 8 resources minted and 118 renewals; 134 claims granted, 120 refused online, 23 queued; 128 released. On the nodes: 120 `online_refused` and 12 `reconciliation_opened` conflicts, 5 entries still open at the end, and the three nodes' claims digests equal at log index 6225.
+- **Report notes.** The outcome names go with the methodology; the two kinds of conflict feed Part J's conflict count.
+
+### D442 · The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented, details D434 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** D434 accepted "an injected delay for the conflict rate" as one of three sweeps without saying where the delay goes. A conflict here is a claim that finds its offer full (D376), and how often that happens grows with how old a responder's news of an offer is when it claims. The runner has no root on the lab PCs, so `tc netem` is not available, and a delay inside a node would change Part J's or the shared log's code for an experiment.
+- **Options considered.**
+  1. *A config key, `workload.claim_delay_ms`: a responder waits that long between picking an offer and claiming it (chosen).*
+  2. *Network delay with `tc netem` on the client PCs.* Closest to a slow network, but it needs root on each PC and delays everything, reports included, so the sweep would move the Phase 1 numbers too.
+  3. *A delay inside the node before a claim is proposed.* Touches Part J's file and the cloud's timing for an experiment.
+- **Decision.** Option 1. Default 0; it must be under 60,000 ms. `workload_started` logs it as `claim_delay_ms`.
+- **Why.** A cell is a config overlay (D63, D430), so a key is what the runner can sweep; it touches only loadgen; and it changes the one cause the sweep is about.
+- **Consequences.** A responder's claim action takes that much longer, so at a fixed think time responders claim a little less often. The analysis reports conflicts per claim, not per second.
+- **Where.** `config.rs::WorkloadConfig::claim_delay_ms`, `bin/loadgen.rs::phase2_call`, `metrics.rs::Event::WorkloadStarted`.
+- **How we check it.** `the_workload_is_phase_1_by_default_and_its_shares_must_add_up` (default 0, 60000 refused), and the conflict sweep's cells.
+- **Report notes.** Describe it as "a responder claims on news this much older", not as a network delay.
 
 ### Notes on older entries
 

@@ -119,9 +119,8 @@ grace_ms = 5000
 tick_ms = 1000
 
 [workload]
-# The Phase 2 user lifecycle in loadgen (D430). false: every user only reports, as in Phase 1.
-# true needs the closed loop with --think-ms above 0. Actions whose part is not merged yet are
-# stubs that send nothing and count as "stub" (D433).
+# The Phase 2 user lifecycle in loadgen (D430, D441). false: every user only reports, as in Phase 1.
+# true needs the closed loop with --think-ms above 0.
 lifecycle = false
 # Share of users per role, adding up to 100 (D431).
 ordinary_percent = 80
@@ -130,3 +129,6 @@ provider_percent = 5
 # Each whole minute, the chance a program goes offline, for offline_for_ms (under 60000) (D432).
 offline_chance_per_min_percent = 0
 offline_for_ms = 20000
+# A responder's wait between picking an offer and claiming it: the conflict sweep's injected delay
+# (D442). Under 60000.
+claim_delay_ms = 0

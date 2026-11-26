@@ -603,11 +603,12 @@ pub enum Event {
         providers: u32,
         offline_chance_per_min_percent: u8,
         offline_for_ms: u64,
+        /// A responder's wait between picking an offer and claiming it (D442).
+        claim_delay_ms: u64,
     },
     /// This program's Phase 2 lifecycle ended (D433). `actions` counts each measured action by
-    /// outcome, keyed `action:outcome`; `stub` means the part behind it is not merged yet and nothing
-    /// was sent. Reports also log their own request events. `outages` counts this program's random
-    /// outages (D432).
+    /// outcome, keyed `action:outcome` (D433, D441). Reports also log their own request events.
+    /// `outages` counts this program's random outages (D432).
     WorkloadDone {
         actions: BTreeMap<String, u64>,
         outages: u32,

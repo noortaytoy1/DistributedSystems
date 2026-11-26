@@ -332,6 +332,9 @@ pub struct WorkloadConfig {
     pub offline_chance_per_min_percent: u8,
     /// How long a program stays offline each time (D432).
     pub offline_for_ms: u64,
+    /// How long a responder waits between picking an offer it has heard of and claiming it, so it
+    /// claims on older news: the injected delay that sweeps the conflict rate (D442). 0: at once.
+    pub claim_delay_ms: u64,
 }
 
 impl Default for WorkloadConfig {
@@ -343,6 +346,7 @@ impl Default for WorkloadConfig {
             provider_percent: 5,
             offline_chance_per_min_percent: 0,
             offline_for_ms: 20_000,
+            claim_delay_ms: 0,
         }
     }
 }
@@ -638,6 +642,10 @@ impl Config {
         if w.offline_chance_per_min_percent > 0 && !(1..60_000).contains(&w.offline_for_ms) {
             return invalid("workload: need 0 < offline_for_ms < 60000".into());
         }
+        // A user waits it inside one action; a minute already reads as a broken run.
+        if w.claim_delay_ms >= 60_000 {
+            return invalid("workload: need claim_delay_ms < 60000".into());
+        }
         Ok(())
     }
 
@@ -851,6 +859,12 @@ grace_ms = 0",
         assert!(with("offline_chance_per_min_percent = 10\noffline_for_ms = 59999").is_ok());
         // With no outages the length is never used, so any value is fine.
         assert!(with("offline_for_ms = 0").is_ok());
+        assert_eq!(
+            w.claim_delay_ms, 0,
+            "claims go at once unless a cell injects a delay"
+        );
+        assert!(with("claim_delay_ms = 2000").is_ok());
+        assert!(with("claim_delay_ms = 60000").is_err());
     }
 
     #[test]
