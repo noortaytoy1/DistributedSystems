@@ -362,10 +362,6 @@ table below in sync.
 | D404 | The flush sends oldest first, 16 at a time, with original IDs, and keeps what got no answer | K | Implemented |
 | D405 | At most 10,000 queued reports; past that a new one is refused | K | Implemented |
 | D406 | Offline events, and loadgen's `--offline-at-s` and `--offline-for-s` | K | Implemented |
-| D437 | The page's directory panel asks by zone or capability, one answer labelled with its log index | L | Implemented |
-| D438 | The page's offline switch takes its own client offline; reports queue and the card says so | L | Implemented |
-| D439 | The page follows a zone by joining a user of its own there, and keeps the newest 50 updates | L | Implemented |
-| D440 | The page's conflicts panel says it waits for Part J | L | Implemented |
 | D407 | The sender holds a peer update that cannot get through: `send_peer_or_hold` | K | Implemented |
 | D408 | Retention: 100 per peer, 10,000 in all, oldest first, and 300 s from when the update was made | K | Implemented |
 | D409 | Obsolete: a newer version of the same subject replaces an older one; a run-out offer is dropped | K | Implemented |
@@ -451,8 +447,14 @@ table below in sync.
 | D434 | Phase 2 experiment cells: users per PC, offline share, injected delay, two profiles | L | Implemented by D446 |
 | D435 | P2P traffic runs between the client PCs only, and the cloud's bytes prove it | L | Accepted |
 | D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented, amended by D441 |
+| D437 | The page's directory panel asks by zone or capability, one answer labelled with its log index | L | Implemented, amended by D443 |
+| D438 | The page's offline switch takes its own client offline; reports queue and the card says so | L | Implemented |
+| D439 | The page follows a zone by joining a user of its own there, and keeps the newest 50 updates | L | Implemented |
+| D440 | The page's conflicts panel says it waits for Part J | L | Superseded by D444 |
 | D441 | The lifecycle's offers, claims and releases are Part J's real calls | L, with J | Implemented, amends D433 and D436 |
 | D442 | The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming | L | Implemented, details D434 |
+| D443 | The page asks each node's directory on its own and shows them side by side | L, with F and G | Implemented, amends D437 |
+| D444 | The page stages scenario 8 with its own users and resolves it as the owner | L, with F, J and K | Implemented, supersedes D440 |
 | D445 | A user joins at its first slot, so a program's joins spread over one think time | L | Implemented, amends D430 |
 | D446 | Nine Phase 2 cells, users given per client PC, run with the generic runner | L | Implemented, implements D434 |
 | D447 | Phase 2 metrics: what each spec measurement is computed from | L | Implemented |
@@ -10874,7 +10876,7 @@ them on the six PCs.
 
 ### D437 · The page's directory panel asks by zone or capability, one answer labelled with its log index
 
-- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented, amended by D443 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** Demo scenario 5 shows the directory. The plan asks for "the same answer from all three nodes side by side". The page may only use `MeshClient` and `middleware::control` (D211, `tests/layers.rs`), and `MeshClient::discover` asks every node and returns the first answer, without saying which node (D321). Part G's directory is not merged, so today every node refuses.
 - **Options considered.**
   1. *One answer, labelled with the log index it was read at (chosen).* What the middleware offers now.
@@ -10917,7 +10919,7 @@ them on the six PCs.
 
 ### D440 · The page's conflicts panel says it waits for Part J
 
-- **Date:** 2026-11-24 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-24 · **Part:** L · **Status:** Superseded by D444 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** Scenario 8 shows items in the reconciliation state, which is Part J's and not merged.
 - **Options considered.**
   1. *A route and panel now that answer `built: false` with a note, and a `TODO(L)` (chosen).*
@@ -10965,6 +10967,41 @@ them on the six PCs.
 - **Where.** `config.rs::WorkloadConfig::claim_delay_ms`, `bin/loadgen.rs::phase2_call`, `metrics.rs::Event::WorkloadStarted`.
 - **How we check it.** `the_workload_is_phase_1_by_default_and_its_shares_must_add_up` (default 0, 60000 refused), and the conflict sweep's cells.
 - **Report notes.** Describe it as "a responder claims on news this much older", not as a network delay.
+
+### D443 · The page asks each node's directory on its own and shows them side by side
+
+- **Date:** 2026-11-26 · **Part:** L, with F and G · **Status:** Implemented, amends D437 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** D437 showed one answer because the middleware had no way to ask one node, and left three columns for when one existed. Part G's directory merged (D289–D295), and `ctl discover` now asks each node over TCP and prints a verdict line. The page may not name the transport (`tests/layers.rs`), so it cannot copy `ctl`'s code.
+- **Options considered.**
+  1. *A middleware call `discover_at(addr, query, timeout)` beside `control`, the same call `ctl discover` makes (chosen).*
+  2. *A new `ControlRequest` variant.* A contract change, and control calls pass the fault gate (D23), so a silenced node would answer, unlike `ctl discover` and every other client call.
+  3. *One extra `MeshClient` per node, built from a one-node config.* Stays above the line, but costs a socket, a peer port, presence and gossip agents and a client ID per node, and waits out a whole call budget on a silent node.
+  4. *Run `ctl discover` and parse its text.* Brittle, and a second program to ship with the page.
+- **Decision.** Option 1. `client.rs::discover_at` opens one TCP call to the node's client port and asks `discover`, ending at the timeout; `middleware.rs` exports it. The page asks the three nodes at once, 2 s each like `ctl`, and shows one column per node: its records and the log index it read at, or `no answer (silenced or catching up)`. The verdict line is `ctl discover`'s: `same answer from N nodes`, `answers differ, read at different log indexes: ask again`, or `DIFFERENT answers at the same log index: a bug`.
+- **Why.** It is the read the plan asks for in scenario 5, with no contract change, and a silenced or catching-up node behaves on the page exactly as with `ctl`.
+- **Consequences.** `client.rs` (F) gains one public function; `ctl` keeps its own copy, as moving it would touch Part C's file. The verdict function is duplicated in the page; both are ten lines.
+- **Where.** `client.rs::discover_at`, `middleware.rs`, `bin/frontend.rs::{directory, directory_verdict}`, `frontend.html` (Who is online).
+- **How we check it.** `the_directory_panel_asks_every_node_and_says_they_agree` (three real nodes: a user the page joins shows in all three columns and the verdict says the same answer from 3 nodes), `the_directory_verdict_tells_catch_up_from_disagreement`, `phase2_panels_refuse_bad_values`.
+- **Report notes.** Scenario 5 on the page: three columns and one verdict.
+
+### D444 · The page stages scenario 8 with its own users and resolves it as the owner
+
+- **Date:** 2026-11-26 · **Part:** L, with F, J and K · **Status:** Implemented, supersedes D440 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** The plan wants "a conflict view listing items in the reconciliation state, for scenario 8". Part J merged (D370–D381). No node lists offers, claims or reconciliation entries to clients, and the token that names an entry, which the owner needs to resolve it, reached only the challenger's claims-outbox flush, which kept counts and dropped the token (D414). Part J's demo was a test that read the entry below the line.
+- **Options considered.**
+  1. *The page plays scenario 8 itself with three of its own users, and the client keeps the tokens its flush gets back (chosen).*
+  2. *A cloud-wide list through a new control call.* The view the plan names, but a contract change across Parts A, J and the node's control path in the last days, and control calls pass the fault gate.
+  3. *Show only `claims_state.reconciling` counts.* Nothing a person can resolve on the page.
+- **Decision.** Option 1:
+  - `MeshClient::reconciliations()` lists this client's claims that a reconnect's flush put into reconciliation, with their tokens, at most 256; `flush_pending_claims` records each `Reconciling` answer.
+  - `POST /api/conflicts/stage`: user 2,000,000 + 3n offers one unit of a new resource; user +1 claims it online; the page goes offline; user +2 claims it and the claim waits in the claims outbox; back online, the claim is resent as speculative, does not fit, and opens an entry. Each step is shown.
+  - The panel lists the page's staged conflicts with "Challenger wins" and "Keep incumbents", which resolve the entry as the offer's owner (D378).
+  - One staging at a time, never while the page is offline, at most 20 per page.
+- **Why.** It shows the whole of scenario 8, detected and resolved, on the real cloud with nothing below the line, and the client change is small and in the client's own file.
+- **Consequences.** The panel lists only what this page staged; the cloud-wide number of open entries is in each node's `claims_state`. Staging takes the page offline for the moment of one claim, and the offline switch shows it.
+- **Where.** `client.rs::{OpenReconciliation, reconciliations, remember_reconciliation, flush_pending_claims}`, `middleware.rs`, `bin/frontend.rs::{conflict_stage, stage_one, conflict_resolve, conflicts, claim_text}`, `frontend.html` (Conflicting claim).
+- **How we check it.** `staging_a_conflict_opens_an_entry_and_its_owner_resolves_it` (three real nodes: the entry appears on every node, the owner resolves it for the challenger, the entry is gone and the challenger holds the unit; staging while offline is refused), `phase2_panels_refuse_bad_values`.
+- **Report notes.** Scenario 8 on the page: the late claim, the entry, and the owner's choice.
 
 ### D445 · A user joins at its first slot, so a program's joins spread over one think time
 

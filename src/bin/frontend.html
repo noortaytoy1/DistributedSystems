@@ -135,6 +135,10 @@ tr.stale td { color: var(--muted); }
   main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   section { max-height: none; }
 }
+.node-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.node-column { border: 1px solid var(--line); border-radius: 6px; padding: 6px; min-width: 0; overflow-wrap: anywhere; }
+.node-column h3 { margin: 0 0 4px; font-size: 12px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -201,20 +205,16 @@ tr.stale td { color: var(--muted); }
     <div id="offline-result" class="small line"></div>
   </section>
 
-  <section id="directory-panel" aria-label="Directory">
-    <h2>Directory</h2>
+  <section id="directory-panel" aria-label="Who is online">
+    <h2>Who is online</h2>
+    <p class="small">Asks each node's directory on its own and shows the answers side by side (scenario 5).</p>
     <form id="directory-form">
       <label>Zone <select id="directory-zone"></select></label>
       <label>or capability <select id="directory-capability"></select></label>
-      <button id="directory-ask" type="submit">Ask</button>
+      <button id="directory-ask" type="submit">Ask all three nodes</button>
     </form>
     <div id="directory-line" class="small line"></div>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>User</th><th>Role</th><th>Zone</th><th>Capabilities</th><th>Peer address</th></tr></thead>
-        <tbody id="directory-body"></tbody>
-      </table>
-    </div>
+    <div class="scroll"><div id="directory-nodes" class="node-columns"></div></div>
   </section>
 
   <section id="zones-panel" aria-label="Zone updates">
@@ -227,8 +227,10 @@ tr.stale td { color: var(--muted); }
     <div id="zone-updates" class="scroll"></div>
   </section>
 
-  <section id="conflicts-panel" aria-label="Conflicts">
-    <h2>Conflicts</h2>
+  <section id="conflicts-panel" aria-label="Conflicting claim">
+    <h2>Conflicting claim</h2>
+    <p class="small">Plays scenario 8 with three users of this page: one offers a single unit, one claims it online, one claims it while the page is offline. Back online, the late claim opens a reconciliation entry that the offer's owner resolves here.</p>
+    <button id="conflict-stage" type="button">Stage a conflict</button>
     <div id="conflicts-line" class="small line"></div>
     <div id="conflicts-list" class="scroll"></div>
   </section>
@@ -557,23 +559,35 @@ async function askDirectory(event) {
   const params = $("directory-capability").value
     ? { capability: $("directory-capability").value }
     : { zone: $("directory-zone").value };
-  $("directory-line").textContent = "Asking every node...";
+  $("directory-line").textContent = "Asking each node...";
+  $("directory-ask").disabled = true;
   try {
     const data = await call("GET", "/api/directory", params);
     if (!data.ok) {
       $("directory-line").textContent = data.error;
-      $("directory-body").replaceChildren();
+      $("directory-nodes").replaceChildren();
       return;
     }
-    $("directory-line").textContent = plural(data.records.length, "user") + " online, read at log index " + data.log_index
-      + ", in " + (data.latency_us / 1000).toFixed(1) + " ms.";
-    $("directory-body").replaceChildren(...data.records.map((r) => {
-      const row = el("tr");
-      for (const value of [r.user, r.role, r.zone, r.capabilities.join(", ") || "-", r.peer_addr]) row.append(el("td", "", value));
-      return row;
+    $("directory-line").textContent = data.verdict;
+    $("directory-nodes").replaceChildren(...data.nodes.map((n) => {
+      const column = el("div", "node-column");
+      column.append(el("h3", "", "Node " + n.node));
+      if (!n.answered) {
+        column.append(el("div", "small", n.note));
+        return column;
+      }
+      column.append(el("div", "small", plural(n.records.length, "user") + ", read at log index " + n.log_index
+        + ", in " + (n.latency_us / 1000).toFixed(1) + " ms"));
+      for (const r of n.records) {
+        column.append(el("div", "small", r.user + " " + r.role + ", zone " + r.zone
+          + (r.capabilities.length ? ", " + r.capabilities.join(", ") : "")));
+      }
+      return column;
     }));
   } catch (error) {
     $("directory-line").textContent = "Local program not answering.";
+  } finally {
+    $("directory-ask").disabled = false;
   }
 }
 
@@ -611,10 +625,64 @@ async function pollUpdates() {
 
 // --- conflicts
 
+// The list is redrawn only when it changed, so a poll never swaps a button under a click.
+let shownConflicts = "";
+
+function renderConflicts(data) {
+  const shown = JSON.stringify(data.items);
+  if (shown === shownConflicts) return;
+  shownConflicts = shown;
+  $("conflicts-line").textContent = data.items.length
+    ? plural(data.items.length, "conflict") + " staged by this page, newest first."
+    : "None staged yet.";
+  $("conflicts-list").replaceChildren(...data.items.map((c) => {
+    const box = el("article", "card");
+    box.append(el("div", "", "Resource " + c.resource + ": owner " + c.owner + ", incumbent " + c.incumbent
+      + ", challenger " + c.challenger));
+    for (const step of c.steps) box.append(el("div", "small", step));
+    if (c.resolved) {
+      box.append(el("div", "small line", c.resolved));
+    } else if (c.token !== null) {
+      const row = el("div", "actions");
+      for (const [winner, label] of [["challenger", "Challenger wins"], ["incumbents", "Keep incumbents"]]) {
+        const button = el("button", "", label);
+        button.type = "button";
+        button.addEventListener("click", () => resolveConflict(c, winner));
+        row.append(button);
+      }
+      box.append(row);
+    }
+    return box;
+  }));
+}
+
+async function stageConflict() {
+  $("conflict-stage").disabled = true;
+  $("conflicts-line").textContent = "Offering, claiming, going offline and coming back...";
+  try {
+    const data = await call("POST", "/api/conflicts/stage");
+    if (data.ok) renderConflicts(data);
+    else $("conflicts-line").textContent = data.error + (data.steps ? " " + data.steps.join(" ") : "");
+  } catch (error) {
+    $("conflicts-line").textContent = "Local program not answering.";
+  } finally {
+    $("conflict-stage").disabled = false;
+  }
+}
+
+async function resolveConflict(c, winner) {
+  try {
+    const data = await call("POST", "/api/conflicts/resolve", { provider: c.provider, seq: c.seq, token: c.token, winner });
+    if (data.ok) renderConflicts(data); else $("conflicts-line").textContent = data.error;
+  } catch (error) {
+    $("conflicts-line").textContent = "Local program not answering.";
+  }
+}
+
 async function pollConflicts() {
   try {
     const data = await call("GET", "/api/conflicts", null, STATUS_TIMEOUT_MS);
-    $("conflicts-line").textContent = data.built ? plural(data.items.length, "item") + " in the reconciliation state." : data.note;
+    if (data.ok) renderConflicts(data);
   } catch (error) {
     // The local banner already says so.
   } finally {
@@ -669,6 +737,7 @@ async function start() {
   $("offline-toggle").addEventListener("click", toggleOffline);
   $("directory-form").addEventListener("submit", askDirectory);
   $("follow-form").addEventListener("submit", followZone);
+  $("conflict-stage").addEventListener("click", stageConflict);
 
   pollStatus();
   pollLoad();

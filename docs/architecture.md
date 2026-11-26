@@ -2332,24 +2332,31 @@ stateDiagram-v2
 ```
 
 ### 13.3 The client page's Phase 2 panels (built, Part L, D437–D440)
+```
+
+### 13.7 The client page's Phase 2 panels (built, Part L, D437–D444)
 
 The page on each client PC gets four panels, all through `MeshClient`:
 
 - **Offline switch:** takes the page's own client offline (Part K). A report made meanwhile shows QUEUED; coming back
   sends the outbox and shows what happened.
-- **Directory:** asks by zone or capability (Part H) and shows one answer with the log index it was read at. Every
-  node refuses until Part G's directory merges.
+- **Who is online:** asks each node's directory on its own, by zone or capability, as `ctl discover` does, and shows the
+  three answers side by side, each with the log index it was read at, under one verdict: the same answer, a catch-up
+  difference, or a real disagreement (D443).
 - **Zone updates:** follows a zone by joining a user of the page there, which subscribes the program (Part I), and
   shows the newest 50 updates with their hops.
-- **Conflicts:** says it waits for Part J.
+- **Conflicting claim:** plays scenario 8 with three users of the page (Part J): an offer of one unit, a claim online, a
+  claim made offline that opens a reconciliation entry on return, and the owner's resolve (D444). It lists only the
+  entries the page made: no node lists them to clients.
 
 ```mermaid
 flowchart LR
     B[Browser] -->|HTTP on this PC| F[frontend]
     F -->|go_offline / go_online| M[MeshClient]
-    F -->|discover| M
+    F -->|discover_at, one node at a time| C[Cloud nodes]
     F -->|join user 1,000,000+z| M
-    M -->|presence calls| C[Cloud nodes]
+    F -->|offer, claim, resolve as users 2,000,000+| M
+    M -->|presence and claims calls| C
     P[Other programs] -->|zone updates, P2P| M
     M -->|take_peer_updates| F
 ```

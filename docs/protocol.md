@@ -357,16 +357,22 @@ rounds a number above 2^53.
 | `POST /api/load/stop` | none | `{ok, stopping}` |
 | `GET /api/load` | none | `{ok, running_users, running_programs, rows:[{client_id, pid, users, think_ms, pattern, state, exit_code, summary}]}`; state is running, stopping, finished, stopped or failed |
 
-Phase 2 panels (Part L, D437–D440):
+Phase 2 panels (Part L, D437–D444):
 
 | Route | Parameters | Answer |
 |-------|------------|--------|
 | `GET /api/offline` | none | `{ok, offline, queued, held_updates, reconciled:null}` |
 | `POST /api/offline/set` | `on` = `true` or `false` | the same; with `false` it waits for the outbox and `reconciled` is `{sent, answered, expired, failed, took_ms}` (D438) |
-| `GET /api/directory` | `zone` or `capability`, exactly one | `{ok, records:[{user, role, zone, peer_addr, capabilities}], log_index, latency_us}`; 502 `{ok:false, error}` if every node refused, as all do until Part G (D437) |
+| `GET /api/directory` | `zone` or `capability`, exactly one | `{ok, nodes:[{node, answered:true, log_index, latency_us, records:[{user, role, zone, peer_addr, capabilities}]} or {node, answered:false, note}], verdict}`: each node asked on its own with `middleware::discover_at`, 2 s each; `verdict` is `ctl discover`'s last line (D437, D443) |
 | `POST /api/zone/follow` | `zone` | joins user 1,000,000 + zone of this page, which subscribes it to the zone; answers as `GET /api/zone/updates`; 502 if the join is refused (D439) |
 | `GET /api/zone/updates` | none | `{ok, followed:[zones], updates:[{id, from, zone, hops, version, kind, text, received_at_ms}]}`, newest 50 |
-| `GET /api/conflicts` | none | `{ok, built:false, items:[], note}` until Part J merges (D440) |
+| `GET /api/conflicts` | none | `{ok, items:[{resource, provider, seq, owner, incumbent, challenger, token, claimed_at_ms, staged_at_ms, steps, resolved}]}`, newest first: the conflicts this page staged (D444) |
+| `POST /api/conflicts/stage` | none | plays scenario 8 with users 2,000,000 + 3n to + 3n + 2 of this page, then answers as `GET /api/conflicts`; 409 while offline or while another staging runs, 502 with `{error, steps}` if a step fails (D444) |
+| `POST /api/conflicts/resolve` | `provider`, `seq`, `token`, `winner` = `challenger` or `incumbents` | resolves as the offer's owner, then answers as `GET /api/conflicts`; 404 for a resource this page did not stage (D444) |
+
+Two middleware calls serve these panels (D443, D444): `discover_at(addr, query, timeout)` asks one node's directory over TCP,
+as `ctl discover` does, and `MeshClient::reconciliations()` lists this client's claims that went into reconciliation when they
+were resent on reconnect, with the token the owner resolves them by (at most 256 kept).
 
 `POST /api/report` made while offline answers `{ok, queued:true, request, zone, severity, needs, who, valid_for_s}` (D438). The
 Phase 1 zone routes stay gone (D209); following a zone is the publish-subscribe of Part I.

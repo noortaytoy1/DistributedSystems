@@ -45,11 +45,14 @@ use futures::future::join_all;
 use rescuemesh::campus;
 use rescuemesh::config::{CampusConfig, Config};
 use rescuemesh::metrics::{EventLog, now_ms};
-use rescuemesh::middleware::{ClientError, Delivery, MeshClient, Submitted, control};
+use rescuemesh::middleware::{
+    ClaimDelivery, ClaimError, ClientError, Delivery, MeshClient, Submitted, control, discover_at,
+};
 use rescuemesh::proto::{
-    Capability, ClientId, ControlReply, ControlRequest, Incident, IncidentStatus, NodeStatus,
-    P2pBody, P2pEnvelope, PresenceRecord, PresenceRole, RequestId, Responder, ResponderId, UserId,
-    ZoneId,
+    Capability, ClaimReply, ClientId, ControlReply, ControlRequest, DiscoverReply, Incident,
+    IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, NodeStatus, P2pBody, P2pEnvelope, Point,
+    PresenceQuery, PresenceRecord, PresenceRole, ReconciliationWinner, RequestId, ResourceId,
+    ResourceOffer, Responder, ResponderId, UserId, ZoneId,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -115,6 +118,15 @@ const MAX_ZONE_UPDATES: usize = 50;
 /// The user this page joins to follow zone `z` is this plus `z` (D439): far above the user numbers
 /// a person types or the load box gives, so it never shares a record with them.
 const FOLLOW_USER_BASE: u32 = 1_000_000;
+/// How long the directory panel waits for each node, as `ctl discover` does (D443).
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(2);
+/// The users the conflicts panel stages scenario 8 with, three per staging, from here up (D444):
+/// above the follow users, so neither meets the other.
+const CONFLICT_USER_BASE: u32 = 2_000_000;
+/// How long a staged offer is available; its claims last as long (D379).
+const CONFLICT_OFFER_FOR_MS: u64 = 600_000;
+/// Most conflicts one page stages, so its list stays short.
+const MAX_STAGED_CONFLICTS: usize = 20;
 
 const PAGE: &str = include_str!("frontend.html");
 
@@ -133,6 +145,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("/api/zone/follow", "POST"),
     ("/api/zone/updates", "GET"),
     ("/api/conflicts", "GET"),
+    ("/api/conflicts/stage", "POST"),
+    ("/api/conflicts/resolve", "POST"),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -216,6 +230,23 @@ struct App {
     followed: Mutex<BTreeSet<ZoneId>>,
     /// Reads the P2P inbox into `updates`; ended at shutdown.
     inbox: tokio::task::JoinHandle<()>,
+    /// The conflicts this page staged, oldest first (D444).
+    staged: Mutex<Vec<Staged>>,
+    /// True while a staging runs: one at a time, as it takes the page offline and back.
+    staging: std::sync::atomic::AtomicBool,
+}
+
+/// One run of scenario 8 by this page's own users (D444).
+struct Staged {
+    resource: ResourceId,
+    owner: UserId,
+    incumbent: UserId,
+    challenger: UserId,
+    staged_at_ms: u64,
+    /// What each step did, as the page shows it.
+    steps: Vec<String>,
+    /// The owner's resolve and its answer, once made.
+    resolved: Option<String>,
 }
 
 impl App {
@@ -245,6 +276,8 @@ impl App {
             updates,
             followed: Mutex::default(),
             inbox,
+            staged: Mutex::new(Vec::new()),
+            staging: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -553,7 +586,12 @@ async fn route(app: &App, request: &Request) -> Response {
         "/api/directory" => directory(app, &query).await,
         "/api/zone/follow" => zone_follow(app, &query).await,
         "/api/zone/updates" => query.only(&[]).map(|()| zone_updates(app)),
-        "/api/conflicts" => query.only(&[]).map(|()| conflicts()),
+        "/api/conflicts" => query.only(&[]).map(|()| conflicts(app)),
+        "/api/conflicts/stage" => match query.only(&[]) {
+            Ok(()) => Ok(conflict_stage(app).await),
+            Err(refused) => Err(refused),
+        },
+        "/api/conflicts/resolve" => conflict_resolve(app, &query).await,
         _ => Ok(Response::error(404, "no such path")),
     };
     answered.unwrap_or_else(|refused| refused)
@@ -837,8 +875,8 @@ fn record_json(record: &PresenceRecord) -> Value {
     })
 }
 
-/// Who is online in a zone or with a capability, as the directory answers (D437). The answer is
-/// from whichever node answered first, labelled with the log index it read at.
+/// Who is online in a zone or with a capability, asked of each node on its own and shown side by
+/// side, as `ctl discover` does (D437, D443). The verdict says whether the nodes that answered agree.
 async fn directory(app: &App, query: &Query<'_>) -> Result<Response, Response> {
     query.only(&["zone", "capability"])?;
     let zone: Option<ZoneId> = query.number("zone")?;
@@ -851,39 +889,85 @@ async fn directory(app: &App, query: &Query<'_>) -> Result<Response, Response> {
                 .ok_or_else(|| Response::error(400, format!("unknown capability {name}")))
         })
         .transpose()?;
-    let found = match (zone, capability) {
-        (Some(zone), None) if zone < app.config.campus.zones => {
-            app.client.discover_zone(zone).await
-        }
-        (Some(_), None) => {
+    match (zone, capability) {
+        (Some(zone), None) if zone >= app.config.campus.zones => {
             return Err(Response::error(
                 400,
                 format!("zone must be below {}", app.config.campus.zones),
             ));
         }
-        (None, Some(capability)) => app.client.discover_capability(capability).await,
+        (Some(_), None) | (None, Some(_)) => {}
         _ => {
             return Err(Response::error(
                 400,
                 "give a zone or a capability, not both",
             ));
         }
-    };
-    match found {
-        Ok(found) => Ok(Response::json(
-            200,
-            &json!({
-                "ok": true,
-                "records": found.records.iter().map(record_json).collect::<Vec<_>>(),
-                "log_index": found.log_index,
-                "latency_us": u64::try_from(found.latency.as_micros()).unwrap_or(u64::MAX),
-            }),
-        )),
-        Err(e) => Ok(Response::error(
-            502,
-            format!("The directory did not answer: {e}"),
-        )),
     }
+    let asked = PresenceQuery {
+        zone,
+        capability,
+        limit: MAX_DISCOVER_RECORDS,
+    };
+    let answers = join_all(app.config.cluster.nodes.iter().map(|n| {
+        let asked = asked.clone();
+        async move {
+            let started = tokio::time::Instant::now();
+            let answer = discover_at(&n.client_addr, asked, DIRECTORY_TIMEOUT).await;
+            (n.id, answer, started.elapsed())
+        }
+    }))
+    .await;
+    let mut found = Vec::new();
+    let nodes: Vec<Value> = answers
+        .into_iter()
+        .map(|(node, answer, took)| {
+            let latency_us = u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+            match answer {
+                Ok(DiscoverReply::Found { records, log_index }) => {
+                    let shown = json!({
+                        "node": node,
+                        "answered": true,
+                        "log_index": log_index,
+                        "latency_us": latency_us,
+                        "records": records.iter().map(record_json).collect::<Vec<_>>(),
+                    });
+                    found.push((node, log_index, records));
+                    shown
+                }
+                Ok(DiscoverReply::Rejected(reason)) => {
+                    json!({ "node": node, "answered": false, "note": format!("refused: {reason}") })
+                }
+                Err(ClientError::Timeout) => json!({
+                    "node": node,
+                    "answered": false,
+                    "note": "no answer (silenced or catching up)",
+                }),
+                Err(e) => {
+                    json!({ "node": node, "answered": false, "note": format!("unreachable: {e}") })
+                }
+            }
+        })
+        .collect();
+    Ok(Response::json(
+        200,
+        &json!({ "ok": true, "nodes": nodes, "verdict": directory_verdict(&found) }),
+    ))
+}
+
+/// Whether the nodes that answered agree, in `ctl discover`'s words (D288, D443). Answers read at
+/// different log indexes may differ for a moment: that is catch-up, not disagreement.
+fn directory_verdict(answers: &[(NodeId, u64, Vec<PresenceRecord>)]) -> String {
+    let Some((_, index, records)) = answers.first() else {
+        return "no node answered".into();
+    };
+    if answers.iter().all(|(_, _, r)| r == records) {
+        return format!("same answer from {} nodes", answers.len());
+    }
+    if answers.iter().all(|(_, i, _)| i == index) {
+        return "DIFFERENT answers at the same log index: a bug".into();
+    }
+    "answers differ, read at different log indexes: ask again".into()
 }
 
 /// Follow a zone: join a user of this page in it, which subscribes this program to the zone's
@@ -988,18 +1072,218 @@ async fn keep_updates(
     }
 }
 
-/// Items in the reconciliation state come from Part J's claims, which are not merged (D440).
-// TODO(L): list the reconciliation state when Part J merges.
-fn conflicts() -> Response {
-    Response::json(
-        200,
-        &json!({
-            "ok": true,
-            "built": false,
-            "items": [],
-            "note": "Conflicts come from Part J's claims, which are not merged yet.",
-        }),
-    )
+/// What a claims call answered, in words for the page.
+fn claim_text(answer: &Result<ClaimReply, ClaimError>) -> String {
+    match answer {
+        Ok(ClaimReply::Offered { log_index }) => format!("offered, at log index {log_index}"),
+        Ok(ClaimReply::Claimed { token, .. }) => format!("claimed, token {token}"),
+        Ok(ClaimReply::Reconciling { token, .. }) => format!("in reconciliation, entry {token}"),
+        Ok(ClaimReply::Released { log_index }) => format!("released, at log index {log_index}"),
+        Ok(ClaimReply::Resolved { log_index }) => format!("resolved, at log index {log_index}"),
+        Ok(ClaimReply::Refused(reason)) => format!("refused: {reason}"),
+        Ok(ClaimReply::Rejected(reason)) => format!("rejected: {reason}"),
+        Err(e) => format!("no answer: {e}"),
+    }
+}
+
+/// Plays scenario 8 with three users of this page (D444). A provider offers one unit; an incumbent
+/// claims it online; the page goes offline and a challenger claims the same unit, which waits in
+/// the claims outbox; back online, the claim is resent as speculative, does not fit, and opens a
+/// reconciliation entry for the provider to resolve.
+async fn conflict_stage(app: &App) -> Response {
+    use std::sync::atomic::Ordering;
+    if app.staging.swap(true, Ordering::SeqCst) {
+        return Response::error(409, "A conflict is being staged already.");
+    }
+    let answer = stage_one(app).await;
+    app.staging.store(false, Ordering::SeqCst);
+    answer
+}
+
+async fn stage_one(app: &App) -> Response {
+    if app.client.is_offline() {
+        return Response::error(
+            409,
+            "Come back online first: staging goes offline and back by itself.",
+        );
+    }
+    let n = lock(&app.staged).len();
+    if n >= MAX_STAGED_CONFLICTS {
+        return Response::error(
+            409,
+            format!("This page has staged {n} conflicts; restart it to stage more."),
+        );
+    }
+    let base = CONFLICT_USER_BASE + 3 * n as u32;
+    let user = |k: u32| UserId {
+        client: app.client_id,
+        user: base + k,
+    };
+    let (owner, incumbent, challenger) = (user(0), user(1), user(2));
+    let now = now_ms();
+    // Minted by this page, from its clock, so a restarted page never reuses one (D372).
+    let resource = ResourceId {
+        provider: app.client_id,
+        seq: now * 1_000 + n as u64,
+    };
+    let zone: ZoneId = 0;
+    let location = app
+        .responders
+        .values()
+        .find(|r| r.zone == zone)
+        .map(|r| r.location)
+        .unwrap_or(Point { x: 0, y: 0 });
+    let offer = ResourceOffer {
+        id: resource,
+        provider: owner,
+        capability: Capability::Rescue,
+        zone,
+        location,
+        capacity: 1,
+        available_until_ms: now + CONFLICT_OFFER_FOR_MS,
+    };
+    let mut steps = Vec::new();
+    let failed = |steps: Vec<String>, why: String| {
+        Response::json(502, &json!({ "ok": false, "error": why, "steps": steps }))
+    };
+    let offered = app.client.offer_resource(offer).await;
+    if !matches!(offered, Ok(ClaimReply::Offered { .. })) {
+        return failed(steps, format!("The offer: {}", claim_text(&offered)));
+    }
+    steps.push(format!(
+        "User {owner} offered 1 unit of resource {resource}: {}.",
+        claim_text(&offered)
+    ));
+    let held = app.client.claim_resource(resource, incumbent, 1).await;
+    if !matches!(held, Ok(ClaimReply::Claimed { .. })) {
+        return failed(steps, format!("The online claim: {}", claim_text(&held)));
+    }
+    steps.push(format!(
+        "User {incumbent} claimed it online: {}.",
+        claim_text(&held)
+    ));
+    app.client.go_offline();
+    steps.push("The page went offline.".to_string());
+    let queued = app
+        .client
+        .claim_resource_or_queue(resource, challenger, 1)
+        .await;
+    let back = app.client.go_online().await;
+    if !matches!(queued, ClaimDelivery::Queued) {
+        return failed(
+            steps,
+            format!("The offline claim was not queued: {queued:?}"),
+        );
+    }
+    steps.push(format!(
+        "User {challenger} claimed the same unit while offline: queued."
+    ));
+    steps.push(match &back {
+        Ok(_) => "Back online: the queued claim went out again, marked speculative.".to_string(),
+        Err(e) => format!("Back online, but the outbox said: {e}"),
+    });
+    let entry = app
+        .client
+        .reconciliations()
+        .into_iter()
+        .find(|e| e.resource == resource && e.challenger == challenger);
+    steps.push(match entry {
+        Some(e) => format!(
+            "It did not fit: reconciliation entry {} is open for user {owner} to resolve.",
+            e.token
+        ),
+        None => "No reconciliation entry came back: the resent claim got no answer and waits \
+                 for the next reconnect."
+            .to_string(),
+    });
+    lock(&app.staged).push(Staged {
+        resource,
+        owner,
+        incumbent,
+        challenger,
+        staged_at_ms: now,
+        steps,
+        resolved: None,
+    });
+    conflicts(app)
+}
+
+/// Resolve a staged conflict as its offer's owner (D378, D444).
+async fn conflict_resolve(app: &App, query: &Query<'_>) -> Result<Response, Response> {
+    query.only(&["provider", "seq", "token", "winner"])?;
+    let resource = ResourceId {
+        provider: query.required_number("provider")?,
+        seq: query.required_number("seq")?,
+    };
+    let token: u64 = query.required_number("token")?;
+    let winner = match query.get("winner") {
+        Some("challenger") => ReconciliationWinner::Challenger,
+        Some("incumbents") => ReconciliationWinner::Incumbents,
+        _ => {
+            return Err(Response::error(
+                400,
+                "winner must be challenger or incumbents",
+            ));
+        }
+    };
+    let owner = lock(&app.staged)
+        .iter()
+        .find(|s| s.resource == resource)
+        .map(|s| s.owner)
+        .ok_or_else(|| {
+            Response::error(
+                404,
+                format!("this page staged no conflict on resource {resource}"),
+            )
+        })?;
+    let answer = app
+        .client
+        .resolve_reconciliation(resource, owner, token, winner)
+        .await;
+    let said = match winner {
+        ReconciliationWinner::Challenger => "the challenger wins",
+        ReconciliationWinner::Incumbents => "the incumbent keeps it",
+    };
+    if let Some(staged) = lock(&app.staged)
+        .iter_mut()
+        .find(|s| s.resource == resource)
+    {
+        staged.resolved = Some(format!(
+            "User {owner} resolved entry {token}, {said}: {}.",
+            claim_text(&answer)
+        ));
+    }
+    Ok(conflicts(app))
+}
+
+/// The conflicts this page staged, newest first, with each one's reconciliation entry and its
+/// resolve (D444). No node lists reconciliation entries to clients, so the page shows its own;
+/// the cloud-wide count is each node's `claims_state.reconciling`.
+fn conflicts(app: &App) -> Response {
+    let open = app.client.reconciliations();
+    let items: Vec<Value> = lock(&app.staged)
+        .iter()
+        .rev()
+        .map(|s| {
+            let entry = open
+                .iter()
+                .find(|e| e.resource == s.resource && e.challenger == s.challenger);
+            json!({
+                "resource": s.resource.to_string(),
+                "provider": s.resource.provider,
+                "seq": s.resource.seq,
+                "owner": s.owner.to_string(),
+                "incumbent": s.incumbent.to_string(),
+                "challenger": s.challenger.to_string(),
+                "token": entry.map(|e| e.token),
+                "claimed_at_ms": entry.map(|e| e.at_ms),
+                "staged_at_ms": s.staged_at_ms,
+                "steps": s.steps,
+                "resolved": s.resolved,
+            })
+        })
+        .collect();
+    Response::json(200, &json!({ "ok": true, "items": items }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1962,6 +2246,10 @@ mod tests {
             "zones-panel",
             "conflicts-panel",
             "QUEUED",
+            "Ask all three nodes",
+            "Stage a conflict",
+            "Challenger wins",
+            "Keep incumbents",
         ] {
             assert!(PAGE.contains(needed), "the page must have {needed}");
         }
@@ -2154,7 +2442,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn phase2_panels_refuse_bad_values_and_say_what_is_not_built() {
+    async fn phase2_panels_refuse_bad_values() {
         let page = start_page(dead_config(), no_program()).await;
         for target in [
             "/api/directory",
@@ -2175,9 +2463,26 @@ mod tests {
             let (status, body) = http(page.addr, "POST", target).await;
             assert_eq!(status, 400, "{target}: {body}");
         }
+        for target in [
+            "/api/conflicts/resolve",
+            "/api/conflicts/resolve?provider=1&seq=2&token=3",
+            "/api/conflicts/resolve?provider=1&seq=2&token=3&winner=maybe",
+            "/api/conflicts/resolve?provider=1&seq=x&token=3&winner=challenger",
+            "/api/conflicts/stage?now=1",
+        ] {
+            let (status, body) = http(page.addr, "POST", target).await;
+            assert_eq!(status, 400, "{target}: {body}");
+        }
+        let (status, body) = http(
+            page.addr,
+            "POST",
+            "/api/conflicts/resolve?provider=1&seq=2&token=3&winner=challenger",
+        )
+        .await;
+        assert_eq!(status, 404, "only a conflict this page staged: {body}");
         let (status, conflicts) = http(page.addr, "GET", "/api/conflicts").await;
         assert_eq!(status, 200);
-        assert_eq!(conflicts["built"], false);
+        assert_eq!(conflicts["items"], json!([]));
         let (_, updates) = http(page.addr, "GET", "/api/zone/updates").await;
         assert_eq!(updates["followed"], json!([]));
         page.end().await;
@@ -2223,24 +2528,133 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn with_no_directory_yet_the_panels_say_so() {
+    async fn the_directory_panel_asks_every_node_and_says_they_agree() {
         let cluster = TestCluster::start(3).await;
         ready(&cluster).await;
         let page = start_page(cluster.config.clone(), no_program()).await;
-        let (status, found) = http(page.addr, "GET", "/api/directory?zone=1").await;
-        assert_eq!(status, 502, "{found}");
-        assert!(
-            found["error"].as_str().unwrap().contains("refused"),
-            "{found}"
-        );
+        // Following zone 1 joins a user of the page there, so the directory has someone to show.
         let (status, follow) = http(page.addr, "POST", "/api/zone/follow?zone=1").await;
-        assert_eq!(status, 502, "{follow}");
-        let (_, updates) = http(page.addr, "GET", "/api/zone/updates").await;
+        assert_eq!(status, 200, "{follow}");
+        assert_eq!(follow["followed"], json!([1]));
+        let follower = format!("{}/{}", page.app.client_id, FOLLOW_USER_BASE + 1);
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            let (status, found) = http(page.addr, "GET", "/api/directory?zone=1").await;
+            assert_eq!(status, 200, "{found}");
+            let nodes = found["nodes"].as_array().unwrap().clone();
+            assert_eq!(nodes.len(), 3, "one column per node: {found}");
+            let everyone_has_it = nodes.iter().all(|n| {
+                n["answered"] == true
+                    && n["records"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r["user"] == follower.as_str())
+            });
+            if everyone_has_it && found["verdict"] == "same answer from 3 nodes" {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the three nodes never agreed on the follower: {found}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (status, by_capability) =
+            http(page.addr, "GET", "/api/directory?capability=Medical").await;
+        assert_eq!(status, 200, "{by_capability}");
+        assert_eq!(by_capability["nodes"].as_array().unwrap().len(), 3);
+        page.end().await;
+    }
+
+    #[test]
+    fn the_directory_verdict_tells_catch_up_from_disagreement() {
+        let record = |user: u32| PresenceRecord {
+            user: UserId { client: 4, user },
+            role: PresenceRole::Ordinary,
+            zone: 1,
+            peer_addr: "10.0.0.4:20000".into(),
+            capabilities: vec![],
+            incarnation: 1,
+        };
+        assert_eq!(directory_verdict(&[]), "no node answered");
+        let same = [(1, 10, vec![record(1)]), (2, 12, vec![record(1)])];
+        assert_eq!(directory_verdict(&same), "same answer from 2 nodes");
+        let behind = [
+            (1, 10, vec![record(1)]),
+            (2, 12, vec![record(1), record(2)]),
+        ];
         assert_eq!(
-            updates["followed"],
-            json!([]),
-            "a refused join follows nothing"
+            directory_verdict(&behind),
+            "answers differ, read at different log indexes: ask again"
         );
+        let split = [(1, 12, vec![record(1)]), (2, 12, vec![record(2)])];
+        assert_eq!(
+            directory_verdict(&split),
+            "DIFFERENT answers at the same log index: a bug"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn staging_a_conflict_opens_an_entry_and_its_owner_resolves_it() {
+        let cluster = TestCluster::start(3).await;
+        ready(&cluster).await;
+        let page = start_page(cluster.config.clone(), no_program()).await;
+        let (status, staged) = http(page.addr, "POST", "/api/conflicts/stage").await;
+        assert_eq!(status, 200, "{staged}");
+        let item = staged["items"][0].clone();
+        let token = item["token"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("an open entry: {staged}"));
+        assert_eq!(item["steps"].as_array().unwrap().len(), 6, "{item}");
+        assert!(item["resolved"].is_null());
+        let resource = ResourceId {
+            provider: item["provider"].as_u64().unwrap(),
+            seq: item["seq"].as_u64().unwrap(),
+        };
+        wait_until(PATIENCE, "the entry on every node", || {
+            cluster.nodes.iter().all(|n| {
+                n.ctx
+                    .state
+                    .with(|s| s.claims().reconciling_on(&resource) == 1)
+            })
+        })
+        .await;
+        let (_, state) = http(page.addr, "GET", "/api/offline").await;
+        assert_eq!(state["offline"], false, "staging leaves the page online");
+
+        let target = format!(
+            "/api/conflicts/resolve?provider={}&seq={}&token={token}&winner=challenger",
+            resource.provider, resource.seq
+        );
+        let (status, resolved) = http(page.addr, "POST", &target).await;
+        assert_eq!(status, 200, "{resolved}");
+        let said = resolved["items"][0]["resolved"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(said.contains("resolved, at log index"), "{said}");
+        wait_until(
+            PATIENCE,
+            "the entry gone and the challenger holding it",
+            || {
+                cluster.nodes.iter().all(|n| {
+                    n.ctx.state.with(|s| {
+                        s.claims().reconciling_on(&resource) == 0
+                            && s.claims().claimed(&resource) == 1
+                    })
+                })
+            },
+        )
+        .await;
+
+        // Staging needs the page online; it does not stage over a page someone took offline.
+        let (status, _) = http(page.addr, "POST", "/api/offline/set?on=true").await;
+        assert_eq!(status, 200);
+        let (status, refused) = http(page.addr, "POST", "/api/conflicts/stage").await;
+        assert_eq!(status, 409, "{refused}");
+        let (status, _) = http(page.addr, "POST", "/api/offline/set?on=false").await;
+        assert_eq!(status, 200);
         page.end().await;
     }
 
