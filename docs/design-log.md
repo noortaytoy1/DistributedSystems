@@ -440,7 +440,7 @@ table below in sync.
 | D367 | `gossip_published` is logged even with no targets | I, with L | Implemented |
 | D368 | Tests against stub nodes, and an explicit list of what changes later | I | Implemented, amended by D369 |
 | D369 | PR 2's leftovers: the directory makes one marker obsolete, a real-cloud test, one marker kept | I, with G and K | Implemented, amends D368 |
-| D430 | The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default | L | Implemented |
+| D430 | The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default | L | Implemented, amended by D445 |
 | D431 | Three roles by fixed share (80, 15, 5) and a per-role action mix | L | Implemented |
 | D432 | Random outages per program, drawn once a minute, through Part K's switch | L | Implemented |
 | D433 | Actions of parts not merged yet are stubs that send nothing and count as `stub` | L | Implemented, amended by D436 and D441 |
@@ -449,6 +449,7 @@ table below in sync.
 | D436 | The lifecycle calls Part H's join, discover, move and peer send; offers and claims stay stubs | L | Implemented, amended by D441 |
 | D441 | The lifecycle's offers, claims and releases are Part J's real calls | L, with J | Implemented, amends D433 and D436 |
 | D442 | The conflict sweep's injected delay is `workload.claim_delay_ms`, a responder's wait before claiming | L | Implemented, details D434 |
+| D445 | A user joins at its first slot, so a program's joins spread over one think time | L | Implemented, amends D430 |
 
 **Open decisions.** None remain in Phase 1's code: D5, D17, D39, D42, D52, D63 and D95 are settled, each in its
 own entry. Any entry marked `Open` in future was a conflict between the Phase 1 architecture document and the
@@ -10748,7 +10749,7 @@ them on the six PCs.
 
 ### D430 · The Phase 2 user lifecycle in loadgen, behind `workload.lifecycle`, off by default
 
-- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
+- **Date:** 2026-11-22 · **Part:** L · **Status:** Implemented, amended by D445 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22)
 - **Context.** Phase 2 is measured on "tens of thousands of operations" and demonstrated end to end. The users that make the load have to do what Phase 2 users do: register, subscribe to a zone, report, discover, talk to peers, offer and claim, move and go offline. Parts G, H, I and J, which provide most of those calls, are not merged yet. Phase 1's scenarios 1 to 4 and 9 must also re-run unchanged on the final build (`docs/phase2-plan.md` section 8).
 - **Options considered.**
   1. *A switch in the config, `workload.lifecycle`, off by default; when on, each closed-loop user runs the lifecycle (chosen).*
@@ -10899,6 +10900,21 @@ them on the six PCs.
 - **Where.** `config.rs::WorkloadConfig::claim_delay_ms`, `bin/loadgen.rs::phase2_call`, `metrics.rs::Event::WorkloadStarted`.
 - **How we check it.** `the_workload_is_phase_1_by_default_and_its_shares_must_add_up` (default 0, 60000 refused), and the conflict sweep's cells.
 - **Report notes.** Describe it as "a responder claims on news this much older", not as a network delay.
+
+### D445 · A user joins at its first slot, so a program's joins spread over one think time
+
+- **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented, amends D430 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
+- **Context.** D430 had each user register and subscribe as soon as its program started, then wait for its first slot. With Part G's directory merged every join is a log write (D284), so a program of 500 users wrote 500 joins in the same instant, and the 5,000-users-per-PC cell would start with 15,000 joins at once: a burst no campus makes, measured as if it were the system's normal load.
+- **Options considered.**
+  1. *Wait for the first slot, then join, then wait one think time before the first action (chosen).*
+  2. *Join at once, as before.* Simple, but the burst lands in every run's warm-up and in the join latency.
+  3. *A separate random join delay.* A second timer to explain, when the first slot already spreads users the way their reports are spread.
+- **Decision.** Option 1. The first slot is the pacer's (D182): even for `steady`, random for `random`, the same instant for `all-at-once`, which keeps a burst when a cell asks for one.
+- **Why.** Users arrive the way they then act, so join latency and the directory's write rate are measured under the load the cell describes.
+- **Consequences.** Every user's actions start one think time later than before; the runs' warm-up (15 s or 30 s) covers it.
+- **Where.** `bin/loadgen.rs::lifecycle_user`.
+- **How we check it.** By hand on three local nodes: the directory's `directory_write` events of the joins spread over the first think time instead of landing within a few milliseconds.
+- **Report notes.** Say users join at their first slot.
 
 ### Notes on older entries
 

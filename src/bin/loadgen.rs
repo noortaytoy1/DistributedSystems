@@ -832,12 +832,15 @@ async fn lifecycle_user(
                 .or_default() += 1;
         }
     };
+    // A user arrives at its first slot, as its first report would, so a program's users join
+    // spread over one think time and not in one burst at the start (D445).
+    pause(pacer.first_wait(owner.user, users, now_ms()), stop_at).await;
     for action in [Action::Register, Action::Subscribe] {
         let started = Instant::now();
         let outcome = phase2_call(action, &mut life, owner, &shared).await;
         count(&stats, started, action, outcome);
     }
-    pause(pacer.first_wait(owner.user, users, now_ms()), stop_at).await;
+    pause(pacer.next_wait(now_ms()), stop_at).await;
     while Instant::now() < stop_at {
         let started = Instant::now();
         let action = life.next_action();
