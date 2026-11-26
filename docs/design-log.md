@@ -11006,8 +11006,8 @@ them on the six PCs.
 - **Decision.** Option 1: `analysis/phase2_stream.py <root> --out DIR --jobs N`. It keeps the P2P, gossip and held-update figures' definitions exactly (it reuses `update_key`, `ratio`, `latency_metrics`, `endpoints` and the outcome tables), calls the rest of `analyze.py`'s functions unchanged, and writes the same `summary.csv` and figures. `peer_updates_held_at_end` is left out (NaN): it needs every held line in order.
 - **Why.** The numbers mean the same as `analyze.py`'s, with one pass over the disk and a run's non-P2P lines in memory.
 - **Consequences.** Fault-run figures (before, during and after a fault, failover, arrival peaks) are not computed: no Phase 2 cell has a fault. A Phase 1 run still goes through `analyze.py`.
-- **Where.** `analysis/phase2_stream.py`.
-- **How we check it.** On the local trial both scripts were run: of 309 figures in common, 307 are equal, one differs in the 16th digit, and one is the NaN above.
+- **Where.** `analysis/phase2_stream.py`; `analysis/phase2_requests.py` adds Phase 1's per-request check (every report sent ends answered or given up, whole run), reading only those lines through `grep`.
+- **How we check it.** On the local trial both scripts were run: of 309 figures in common, 307 are equal, one differs in the 16th digit, and one is the NaN above. On the first lab series (27 runs): 2,550,003 reports sent, 2,547,087 answered, 2,916 given up, 0 unaccounted.
 - **Report notes.** Say the Phase 2 numbers come from one streaming pass with the same definitions.
 
 ### D449 · The Phase 1 rerun is a `regress` mode of Phase 1's own runner, on repeats above 20
