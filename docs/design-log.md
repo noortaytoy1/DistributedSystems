@@ -10923,7 +10923,7 @@ them on the six PCs.
 ### D446 · Nine Phase 2 cells, users given per client PC, run with the generic runner
 
 - **Date:** 2026-11-26 · **Part:** L · **Status:** Implemented, implements D434 · **Decided by:** the agent, on its recommendation, on Noor Emam's instruction to take every recommendation for Part L and review them all after Phase 2 (2026-11-22; applied 2026-11-26)
-- **Context.** D434 accepted three sweeps. The cells must be config overlays for `scripts/run-experiments.sh` (D63), whose run line gives the total users over the client machines in the hosts file. On the lab, client PC 1's firewall drops the P2P port range (D336) and opening it needs `sudo`, which the runs must not wait for; clients 2 and 3 take it.
+- **Context.** D434 accepted three sweeps. The cells must be config overlays for `scripts/run-experiments.sh` (D63), whose run line gives the total users over the client machines in the hosts file. On the lab, client PC 1 and node 2 first looked unreachable for P2P and client traffic; the cause turned out to be Wi-Fi subnets that cannot reach each other, and their wired addresses work. A client PC that cannot take P2P must still be easy to leave out.
 - **Options considered.**
   1. *Cells:* the three sweeps as nine cells sharing one body (chosen); a full grid of users × offline × delay, 27 cells and about 4 hours on `quick`; or one cell per sweep with the value passed in the environment, which the analysis could not tell apart.
   2. *Users:* a run-line key `users_per_pc`, the users per client machine (chosen); totals for three machines, which mean another load per PC when a machine is left out; or a second hosts-dependent cell set.
@@ -10935,7 +10935,7 @@ them on the six PCs.
   - `ph2conflict-0ms`, `ph2conflict-500ms`, `ph2conflict-2000ms`: `workload.claim_delay_ms` (D442), at 1,000 users per PC.
   - `experiments/phase2.list` names them; `quick` and `full` keep Phase 1's timings (D63).
   - The runner reads `users_per_pc=N` and gives each client machine in the hosts file N users; `users` stays as it was.
-  - A client PC whose firewall drops the P2P range is left out of the hosts file's client lines.
+  - A client PC that cannot take P2P is left out of the hosts file's client lines; on 2026-11-26 all three took part, node 2 and client PC 1 by their wired addresses.
 - **Why.** Each sweep answers one question of the spec with the others held still, and `users_per_pc` keeps a cell's meaning when the number of client PCs changes.
 - **Consequences.** The full profile now has 43 cells; Phase 2 runs are started with the list. Runs on two client PCs carry two thirds of the users a three-PC run would, which the methodology states.
 - **Where.** `experiments/ph2*.toml`, `experiments/phase2.list`, `scripts/run-experiments.sh` (`users_per_pc`), `experiments/README.md`.

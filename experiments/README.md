@@ -48,9 +48,15 @@ scripts/run-experiments.sh experiments/hosts full $(cat experiments/phase2.list)
 
 Then `python3 analysis/analyze.py runs --out analysis/out` writes the Phase 2 figures beside Phase 1's (see `analysis/README.md`).
 
-**P2P needs its ports.** Client PCs must take UDP on 20000 to 20999 from each other (`sudo ufw allow 20000:20999/udp`, D336). A
-client PC that drops them cannot be a peer: leave it out of the hosts file's client lines, and the runner uses the first client
-line for `ctl`. With `users_per_pc` every remaining client PC still gets the cell's load.
+**Check the network first.** Client PCs must take UDP on 20000 to 20999 from each other (`sudo ufw allow 20000:20999/udp`,
+D336), and every PC must reach every other. On 2026-11-26 nodes 1 and 3 and client PCs 2 and 3 shared the Wi-Fi's 10.40.0.0/21,
+while node 2 and client PC 1 were on other Wi-Fi subnets it could not reach; their wired 10.7.57.x addresses worked, so the hosts
+file named them by those (client PC 1 as `local`). Ping every pair before a series. A client PC that still cannot take P2P can be
+left out of the client lines: with `users_per_pc` the others keep the cell's load per PC.
+
+**Disk and memory.** One quick series of the nine cells wrote about 105 GB to client PC 1. Analyse it with
+`python3 analysis/phase2_stream.py runs --out analysis/out/phase2` (a run is too big for `analyze.py`'s memory, D448) and check
+every report with `python3 analysis/phase2_requests.py runs`.
 
 ## 1. How long
 
