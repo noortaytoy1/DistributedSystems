@@ -1,0 +1,105 @@
+% ==============================================================================================
+\section{The Phase 2 workload and the demonstration}
+\label{sec:workload}
+% DRAFT (Noor). Facts from the design log, D430 to D445 (the lifecycle, D430 to D436, D441, D442;
+% the page, D437 to D440, D443, D444). No file names, functions, settings' names or log strings in
+% the text (D266).
+
+Phase 2 is measured with simulated users who do what Phase 2's users do: they register, follow their zone, report incidents, look for other users, send updates to peers, offer and claim resources, move between zones, and go offline and come back. They run inside the same load programs as in Phase 1, on the three client PCs. A switch in the shared configuration turns this lifecycle on. With it off, every user only reports, exactly as in Phase 1, so the Phase 1 scenarios run again unchanged (Section~\ref{sec:regression}).
+
+\subsection{A simulated user's life}
+\label{sec:lifecycle}
+
+Each user has a role. The spec names three: ordinary users, volunteer responders and resource providers. Their shares are fixed at 80\%, 15\% and 5\%, and they are given out by position rather than by a random draw. Each user of a program owns an equal slice of the range from 0 to 100 and gets the role whose share holds the middle of its slice. A program of 100 users therefore has exactly 80, 15 and 5 of each, and a program of 10 users has 8, 1 and 1. A random draw would match the shares only on average, and a small program would often have no provider at all.
+
+A user arrives at its first turn, the moment its first report would go, so the users of one program arrive spread over one think time rather than all at once. It then registers with the presence directory, with its role and a home zone drawn at random. A responder or a provider also advertises one capability, drawn once. Registering in a zone is also the subscription to it, because a program follows the zones its users are in (Section~\ref{sec:dissem}). One think time later it starts to do one action per think time until the run ends, drawn from its role's row of Table~\ref{tab:actions}. Ordinary users report most, so the cloud keeps a load like Phase 1's while the Phase 2 traffic grows beside it.
+
+\begin{table}[!htb]
+\centering\small
+\caption{What each role does per think time, in percent. Each row adds up to 100.}
+\label{tab:actions}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Role & Share & Report & Discover & Peer send & Offer & Claim & Move zone \\
+\midrule
+Ordinary user & 80\% & 60 & 20 & 15 & -- & -- & 5 \\
+Volunteer responder & 15\% & -- & 30 & 25 & -- & 40 & 5 \\
+Resource provider & 5\% & -- & 25 & 30 & 40 & -- & 5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+  \item \textbf{Report.} A new incident, sent through the call that can wait offline. Online it is answered as in Phase 1; offline it waits in the outbox under its own ID.
+  \item \textbf{Discover.} Asks the directory for the users in the user's zone, or, half the time for a user with a capability, for the users with that capability. The user keeps the users of other programs that it found, for its next peer sends.
+  \item \textbf{Peer send.} Sends one update directly to a user from its last discovery. A provider sends its live offer, as an announcement; anyone else sends the summary of the last incident its program reported, so a peer update is always about a real report. An update that cannot get through is held for later.
+  \item \textbf{Offer.} A provider offers one resource of its capability in its zone, with 1 to 3 units drawn once, for 60 s. Its next offers renew the same resource where the provider now is, keeping the end time. Once less than half the time is left, it offers a new resource.
+  \item \textbf{Claim.} A responder claims one unit of an offer its program has heard of, from its own providers or from a peer's announcement, if the offer has not ended. Offline, the claim waits in the claims outbox and is resent as speculative on return. A responder that already holds a claim gives it back instead, the next time its row says claim.
+  \item \textbf{Move zone.} The user moves to another zone of the campus. This registers it in the new zone and changes what its program follows.
+\end{itemize}
+
+A program reads the updates it receives as they arrive and counts them by kind, so its inbox never fills. The load programs resolve no reconciliation entries. Nothing tells a provider that an entry is open on its offer, so the entries the load makes stay open and show only in the nodes' counts. The deliberate conflict of scenario 8, and its resolution, is played on the demonstration page instead (Section~\ref{sec:page}).
+
+\subsection{Outages}
+
+Programs go offline at random, through the same offline switch that the page uses. Each whole minute of a run draws once. With the cell's chance, the program goes offline at a random moment of that minute, for 20 s, early enough to be back before the minute ends. A run of 150 s therefore draws twice. The whole program goes offline, with all its users: a real disconnection takes a whole device offline, and the switch belongs to one program's middleware, which all its users share. A switch per user would need a client of its own, with its own sockets, for every user: at least 15,000 sockets for 5,000 users on one PC. The plan's chance per user per minute is therefore a chance per program per minute.
+
+A program is then offline for about the chance times 20 s in every 60 s. That is about 3\% of the time at a chance of 10\%, and 10\% at a chance of 30\%. The analysis measures the real share from each program's own records of going offline and coming back.
+% CONFIRM(Noor): the cells are named by the chance a minute (0, 10, 30), not by the share of time
+% offline (about 0, 3 and 10%). Say this wherever the offline sweep is quoted.
+
+\subsection{The injected claim delay}
+
+To sweep how often claims conflict, a responder can be made to wait between picking an offer and claiming it. Its claim then goes out on news that much older, so it more often finds the offer already full. The delay is a setting of the load programs only. It changes nothing in the cloud and slows no other traffic, unlike a delay added to the network, which would also slow the reports and move the Phase 1 numbers. Because each claim takes longer, responders claim a little less often at a fixed think time, so conflicts are reported per claim, not per second.
+
+\subsection{Seeds and repeatability}
+
+Every draw is seeded. Each program's seed comes from the run's number and the program's client ID. Each user has its own random streams, seeded from that and its user number: one for its incidents, one for its waits and one for its actions. The program's outages have a stream of their own. The streams are kept apart, so turning the lifecycle on never changes which incidents a seed draws. A seed fixes every draw, but not everything a draw meets: which offers a responder has heard of, for example, depends on timing.
+
+\subsection{More programs, more load}
+
+Load grows by adding users or programs, never by changing the logic. Every program runs the same code, and a cell sets only how many users there are, which the experiment runner splits over the three client PCs and over each PC's 10 programs. Each user also renews its lease about every 3.3 s, a third of the 10 s lease. The directory therefore adds about 0.3 commands a second per user to the shared log, which is about 4,500 a second at 5,000 users per PC.
+
+\subsection{What is counted}
+
+Each program counts every action it starts after the warm-up, by action and by outcome. A claim, for example, can be granted, refused because the offer was full, queued offline, or turned into a reconciliation entry. A peer send can be delivered, answered as a duplicate, or held, or find nobody to send to. The program writes these counts in its log when it ends, beside the events each part logs as it works (Section~\ref{sec:method}). Reports keep their Phase 1 records, so throughput and latency are computed exactly as in Phase 1.
+
+\subsection{The demonstration page}
+\label{sec:page}
+
+The web page from Phase 1 runs on a client PC and holds its own client middleware, like a load program. In Phase 1 it could report an incident, show the nodes, and start and stop load programs. Phase 2 adds four panels.
+
+\begin{itemize}
+  \item \textbf{Offline switch.} Takes the page's own client offline. A report sent while offline shows a yellow QUEUED card with its request ID. ``Back online'' sends the outbox and prints ``sent N, answered N, expired N, no answer N, in X ms''.
+  \item \textbf{Who is online.} The user picks a zone or a capability and presses ``Ask all three nodes''. The page asks each node separately, the same way the operator tool does, and shows three columns, one per node. Each column holds that node's records, with each user's role, zone and capabilities, and the log index the node read at, or ``no answer (silenced or catching up)''. Under the columns, one verdict line says ``same answer from N nodes'', ``answers differ, read at different log indexes: ask again'', or ``DIFFERENT answers at the same log index: a bug''.
+  \item \textbf{Zone updates.} ``Follow'' a zone: the page joins a user of its own in that zone, which subscribes its program. The panel lists the newest 50 updates it receives, which are incident summaries, assignments and offers, each with its sender, its hops and its version.
+  \item \textbf{Conflicting claim.} ``Stage a conflict'' makes the page play scenario 8 by itself, with three of its own users. A provider offers a resource with 1 unit, and an incumbent claims it online. The page goes offline, and a challenger claims the same unit, which waits in the claims outbox. The page comes back online, the queued claim is resent as speculative, and it opens a reconciliation entry. The panel lists the open entries this page knows of, each with the resource, the challenger, the token and when it was claimed. Each row has two buttons, ``Challenger wins'' and ``Keep incumbents'', which resolve the entry as the offer's owner. The row then shows the answer: resolved at log index N, or the refusal. The panel lists only the entries this page made, because no node offers clients a list of reconciliation entries. The count over the whole cloud is in each node's report, once a second.
+\end{itemize}
+% CONFIRM(Noor): the four panels as built on part-l-demo-page (D438, D439, D443, D444).
+
+\subsection{One session, end to end}
+\label{sec:session}
+% DRAFT (Noor): the planned order. TODO(Noor): match it to the end-to-end script in
+% docs/demo.md once written, and after the integration day say what was shown, in the past tense.
+
+The demonstration runs every scenario in one session, on the six PCs, with the Phase 1 cloud underneath. Table~\ref{tab:session} gives the order.
+
+\begin{table}[!htb]
+\centering\small
+\caption{The end-to-end session, in order.}
+\label{tab:session}
+\begin{tabularx}{\linewidth}{@{}p{0.5cm}Lp{1.6cm}@{}}
+\toprule
+Step & What is done & Scenarios \\
+\midrule
+1 & Start the three nodes, the page on a client PC, and load programs with the lifecycle on, on all three client PCs & 1, 9 \\
+2 & Slow one node's planning with the operator tool, then restore it & 2 \\
+3 & Silence one node for 20 s while the others go on, then watch it catch up when it returns & 3, 4 \\
+4 & Ask all three nodes who is online, by zone and by capability; ask again while a node is silenced & 5 \\
+5 & Follow a zone and report into it, from the page and from the load; the updates arrive with their hops & 6 \\
+6 & Take the page offline, report, and come back online & 7 \\
+7 & Stage a conflicting claim and resolve it as the offer's owner & 8 \\
+8 & After the session: every request accounted for, and the nodes' digests equal & all \\
+\bottomrule
+\end{tabularx}
+\end{table}

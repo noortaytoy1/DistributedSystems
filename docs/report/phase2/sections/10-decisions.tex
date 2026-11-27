@@ -1,0 +1,59 @@
+% ==============================================================================================
+\section{Design decisions changed during development}
+\label{sec:changed}
+% DRAFT (Noor assembles). Rows as of 2026-11-26: every Phase 2 entry marked Amended or Superseded
+% in the design log (D267 to D519, plus Part L's D430 to D444 on the part-l branches), and every
+% place where what was built differs from the Phase 2 plan or from the Phase 1 report's
+% "Phase 2: what comes next". No IDs in the text (D266): each row's IDs are in the comment after it.
+% CONFIRM(each owner): your rows. Send new From / To / Why rows to Noor as decisions change.
+% Left out on purpose, as process rather than design: Part J built as one pull request, not the
+% plan's three (D381); two parts took a second block of design-log IDs (D460, D490).
+
+Several design decisions changed during Phase 2. Most changes came from building a part against what was already built. The plan was written before any Phase 2 code, and some of the values and mechanisms it named did not fit once the code existed. A few came from measurement, such as the hop limit. Tables~\ref{tab:changed} and \ref{tab:changed2} list them, with the reason for each. ``From'' is what the Phase 2 plan, the outline of Phase 2 at the end of the Phase 1 report \cite{phase1}, or the first version built said.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Decisions that changed in the cloud and between peers, with the reason for each.}
+\label{tab:changed}
+\begin{tabularx}{\linewidth}{@{}P{3.9cm}P{4.1cm}L@{}}
+\toprule
+From & To & Why \\
+\midrule
+Leases counted in rounds of the shared log & a log clock: the latest time a proposing node stamped into a presence command, with a tick each second when idle; claims use the same clock & rounds exist in only one of the two ordering modes, an idle round is never logged, and the state machines never see a round number \\ % D281 (plan G); D371
+Convergence as the time until the nodes' checkpoints match & each node's own wait from a write arriving until its directory shows it; the slowest of the three & a checkpoint shows that the copies match at a log index, not when; timing it would subtract two machines' clocks \\ % D293 (plan G)
+A program's peer port is a base port plus its client ID & the first free port of a configured range, advertised in the presence record & client IDs go up to 99,999, past the last port number, and the web page's programs could collide with the load programs' on one PC \\ % D313, D336 (plan H)
+The cloud pushes each committed incident summary into its zone & the program that reported it publishes it once its answer commits: the summary, then the assignment & the nodes have no client identity to send peer updates from, and giving them one would put the cloud back in the peer data path \\ % D351, D355 (plan I)
+Duplicate suppression by report ID & by update ID, then by the newest version of each subject & one report gives several updates, and a late copy of an old version would otherwise overwrite a newer one \\ % D342 (Phase 1 report, sec:phase2)
+A copy crosses at most 4 links, with a fan-out of 3 & at most 8 links, with a fan-out of 3 & in a simulation of the gossip rules, a zone of 500 programs was 21\% covered at 4 links and 93\% at 8, and in the lab's small zones the extra links cost nothing \\ % D345 (plan I: k = 3, hop limit 4, i.e. max_hops 3)
+Seen update IDs kept for 60 s & kept for 300 s, at most 10,000 & a copy held for an offline peer can arrive up to 300 s after it was made and must still be recognised \\ % D344 (plan I)
+Obsolete and unsubscribed copies refused in the receiver's reply & the reply says only accepted, duplicate or busy; the receiver counts the rest & the peer endpoint answers before the gossip rules see the update \\ % D349, D353
+Never forward a copy back to the program it came from & never back to its origin; a copy can return to the program that just forwarded it, which drops it as a duplicate & an update names only its origin, and naming every forwarder would change a message shared by three parts \\ % D347, D354 (plan I)
+A peer subscribes to one or more zones, listed in its presence record & a program follows the zones of its joined users, one zone per user & the directory then lists exactly the programs that forward; several zones per user would change the shared message format \\ % D359 (plan I)
+An offer's versions counted per provider and capability & counted per resource & two offers of one kind from one provider would have hidden each other \\ % D343 amended by D490
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[!htb]
+\centering\small
+\caption{Decisions that changed in offline operation, the workload and the demonstration page, with the reason for each.}
+\label{tab:changed2}
+\begin{tabularx}{\linewidth}{@{}P{3.9cm}P{4.1cm}L@{}}
+\toprule
+From & To & Why \\
+\midrule
+A gossip copy that cannot reach an absent subscriber is lost & held by its sender like any peer update, for up to 300 s & a subscriber back within 300 s gets what it missed, with no new message and no cloud in the path \\ % D362 amended by D415
+Offline changes build on provisional answers and on the first result winning & on the first result winning alone: a report made offline keeps its ID and waits; only a claim is marked speculative & a report or a peer update only adds, so it cannot contradict anyone's; a claim can, so one that no longer fits is surfaced to the owner \\ % D400, D403, D412, D376 (Phase 1 report, sec:phase2; plan K)
+A pending update held by its sender and by one zone peer & held by its sender only & the second holder needed the directory to name zone peers, which was not built yet; updates held by a program that leaves for good are lost \\ % D407 (plan K)
+A returning program collects missed zone updates from the cloud & no catch-up from the cloud; the peers' held copies cover 300 s & a catch-up needed a new query in the shared contract and the cloud in the peer data path, ten days before the deadline \\ % D417 (plan K)
+Claims made offline wait in memory & in a second outbox on disk, of the reports' kind, kept until answered & a restart, or a resend that got no answer, lost a claim and told nobody \\ % D377 amended by D414
+An outage chance per user per minute & per program per minute; the whole program goes offline for 20 s & the offline switch belongs to one program's middleware, which its users share; a switch per user needs sockets of its own for every user \\ % D432 (plan L)
+The page's zone panel revived from Phase 1 & the page joins a user of its own in the zone and lists the newest 50 updates & a program follows a zone only through a joined user; the old panel read a route the cloud never had \\ % D439 (plan L)
+The directory panel shows one answer, labelled with its log index & each node asked on its own: one column per node, and one verdict line & scenario 5 must show that all three directories match; the first version had no way to ask one node \\ % D437 amended by D443 (plan L)
+A view that lists every item in the reconciliation state & the page stages its own conflict, lists the entries it made and resolves them as the offer's owner & no node lists reconciliation entries to clients; the count over the whole cloud is in each node's report \\ % D440 superseded by D444 (plan L)
+Stand-ins while a part was missing: refusals of presence calls, a peer address the caller gave, load calls that sent nothing, gossip tested only on a stub node & the real directory, the real endpoint and the real calls, and a gossip test on three real nodes & each stand-in went when its part merged; no result in this report comes from one \\ % D325 superseded by D290; D330 by D336; D368 amended by D369; D433 amended by D436 and D441; D436 by D441
+\bottomrule
+\end{tabularx}
+\end{table}
+
+As in Phase 1, every decision was recorded with the options considered, the reasons for the choice and who made it, together with updated architecture diagrams, so a later change could see why the earlier choice was made. In Phase 2 six parts were built at the same time, so a change that crossed parts named every owner it touched, and the earlier decision was marked as changed rather than rewritten.

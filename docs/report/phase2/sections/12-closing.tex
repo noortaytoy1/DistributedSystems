@@ -1,0 +1,99 @@
+% ==============================================================================================
+\section{Limits}
+\label{sec:limits}
+% DRAFT (Noor), from what the design log and the code say is not built, as of 2026-11-26. Owners
+% add their own limits and check these: Omar (5, 6), Wahiba (8), Yahia (7, 8, 15), Ahmed (1 to 4),
+% Aabed (4, 9, 10), Noor (11 to 17). Items 14 to 17 come from the quick series of 2026-11-26.
+% TODO(Yahia): if the planner's use of offers and online volunteers is not on the final build,
+% add it here.
+
+This section lists what the results do not show, and what the system does not do, as plainly as the results themselves.
+
+\begin{enumerate}
+  \item \textbf{Reconciliation entries do not run out.} By design, an entry that nobody resolves is dropped when its offer ends. Nothing removes it, and the owner can still resolve it after the offer has ended. % claims.rs: resolve and reconciling_on never check the end time (D378 says they do)
+  \item \textbf{Ended offers and claims stay in the replicated state.} A claim on an ended offer is refused when it is tried. But nothing removes ended offers, claims or entries, so the claims state grows with every resource offered. % claims.rs: no expiry pass
+  \item \textbf{Only a conflict's own client knows of it.} No node lists reconciliation entries to clients, so an owner can resolve only the entries it learns of. In the demonstration it learns of them through the page that made them. The entries the load programs make stay open. % D441, D444
+  \item \textbf{A resource cannot be offered offline.} Reports, peer updates and claims can be made while offline; an offer fails at once. % client.rs: offer_resource goes through claims_call, which refuses offline
+  \item \textbf{The lease clock follows the fastest node's clock.} A node whose clock runs ahead shortens every lease by its error. The 5 s of grace absorbs a few seconds of difference, not more. % D281
+  \item \textbf{Nothing expires while the cloud cannot commit,} because the log clock moves only with the log. The first command after an outage lets go of every record that was not renewed, and those clients register again. % D281
+  \item \textbf{Gossip misses a few programs in a large zone.} Forward-once push gossip misses about $e^{-k}$ of a zone's programs, 5\% at a fan-out of 3. In a simulation of the gossip rules, a zone of 5 programs was always covered, 50 about 96\% and 500 about 93\%. % D345
+  \item \textbf{A copy can go back to the program that sent it,} since an update names only its origin. The receiver drops it as a duplicate, so the duplicate rate is a little higher than the gossip rules alone would give. % D354
+  \item \textbf{Held updates live in the sender's memory.} A program that goes away for good loses what it held for others. Reports and claims made offline are on disk and survive a restart. % D407, offline policy section 7
+  \item \textbf{No catch-up after 300 s.} A program offline for longer than the peers keep its copies misses those zone updates. The incidents themselves are all still on record in the cloud. % D417
+  \item \textbf{A whole program goes offline at once} in the experiments, with all its users, which is 10 to 500 of them in these cells. No single user is ever offline alone. % D432
+  \item \textbf{Some figures compare two clocks:} the age of a zone update when it arrives, and the time a reconciliation entry waited. They are given beside the measured clock skew, and no target is judged from them. % D233, D378
+  \item \textbf{Peer traffic is counted in messages, not bytes.} Each program's peer socket counts its bytes, but the runs do not log them. % CONFIRM(Noor): drop this item if the Phase 2 analysis logs peer bytes
+  \item \textbf{The largest cell is past what the cloud carries at a 1 s think time.} From 1,000 to 5,000 users per client PC the reports answered a second only doubled, from about 1,250 to about 2,500, and 2,916 of the cell's 579,783 reports (0.5\%) gave up after every retry. None was lost: every report sent was answered or given up.
+  \item \textbf{Zone gossip outweighs the reports.} At 1,000 users per client PC the programs made about 100 peer-to-peer sends for every report answered. From 1,000 to 5,000 users per PC the sends a run grew only from about 7.5 million to 8.0 million: each program's limit on gossip sends in flight holds them.
+  \item \textbf{Quick profile only, so far.} Every Phase~2 table here has 3 runs per row; the full profile, 5 runs of 120 s, is to be run on the final build.
+  \item \textbf{Default receive buffers on the client PCs.} The client PCs' socket buffers were at the operating system's default during the series, which can drop bursts of replies; the nodes' were raised.
+\end{enumerate}
+
+% ==============================================================================================
+\section{Libraries and the team's own work}
+\label{sec:library}
+% CONFIRM(Noor): no dependency was added in Phase 2 (Cargo.toml is unchanged since Phase 1, and the
+% design log records no new library, AGENTS.md rule 6). Owners: say if your part uses a library.
+
+The spec requires the report to make clear which functions come from libraries, and which distributed protocols, consistency mechanisms and recovery procedures the team designed and built. Phase 2 added no library. The same two libraries do distributed-systems work as in Phase 1: tarpc makes the remote calls, now between peers as well, and openraft is still compiled in but is off in every lab run. Table~\ref{tab:library} draws the line for Phase 2.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Libraries and the team's own work in Phase 2.}
+\label{tab:library}
+\begin{tabularx}{\linewidth}{@{}LL@{}}
+\toprule
+Done by a library & Designed and built by the team \\
+\midrule
+Remote calls, call IDs, deadlines, between peers too: tarpc 0.37 \cite{tarpc} & The presence directory on the shared log, its log clock, and its rules for late, gone and duplicate records \\
+Async tasks, timers, sockets, file writes: tokio 1 \cite{tokio} & Offers and claims: counted claims, fencing tokens from the log, the conflict rule and the reconciliation state \\
+Encoding: serde 1, bincode 1.3 \cite{serde} & The presence agent: registration, renewal and registering again \\
+Splitting TCP into frames: tokio-util 0.7 & The peer endpoint: one port per program, tries and acknowledgements, the duplicate drop, the inbox \\
+A socket option for buffers: socket2 0.6 & Zone gossip: the duplicate and version checks, the fan-out and the hop limit \\
+Log lines as JSON: serde\_json & The offline switch, the two outboxes, and store-and-forward with its retention rules \\
+Raft: openraft 0.9.25 \cite{openraft}, built in but off & The Phase 2 workload, the demonstration page's panels, the experiments and their analysis \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{AI and open source.} As in Phase 1, much of the code, the tests, the analysis scripts and the first drafts of the documents, this report's included, were written with an AI coding assistant, Claude Code \cite{claude}, under the team's direction. The team's working agreement required the assistant to raise each design decision, with its options and a recommendation, and to record who decided it. For several parts the owner chose to take the assistant's recommendations and to review them as a team at the end of the phase; the record of each decision says which. All libraries above are open source and used under their licences.
+% CONFIRM(Noor): after the team's review of the delegated decisions against the course material,
+% say what the review changed. Delegated so far: Part G (D280 to D295, Omar), Part K (D400 to
+% D417, Aabed) and Part L (D430 onwards, Noor).
+
+% ==============================================================================================
+\section{Team contributions}
+\label{sec:team}
+
+The team worked as one: decisions were discussed together, the parts were split for ownership but built to fit one system, and every member can explain the whole of it. For Phase 2 each member owned one mechanism, with its tests, its measurements, its demonstration scenario and its section of this report. Table~\ref{tab:team} lists the areas each member mainly built, from the project's history.
+% CONFIRM(each member): drafted from the plan's split (phase2-plan.md section 1) and the git history
+% of main up to 2026-11-26 (PRs 32 to 47; 48, the planner, still open; Part L on local branches).
+% Reviews: the plan pairs G-H, I-K and J-L, but on GitHub most Phase 2 pull requests were approved
+% by Aabed; say "reviewed" in a row only if it is true.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Main contributions to Phase 2.}
+\label{tab:team}
+\begin{tabularx}{\linewidth}{@{}P{2.9cm}L@{}}
+\toprule
+Member & Main contributions \\
+\midrule
+Noor Emam & The Phase 2 workload, with simulated users who live the whole lifecycle; the demonstration page's Phase 2 panels; the experiment cells, the runs and their analysis; the end-to-end demonstration; the assembly of this report, with its sections on the workload, the results, the decisions changed and the tests. \\ % CONFIRM(Noor)
+Omar Leithy & The presence directory as a second state machine on the shared log, with its log clock for leases; the spec's hard cases and their tests on three nodes; the discovery and convergence measurements and their analysis; the operator tool's side-by-side discovery. Section~\ref{sec:directory}. \\ % CONFIRM(Omar)
+Wahiba Elhimer & The peer message format and the client's presence calls; the presence agent in the client middleware; the P2P link between client programs, with its tries, acknowledgements and duplicate drop. Section~\ref{sec:peerproto}. \\ % CONFIRM(Wahiba)
+Yahia Kilany & Zone publish-subscribe: the gossip rules, with duplicate suppression, the hop limit and the fan-out, measured for coverage, and their wiring into every client program; the planner's use of offers and online volunteers. Section~\ref{sec:dissem}. \\ % CONFIRM(Yahia): the planner part only if PR 48 merged
+Ahmed Abdeen & Resource offers and claims as a third state machine on the shared log, with counted claims, fencing tokens, the conflict rule and the reconciliation state; the conflicting-claim scenario. Section~\ref{sec:claims}. \\ % CONFIRM(Ahmed)
+Aabed Elghadban & Offline operation: the offline switch, the outboxes for reports and claims, store-and-forward with its retention limits, reconnection, and the written offline policy; the Phase 2 plan. Section~\ref{sec:offline}. \\ % CONFIRM(Aabed)
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ==============================================================================================
+\section{Conclusion}
+% DRAFT (Noor): the first paragraph says what was built; the second takes the results and the
+% lessons once the series has run.
+
+RescueMesh Phase 2 makes the Phase 1 cloud the meeting point of a peer-to-peer system. The cloud keeps only what must agree: the incidents, who is online, and who holds which resource, as three state machines on the one shared log it already had. All three nodes therefore hold the same directory and the same claims, with no new replication protocol, and time enters only through the log. Everything else moves to the client PCs. Users find each other through the cloud and then talk directly. Updates about a zone spread by gossip, with duplicate checks and a hop limit. A client that goes offline keeps working, and what it made waits under its own IDs until it returns.
+
+\tbd{}

@@ -1,0 +1,57 @@
+% ==============================================================================================
+\section{Peer protocol and message formats: timeouts, retries and duplicates}
+\label{sec:peerproto}
+% SKELETON. Owner: Wahiba Elhimer, Part H. Nothing below is written yet: no claim in this section
+% comes from the assembler.
+%
+% TODO(Wahiba): write this section. Third person and stand-alone: no file names, functions,
+% commits or design-log IDs in the text (D266); the IDs here are for you. Rename, merge or drop
+% subsections freely, but keep \label{sec:peerproto}: other sections point to it.
+% Sources: docs/architecture.md section 13.2; docs/protocol.md (the peer envelope, the presence
+% calls, the P2P link); design log D310 to D339 and D460 to D465.
+% Cover:
+%   - the presence agent in the client middleware: join registers a user on every node, with the
+%     report's retries, and ends at once if every node refuses; one renewal loop per program at a
+%     third of the lease, +-10% jitter; a lost lease registered again with the same incarnation;
+%     offline pauses renewals; leave and move zone; each user registers, not each program
+%     (D319 to D321, D323, D324, D326 to D329, D331, D333);
+%   - discovery: one call with optional zone and capability filters, at most 16 records, labelled
+%     with the log index; the first node to answer wins (D321, D327);
+%   - the peer endpoint: one per program, the first free UDP port of a configured range, advertised
+%     in the users' records; the local address used to reach the first node; behind the program's
+%     offline gate; the named exception to the sockets rule (D311, D313, D336 to D338); why UDP
+%     with tarpc, with Phase 1's measured path as the reason (D312);
+%   - the peer update as a table of its fields (update ID, origin user, one user or the whole zone,
+%     zone, kind and body, version, created time, hops and max hops) and the acknowledgement
+%     (accepted, duplicate, refused with a reason) (D310, D314 to D318, D322);
+%   - timeouts and retries: three tries of 500 ms with the same update ID, and what the sender
+%     sees after each; a sequence diagram with one lost try (\seqlost) (D339);
+%   - duplicates and the inbox: 10,000 update IDs kept for 300 s; an inbox of 1,024 whose overflow
+%     answers busy; an update for one user is taken only by that user's program; at most 256 peer
+%     stubs, least recently used dropped first (D460 to D463);
+%   - the cloud out of the data path: the test with a real three-node cloud, and what the lab
+%     shows (D465, D435);
+%   - what is measured: the P2P round trip on the sender, retries included, and the ack rate.
+%     Events: p2p_listening, p2p_sent, p2p_received, presence_registered, presence_renewed,
+%     presence_lost, presence_left, discovered (D334, D464). A one-way delay would compare two
+%     clocks; if quoted, give the clock skew beside it (D233).
+% The numbers go in Section~\ref{sec:s6} (Results); point there, do not repeat them.
+% Also check: the presence-agent and peer-endpoint rows of tab:clientparts and the paragraph of
+% sec:p2ponly (02-architecture), the peer-port row of tab:changed (10-decisions), and your row of
+% tab:team (12-closing).
+
+\tbd{} \emph{Section to be written by Wahiba Elhimer (Part H).}
+
+\subsection{The presence agent: join, renew and discover}
+
+\subsection{The peer endpoint and its address}
+
+\subsection{The peer update and its fields}
+
+\subsection{Delivery: tries, timeouts and acknowledgements}
+
+\subsection{Duplicates, the inbox and addressing}
+
+\subsection{The cloud out of the data path}
+
+\subsection{Measuring the peer link}

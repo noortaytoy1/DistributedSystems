@@ -1,0 +1,58 @@
+% ==============================================================================================
+\section{Consistency model for resources, leases and claims, and the conflict policy}
+\label{sec:claims}
+% SKELETON. Owner: Ahmed Abdeen, Part J. Nothing below is written yet: no claim in this section
+% comes from the assembler.
+%
+% TODO(Ahmed): write this section. Third person and stand-alone: no file names, functions, commits
+% or design-log IDs in the text (D266); the IDs here are for you. Rename, merge or drop subsections
+% freely, but keep \label{sec:claims}: other sections point to it.
+% Sources: docs/architecture.md section 13.5; docs/protocol.md (the claims commands and calls);
+% docs/demo.md, spec scenario 8; design log D370 to D381, D414 (and D69, D149 for the origin).
+% Cover:
+%   - offers and claims as a third state machine on the shared log, beside the directory; a
+%     resource ID minted by its provider; the cloud's copy decides, the peer-to-peer offer only
+%     announces (D370, D372, D373);
+%   - counted claims against an offer's capacity (D374);
+%   - leases and fencing tokens: a claim's token is the log index it was accepted at, so no node
+%     issues tokens; a release or resolve naming the wrong token is a no-op; a claim lives until its
+%     offer's end time, judged on the directory's log clock (D371, D375, D379);
+%   - the conflict policy: first in log order wins; an online claim over capacity is refused at
+%     once; a speculative one, first made offline, opens a reconciliation entry instead (D376);
+%   - the reconciliation state: only the offer's owner may resolve it, for the challenger or for
+%     the incumbents; evictions most recent first; offline claims kept on disk until answered
+%     (D377, D378, D414). Draw the state diagram of architecture.md 13.5 in TikZ (`state' style)
+%     and the sequence of scenario 8 (\seqactor, \seqmsg, \seqnote);
+%   - why log order and fencing tokens, rather than vector clocks or quorum confirmation, and the
+%     limits of the choice: the plan asks for this explicitly;
+%   - response assignments with created and expiry times: say where the spec's fields are (the
+%     assignment time and planned end each incident record carries since Phase 1, and the
+%     assignment update that peers receive);
+%   - what is measured: conflicts by type, claim latency, time in the reconciliation state.
+%     Events: resource_offered, claim_write, claim_conflict, reconciliation_resolved, claims_state,
+%     and the client's claim_queued and claims_flushed (D380, D414). The reconciliation wait
+%     compares the challenger's clock with the resolving node's (D378): give the skew beside it.
+% Known gaps, also listed in sec:limits (12-closing): an unresolved entry is not dropped when its
+% offer ends, and ended offers, claims and entries are never removed (claims.rs has no expiry
+% pass, though its header and D378 say an entry is dropped); no client can list the entries.
+% The numbers go in Section~\ref{sec:s8} (Results); point there, do not repeat them.
+% Also check: the claims row of tab:statemachines (02-architecture), the claims rows of the
+% decisions tables (10-decisions), and your row of tab:team (12-closing).
+
+\tbd{} \emph{Section to be written by Ahmed Abdeen (Part J).}
+
+\subsection{Offers and claims: a third state machine on the log}
+
+\subsection{Counted claims against capacity}
+
+\subsection{Leases and fencing tokens}
+
+\subsection{The conflict policy: first in log order wins}
+
+\subsection{The reconciliation state, and who resolves it}
+
+\subsection{Why log order and fencing tokens}
+
+\subsection{Response assignments: created and expiry times}
+
+\subsection{Measuring claims and conflicts}
