@@ -1,0 +1,64 @@
+% ==============================================================================================
+\section{Discovery directory design and consistency model for presence}
+\label{sec:directory}
+% SKELETON. Owner: Omar Leithy, Part G. Nothing below is written yet: no claim in this section
+% comes from the assembler.
+%
+% TODO(Omar): write this section. Third person and stand-alone: no file names, functions, commits
+% or design-log IDs in the text (D266); the IDs here are for you. Rename, merge or drop subsections
+% freely, but keep \label{sec:directory}: other sections point to it.
+% Sources: docs/architecture.md section 13.4; docs/protocol.md (the presence commands and calls);
+% docs/demo.md, spec scenario 5; design log D280 to D295 (and D69 for the original idea).
+% Cover:
+%   - why the directory is a second state machine on the shared log and not a service of its own:
+%     the same copy on all three nodes, no new replication protocol, covered by the state digest
+%     (D69, D280, D289);
+%   - the presence record (user, role, zone, capabilities, the program's peer address, incarnation)
+%     and the four commands; a zone move is a registration, not a fifth command; outcomes carry the
+%     log index (D282, D283, D319, D323);
+%   - time in the log: the log clock is the latest time a proposing node stamped, the tick moves it
+%     when idle, a 10 s lease with 5 s of grace and a 1 s tick, and why not rounds (D281, D284,
+%     D291). This is a changed decision; its row is in tab:changed (Section 10);
+%   - live, then late (hidden, still renewable), then gone (D285): a state diagram in TikZ with the
+%     preamble's `state' and `sinit' styles, from the Mermaid diagram in architecture.md 13.4;
+%   - duplicate registrations: a higher incarnation wins, an equal one replaces, a lower one is
+%     refused; a restarted program wins over its old record (D286);
+%   - who proposes and who answers: one node per user by hashing it over the view; every serving
+%     node answers a discovery from its own applied state at the log clock, labelled with the
+%     index, one record per program first (D287, D288, D290); a sequence diagram with \seqactor,
+%     \seqmsg and \seqrep;
+%   - the consistency model for presence: local reads labelled with the index; two nodes can read a
+%     few entries apart; why that is "sufficiently consistent" for discovery (D288);
+%   - the spec's hard cases as a table: case / what the directory does / how a test shows it
+%     (delayed heartbeats, expired registrations, duplicate registrations, server failure and
+%     reconstruction, zone moves). Rows are in architecture.md 13.4; name each test by what it
+%     checks, not by its function name;
+%   - what is measured and why no two clocks are compared: discovery latency on the client and on
+%     the node, write latency at the proposer, convergence as each node's own wait from the call
+%     to the change showing, the slowest of the three, and the directory digest each second
+%     (D292 to D295). Events: discovered (client), directory_query, directory_write,
+%     directory_seen, directory_state. Measured convergence after an expiry or a rejoin is not
+%     built; say why expiry needs none (same log position by construction, D293).
+% The numbers go in Section~\ref{sec:s5} (Results); point there, do not repeat them.
+% Also check: the presence row of tab:statemachines (02-architecture), the lease-clock and
+% convergence rows of tab:changed (10-decisions), and your row of tab:team (12-closing).
+
+\tbd{} \emph{Section to be written by Omar Leithy (Part G).}
+
+\subsection{A second state machine on the shared log}
+
+\subsection{The presence record and its commands}
+
+\subsection{Time in the log: leases and the log clock}
+
+\subsection{Live, late and gone}
+
+\subsection{Duplicate registrations and incarnations}
+
+\subsection{Who proposes a write, and who answers a discovery}
+
+\subsection{The consistency model for presence}
+
+\subsection{The spec's hard cases}
+
+\subsection{Measuring discovery and convergence}

@@ -1,0 +1,62 @@
+% ==============================================================================================
+\section{Bounded dissemination: publish-subscribe, duplicate suppression and a hop limit}
+\label{sec:dissem}
+% SKELETON. Owner: Yahia Kilany, Part I. Nothing below is written yet: no claim in this section
+% comes from the assembler.
+%
+% TODO(Yahia): write this section. Third person and stand-alone: no file names, functions, commits
+% or design-log IDs in the text (D266); the IDs here are for you. Rename, merge or drop subsections
+% freely, but keep \label{sec:dissem}: other sections point to it.
+% Sources: docs/architecture.md section 13.3; docs/protocol.md (gossip); design log D340 to D369
+% and D490; D491 to D500 for the planner if that work is merged by the final build.
+% Cover:
+%   - push gossip over the peer link; a gossip peer is a program, not a user; the agent sits
+%     between the peer inbox and the application and is always on (D340, D341, D360, D361);
+%   - zones as topics: a program follows the zones of its joined users, one zone per user, and
+%     what that costs (D359). This is a changed decision; its row is in tab:changed;
+%   - who publishes and what: the reporting program, once its report's answer commits; the
+%     summary at version 1 and the assignment at the commit's log index; committed answers only,
+%     expired ones included; in the background of the report call (D351, D355, D356, D366).
+%     "The cloud publishes" was the plan; its row is in tab:changed;
+%   - duplicate suppression: the update ID, then the subject's highest version; what a subject is,
+%     an offer's being its resource ID; both caches 10,000 entries or 300 s (D342 to D344, D490);
+%   - bounded forwarding: fan-out 3 and at most 7 forwards, the cap every program obeys,
+%     hash-ranked targets, never itself or the origin, direct messages never forwarded (D345 to
+%     D348). The coverage table in D345 is the overhead-against-coverage trade-off: put it in as a
+%     booktabs table, and state the e^-k miss rate of forward-once push gossip;
+%   - where each outcome is counted (at the receiver, not in the sender's ack), and the origin
+%     standing in for the sender, with its cost in duplicates (D349, D353, D354);
+%   - the zone's programs: from discovery, one per program, cached for 10 s; what a stale list
+%     does (D357, D358, and Part G's D288);
+%   - copies for a subscriber that is away, held by the sender through store-and-forward, and no
+%     catch-up past 300 s (D415, D417, with Part K);
+%   - at most 256 sends in flight; the gossip settings (D363, D364);
+%   - the planner and resource availability: offers and online volunteers beside the synthetic
+%     responders, and how availability enters the plan (D352; D491 to D500 if merged). If it is
+%     not on the final build, say so here and add a limit in sec:limits;
+%   - what is measured: the duplicate rate, the forwarding overhead, coverage and the time to
+%     reach. Events: gossip_published, gossip_received, gossip_send_failed, gossip_zone_refreshed
+%     (D365, D367). The age of a copy on arrival compares two clocks (D233): give the skew.
+% The numbers go in Section~\ref{sec:s6} (Results); point there, do not repeat them.
+% Also check: the zone-gossip row of tab:clientparts (02-architecture), the gossip rows of
+% tab:changed (10-decisions), and your row of tab:team (12-closing).
+
+\tbd{} \emph{Section to be written by Yahia Kilany (Part I).}
+
+\subsection{Zones as topics, and who subscribes}
+
+\subsection{Who publishes, and what}
+
+\subsection{Duplicate suppression: update IDs and versions}
+
+\subsection{Bounded forwarding: fan-out and the hop limit}
+
+\subsection{Where each outcome is counted}
+
+\subsection{The zone's programs, from the directory}
+
+\subsection{Copies for a subscriber that is away}
+
+\subsection{The planner and resource availability}
+
+\subsection{Measuring dissemination}

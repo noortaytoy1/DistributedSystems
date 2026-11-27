@@ -1,0 +1,94 @@
+% ==============================================================================================
+\section{What Phase 2 adds to the architecture}
+\label{sec:arch}
+% DRAFT (Noor), from docs/architecture.md section 13. Each owner checks the sentences and rows
+% about their part, marked CONFIRM(<name>), and says so on the report's pull request.
+
+The Phase 1 architecture stays as it was: three equal nodes, an election for every report, a shared log with no leader, failure detection and recovery, and a lone node's provisional answers \cite{phase1}. Phase 2 adds three things to it: two more state machines on the same shared log, new parts in the client middleware of every program, and traffic directly between programs on the client PCs. Figure~\ref{fig:deploy} shows where each runs.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+  % Cloud nodes
+  \foreach \i/\x in {1/0, 2/5.3, 3/10.6} {
+    \node[nodebox, text width=3.9cm] (n\i) at (\x,0) {\textbf{Node \i}\\[1pt] incidents, presence directory\\ and claims, on one shared log\\ client port 8001, UDP and TCP};
+  }
+  \draw[<->, thick, nodeblue] (n1) -- node[elabel, above]{shared log} (n2);
+  \draw[<->, thick, nodeblue] (n2) -- node[elabel, above]{shared log} (n3);
+  \begin{scope}[on background layer]
+    \node[group, fill=nodeblue!3, fit=(n1)(n3), inner sep=8pt, label={[grouplabel]north west:Cloud: three equal peers, as in Phase 1}] (cloud) {};
+  \end{scope}
+  % Client PCs
+  \foreach \i/\x in {1/0, 2/5.3, 3/10.6} {
+    \node[clientbox, text width=3.9cm] (c\i) at (\x,-5.4) {\textbf{Client PC \i}\\[1pt] load programs, and the web page\\ in each program: presence agent,\\ peer endpoint, zone gossip,\\ outboxes and held updates\\ peer ports 20000--20999, UDP};
+  }
+  \coordinate (cbelow) at (5.3,-8.0);
+  \begin{scope}[on background layer]
+    \node[group, fill=clientorange!3, fit=(c1)(c3)(cbelow), inner sep=8pt, label={[grouplabel, anchor=north west]south west:Client PCs: simulated users, and peers of each other}] (clients) {};
+  \end{scope}
+  % Peer to peer, between every pair of client PCs
+  \draw[<->, very thick, mwgreen!70!black] (c1) -- node[elabel, above]{P2P} (c2);
+  \draw[<->, very thick, mwgreen!70!black] (c2) -- node[elabel, above]{P2P} (c3);
+  \draw[<->, very thick, mwgreen!70!black] (c1.south) to[bend right=16] node[elabel, below]{P2P over UDP: peer updates, zone gossip, held copies} (c3.south);
+  % Client PCs and the cloud
+  \draw[->, very thick, clientorange!80!black] ($(clients.north)+(-2.65,0)$) -- node[elabel, left, align=right]{reports, presence, discovery,\\ offers and claims, to all 3 nodes} ($(cloud.south)+(-2.65,0)$);
+  \draw[->, very thick, nodeblue!80!black] ($(cloud.south)+(2.65,0)$) -- node[elabel, right, align=left]{one answer, the first wins;\\ reads labelled with the log index} ($(clients.north)+(2.65,0)$);
+  \node[snote, text width=2.3cm] at (5.3,-2.6) {no peer update passes through the cloud};
+\end{tikzpicture}
+\caption{Deployment in Phase 2. The cloud is the Phase 1 cloud, now with three state machines on its one shared log. Each program on a client PC calls the cloud for reports, presence, discovery, offers and claims, and sends updates to other programs directly over UDP. Every pair of client PCs talks directly, and programs on the same PC talk the same way.}
+\label{fig:deploy}
+\end{figure}
+
+\subsection{Three state machines on one log}
+\label{sec:statemachines}
+
+In Phase 1 the shared log carried one state machine, the incident records. Phase 2 puts two more on the same log: the presence directory and the claims on resources (Table~\ref{tab:statemachines}). Each is changed only by commands that go through the log, so every node applies the same commands in the same order and holds the same copy, with no new replication protocol. The state digest that the nodes compare covers all three.
+
+None of the three reads a clock when it applies a command. Instead, the node that proposes a presence command stamps its own time into it, and the directory keeps the latest time stamped so far as its \emph{log clock}. A small tick command, proposed once a second while the directory holds records, moves the clock on when no client is sending. Leases, and the end times of resource offers, are judged against this clock, so every node lets the same records go at the same position in the log. For each user, and for each resource, one node proposes the writes, chosen by hashing the user or the resource over the nodes it can see, and the others stay quiet. A discovery only reads, so every serving node answers it from its own copy, labelled with the log index it read at.
+% CONFIRM(Omar): the log clock, the tick and the proposer rule (D281, D287, D288).
+% CONFIRM(Ahmed): claims on the same clock and the proposer rule for resources (D371, D376).
+
+\begin{table}[!htb]
+\centering\small
+\caption{The three state machines on the one shared log. Every node applies the same commands in the same order, and one digest covers all three.}
+\label{tab:statemachines}
+\begin{tabularx}{\linewidth}{@{}P{2.4cm}LLP{1.3cm}@{}}
+\toprule
+State machine & What it holds & What changes it & Section \\
+\midrule
+Incidents, from Phase 1 & each report's first committed result and its responder & a plan, a refusal of a report too old to plan, a responder's release & \cite{phase1} \\
+Presence directory & one record per user: its role, zone, capabilities, its program's peer address, its lease and its incarnation & register, renew and deregister, and a tick that moves the log clock & \ref{sec:directory} \\ % CONFIRM(Omar)
+Claims & resource offers, each with a capacity and an end time; the claims on them, each with its fencing token; reconciliation entries & offer, claim and release, and a resolve by the offer's owner & \ref{sec:claims} \\ % CONFIRM(Ahmed)
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{The client middleware's new parts}
+\label{sec:clientmw}
+
+In Phase 1 the client middleware sent each report to all three nodes and took the first answer, with its retries and its budget. Phase 2 gives every program the parts in Table~\ref{tab:clientparts}. All of them sit below the application's interface. The application joins, moves and removes its users, asks who is online, sends updates to peers, and offers, claims and releases resources, and it still never names a node or opens a socket. As in Phase 1, a test fails if the application reaches past that interface.
+
+\begin{table}[!htb]
+\centering\small
+\caption{What each client program gained in Phase 2. All of it sits below the application's interface.}
+\label{tab:clientparts}
+\begin{tabularx}{\linewidth}{@{}P{2.6cm}LP{1.5cm}@{}}
+\toprule
+Part & What it does & Section \\
+\midrule
+Presence agent & registers each user that joins, on every node; renews its lease at about a third of its length; registers it again after a lost lease or a return from offline; asks every node for a discovery and takes the first answer & \ref{sec:peerproto} \\ % CONFIRM(Wahiba)
+Peer endpoint & listens on the first free UDP port of a configured range, which the users' records advertise; delivers an update with up to three tries and an acknowledgement; drops a repeated update & \ref{sec:peerproto} \\ % CONFIRM(Wahiba)
+Zone gossip & follows the zones of the program's users; publishes a committed report's summary and assignment into its zone; forwards each new update to three programs of the zone, within a hop limit & \ref{sec:dissem} \\ % CONFIRM(Yahia)
+Offline switch and outbox & cuts every socket of the program at once; keeps the reports made offline on disk, under their own IDs, and sends them on return & \ref{sec:offline} \\ % CONFIRM(Aabed)
+Held updates & keeps a peer update that cannot get through, for a limited time, and tries it again & \ref{sec:offline} \\ % CONFIRM(Aabed)
+Claims outbox & keeps a claim made offline on disk and resends it on return, marked speculative & \ref{sec:offline}, \ref{sec:claims} \\ % CONFIRM(Aabed, Ahmed)
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Peer to peer between the client PCs only}
+\label{sec:p2ponly}
+
+Peers run only on the client PCs. The node PCs run no client programs, so peer traffic never shares a machine with the cloud, and the cloud's own counters can show that none of it passes through. After discovery the cloud is not in the path: a program sends an update straight to the address another program advertised in its presence record. A test with a real three-node cloud shows that the cloud's client ports carry none of a peer exchange, and Section~\ref{sec:s6} measures the same on the lab PCs. Each program listens on its own UDP port, from a range opened on the client PCs' firewalls. Peer messages use the same remote-call library and the same datagram adapter as the calls to the cloud.
+% CONFIRM(Wahiba): the endpoint, the port range and the test (D312, D313, D336, D465).
+% TODO(Noor): once the lab runs exist, point to the cloud-bytes table in sec:s6 by name.
