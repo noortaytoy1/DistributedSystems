@@ -2331,9 +2331,6 @@ stateDiagram-v2
     Acting --> [*]: run ends
 ```
 
-### 13.3 The client page's Phase 2 panels (built, Part L, D437–D440)
-```
-
 ### 13.7 The client page's Phase 2 panels (built, Part L, D437–D444)
 
 The page on each client PC gets four panels, all through `MeshClient`:
