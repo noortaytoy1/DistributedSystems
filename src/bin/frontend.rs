@@ -1834,19 +1834,26 @@ mod tests {
         (status, serde_json::from_str(&body).unwrap())
     }
 
-    fn free_port() -> u16 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
+    /// `n` different ports nobody listens on. All `n` are held while they are picked: one at a
+    /// time, the system can hand back a port it just released, and the config refuses an address
+    /// used twice, which made the tests that build on this fail now and then.
+    fn free_ports(n: usize) -> Vec<u16> {
+        let held: Vec<_> = (0..n)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        held.iter()
+            .map(|listener| listener.local_addr().unwrap().port())
+            .collect()
     }
 
     /// Three addresses nobody listens on, and retries short enough for a test.
     fn dead_config() -> Config {
+        let ports = free_ports(6);
         let mut text = String::new();
-        for id in 1..=3 {
+        for (id, pair) in (1..=3).zip(ports.chunks(2)) {
             text.push_str(&format!(
                 "[[cluster.nodes]]\nid = {id}\npeer_addr = \"127.0.0.1:{}\"\nclient_addr = \"127.0.0.1:{}\"\n",
-                free_port(),
-                free_port()
+                pair[0], pair[1]
             ));
         }
         text.push_str(
