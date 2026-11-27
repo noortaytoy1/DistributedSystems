@@ -16,6 +16,7 @@
 # override the profile's values, PROGRAMS_PER_PC the 10 real programs on each client machine (D181), and
 # STOP_WAIT_S the 10 s it lets things stop. A cell's first line says how to run it:
 #   # run: users=300 think_ms=1000 victim=leader silence_ms=15000 skew_work=0 programs=10 pattern=steady
+# users_per_pc=N instead of users=N gives N users to each client machine in the hosts file (D446).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/lab-common.sh
@@ -166,8 +167,11 @@ run_once() {
   local experiment=${cell%%-*}
   local rest=${cell#*-}
   local out="runs/$experiment/$rest/run-$rep"
-  local users think victim silence_ms skew_work programs pattern i host share expected=0
+  local users per_pc think victim silence_ms skew_work programs pattern i host share expected=0
   users=$(run_value "$file" users 30)
+  # A Phase 2 cell names its users per client machine, so it means the same on two machines as on three.
+  per_pc=$(run_value "$file" users_per_pc "")
+  if [[ -n "$per_pc" ]]; then users=$((per_pc * ${#CLIENT_IDS[@]})); fi
   think=$(run_value "$file" think_ms 1000)
   victim=$(run_value "$file" victim none)
   silence_ms=$(run_value "$file" silence_ms 0)

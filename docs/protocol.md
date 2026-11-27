@@ -564,3 +564,24 @@ not Aabed's incident outbox) and resends it with `speculative: true` on `go_onli
 Demo scenario 8 (`tests/claims.rs`): an online claimant takes a one-capacity resource; a second claimant goes offline,
 queues its claim, and reconnects, surfacing a reconciliation entry instead of a silent refusal; the resource's owner
 resolves it for the challenger.
+
+## The Phase 2 workload (Part L, D430–D442)
+
+No message changes. `loadgen` reads `[workload]` from the config; nodes ignore it.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `workload.lifecycle` | false | true: each user registers, subscribes to its home zone, then does one action per think time as its role says: report, discover, send to a peer, offer, claim or move zone. Needs the closed loop and `--think-ms` above 0 (D430) |
+| `workload.ordinary_percent`, `responder_percent`, `provider_percent` | 80, 15, 5 | Users per role; they must add up to 100. Fixed by position, so 100 users are exactly 80, 15 and 5 (D431) |
+| `workload.offline_chance_per_min_percent` | 0 | Each whole minute, the chance a program goes offline through Part K's switch (D432). Not with `--offline-at-s` |
+| `workload.offline_for_ms` | 20000 | How long each outage lasts; under 60000, so it ends inside its minute |
+| `workload.claim_delay_ms` | 0 | A responder's wait between picking an offer and claiming it, so it claims on older news: the conflict sweep's injected delay. Under 60000 (D442) |
+
+| Event | When |
+|-------|------|
+| `workload_started` | At the start: users per role, the outage settings and `claim_delay_ms` |
+| `workload_done` | At the end: `actions`, keyed `action:outcome`, and `outages` (D433, D441) |
+
+Outcomes (D436, D441): presence calls `ok`, `rejected` (a node refused, D325), `gave_up`, `offline`, `not_joined`, `no_endpoint`; peer sends `delivered`, `duplicate`, `refused`, `held`, `offline`, `gave_up`, `failed`, `no_peer`, `nothing_to_send`; `subscribe:with_join` (D359); offers `offered` (a new resource), `renewed`; claims `claimed`, `refused` (an online conflict), `reconciling`, `queued` (in Part J's claims outbox), `not_queued`, `no_offer`; releases `released`, `nothing_held`; any claims call also `rejected`, `offline`, `timeout`. Updates other programs delivered count as `peer_received:<kind>`.
+
+A provider keeps one resource on offer: 1 to 3 units, 60 s, renewed in place and replaced by a new ID once half its time is left; a renewal keeps the end time, so no claim outlives it. A responder claims one unit of an offer its program heard of (its own providers', or a peer's `ResourceOffer` update), and gives it back the next time it would claim (D441).

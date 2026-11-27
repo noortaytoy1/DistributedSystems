@@ -5,6 +5,7 @@ tests the arithmetic and says nothing about RescueMesh.
     python3 analysis/test_analyze.py
 """
 
+import importlib.util
 import json
 import math
 import sys
@@ -1172,6 +1173,15 @@ class HowFarApartTheClocksWere(unittest.TestCase):
     def test_a_run_with_no_copies_says_nothing(self):
         self.assertEqual(analyze.clock_skew_metrics({"client-10000": [], "node-1": []}), {})
 
+    def test_a_report_sent_again_from_the_outbox_reads_no_skew(self):
+        # One PC. A copy got through just before an outage cut the report off, and Part K sent the report again
+        # 10 s later under the same ID and attempt (D404). Counted from the later send, that copy came 10 s early.
+        sends = [copy_sent(T0 + S, 0), copy_sent(T0 + 11 * S, 0)]
+        arrivals = [copy_to_a_node(T0 + S + 200, 0), copy_to_a_node(T0 + 11 * S + 200, 0)]
+        m = analyze.clock_skew_metrics({"client-10000": sends, "node-1": arrivals, "node-2": list(arrivals)})
+        self.assertAlmostEqual(m["client_clock_skew_ms"], 0.2)
+        self.assertAlmostEqual(m["node_clock_skew_ms"], 0.0)
+
 
 def received(at_s=1):
     return {"ts_us": T0 + at_s * S, "ev": "request_received", "request": request(0), "attempt": 0}
@@ -1289,6 +1299,439 @@ class WhatABusyLookingRunMeans(unittest.TestCase):
         self.assertIn("udp_copies_lost_share", self.m)
         # The vote alone: the old figure, kept under its old name.
         self.assertAlmostEqual(self.m["election_duration_mean_ms"], 200.0)
+
+
+# --- Phase 2 (D447). Measuring starts at T0 + 2 s in these cases unless they say otherwise.
+
+PEER = "10.0.0.22:20000"
+
+
+def at(at_s, ev, **fields):
+    return {"ts_us": T0 + int(at_s * S), "ev": ev, **fields}
+
+
+def update(origin, seq):
+    return {"origin": origin, "seq": seq}
+
+
+def listening():
+    return at(0, "p2p_listening", addr="10.0.0.21:20000")
+
+
+def p2p_sent(at_s, upd, ack="accepted", tries=1, latency_ms=5.0):
+    return at(at_s, "p2p_sent", update=upd, to_addr=PEER, ack=ack, tries=tries, latency_us=int(latency_ms * 1000))
+
+
+def p2p_received(at_s, upd, outcome="accepted", hops=0):
+    return at(at_s, "p2p_received", update=upd, **{"from": {"client": upd["origin"], "user": 0}}, hops=hops,
+              outcome=outcome)
+
+
+def published(at_s, upd, targets=2):
+    return at(at_s, "gossip_published", update=upd, zone=1, kind="summary", version=1, targets=targets)
+
+
+def gossip_received(at_s, upd, outcome="new", hops=0, forwarded=0, age_ms=10):
+    return at(at_s, "gossip_received", update=upd, zone=1, kind="summary", hops=hops, outcome=outcome,
+              forwarded=forwarded, age_ms=age_ms)
+
+
+def claim_write(at_s, outcome, latency_ms, kind="claim", speculative=False, claimant=1):
+    return at(at_s, "claim_write", resource={"provider": 30000, "seq": 1}, claimant={"client": 10000, "user": claimant},
+              quantity=1 if kind == "claim" else 0, kind=kind, outcome=outcome, speculative=speculative, log_index=1,
+              latency_us=int(latency_ms * 1000))
+
+
+def claims_state(last_applied, digest, reconciling=0):
+    return {"ts_us": T0, "ev": "claims_state", "last_applied": last_applied, "digest": digest, "offers": 1,
+            "reconciling": reconciling, "claimed": 0, "refused": 0, "resolved": 0}
+
+
+def workload_started(delay_ms=500):
+    return at(0, "workload_started", ordinary=8, responders=1, providers=1, offline_chance_per_min_percent=10,
+              offline_for_ms=20_000, claim_delay_ms=delay_ms)
+
+
+def workload_done(actions, outages=0):
+    return at(12, "workload_done", actions=actions, outages=outages)
+
+
+def usage(at_s, rx, tx):
+    return at(at_s, "resource_usage", rss_kb=1, cpu_ticks=0, net_rx_bytes=rx, net_tx_bytes=tx, udp_drops=0,
+              queued=0, running=0)
+
+
+class ThePeerToPeerLink(unittest.TestCase):
+    def test_delivery_latency_counts_the_sends_whose_peer_has_the_update(self):
+        u = update(10000, 1)
+        sender = [listening(), p2p_sent(1, u, latency_ms=999),  # in the warm-up: dropped
+                  p2p_sent(3, u, latency_ms=10), p2p_sent(4, u, ack="duplicate", tries=2, latency_ms=30),
+                  p2p_sent(5, u, ack="refused", latency_ms=1), p2p_sent(6, u, ack="none", tries=3, latency_ms=1500)]
+        receiver = [listening(), p2p_received(3, u), p2p_received(4, u, outcome="duplicate")]
+        m = analyze.p2p_metrics({"client-10000": sender, "client-20000": receiver}, T0 + 2 * S)
+        self.assertEqual((m["p2p_sent"], m["p2p_delivered"], m["p2p_duplicate"], m["p2p_refused"], m["p2p_failed"]),
+                         (4, 1, 1, 1, 1))
+        self.assertEqual(m["p2p_latency_count"], 2, "a refusal or no ack delivered nothing")
+        self.assertAlmostEqual(m["p2p_latency_mean_ms"], 20.0)
+        self.assertAlmostEqual(m["p2p_latency_p99_ms"], 30.0)
+        self.assertAlmostEqual(m["p2p_ack_share"], 3 / 4)
+        self.assertAlmostEqual(m["p2p_retried_share"], 1 / 3)
+        self.assertEqual((m["p2p_received"], m["p2p_endpoints"]), (2, 2))
+
+    def test_a_run_without_p2p_reads_zero_and_nan(self):
+        m = analyze.p2p_metrics({"client-1": [sent(0)], "node-1": []}, T0)
+        self.assertEqual((m["p2p_sent"], m["p2p_endpoints"]), (0, 0))
+        self.assertTrue(math.isnan(m["p2p_latency_mean_ms"]))
+        self.assertTrue(math.isnan(m["p2p_ack_share"]))
+
+
+class ZoneGossip(unittest.TestCase):
+    """Three programs, each with a peer endpoint. Program 10000 publishes."""
+
+    def logs(self):
+        early, u1, u2, direct = update(10000, 0), update(10000, 1), update(10000, 2), update(20000, 9)
+        origin = [listening(), published(1, early),  # in the warm-up: not followed
+                  published(3, u1, targets=2), published(4, u2, targets=0), p2p_sent(3, u1), p2p_sent(3, u1),
+                  at(3, "gossip_zone_refreshed", zone=1, programs=3, ok=True, latency_us=900)]
+        second = [listening(), p2p_received(3, u1), gossip_received(3, u1, forwarded=1, age_ms=12),
+                  p2p_sent(3, u1),  # its copy on to the third
+                  p2p_sent(5, u1, ack="duplicate"),  # store-and-forward tried it again
+                  p2p_received(3.1, u1, outcome="duplicate"),  # the endpoint knew the ID: gossip never saw it
+                  p2p_sent(6, direct)]  # a user's own message to a peer, which nobody published
+        third = [listening(), p2p_received(3, u1), gossip_received(3, u1, hops=1, age_ms=30),
+                 p2p_received(3.2, u1), gossip_received(3.2, u1, outcome="duplicate"),  # the endpoint forgot it
+                 p2p_received(1.5, early, outcome="duplicate"),
+                 p2p_received(6, direct), gossip_received(6, direct)]
+        return {"client-10000": origin, "client-20000": second, "client-30000": third}
+
+    def test_duplicates_count_at_the_endpoint_and_in_gossip(self):
+        m = analyze.gossip_metrics(self.logs(), T0 + 2 * S)
+        self.assertEqual((m["gossip_published"], m["gossip_published_no_targets"]), (2, 1))
+        self.assertEqual(m["gossip_copies_received"], 4, "the warm-up update and the direct message are left out")
+        self.assertEqual(m["gossip_duplicates"], 2)
+        self.assertAlmostEqual(m["gossip_duplicate_share"], 0.5)
+        self.assertAlmostEqual(m["gossip_duplicates_per_new"], 1.0)
+        self.assertEqual((m["gossip_received_new"], m["gossip_received_duplicate"]), (2, 1))
+
+    def test_forwarding_overhead_is_copies_chosen_and_copies_sent_per_update(self):
+        m = analyze.gossip_metrics(self.logs(), T0 + 2 * S)
+        self.assertAlmostEqual(m["gossip_copies_per_update"], (2 + 0 + 1) / 2)
+        self.assertAlmostEqual(m["gossip_sends_per_update"], 4 / 2, msg="a later try is a send too")
+
+    def test_coverage_and_hops(self):
+        m = analyze.gossip_metrics(self.logs(), T0 + 2 * S)
+        self.assertAlmostEqual(m["gossip_reach_mean"], 1.0, msg="one update reached both others, one nobody")
+        self.assertAlmostEqual(m["gossip_coverage_share"], 0.5)
+        self.assertAlmostEqual(m["gossip_full_coverage_share"], 0.5)
+        self.assertAlmostEqual(m["gossip_hops_mean"], 0.5)
+        self.assertEqual(m["gossip_hops_max"], 1)
+        self.assertAlmostEqual(m["gossip_hops_1_share"], 0.5)
+        self.assertEqual(m["gossip_hops_7_share"], 0.0)
+        self.assertAlmostEqual(m["gossip_age_mean_ms"], 21.0)
+        self.assertEqual(m["gossip_zone_programs_max"], 3)
+
+    def test_only_the_origins_clock_chooses_the_updates(self):
+        logs = self.logs()
+        # The receivers' clocks 5 s behind put all their lines before the measured time. Joined by ID, it moves
+        # nothing.
+        behind = dict(logs, **{s: later(logs[s], -5000) for s in ("client-20000", "client-30000")})
+        self.assertEqual(analyze.gossip_metrics(behind, T0 + 2 * S), analyze.gossip_metrics(logs, T0 + 2 * S))
+
+    def test_a_run_without_gossip_reads_zero_and_nan(self):
+        m = analyze.gossip_metrics({"client-1": [sent(0)]}, T0)
+        self.assertEqual(set(m), set(analyze.gossip_metrics(self.logs(), T0)))
+        self.assertEqual(m["gossip_published"], 0)
+        self.assertTrue(math.isnan(m["gossip_coverage_share"]))
+        self.assertTrue(math.isnan(m["gossip_hops_0_share"]))
+
+
+class OfflineOperation(unittest.TestCase):
+    """Program 10000 goes offline at 3 s and is back at 13 s; program 20000 is away 1 s with nothing queued."""
+
+    def logs(self):
+        a, b, c = update(10000, 1), update(10000, 2), update(10000, 3)
+        away = [
+            at(0.5, "client_offline"), at(1, "client_online", offline_ms=500, queued=1),  # in the warm-up
+            at(1.1, "outbox_flushed", sent=1, answered=1, expired=0, failed=0, reconcile_us=50_000),
+            at(3, "client_offline"),
+            at(3.5, "outbox_queued", request=request(1)), at(3.6, "outbox_queued", request=request(2)),
+            at(4, "peer_update_held", update=a, to_addr=PEER, held=1),
+            at(4, "peer_update_held", update=b, to_addr=PEER, held=2),
+            at(4.5, "claim_queued", resource={"provider": 20000, "seq": 1}, claimant={"client": 10000, "user": 0}),
+            at(13, "client_online", offline_ms=10_000, queued=2),
+            at(13.1, "outbox_sent", request=request(1), outcome="answered", waited_ms=9_500),
+            at(13.2, "outbox_sent", request=request(2), outcome="failed", waited_ms=9_600),
+            at(13.4, "outbox_flushed", sent=2, answered=1, expired=0, failed=1, reconcile_us=400_000),
+            at(13.6, "claims_flushed", sent=1, claimed=0, reconciling=1, other=0, failed=0, reconcile_us=200_000),
+            at(13.7, "peer_update_forwarded", update=a, to_addr=PEER, ack="accepted", since_made_ms=9_700),
+            at(14, "peer_update_dropped", update=c, to_addr=PEER, reason="obsolete"),  # let go at once, never held
+        ]
+        quiet = [at(5, "client_offline"), at(6, "client_online", offline_ms=1_000, queued=0)]
+        return {"client-10000": away, "client-20000": quiet}
+
+    def test_a_reconnect_runs_to_the_end_of_its_last_flush(self):
+        m = analyze.offline_metrics(self.logs(), T0 + 2 * S)
+        self.assertEqual(m["offline_count"], 2)
+        self.assertAlmostEqual(m["offline_mean_ms"], 5500.0)
+        self.assertEqual(m["reconcile_count"], 1, "nothing queued, nothing to reconcile")
+        self.assertAlmostEqual(m["reconcile_mean_ms"], 600.0, msg="from 13.0 s to the claims flush at 13.6 s")
+        self.assertAlmostEqual(m["reconcile_max_ms"], 600.0)
+        self.assertEqual(m["reconcile_reports_count"], 1, "the warm-up's flush is left out")
+        self.assertAlmostEqual(m["reconcile_reports_mean_ms"], 400.0)
+        self.assertAlmostEqual(m["reconcile_claims_mean_ms"], 200.0)
+
+    def test_queued_reports_claims_and_held_updates_are_counted(self):
+        m = analyze.offline_metrics(self.logs(), T0 + 2 * S)
+        self.assertEqual((m["outbox_queued"], m["outbox_answered"], m["outbox_failed"], m["outbox_expired"]),
+                         (2, 1, 1, 0))
+        self.assertAlmostEqual(m["outbox_wait_mean_ms"], 9500.0, msg="answered reports only")
+        self.assertEqual((m["claims_outbox_queued"], m["claims_outbox_sent"], m["claims_outbox_reconciling"]),
+                         (1, 1, 1))
+        self.assertEqual((m["peer_updates_held"], m["peer_updates_forwarded"], m["peer_updates_dropped"]), (2, 1, 1))
+        self.assertEqual(m["peer_updates_dropped_obsolete"], 1)
+        self.assertEqual(m["peer_updates_held_at_end"], 1, "b was never sent or let go")
+
+    def test_a_run_without_outages_reads_zero_and_nan(self):
+        m = analyze.offline_metrics({"client-1": [sent(0)]}, T0)
+        self.assertEqual(set(m), set(analyze.offline_metrics(self.logs(), T0)))
+        self.assertEqual((m["offline_count"], m["outbox_queued"], m["peer_updates_held"]), (0, 0, 0))
+        self.assertTrue(math.isnan(m["reconcile_max_ms"]))
+
+
+class OffersAndClaims(unittest.TestCase):
+    def logs(self):
+        resource, challenger = {"provider": 30000, "seq": 1}, {"client": 10000, "user": 3}
+        node1 = [
+            claim_write(1, "resource_claimed", 50),  # in the warm-up: dropped
+            claim_write(3, "resource_claimed", 2),
+            claim_write(4, "resource_claim_refused", 4, claimant=2),
+            at(4, "claim_conflict", resource=resource, claimant={"client": 10000, "user": 2}, kind="online_refused",
+               log_index=5),
+            claim_write(5, "resource_claim_reconciling", 6, speculative=True, claimant=3),
+            at(5, "claim_conflict", resource=resource, claimant=challenger, kind="reconciliation_opened", log_index=6),
+            claim_write(6, "resource_unknown", 8, claimant=4),
+            claim_write(7, "resource_claim_released", 1, kind="release"),
+            at(3, "resource_offered", resource=resource, provider={"client": 30000, "user": 0}, capability="Fire",
+               zone=1, capacity=1, available_until_ms=0, log_index=2, latency_us=3000),
+            at(9, "reconciliation_resolved", resource=resource, challenger=challenger, winner="Challenger",
+               wait_ms=4200, log_index=9),
+            claims_state(10, 1, reconciling=1), claims_state(20, 7, reconciling=2),
+        ]
+        node2 = [claims_state(10, 1, reconciling=1), claims_state(20, 8), claims_state(30, 9)]
+        return {"node-1": node1, "node-2": node2}
+
+    def test_conflicts_by_kind_and_per_claim(self):
+        m = analyze.claims_metrics(self.logs(), T0 + 2 * S)
+        self.assertEqual(m["claim_count"], 4, "claims only, not the release")
+        self.assertEqual((m["claim_claimed"], m["claim_refused"], m["claim_reconciling"], m["claim_unknown"]),
+                         (1, 1, 1, 1))
+        self.assertEqual(m["claim_speculative"], 1)
+        self.assertAlmostEqual(m["claim_conflicts_per_claim"], 2 / 4)
+        self.assertEqual((m["claim_conflicts_online_refused"], m["claim_conflicts_reconciliation_opened"]), (1, 1))
+        self.assertEqual((m["release_released"], m["release_stale"]), (1, 0))
+
+    def test_latencies_and_the_time_in_reconciliation(self):
+        m = analyze.claims_metrics(self.logs(), T0 + 2 * S)
+        self.assertAlmostEqual(m["claim_mean_ms"], 5.0)
+        self.assertAlmostEqual(m["offer_mean_ms"], 3.0)
+        self.assertAlmostEqual(m["reconciliation_time_mean_ms"], 4000.0, msg="opened at 5 s, resolved at 9 s")
+        self.assertAlmostEqual(m["reconciliation_wait_mean_ms"], 4200.0)
+
+    def test_digests_are_compared_at_equal_indexes_and_open_entries_read_at_the_end(self):
+        m = analyze.claims_metrics(self.logs(), T0 + 2 * S)
+        self.assertEqual(m["claims_states_compared"], 2, "index 30 is only on node 2")
+        self.assertEqual(m["claims_digest_mismatches"], 1, "index 20 differs")
+        self.assertEqual(m["claims_reconciling_at_end"], 2)
+
+    def test_a_run_without_claims_reads_zero_and_nan(self):
+        m = analyze.claims_metrics({"node-1": []}, T0)
+        self.assertEqual(set(m), set(analyze.claims_metrics(self.logs(), T0)))
+        self.assertEqual((m["claim_count"], m["claims_reconciling_at_end"]), (0, 0))
+        self.assertTrue(math.isnan(m["claim_conflicts_per_claim"]))
+
+
+class TheWorkload(unittest.TestCase):
+    def test_actions_are_summed_over_programs_by_outcome(self):
+        events = {
+            "client-10000": [workload_started(), workload_done(
+                {"report:answered": 50, "claim:claimed": 3, "claim:refused": 1, "register:ok": 10,
+                 "discover:not_joined": 2, "peer_received:incident_summary": 7}, outages=1)],
+            "client-20000": [workload_started(), workload_done(
+                {"report:answered": 30, "claim:refused": 3, "peer_send:delivered": 5})],
+        }
+        m = analyze.workload_metrics(events, 10)
+        self.assertEqual(m["workload_report_answered"], 80)
+        self.assertEqual((m["workload_claim_claimed"], m["workload_claim_refused"]), (3, 4))
+        self.assertAlmostEqual(m["workload_claim_refused_share"], 4 / 7)
+        self.assertEqual(m["workload_peer_received_incident_summary"], 7)
+        self.assertEqual(m["workload_other"], 2, "discover:not_joined has no key of its own")
+        self.assertEqual(m["workload_actions"], 104, "updates received are not actions")
+        self.assertAlmostEqual(m["workload_actions_per_s"], 10.4)
+        self.assertEqual((m["workload_programs"], m["workload_outages"]), (2, 1))
+        self.assertEqual((m["workload_ordinary"], m["workload_responders"], m["workload_providers"]), (16, 2, 2))
+        self.assertEqual(m["workload_claim_delay_ms"], 500)
+
+    def test_a_phase_1_run_has_counts_of_zero_and_no_settings(self):
+        m = analyze.workload_metrics({"client-1": [sent(0)]}, 10)
+        self.assertEqual((m["workload_report_answered"], m["workload_programs"]), (0, 0))
+        self.assertTrue(math.isnan(m["workload_claim_refused_share"]))
+        self.assertTrue(math.isnan(m["workload_claim_delay_ms"]))
+        self.assertTrue(math.isnan(m["workload_actions_per_s"]))
+
+
+class TheCloudsBytes(unittest.TestCase):
+    """D435. The measured time runs from T0 + 2 s to T0 + 12 s."""
+
+    def logs(self):
+        node1 = [udp_counters(T0 + 2 * S, rx_bytes=1000, tx_bytes=1000),
+                 udp_counters(T0 + 12 * S, rx_bytes=11_000, tx_bytes=6000),
+                 udp_counters(T0 + 30 * S, rx_bytes=999_999, tx_bytes=999_999),  # after the measured time
+                 usage(2, 0, 0), usage(12, 50_000, 50_000)]
+        node2 = [udp_counters(T0 + 2 * S), udp_counters(T0 + 12 * S, rx_bytes=5000)]
+        client = [udp_counters(T0 + 2 * S), udp_counters(T0 + 12 * S, tx_bytes=15_000, rx_bytes=5000)]
+        client += [p2p_sent(3 + i * 0.1, update(10000, i)) for i in range(19)]
+        client += [p2p_sent(5, update(10000, 99), ack="none", tries=3), p2p_sent(13, update(10000, 100))]
+        return {"node-1": node1, "node-2": node2, "client-10000": client}
+
+    def test_each_rate_is_over_the_measured_time_on_its_own_clock(self):
+        m = analyze.cloud_bytes_metrics(self.logs(), T0 + 2 * S, T0 + 12 * S)
+        self.assertAlmostEqual(m["cloud_udp_bytes_per_s"], 1500.0 + 500.0)
+        self.assertAlmostEqual(m["cloud_net_bytes_per_s"], 10_000.0)
+        self.assertAlmostEqual(m["client_cloud_socket_bytes_per_s"], 2000.0)
+        self.assertAlmostEqual(m["cloud_udp_bytes_over_client"], 1.0)
+        self.assertAlmostEqual(m["p2p_sends_per_s"], 2.0)
+        self.assertAlmostEqual(m["p2p_tries_per_s"], 2.2)
+
+    def test_a_restarted_node_adds_no_negative_bytes(self):
+        node = [udp_counters(T0 + 2 * S, rx_bytes=5000), udp_counters(T0 + 7 * S, rx_bytes=1000),
+                udp_counters(T0 + 12 * S, rx_bytes=3000)]
+        m = analyze.cloud_bytes_metrics({"node-1": node}, T0 + 2 * S, T0 + 12 * S)
+        self.assertAlmostEqual(m["cloud_udp_bytes_per_s"], 200.0)
+
+    def test_a_run_without_counters_has_no_rates(self):
+        m = analyze.cloud_bytes_metrics({"node-1": [], "client-1": []}, T0, T0 + 10 * S)
+        self.assertTrue(math.isnan(m["cloud_udp_bytes_per_s"]))
+        self.assertTrue(math.isnan(m["cloud_udp_bytes_over_client"]))
+        self.assertEqual(m["p2p_sends_per_s"], 0.0)
+
+
+def phase2_run():
+    """Two programs on two PCs and three nodes, with a little of every Phase 2 family. Warm-up 2 s, 10 s
+    measured. Program 10000 goes offline from 4.5 s to 9.5 s."""
+    a, b = update(10000, 1), update(10000, 2)
+    resource = {"provider": 20000, "seq": 1}
+    first = [
+        at(0, "client_started", users=10, host="pc1", ip="10.0.0.21"), sent(0), listening(), workload_started(),
+        published(3, a, targets=1), p2p_sent(3, a, latency_ms=4),
+        published(4, b, targets=1), p2p_sent(4, b, ack="none", tries=3, latency_ms=1500),
+        at(4, "peer_update_held", update=b, to_addr=PEER, held=1),
+        at(4.5, "client_offline"), at(6, "outbox_queued", request=request(1)),
+        at(9.5, "client_online", offline_ms=5000, queued=1),
+        at(9.7, "outbox_sent", request=request(1), outcome="answered", waited_ms=3700),
+        at(9.8, "outbox_flushed", sent=1, answered=1, expired=0, failed=0, reconcile_us=300_000),
+        at(10, "peer_update_forwarded", update=b, to_addr=PEER, ack="accepted", since_made_ms=6000),
+        udp_counters(T0 + 2 * S), udp_counters(T0 + 12 * S, tx_bytes=9000, rx_bytes=3000),
+        workload_done({"report:answered": 20, "report:queued": 1, "claim:claimed": 1, "claim:refused": 1}, outages=1),
+    ]
+    second = [
+        at(0, "client_started", users=10, host="pc2", ip="10.0.0.22"), sent(0), listening(), workload_started(),
+        p2p_received(3, a), gossip_received(3, a, age_ms=4),
+        p2p_received(10, b), gossip_received(10, b, age_ms=6000),
+        udp_counters(T0 + 2 * S), udp_counters(T0 + 12 * S, tx_bytes=3000, rx_bytes=1000),
+        workload_done({"report:answered": 25}),
+    ]
+    nodes = {f"node-{n}": [udp_counters(T0 + 2 * S), udp_counters(T0 + 12 * S, rx_bytes=4000, tx_bytes=1000),
+                           claims_state(50, 77)] for n in (1, 2, 3)}
+    nodes["node-1"] += [
+        claim_write(3, "resource_claimed", 2), claim_write(4, "resource_claim_refused", 4, claimant=2),
+        at(4, "claim_conflict", resource=resource, claimant={"client": 10000, "user": 2}, kind="online_refused",
+           log_index=5),
+    ]
+    return {"client-10000": first, "client-20000": second, **nodes}
+
+
+def outbox_files(directory):
+    """Part K's outboxes as offline.rs writes them, beside the logs (D401, D414). Neither is a log."""
+    (directory / "outbox-client-10000.jsonl").write_text(json.dumps(
+        {"id": {"client": 10000, "seq": 7}, "incident": {"zone": 1}, "queued_at_ms": 1_000_000}) + "\n")
+    (directory / "claims-client-10000.jsonl").write_text(json.dumps(
+        {"resource": {"provider": 3, "seq": 81604378624}, "claimant": {"client": 10000, "user": 16},
+         "quantity": 1, "at_ms": 1_000_000}) + "\n")
+    (directory / "outbox-client-20000.jsonl").write_text("")
+
+
+class APhase2Run(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.run_dir = self.root / "ph2users" / "100" / "run-1"
+        write_run(self.run_dir, phase2_run(), 1, experiment="ph2users", cell="100", users=20,
+                  client_programs_expected=2, nodes=3)
+        outbox_files(self.run_dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_outbox_files_are_not_read_as_logs(self):
+        self.assertEqual(sorted(analyze.read_events(self.run_dir)),
+                         ["client-10000", "client-20000", "node-1", "node-2", "node-3"])
+
+    def test_a_whole_run_has_every_family_and_is_kept(self):
+        meta, m = analyze.analyse_run(self.run_dir)
+        self.assertIsNone(analyze.run_problem(meta, m))
+        self.assertEqual((m["p2p_sent"], m["p2p_failed"]), (2, 1))
+        self.assertAlmostEqual(m["p2p_latency_mean_ms"], 4.0)
+        self.assertEqual(m["gossip_published"], 2)
+        self.assertAlmostEqual(m["gossip_coverage_share"], 1.0, msg="b got there after the outage, joined by ID")
+        self.assertEqual(m["offline_count"], 1)
+        self.assertAlmostEqual(m["reconcile_mean_ms"], 300.0)
+        self.assertEqual((m["peer_updates_held"], m["peer_updates_forwarded"], m["peer_updates_held_at_end"]),
+                         (1, 1, 0))
+        self.assertAlmostEqual(m["claim_conflicts_per_claim"], 0.5)
+        self.assertEqual((m["claims_states_compared"], m["claims_digest_mismatches"]), (1, 0))
+        self.assertEqual(m["workload_report_answered"], 45)
+        self.assertAlmostEqual(m["workload_claim_refused_share"], 0.5)
+        self.assertAlmostEqual(m["cloud_udp_bytes_per_s"], 3 * 500.0)
+        self.assertAlmostEqual(m["cloud_udp_bytes_over_client"], 1500.0 / 1600.0)
+
+    def test_a_phase_1_run_gets_every_phase_2_figure_at_0_or_nan(self):
+        write_run(self.root / "e9" / "synthetic" / "run-1", synthetic_run(), 1)
+        _, old = analyze.analyse_run(self.root / "e9" / "synthetic" / "run-1")
+        _, new = analyze.analyse_run(self.run_dir)
+        families = ("p2p_", "gossip_", "offline_", "reconcile", "outbox_", "claims_", "peer_updates_", "claim_",
+                    "release_", "offer_", "reconciliation_", "workload_", "cloud_", "client_cloud_")
+        self.assertLessEqual({name for name in new if name.startswith(families)}, set(old))
+        self.assertEqual(old["gossip_published"], 0)
+        self.assertTrue(math.isnan(old["p2p_latency_mean_ms"]))
+
+    def test_a_cell_of_runs_gets_a_worst_reconcile_row(self):
+        summary = analyze.summarise(self.root)
+        mean, _, runs = summary[("ph2users", "100")]["reconcile_max_ms_worst_run"]
+        self.assertEqual((mean, runs), (300.0, 1))
+
+
+class ThePhase2Sweeps(unittest.TestCase):
+    def test_each_cell_is_placed_by_the_last_number_in_its_name(self):
+        def cell(mean, half=0.0):
+            return {"claim_conflicts_per_claim": (mean, half, 3)}
+
+        summary = {
+            ("ph2conflict", "2000ms"): cell(0.4, 0.1), ("ph2conflict", "0ms"): cell(0.1, float("nan")),
+            ("ph2conflict", "500ms"): cell(0.2, 0.05), ("ph2conflict", "try"): cell(0.9),
+            ("ph2conflict", "1000ms"): cell(float("nan")), ("ph2users", "100"): cell(0.3),
+        }
+        self.assertEqual(analyze.sweep_series(summary, "ph2conflict", "claim_conflicts_per_claim"),
+                         [(0, 0.1, 0.0), (500, 0.2, 0.05), (2000, 0.4, 0.1)])
+        self.assertEqual(analyze.sweep_series(summary, "ph2offline", "claim_conflicts_per_claim"), [])
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is not installed")
+    def test_a_sweep_with_runs_gets_its_figure_and_one_without_gets_none(self):
+        summary = {("ph2users", cell): {"p50_ms": (10.0 * i, 1.0, 3), "throughput_rps": (100.0 * i, 5.0, 3)}
+                   for i, cell in enumerate(("100", "1000", "5000"), 1)}
+        with tempfile.TemporaryDirectory() as tmp:
+            analyze.write_plots(summary, Path(tmp))
+            made = sorted(p.name for p in Path(tmp).glob("*.png"))
+        self.assertEqual(made, ["ph2users_scale.png"])
 
 
 if __name__ == "__main__":

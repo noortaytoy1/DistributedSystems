@@ -30,14 +30,14 @@ RATES=${LAB_RATES:-1000 2000 3000 4000 5000 6000 8000 10000}
 MIN_FREE_GB=${LAB_MIN_FREE_GB:-8}
 
 STOP_WAIT_S=15
-OUT=runs/exp8h
+OUT=${LAB_OUT:-runs/exp8h}
 CTL_HOST=${CLIENT_SSH[0]}
 COMMIT=$(git rev-parse HEAD)
 LOAD_PIDS=()
-STRESS=runs/exp8h-stress-summary.txt
-FALLEN=runs/exp8h-fallen.txt
+STRESS=$OUT-stress-summary.txt
+FALLEN=$OUT-fallen.txt
 mkdir -p runs "$OUT" runs-config
-exec > >(tee -a runs/exp8h-tests.log) 2>&1
+exec > >(tee -a "$OUT-tests.log") 2>&1
 
 say() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { say "STOPPED: $*"; exit 1; }
@@ -860,6 +860,24 @@ t2_both_killed() { # name rep: first_back second_back are positions 0 or 1
   say "$name saved in $LAST_OUT"
 }
 
+# Phase 2's regression (docs/phase2-plan.md section 8): scenarios 1, 2, 3, 4 and 9 at one or two of the
+# report's loads, with pass()'s cells and fault lines. Repeats above 20, so no Phase 1 log is touched.
+regress_pass() {
+  local rep=$1 v
+  v=$(( (rep - 1) % 3 + 1 ))
+  make_cell 0 expected-wait
+  mapfile -t L < <(even_load 10000 75 3); fixed_run "s0-10000" "$rep" 15 75 "" "${L[@]}" || true
+  make_cell 1000 expected-wait
+  mapfile -t L < <(even_load 12000 75 3); fixed_run "s1-12000" "$rep" 15 75 "" "${L[@]}" || true
+  L=(); for r in 0 1 2; do L+=("$r 0 333 0 240" "$r 1 1333 60 120" "$r 2 1333 120 60"); done
+  fixed_run "e1-steps" "$rep" 15 240 "" "${L[@]}" || true
+  mapfile -t L < <(even_load 3000 180 3); fixed_run "e2-skewfix" "$rep" 15 180 "skew 60 120 5000 $v" "${L[@]}" || true
+  mapfile -t L < <(even_load 5000 150 3); fixed_run "f1-5000" "$rep" 15 150 "silence 45 20000 $v" "${L[@]}" || true
+  make_cell 0 expected-wait
+  mapfile -t L < <(even_load 10000 150 3); fixed_run "f0-10000" "$rep" 15 150 "silence 45 20000 $v" "${L[@]}" || true
+  mapfile -t L < <(even_load 10000 150 3); fixed_run "k0-10000" "$rep" 15 150 "kill 45 75 $v" "${L[@]}" || true
+}
+
 case "${1:-}" in
   rf) say "TRIAL rf"; fail_step 10000 stress-fail-10000 120 45 75 3; stop_all ;;
   trace) trace_step 10000 25 runs/phase1/request-trace.txt ;;
@@ -878,6 +896,11 @@ case "${1:-}" in
   t3extra) setup_note; flat_step; closed_step stress-spike-100 e1-300-bidding 100; closed_step stress-spike-333 e1-1000-bidding 333; stop_all ;;
   userssteady) setup_note; users_step users-333-run1 e1-1000-bidding 333; users_step users-1000-run1 e1-3000-bidding 1000; stop_all ;;
   series) setup_note; for rep in ${2:-1 2 3}; do say "=== PASS $rep"; pass "$rep"; [[ "$rep" == 1 ]] && holds; say "=== PASS $rep DONE"; done; stop_all ;;
+  regress) reps=${2:-21 22}; for rep in $reps; do ((rep > 20)) || die "repeat $rep: use repeats above 20, Phase 1's logs use 1 to 5"; done
+    setup_note; export SKEW_BACK=1000
+    for rep in $reps; do say "=== REGRESSION PASS $rep"; regress_pass "$rep"; done
+    make_cell 1000 expected-wait random-faults; mapfile -t L < <(even_load 3000 315 3); fixed_run "r1-3000" "${reps%% *}" 15 315 "" "${L[@]}" || true
+    stop_all ;;
   all) t5; t1; t2; t4; t3; stop_all; finish ;;
   finish) finish ;;
   *) echo "usage: bash lab-tests.sh all|t1|t2|t3|t4|t5|finish"; exit 1 ;;

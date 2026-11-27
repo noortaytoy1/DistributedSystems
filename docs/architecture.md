@@ -2307,6 +2307,30 @@ store-and-forward (D415), zone lists from Part G's directory (D288), and `tests/
 node (D369). Planned: the sender of each copy if the lab shows the extra duplicates matter, the one `TODO(I)` left (D354); the
 planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into loadgen and the zone panel is Part L's.
 
+### 13.6 The Phase 2 user lifecycle in loadgen (built, Part L, D430–D445)
+
+With `workload.lifecycle = true` each simulated user gets a role by fixed share (80% ordinary, 15% responder, 5%
+provider), waits for its first slot, registers and subscribes to its home zone, then does one action per think time from
+its role's mix (D445). Reports
+are real, through `submit_or_queue`. Register, discover, move zone and peer send call Part H's presence agent and P2P
+link against Part G's directory (D436). Offer, claim and release are Part J's calls: a provider keeps one resource on
+offer and renews it, a responder claims a unit of an offer its program heard of and gives it back the next time it would
+claim, and a claim made offline waits in Part J's claims outbox (D441). A responder can be made to claim on older news
+with `workload.claim_delay_ms`, the conflict sweep's delay (D442). Each whole minute a program may go offline
+through Part K's switch, for `workload.offline_for_ms`. Off by default, so Phase 1's runs repeat unchanged.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Arriving: run starts
+    Arriving --> Registered: its first slot, join (H, G, D445)
+    Registered --> Subscribed: subscribed with the join (I, D359)
+    Subscribed --> Acting: one think time later
+    Acting --> Acting: report, discover, peer send, move zone, offer, claim, release (D441)
+    Acting --> Offline: this minute's draw hits (whole program)
+    Offline --> Acting: back after offline_for_ms, outbox sent
+    Acting --> [*]: run ends
+```
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid

@@ -595,6 +595,24 @@ pub enum Event {
         log_index: u64,
         latency_us: u64,
     },
+    /// This program started the Phase 2 lifecycle (D430): its users by role (D431) and its outage
+    /// settings (D432).
+    WorkloadStarted {
+        ordinary: u32,
+        responders: u32,
+        providers: u32,
+        offline_chance_per_min_percent: u8,
+        offline_for_ms: u64,
+        /// A responder's wait between picking an offer and claiming it (D442).
+        claim_delay_ms: u64,
+    },
+    /// This program's Phase 2 lifecycle ended (D433). `actions` counts each measured action by
+    /// outcome, keyed `action:outcome` (D433, D441). Reports also log their own request events.
+    /// `outages` counts this program's random outages (D432).
+    WorkloadDone {
+        actions: BTreeMap<String, u64>,
+        outages: u32,
+    },
     /// A client connection to `node` was opened (D112). Nothing logs this since reports moved to
     /// UDP, which has no connection (D167). Kept because the analysis reads the name in old runs.
     ClientLinkUp {

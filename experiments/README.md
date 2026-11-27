@@ -25,6 +25,39 @@ normal. They are never results.
 **Since `e4ab477` only the analysis, comments and docs have changed.** Nothing changes the wire format or what a node does (D229 to D233), so
 logs from that commit on are good, and need no rerun.
 
+## Phase 2 cells (Part L, D434, D446)
+
+Nine cells, listed in `experiments/phase2.list`, each with the Phase 2 lifecycle on (`[workload] lifecycle = true`): every
+user registers, subscribes to its zone, reports, discovers, sends to peers, offers or claims, and moves zone (D430, D441).
+They give their users per client PC (`users_per_pc`), so a cell means the same load per PC on two client PCs as on three.
+
+| Sweep | Cells | What changes | Answers |
+|-------|-------|--------------|---------|
+| Users per PC | `ph2users-100`, `ph2users-1000`, `ph2users-5000` | 100, 1,000 or 5,000 users on each client PC | throughput and latency as clients grow with P2P on; discovery, presence and gossip at scale; CPU, memory and network |
+| Offline share | `ph2offline-0`, `ph2offline-10`, `ph2offline-30` | each program goes offline for 20 s with a 0, 10 or 30% chance each minute; 1,000 users per PC | reconciliation delay; updates held, dropped or obsolete |
+| Injected delay | `ph2conflict-0ms`, `ph2conflict-500ms`, `ph2conflict-2000ms` | responders claim on news 0, 0.5 or 2 s old; 1,000 users per PC | conflicts per claim and by type; claim latency |
+
+All nine use a 1 s think time with random waits, planning work 1000, 3,000 responders and no faults. Run them with the runner
+and the build of section 4, from the repo folder on client PC 1:
+
+```bash
+export REMOTE_DIR=distributedddd/DIstributedSYstems
+scripts/run-experiments.sh experiments/hosts quick $(cat experiments/phase2.list)
+scripts/run-experiments.sh experiments/hosts full $(cat experiments/phase2.list)
+```
+
+Then `python3 analysis/analyze.py runs --out analysis/out` writes the Phase 2 figures beside Phase 1's (see `analysis/README.md`).
+
+**Check the network first.** Client PCs must take UDP on 20000 to 20999 from each other (`sudo ufw allow 20000:20999/udp`,
+D336), and every PC must reach every other. On 2026-11-26 nodes 1 and 3 and client PCs 2 and 3 shared the Wi-Fi's 10.40.0.0/21,
+while node 2 and client PC 1 were on other Wi-Fi subnets it could not reach; their wired 10.7.57.x addresses worked, so the hosts
+file named them by those (client PC 1 as `local`). Ping every pair before a series. A client PC that still cannot take P2P can be
+left out of the client lines: with `users_per_pc` the others keep the cell's load per PC.
+
+**Disk and memory.** One quick series of the nine cells wrote about 105 GB to client PC 1. Analyse it with
+`python3 analysis/phase2_stream.py runs --out analysis/out/phase2` (a run is too big for `analyze.py`'s memory, D448) and check
+every report with `python3 analysis/phase2_requests.py runs`.
+
 ## 1. How long
 
 **No document sets a required duration.** The spec, the class notes and Lectures 8 and 9 give no number of minutes.

@@ -174,6 +174,7 @@ fn stub_config(addrs: &[String]) -> Config {
         metrics: Default::default(),
         faults: Default::default(),
         storage: Default::default(),
+        workload: Default::default(),
         consensus: Default::default(),
         p2p: Default::default(),
         gossip: Default::default(),

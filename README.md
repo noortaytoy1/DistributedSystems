@@ -108,6 +108,7 @@ cargo run --release --bin ctl -- incidents --client 1 --limit 5                 
 cargo run --release --bin ctl -- incidents --id 1-1762180000000123                 # one record, on every node
 cargo run --release --bin loadgen -- --client-id 3 --users 1 --duration-s 1 --ttl-ms 0   # every report refused
 cargo run --release --bin loadgen -- --client-id 4 --users 10 --duration-s 30 --offline-at-s 5 --offline-for-s 10   # offline 10 s, then sends its outbox (D406)
+cargo run --release --bin loadgen -- --config my-phase2.toml --client-id 5 --users 20 --think-ms 500 --duration-s 75   # with [workload] lifecycle = true: the Phase 2 user lifecycle (D430)
 bash scripts/start-users.sh --config config/local.toml --machine 1 --users 100 --duration-s 30   # 10 real programs share the users
 bash scripts/start-users.sh --stop --machine 1
 ```
