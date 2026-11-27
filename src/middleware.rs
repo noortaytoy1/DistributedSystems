@@ -42,7 +42,8 @@
 //! Owner: shared (A, C and F).
 
 // The client side: what user code calls.
-pub use crate::client::{ClientError, MeshClient, Submitted, control};
+pub use crate::client::{ClaimDelivery, ClaimError, ClientError, MeshClient, Submitted, control};
+pub use crate::client::{OpenReconciliation, discover_at};
 // Offline operation (Phase 2, Part K): what a report handed over while offline becomes.
 pub use crate::offline::{Delivery, PeerSend, Reconciled};
 // Presence (Phase 2, Part H): what join and discover give back (D326).

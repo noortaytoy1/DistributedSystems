@@ -1,0 +1,105 @@
+% ==============================================================================================
+\section{Introduction}
+\label{sec:intro}
+% DRAFT (Noor). Third person and stand-alone: no file names, functions, commits or design-log IDs
+% in the text (D266). IDs in comments are fine.
+
+RescueMesh is a simulated emergency service for a university campus. A person reports an incident, and a cloud of three equal machines decides who responds and sends back a plan. Phase 1 built that cloud \cite{phase1}. An election picks the node that plans each report. A shared log with no leader puts every change in the same order on all three nodes. A node that fails is detected, worked around and brought back. All incidents, zones, people and resources are synthetic \cite{spec}.
+
+This report covers Phase 2, which adds what happens between the users: how they find each other, how they talk to each other directly, and how they keep working while cut off. Phase 2 requires the following \cite{spec}:
+% CONFIRM(Noor): this list is the plan's spec checklist (phase2-plan.md section 11); check each
+% item against the spec's own Phase 2 text, which is not in the repository.
+
+\begin{itemize}
+  \item a replicated discovery and presence service that handles delayed heartbeats, expired and duplicate registrations, a server failure and the rebuilding of its state, and users moving between zones;
+  \item direct peer-to-peer communication after discovery, with the cloud out of the data path;
+  \item subscriptions to zones, and dissemination with duplicate suppression and bounded forwarding;
+  \item a planner that combines severity, age, distance, resource availability and capability;
+  \item pending updates held for offline peers, with retention limits and rules for updates that become obsolete;
+  \item clients that disconnect and reconnect, under a clearly documented best-effort offline policy;
+  \item while the owner of an item is offline, only the operations the consistency model permits, with speculative actions labelled and reconciled;
+  \item leases and reservations on resources, with at least one deliberate conflict that is detected and then resolved or surfaced;
+  \item response assignments with their creation and expiry times;
+  \item all of it integrated end to end with the Phase 1 cloud;
+  \item measurements of discovery latency, presence convergence, peer-to-peer latency, the duplicate rate, the forwarding overhead, the reconciliation delay and the conflicts, over tens of thousands of operations.
+\end{itemize}
+
+The report must also describe the directory's design, the peer protocol, the offline policy and the consistency choices, analyse the measurements, and say who did what.
+
+\subsection{The system, in short}
+
+Underneath, the Phase 1 cloud is unchanged: three equal nodes, an election for every report, and a shared log with no leader. Phase 2 adds two kinds of state to that log and new parts to every client program. The cloud now also keeps a presence directory and a claims state. The directory lists who is online, in which zone, with which role and capabilities, and the address of their program. The claims state lists the resources on offer and who holds them. Both are applied in log order on every node, like the incidents, so every node holds the same copy.
+
+On the client PCs, every program registers its users, finds other users through the directory, and then sends them updates directly, peer to peer, with the cloud out of the path. Updates about a zone spread through the zone's programs by gossip, with duplicates dropped and a limit on how far a copy travels. A program can go offline. What its users make meanwhile waits on its disk under its own IDs and goes out when it returns, and what others could not deliver to it is held by them for a while. A claim made offline that turns out to conflict is not silently refused: it is surfaced for the resource's owner to resolve. Section~\ref{sec:arch} shows where each part runs.
+
+\subsection{The results, in short}
+
+The demonstration scenarios that belong to Phase 2 are 5 to 8 of the spec's list. Scenario 9, scale and stress, is measured again with the peer-to-peer traffic on, and scenarios 1 to 4 are checked to still pass. Table~\ref{tab:scenarios} gives the verdict on each, and Section~\ref{sec:results} gives the measurements.
+% FILL (Noor): every \tbd{} in this table from docs/phase2-results.md once the full series has run;
+% keep each line to one or two sentences, as in Phase 1's table. Verdict: Met, Partly met or Not met.
+
+\begin{table}[!htb]
+\centering\small
+\caption{The Phase 2 demonstration scenarios and the measurements on the six lab PCs.}
+\label{tab:scenarios}
+\begin{tabularx}{\linewidth}{@{}P{2.4cm}Lp{1.1cm}@{}}
+\toprule
+Scenario & Measured & Verdict \\
+\midrule
+5. Peer discovery & Users found by zone and by capability on every node in \tbd{} ms at the median and \tbd{} ms at p99, with up to \tbd{} users; a registration showed on all three nodes within \tbd{} ms at p99; \tbd{} directory mismatches. & \tbd{} \\
+6. Direct P2P exchange & Peer updates delivered in \tbd{} ms at the median, \tbd{}\% acknowledged; a zone update reached \tbd{}\% of its zone with \tbd{} duplicates per delivery; the cloud's client ports carried \tbd{} of it. & \tbd{} \\
+7. Offline peer & Outages of 20 s: \tbd{} reports queued, \tbd{} answered after reconnecting, reconciled in \tbd{} ms at the median; \tbd{} held updates delivered later and \tbd{} dropped. & \tbd{} \\
+8. Conflicting claim & \tbd{} claims refused online and \tbd{} reconciliation entries per 1,000 claims at the longest claim delay; the staged conflict: \tbd{}. & \tbd{} \\
+9. Scale and stress & Up to \tbd{} users per client PC: \tbd{} reports a second answered, p99 \tbd{} ms; \tbd{} requests unaccounted for. & \tbd{} \\
+1 to 4 still pass & On the Phase 2 build with the lifecycle off: \tbd{}. & \tbd{} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{How to read this report}
+
+\begin{itemize}
+  \item \textbf{Builds.} The Phase 2 results in this draft come from one build, the main branch of 26 November 2026 with Part~L's three branches merged into it, run on the six lab PCs on 26 November 2026 under the quick profile. The final build is to be measured again with the full profile after the integration day. Phase 1 results quoted for comparison come from the Phase 1 report \cite{phase1}.
+  % FILL (Noor): the dates and times of the series, in words; the commit goes only in docs/phase2-results.md.
+  \item \textbf{Numbers.} Every result comes from the event logs that each program writes, processed by the team's analysis scripts. A value written as $a \pm b$ is a mean across runs with its 95\% confidence interval by Student's $t$. Section~\ref{sec:method} gives the method.
+  \item \textbf{Words.} A \emph{node} is one of the three cloud machines, and a \emph{client PC} one of the three machines that run users. A \emph{program} is one load program, or the web page, on a client PC; it holds many simulated \emph{users}. A \emph{peer} is another program, as one program sees it. An \emph{update} is a message between peers: an incident's summary, its assignment, or a resource offer. A \emph{zone} is a part of the campus, and also the topic its programs follow. An \emph{offer} makes some units of a resource available until a set time, and a \emph{claim} holds some of those units.
+\end{itemize}
+
+\subsection{Where each requirement is answered}
+
+Table~\ref{tab:reqmap} maps each requirement to the section that answers it.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Where this report answers each requirement.}
+\label{tab:reqmap}
+\begin{tabularx}{\linewidth}{@{}Lp{2.6cm}@{}}
+\toprule
+Requirement & Section \\
+\midrule
+Replicated discovery and presence service & \ref{sec:directory}, \ref{sec:peerproto} \\
+Delayed heartbeats, expired and duplicate registrations, server failure and reconstruction, zone moves & \ref{sec:directory}, \ref{sec:s5} \\
+Direct P2P communication after discovery, with the cloud out of the data path & \ref{sec:peerproto}, \ref{sec:p2ponly}, \ref{sec:s6} \\
+Zone subscriptions; dissemination with duplicate suppression and bounded forwarding & \ref{sec:dissem}, \ref{sec:s6} \\
+Planner that combines severity, age, distance, resource availability and capability & \ref{sec:dissem} \\
+Pending updates for offline peers, with retention limits and obsolescence & \ref{sec:offline}, \ref{sec:s7} \\
+Client disconnection and reconnection; the documented best-effort offline policy & \ref{sec:offline} \\
+Owner offline: only permitted operations; speculative actions labelled and reconciled & \ref{sec:offline}, \ref{sec:claims} \\
+Leases and reservations; a deliberate conflict, detected and resolved or surfaced & \ref{sec:claims}, \ref{sec:s8} \\
+Response assignments with created and expiry times & \ref{sec:claims} \\
+Integrated end to end with the Phase 1 cloud & \ref{sec:arch}, \ref{sec:session}, \ref{sec:regression} \\
+Directory design and the consistency model for presence & \ref{sec:directory} \\
+Peer protocol and message formats, timeouts, retries and duplicates & \ref{sec:peerproto} \\
+Consistency model for resources, leases and claims & \ref{sec:claims} \\
+Discovery latency, presence convergence, P2P latency, duplicate rate, forwarding overhead, reconciliation delay, conflicts & \ref{sec:s5} to \ref{sec:s8} \\
+Throughput and latency as users grow, with P2P on; CPU, memory, network and queues & \ref{sec:s9} \\
+Phase 1 scenarios still pass & \ref{sec:regression} \\
+Methodology, raw data, plots and tables, analysis and limits & \ref{sec:method}, \ref{sec:results}, \ref{sec:limits} \\
+The workload and the demonstration & \ref{sec:workload} \\
+Decisions changed during development, with reasons & \ref{sec:changed} \\
+Test plan and use cases & \ref{sec:testing} \\
+Which functions are libraries and which are the team's own & \ref{sec:library} \\
+Who did what & \ref{sec:team} \\
+\bottomrule
+\end{tabularx}
+\end{table}

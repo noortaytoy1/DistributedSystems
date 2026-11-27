@@ -181,6 +181,7 @@ async fn stubs(n: usize) -> (Vec<Arc<Directory>>, Config) {
         metrics: Default::default(),
         faults: Default::default(),
         storage: Default::default(),
+        workload: Default::default(),
         consensus: Default::default(),
         p2p: Default::default(),
         gossip: Default::default(),

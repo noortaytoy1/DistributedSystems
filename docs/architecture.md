@@ -2313,6 +2313,57 @@ store-and-forward (D415), zone lists from Part G's directory (D288), and `tests/
 node (D369). Planned: the sender of each copy if the lab shows the extra duplicates matter, the one `TODO(I)` left (D354); the
 planner's Phase 2 inputs (D352, `part-i-planner-phase2`). Wiring gossip into loadgen and the zone panel is Part L's.
 
+### 13.6 The Phase 2 user lifecycle in loadgen (built, Part L, D430–D445)
+
+With `workload.lifecycle = true` each simulated user gets a role by fixed share (80% ordinary, 15% responder, 5%
+provider), waits for its first slot, registers and subscribes to its home zone, then does one action per think time from
+its role's mix (D445). Reports
+are real, through `submit_or_queue`. Register, discover, move zone and peer send call Part H's presence agent and P2P
+link against Part G's directory (D436). Offer, claim and release are Part J's calls: a provider keeps one resource on
+offer and renews it, a responder claims a unit of an offer its program heard of and gives it back the next time it would
+claim, and a claim made offline waits in Part J's claims outbox (D441). A responder can be made to claim on older news
+with `workload.claim_delay_ms`, the conflict sweep's delay (D442). Each whole minute a program may go offline
+through Part K's switch, for `workload.offline_for_ms`. Off by default, so Phase 1's runs repeat unchanged.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Arriving: run starts
+    Arriving --> Registered: its first slot, join (H, G, D445)
+    Registered --> Subscribed: subscribed with the join (I, D359)
+    Subscribed --> Acting: one think time later
+    Acting --> Acting: report, discover, peer send, move zone, offer, claim, release (D441)
+    Acting --> Offline: this minute's draw hits (whole program)
+    Offline --> Acting: back after offline_for_ms, outbox sent
+    Acting --> [*]: run ends
+```
+
+### 13.7 The client page's Phase 2 panels (built, Part L, D437–D444)
+
+The page on each client PC gets four panels, all through `MeshClient`:
+
+- **Offline switch:** takes the page's own client offline (Part K). A report made meanwhile shows QUEUED; coming back
+  sends the outbox and shows what happened.
+- **Who is online:** asks each node's directory on its own, by zone or capability, as `ctl discover` does, and shows the
+  three answers side by side, each with the log index it was read at, under one verdict: the same answer, a catch-up
+  difference, or a real disagreement (D443).
+- **Zone updates:** follows a zone by joining a user of the page there, which subscribes the program (Part I), and
+  shows the newest 50 updates with their hops.
+- **Conflicting claim:** plays scenario 8 with three users of the page (Part J): an offer of one unit, a claim online, a
+  claim made offline that opens a reconciliation entry on return, and the owner's resolve (D444). It lists only the
+  entries the page made: no node lists them to clients.
+
+```mermaid
+flowchart LR
+    B[Browser] -->|HTTP on this PC| F[frontend]
+    F -->|go_offline / go_online| M[MeshClient]
+    F -->|discover_at, one node at a time| C[Cloud nodes]
+    F -->|join user 1,000,000+z| M
+    F -->|offer, claim, resolve as users 2,000,000+| M
+    M -->|presence and claims calls| C
+    P[Other programs] -->|zone updates, P2P| M
+    M -->|take_peer_updates| F
+```
+
 Publish-subscribe as planned, with the cloud as the directory of service (Lecture 8, section 10.3). **Not built.**
 
 ```mermaid

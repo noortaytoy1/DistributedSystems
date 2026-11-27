@@ -37,7 +37,11 @@ fn cell_text(cell: &str) -> String {
 #[test]
 fn every_cell_is_a_valid_config_with_a_run_line() {
     let cells = cells();
-    assert_eq!(cells.len(), 34, "the full profile has 34 cells");
+    assert_eq!(
+        cells.len(),
+        43,
+        "the full profile has 43 cells: 34 from Phase 1 and 9 from Phase 2"
+    );
     for cell in &cells {
         let text = cell_text(cell);
         assert!(text.starts_with("# run:"), "{cell} has no run line");
@@ -106,4 +110,63 @@ fn the_quick_profile_is_fifteen_cells_of_the_full_one() {
     assert!(quick.is_subset(&cells()), "{quick:?}");
     // First, so a bug in the fault election costs one cell's time and not the whole list's (D162).
     assert_eq!(list.lines().next(), Some("ft8-random-faults"));
+}
+
+/// The Phase 2 cells: the lifecycle on, users per client PC, the three sweeps (D434, D446). Phase 1's
+/// cells keep the lifecycle off, so they repeat unchanged.
+#[test]
+fn the_phase2_list_holds_the_three_sweeps_and_only_they_run_the_lifecycle() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/phase2.list"),
+    )
+    .unwrap();
+    let phase2: Vec<&str> = text.lines().collect();
+    assert_eq!(phase2.len(), 9);
+    let config = |cell: &str| Config::from_toml(&format!("{BASE}{}", cell_text(cell))).unwrap();
+    let run_value = |cell: &str, key: &str| -> Option<u64> {
+        let text = cell_text(cell);
+        let line = text.lines().next().unwrap().strip_prefix("# run:").unwrap();
+        line.split_whitespace().find_map(|kv| {
+            kv.strip_prefix(&format!("{key}="))
+                .map(|v| v.parse().unwrap())
+        })
+    };
+    for cell in cells() {
+        let w = config(&cell).workload;
+        assert_eq!(
+            w.lifecycle,
+            phase2.contains(&cell.as_str()),
+            "{cell}: the lifecycle runs in the Phase 2 cells only"
+        );
+    }
+    for cell in &phase2 {
+        assert!(
+            run_value(cell, "users").is_none(),
+            "{cell} names users per PC"
+        );
+        assert!(
+            run_value(cell, "think_ms").unwrap() > 0,
+            "{cell}: the lifecycle needs a think time"
+        );
+    }
+    for per_pc in [100, 1000, 5000] {
+        assert_eq!(
+            run_value(&format!("ph2users-{per_pc}"), "users_per_pc"),
+            Some(per_pc)
+        );
+    }
+    for share in [0, 10, 30] {
+        let cell = format!("ph2offline-{share}");
+        assert_eq!(run_value(&cell, "users_per_pc"), Some(1000));
+        let w = config(&cell).workload;
+        assert_eq!(u64::from(w.offline_chance_per_min_percent), share);
+        assert_eq!(w.claim_delay_ms, 0);
+    }
+    for delay in [0, 500, 2000] {
+        let cell = format!("ph2conflict-{delay}ms");
+        assert_eq!(run_value(&cell, "users_per_pc"), Some(1000));
+        let w = config(&cell).workload;
+        assert_eq!(w.claim_delay_ms, delay);
+        assert_eq!(w.offline_chance_per_min_percent, 0);
+    }
 }

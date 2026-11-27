@@ -1,0 +1,61 @@
+% ==============================================================================================
+\section{Offline operation and the best-effort reconciliation policy}
+\label{sec:offline}
+% SKELETON. Owner: Aabed Elghadban, Part K. Nothing below is written yet: no claim in this section
+% comes from the assembler.
+%
+% TODO(Aabed): write this section. Third person and stand-alone: no file names, functions,
+% commits or design-log IDs in the text (D266); the IDs here are for you. Rename, merge or drop
+% subsections freely, but keep \label{sec:offline}: other sections point to it.
+% Sources: docs/offline-policy.md is this section's source (D412 says so); its sections 1 to 8
+% map onto the subsections below. Also docs/architecture.md section 13.1 and design log D400 to
+% D417.
+% Cover:
+%   - what offline is: one gate inside every socket of a program, so nothing leaves and nothing
+%     arrives, the node's fault gate one layer out (D402, D338);
+%   - what a user may do offline: only add; reports queue, peer updates are held, claims are
+%     speculative; the policy's table (D412). Note that an offer fails at once while offline;
+%   - the outbox: one line per report on disk, the original IDs, 16 at a time on return, the
+%     cloud decides if a report is too old, at most 10,000 (D400, D401, D403 to D405); claims in a
+%     second outbox of the same kind, one at a time in order, kept until answered (D414);
+%   - store-and-forward: the sender holds; 100 per peer, 10,000 in all, 300 s from when made, and
+%     why 300 s (the receivers' seen caches); redelivery every 2 s and at once on return; zone
+%     gossip copies held the same way (D407 to D411, D415);
+%   - obsolete updates: a newer version replaces an older one; an offer that has ended is dropped
+%     (D409, with D490: an offer's subject is its resource ID);
+%   - reconnection, in order: presence, the outbox, claims, held updates, missed zone updates; a
+%     sequence diagram (D416, and the policy's section 5);
+%   - why nothing is applied twice: IDs that never change, first commit wins, the seen caches;
+%   - what can be lost, plainly (the policy's section 7, D417);
+%   - what is measured: the reconciliation delay, pending updates kept, delivered and dropped by
+%     reason, and speculative claims that ended differently. Events: client_offline,
+%     client_online, outbox_queued, outbox_sent, outbox_flushed, peer_update_held,
+%     peer_update_forwarded, peer_update_dropped, claim_queued, claims_flushed (D406, D411, D414).
+%     A held update's age when forwarded compares two clocks when the holder did not make it.
+% Two lines of docs/offline-policy.md are out of date: section 4 still keys an offer's versions by
+% provider and capability (D490 made it the resource ID), and section 9 lists the web page's
+% offline toggle as not built (it is built, Part L).
+% The numbers go in Section~\ref{sec:s7} (Results); point there, do not repeat them.
+% Also check: the offline-switch, held-updates and claims-outbox rows of tab:clientparts
+% (02-architecture), the offline rows of tab:changed2 (10-decisions), and your row of tab:team
+% (12-closing).
+
+\tbd{} \emph{Section to be written by Aabed Elghadban (Part K).}
+
+\subsection{What offline means: the switch}
+
+\subsection{What a user may do while offline}
+
+\subsection{The outbox: reports and claims made offline}
+
+\subsection{Store-and-forward between peers}
+
+\subsection{Retention limits and obsolete updates}
+
+\subsection{Reconnection, in order}
+
+\subsection{Why nothing is applied twice}
+
+\subsection{What can be lost}
+
+\subsection{Measuring offline operation}

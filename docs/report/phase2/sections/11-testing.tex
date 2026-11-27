@@ -1,0 +1,65 @@
+% ==============================================================================================
+\section{Test plan}
+\label{sec:testing}
+% DRAFT (Noor assembles). Rows from each Phase 2 test file's header comment; no file names in the
+% text (D266): each row's file is in the comment after it. Counts are the files' tests on main on
+% 2026-11-26. CONFIRM(each owner): your row. FILL: the final counts from the final build's CI run.
+
+\subsection{Automated tests}
+\label{sec:tests}
+
+Phase 2 kept Phase 1's way of working: every change went through a pull request, and the CI run checks formatting, runs the linter with warnings as errors, and runs the full test suite on Ubuntu. On the final Phase 2 build the full suite passes \tbd{} tests on Ubuntu, \tbd{} of them added in Phase 2. The new parts that have no network or clock of their own are also tested alone, by unit tests: the directory, the claims, the gossip rules, and the outboxes and held updates. Table~\ref{tab:testfiles} lists the multi-node tests that Phase 2 added, by area. Most start real nodes on one machine and talk to them over real sockets; the rest use stand-in nodes, to check the client side alone.
+% FILL (Noor): the totals from the final build's test run. On main on 2026-11-26 the eight files
+% below hold 41 tests, and the new pure parts hold 68 unit tests (directory 16, claims 12, gossip
+% 22, outbox and held updates 12, presence 2, P2P 4).
+
+\begin{table}[!htb]
+\centering\small
+\caption{Multi-node tests added in Phase 2.}
+\label{tab:testfiles}
+\begin{tabularx}{\linewidth}{@{}P{3.6cm}rL@{}}
+\toprule
+Area & Tests & What they check \\
+\midrule
+Presence directory & 8 & on three real nodes, with the real presence agent: users found by zone and by capability on every node; a zone move; expiry with no renewals, the same on every node; a restarted program wins over its old registration; a node back from silence rebuilds the directory from the log; a user leaving; the same under rotating rounds; the measurement events. Every test ends by checking that the three copies match \\ % tests/discovery.rs (Omar)
+Presence agent & 8 & against stand-in nodes: every node is asked; leases are renewed at a third; a lost lease is registered again; offline pauses renewals; leaving deregisters; a zone move registers again; one dead node does not stop a join; discovery returns what a node read, with the limit capped \\ % tests/presence.rs (Wahiba)
+P2P link & 5 & two programs exchange an update directly, and a repeat is a duplicate; an update for another program's user is refused; offline, a program sends nothing and hears nothing; programs take the first free port; with a real three-node cloud running, the cloud's client ports carry none of a peer exchange \\ % tests/p2p.rs (Wahiba)
+Zone gossip & 7 & a committed report reaches every program of a five-program zone; a stale directory does not pull in another zone; a repeated answer is not spread again; a dead peer does not stop the rest; a subscriber that was offline gets its copies on return; with no directory, nothing is sent; the whole path on three real nodes with the real directory \\ % tests/gossip.rs (Yahia)
+Offers and claims & 3 & on a real cluster: an offer is claimed, then released; an online claim over capacity is refused; a speculative conflict is surfaced as a reconciliation entry and the owner resolves it for the challenger \\ % tests/claims.rs (Ahmed)
+Offline reports & 4 & on three real nodes: reports made offline reach every node with their IDs; a report too old by reconnection is refused, on record; the outbox outlives its program; an answer on its way is lost while offline, and the resend gets the same result \\ % tests/offline.rs (Aabed)
+Store-and-forward & 3 & between two real programs: an update made offline reaches its peer on reconnection; an update for an offline peer waits and arrives when it returns; only the newest version of a held update arrives \\ % tests/store_forward.rs (Aabed)
+Reconnection & 3 & on three real nodes: a returning client is found again after its lease ran out; a claim that gets no answer stays queued; claims made offline survive a restart and reach the cloud \\ % tests/reconnect.rs (Aabed)
+Load programs, web page & \tbd{} & the lifecycle's roles, actions, outages and outcome counts; the page's four Phase 2 panels \\ % loadgen unit tests and tests/frontend.rs, part-l-workload and part-l-demo-page (Noor); FILL
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Phase 1's two rules still held. Tests never sleep for a fixed time: they wait for a condition with a deadline. A test that touches timing must pass 10 times in a row before it merges. Phase 2 added a third habit. For many rules, the test itself was checked by breaking the rule on purpose, and the test had to fail. Examples are resending an offline report under a new ID, keeping offline claims only in memory, and dropping a gossip copy instead of holding it.
+% Sources for the third habit: D402, D404, D407, D414, D415, D359, D490 ("a mutant ... fails").
+
+\subsection{Lab checks}
+\label{sec:labchecks}
+
+Besides the experiment cells, the checks in Table~\ref{tab:labtests} are made on the six lab PCs.
+% FILL (Noor): results after the integration day (2026-12-02) and the series, then put this
+% sentence in the past tense. TODO(Noor): drop a row that was not run, and say so in sec:limits;
+% add the guide's T1 to T5 if they are rerun.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Lab checks on the six PCs.}
+\label{tab:labtests}
+\begin{tabularx}{\linewidth}{@{}P{3.4cm}LP{3.2cm}@{}}
+\toprule
+Check & What it does & Result on the final build \\
+\midrule
+Same build everywhere & every PC builds the same commit; the nodes' stored state is wiped before the first run, since its format changed in Phase 2 & \tbd{} \\
+Peer ports open & each client PC opens the peer port range; two programs on different client PCs exchange an update & \tbd{} \\
+Clocks & the node and client clock skew, measured from the traffic, before the series & \tbd{} \\
+End-to-end session & every scenario in one session, in the order of Section~\ref{sec:session} & \tbd{} \\
+Every request accounted for & every report a client sent is answered, given up or found in a node's log; the state, directory and claims digests are equal at equal log indexes & \tbd{} \\
+The cloud out of the peer path & the cloud's client-port bytes while programs exchange peer updates & \tbd{} \\
+Phase 1 still passes & scenarios 1 to 4 and 9 on the Phase 2 build, with the lifecycle off & \tbd{} \\
+\bottomrule
+\end{tabularx}
+\end{table}

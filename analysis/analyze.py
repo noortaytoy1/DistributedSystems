@@ -12,7 +12,8 @@ client_gap_pc_*, which are on one clock (D233). failover_to_*, before_rps, durin
 arrival_peak_100ms_share_first_s subtract timestamps from different machines, so they are only as good as those
 clocks (AGENTS.md, Measuring). The phases' edges, the other arrival_peak_*, elections_after_rejoin and every filter
 on the measured time compare them, to choose lines. node_clock_skew_ms and client_clock_skew_ms say how far apart
-the clocks were in that run.
+the clocks were in that run. Phase 2's gossip_age_* (two client PCs) and reconciliation_wait_* (a client PC and a
+node) read two machines' clocks too.
 """
 
 import argparse
@@ -22,7 +23,7 @@ import json
 import math
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -37,15 +38,21 @@ PERCENTILES = (50, 95, 99)
 NODE_CLOCK_SKEW_WARN_MS = 10  # failover_to_* moves by exactly this
 CLIENT_CLOCK_SKEW_WARN_MS = 50  # half the width of arrival_peak_*, and one priority point (D148)
 # FT-2 holds for every failover, and a mean across runs can hide one. A maximum is its own question (D233).
-WORST_RUN_METRICS = ("failover_gap_ms_max", "client_gap_pc_max_ms", "client_gap_max_ms", "worst_request_ms")
+WORST_RUN_METRICS = ("failover_gap_ms_max", "client_gap_pc_max_ms", "client_gap_max_ms", "worst_request_ms",
+                     "reconcile_max_ms")
+# Part K's outboxes sit in the metrics directory beside the logs: outbox-client-<id>.jsonl and
+# claims-client-<id>.jsonl, one queued report or claim a line, with no "ev" (D401, D414). Not event logs.
+NOT_EVENT_LOGS = ("outbox-", "claims-")
 
 
 def read_events(run_dir):
     """Every event in a run, by source name, each source's events in file order. A program killed in the
     middle of a write leaves half a line at the end of its log: that one is dropped and named. A bad line
-    anywhere else is real damage, and raises."""
+    anywhere else is real damage, and raises. Part K's outbox files are not logs, and are not read."""
     events = {}
     for path in sorted(Path(run_dir).glob("*.jsonl")):
+        if path.stem.startswith(NOT_EVENT_LOGS):
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = [line for line in text.split("\n") if line.strip()]
         try:
@@ -420,7 +427,11 @@ def clock_skew_metrics(events):
         machine = source[len("client-")]
         for e in es:
             if e["ev"] == "client_sent":
-                sent[(e["request"]["client"], e["request"]["seq"], e["attempt"])] = (machine, e["ts_us"])
+                # A report cut off by an outage goes again from the outbox under its own ID and attempt
+                # (D404). The first send is the one to count from: a copy of it that got through before the
+                # cut would read as arriving before its later send, by the outage's length.
+                key = (e["request"]["client"], e["request"]["seq"], e["attempt"])
+                sent.setdefault(key, (machine, e["ts_us"]))
     quickest = defaultdict(dict)
     for source, es in node_events(events).items():
         for e in es:
@@ -690,6 +701,386 @@ def presence_metrics(events, start_us):
     metrics["directory_expired"] = max((e["expired"] for e in last), default=0)
     metrics["directory_revived"] = max((e["revived"] for e in last), default=0)
     return metrics
+
+
+# ---------------------------------------------------------------------------------------------
+# Phase 2: the P2P link (H), zone gossip (I), offline operation (K), claims (J), the workload (L) and
+# the cloud's bytes (D435). Each function gives the same keys for every run, so a run without the
+# events reads 0 or NaN, and joins lines from different logs by ID, never by time (D447).
+# ---------------------------------------------------------------------------------------------
+
+
+def ratio(part, whole):
+    return part / whole if whole else float("nan")
+
+
+def update_key(update):
+    return update["origin"], update["seq"]
+
+
+def events_named(logs, names, start_us):
+    """{ev: [events]} for each name, from `start_us` on, in one pass over `logs`."""
+    found = {name: [] for name in names}
+    for es in logs.values():
+        for e in es:
+            if e["ev"] in found and e["ts_us"] >= start_us:
+                found[e["ev"]].append(e)
+    return found
+
+
+def endpoints(clients):
+    """Programs whose peer endpoint opened (`p2p_listening`), so that peers could reach them."""
+    return sum(1 for es in clients.values() if any(e["ev"] == "p2p_listening" for e in es))
+
+
+# p2p_sent.ack, by the name its count goes under. "none" is no ack after every try (D339).
+P2P_ACKS = {"accepted": "delivered", "duplicate": "duplicate", "refused": "refused", "none": "failed"}
+
+
+def p2p_metrics(events, start_us):
+    """Part H's P2P link (D336, D339, D464). Every `send_peer` call logs one `p2p_sent` on the sender: a
+    user's direct send, a gossip copy, or a held update tried again. Its `latency_us` runs from the first
+    try to the ack, retries included, on the sender's clock, so no two clocks meet. The delivery latency
+    counts the sends whose peer has the update afterwards, acked `accepted` or `duplicate`. `p2p_ack_share`
+    is the plan's ack rate: the sends that got any answer."""
+    clients = client_sources(events)
+    found = events_named(clients, ("p2p_sent", "p2p_received"), start_us)
+    sent = found["p2p_sent"]
+    acks = Counter(e["ack"] for e in sent)
+    metrics = {"p2p_sent": len(sent)}
+    for ack, name in P2P_ACKS.items():
+        metrics[f"p2p_{name}"] = acks[ack]
+    answered = [e for e in sent if e["ack"] != "none"]
+    metrics["p2p_ack_share"] = ratio(len(answered), len(sent))
+    metrics["p2p_retried_share"] = ratio(sum(1 for e in answered if e["tries"] > 1), len(answered))
+    delivered = [e["latency_us"] for e in sent if e["ack"] in ("accepted", "duplicate")]
+    metrics.update(latency_metrics("p2p_latency_", delivered))
+    metrics["p2p_received"] = len(found["p2p_received"])
+    metrics["p2p_endpoints"] = endpoints(clients)
+    return metrics
+
+
+GOSSIP_HOPS = range(8)  # a copy carries 0 to [gossip] hop_cap hops, 7 by default (D345, D346)
+GOSSIP_LINES = ("gossip_received", "p2p_received", "p2p_sent", "gossip_send_failed")
+
+
+def gossip_metrics(events, start_us):
+    """Part I's zone gossip (D340 to D368). It follows the zone updates published in the measured time,
+    from each origin's `gossip_published`, into every program's log, joined by update ID. A user's direct
+    send to a peer passes the gossip core too, and logs a `gossip_received`, but nobody publishes it, so
+    the join leaves it out.
+
+    Duplicates. Part H's endpoint answers an update ID it has seen with `duplicate` before gossip sees the
+    copy (D353). So a duplicate is a `p2p_received` with `duplicate`, or the rare `gossip_received` with
+    `duplicate`. `gossip_duplicate_share` is duplicates over every copy that reached an endpoint, and
+    `gossip_duplicates_per_new` is D350's rate, duplicates per delivery.
+
+    Forwarding overhead. `gossip_copies_per_update` is what the cores chose to send: the origin's
+    `targets` plus every `forwarded`, per published update (D350). `gossip_sends_per_update` counts the
+    `p2p_sent` lines instead, so it adds store-and-forward's later tries (D415).
+
+    Coverage. Per update, the programs that got it as new (`gossip_reach_mean`), and that over every other
+    program with a peer endpoint (`gossip_coverage_share`). No event says which programs subscribe to a
+    zone. A program subscribes to the zones of its users, so with users in every zone it is all of them.
+
+    `gossip_age_*` is `age_ms`, the receiving PC's clock minus the origin PC's (D233). `gossip_hops_*` says
+    how far an update went, with no clock."""
+    clients = client_sources(events)
+    published = {}
+    for es in clients.values():
+        for e in es:
+            if e["ev"] == "gossip_published" and e["ts_us"] >= start_us:
+                published[update_key(e["update"])] = e
+    outcomes = Counter()
+    reached = defaultdict(set)
+    hops, ages = [], []
+    forwarded = copies = endpoint_duplicates = sends = failed = 0
+    for source, es in clients.items():
+        for e in es:
+            if e["ev"] not in GOSSIP_LINES or update_key(e["update"]) not in published:
+                continue
+            if e["ev"] == "gossip_received":
+                outcomes[e["outcome"]] += 1
+                forwarded += e["forwarded"]
+                if e["outcome"] == "new":
+                    reached[update_key(e["update"])].add(source)
+                    hops.append(e["hops"])
+                    ages.append(e["age_ms"] * 1000)
+            elif e["ev"] == "p2p_received":
+                copies += 1
+                endpoint_duplicates += e["outcome"] == "duplicate"
+            elif e["ev"] == "p2p_sent":
+                sends += 1
+            else:
+                failed += 1
+    updates = len(published)
+    metrics = {
+        "gossip_published": updates,
+        "gossip_published_no_targets": sum(1 for e in published.values() if e["targets"] == 0),
+    }
+    for outcome in ("new", "duplicate", "obsolete", "not_subscribed"):
+        metrics[f"gossip_received_{outcome}"] = outcomes[outcome]
+    duplicates = endpoint_duplicates + outcomes["duplicate"]
+    metrics["gossip_copies_received"] = copies
+    metrics["gossip_duplicates"] = duplicates
+    metrics["gossip_duplicate_share"] = ratio(duplicates, copies)
+    metrics["gossip_duplicates_per_new"] = ratio(duplicates, outcomes["new"])
+    chosen = sum(e["targets"] for e in published.values()) + forwarded
+    metrics["gossip_copies_per_update"] = ratio(chosen, updates)
+    metrics["gossip_sends_per_update"] = ratio(sends, updates)
+    metrics["gossip_send_failed"] = failed
+    reach = [len(reached[update]) for update in published]
+    others = endpoints(clients) - 1
+    metrics["gossip_reach_mean"] = float(np.mean(reach)) if reach else float("nan")
+    metrics["gossip_coverage_share"] = (
+        float(np.mean(reach)) / others if reach and others > 0 else float("nan")
+    )
+    metrics["gossip_full_coverage_share"] = (
+        ratio(sum(1 for r in reach if r >= others), updates) if others > 0 else float("nan")
+    )
+    at_hops = Counter(hops)
+    metrics["gossip_hops_mean"] = float(np.mean(hops)) if hops else float("nan")
+    metrics["gossip_hops_max"] = max(hops) if hops else float("nan")
+    for h in GOSSIP_HOPS:
+        metrics[f"gossip_hops_{h}_share"] = ratio(at_hops[h], len(hops))
+    metrics.update(latency_metrics("gossip_age_", ages))
+    lists = events_named(clients, ("gossip_zone_refreshed",), start_us)["gossip_zone_refreshed"]
+    metrics["gossip_zone_programs_max"] = max((e["programs"] for e in lists), default=0)
+    return metrics
+
+
+HELD_DROP_REASONS = ("age", "limit", "obsolete", "refused")  # offline::Dropped (D408, D409)
+OFFLINE_LINES = ("client_online", "outbox_queued", "outbox_sent", "outbox_flushed", "claim_queued",
+                 "claims_flushed", "peer_update_held", "peer_update_forwarded", "peer_update_dropped")
+
+
+def offline_metrics(events, start_us):
+    """Part K's offline operation (D400 to D417), each figure on one program's own clock.
+
+    `offline_*` is how long each outage lasted (`client_online.offline_ms`). The reconciliation delay has
+    three figures. `reconcile_reports_*` is `outbox_flushed.reconcile_us`, from the start of the flush to
+    its last answer. `reconcile_claims_*` is `claims_flushed.reconcile_us`, the queued claims sent after the
+    reports (D414). `reconcile_*` is per reconnect: from its `client_online` to the end of the last flush it
+    ran, in that program's log. A reconnect with nothing queued flushes nothing, and is not in it. The held
+    peer updates go out after both flushes, and no event marks the end of that, so they are not in it.
+
+    `peer_updates_*` count store-and-forward (D407 to D411): held, sent later, or let go by reason.
+    `peer_updates_held_at_end` is what each program still held when its log ended."""
+    clients = client_sources(events)
+    found = events_named(clients, OFFLINE_LINES, start_us)
+    metrics = latency_metrics("offline_", [e["offline_ms"] * 1000 for e in found["client_online"]])
+    metrics.update(latency_metrics("reconcile_reports_", [e["reconcile_us"] for e in found["outbox_flushed"]]))
+    metrics.update(latency_metrics("reconcile_claims_", [e["reconcile_us"] for e in found["claims_flushed"]]))
+    whole, held_at_end = [], 0
+    for es in clients.values():
+        opened = finished = None
+        holding = defaultdict(int)
+        for e in es:
+            ev = e["ev"]
+            if ev in ("client_offline", "client_online"):
+                if opened is not None and finished is not None:
+                    whole.append(finished - opened)
+                opened = e["ts_us"] if ev == "client_online" and e["ts_us"] >= start_us else None
+                finished = None
+            elif ev in ("outbox_flushed", "claims_flushed"):
+                finished = e["ts_us"] if opened is not None else None
+            elif ev == "peer_update_held":
+                holding[(e["to_addr"], update_key(e["update"]))] += 1
+            elif ev in ("peer_update_forwarded", "peer_update_dropped"):
+                key = (e["to_addr"], update_key(e["update"]))
+                # One let go at once was never held, so it takes nothing off.
+                if holding.get(key):
+                    holding[key] -= 1
+        if opened is not None and finished is not None:
+            whole.append(finished - opened)
+        held_at_end += sum(holding.values())
+    metrics.update(latency_metrics("reconcile_", whole))
+    metrics["reconcile_max_ms"] = max(whole) / 1000 if whole else float("nan")
+    metrics["outbox_queued"] = len(found["outbox_queued"])
+    sent = Counter(e["outcome"] for e in found["outbox_sent"])
+    for outcome in ("answered", "expired", "failed"):
+        metrics[f"outbox_{outcome}"] = sent[outcome]
+    waits = [e["waited_ms"] * 1000 for e in found["outbox_sent"] if e["outcome"] == "answered"]
+    metrics.update(latency_metrics("outbox_wait_", waits))
+    metrics["claims_outbox_queued"] = len(found["claim_queued"])
+    for field in ("sent", "claimed", "reconciling", "other", "failed"):
+        metrics[f"claims_outbox_{field}"] = sum(e[field] for e in found["claims_flushed"])
+    drops = Counter(e["reason"] for e in found["peer_update_dropped"])
+    metrics["peer_updates_held"] = len(found["peer_update_held"])
+    metrics["peer_updates_forwarded"] = len(found["peer_update_forwarded"])
+    metrics["peer_updates_dropped"] = len(found["peer_update_dropped"])
+    for reason in HELD_DROP_REASONS:
+        metrics[f"peer_updates_dropped_{reason}"] = drops[reason]
+    metrics["peer_updates_held_at_end"] = held_at_end
+    return metrics
+
+
+# claim_write.outcome for a claim, by the name its count goes under (proto.rs ClaimOutcome::kind).
+CLAIM_OUTCOMES = {"resource_claimed": "claimed", "resource_claim_refused": "refused",
+                  "resource_claim_reconciling": "reconciling", "resource_unknown": "unknown"}
+
+
+def resource_key(resource):
+    return resource["provider"], resource["seq"]
+
+
+def user_key(user):
+    return user["client"], user["user"]
+
+
+def claims_metrics(events, start_us):
+    """Part J's offers and claims (D370 to D381), from the node that proposed each write. A conflict is a
+    claim that did not simply get in: refused online, or a reconciliation entry opened by a claim resent
+    from the claims outbox (D376). `claim_conflicts_per_claim` is the two kinds together over every claim
+    write, so a sweep that makes responders claim less often still compares (D442). `claim_unknown` is a claim on an offer the
+    cloud does not hold or that has run out: the spec's expired-lease refusal, which no event tells apart.
+
+    Latency is the proposer's, from the call arriving to the commit, on its clock. `reconciliation_time_*`
+    runs from an entry's `reconciliation_opened` to its `reconciliation_resolved` on the same node, one
+    clock. `reconciliation_wait_*` is the event's `wait_ms`: the resolving node's clock minus the
+    challenger PC's first try, two clocks (D378, D380). loadgen resolves no entry (D441), so in its runs
+    both are empty and the entries show in `claims_reconciling_at_end`.
+
+    `claims_digest_mismatches` compares the once-a-second `claims_state` digests at equal `last_applied`,
+    over the whole log, as the directory's are."""
+    nodes = node_events(events)
+    found = events_named(nodes, ("claim_write", "claim_conflict", "resource_offered", "reconciliation_resolved"),
+                         start_us)
+    claims = [e for e in found["claim_write"] if e["kind"] == "claim"]
+    metrics = latency_metrics("claim_", [e["latency_us"] for e in claims])
+    outcomes = Counter(e["outcome"] for e in claims)
+    for outcome, name in CLAIM_OUTCOMES.items():
+        metrics[f"claim_{name}"] = outcomes[outcome]
+    metrics["claim_speculative"] = sum(1 for e in claims if e["speculative"])
+    metrics["claim_conflicts_per_claim"] = ratio(metrics["claim_refused"] + metrics["claim_reconciling"],
+                                                 len(claims))
+    kinds = Counter(e["kind"] for e in found["claim_conflict"])
+    for kind in ("online_refused", "reconciliation_opened"):
+        metrics[f"claim_conflicts_{kind}"] = kinds[kind]
+    released = Counter(e["outcome"] for e in found["claim_write"] if e["kind"] == "release")
+    metrics["release_released"] = released["resource_claim_released"]
+    metrics["release_stale"] = released["resource_claim_stale_release"]
+    metrics.update(latency_metrics("offer_", [e["latency_us"] for e in found["resource_offered"]]))
+    resolved = found["reconciliation_resolved"]
+    metrics.update(latency_metrics("reconciliation_wait_", [e["wait_ms"] * 1000 for e in resolved]))
+    times = []
+    for es in nodes.values():
+        opened = {}
+        for e in es:
+            if e["ev"] == "claim_conflict" and e["kind"] == "reconciliation_opened":
+                opened[(resource_key(e["resource"]), user_key(e["claimant"]))] = e["ts_us"]
+            elif e["ev"] == "reconciliation_resolved" and e["ts_us"] >= start_us:
+                at = opened.pop((resource_key(e["resource"]), user_key(e["challenger"])), None)
+                if at is not None:
+                    times.append(e["ts_us"] - at)
+    metrics.update(latency_metrics("reconciliation_time_", times))
+    digests, seen_by, last = defaultdict(set), defaultdict(set), []
+    for source, es in nodes.items():
+        states = [e for e in es if e["ev"] == "claims_state"]
+        for e in states:
+            digests[e["last_applied"]].add(e["digest"])
+            seen_by[e["last_applied"]].add(source)
+        last += states[-1:]
+    metrics["claims_states_compared"] = sum(1 for nodes_at in seen_by.values() if len(nodes_at) > 1)
+    metrics["claims_digest_mismatches"] = sum(1 for found_at in digests.values() if len(found_at) > 1)
+    metrics["claims_reconciling_at_end"] = max((e["reconciling"] for e in last), default=0)
+    return metrics
+
+
+# The outcomes kept apart, as `workload_<action>_<outcome>`; any other is in `workload_other` (D436, D441).
+WORKLOAD_ACTIONS = (
+    "report:answered", "report:queued", "report:gave_up", "report:failed",
+    "register:ok", "subscribe:with_join", "move_zone:ok", "move_zone:offline",
+    "discover:ok", "discover:offline", "discover:gave_up",
+    "peer_send:delivered", "peer_send:held", "peer_send:no_peer", "peer_send:nothing_to_send",
+    "peer_send:gave_up",
+    "offer:offered", "offer:renewed", "offer:offline", "offer:timeout",
+    "claim:claimed", "claim:refused", "claim:reconciling", "claim:queued", "claim:no_offer",
+    "release:released", "release:refused", "release:offline", "release:timeout",
+)
+PEER_RECEIVED_KINDS = ("incident_summary", "assignment_update", "resource_offer")
+WORKLOAD_SETTINGS = ("claim_delay_ms", "offline_chance_per_min_percent", "offline_for_ms")
+
+
+def workload_metrics(events, measured_s):
+    """Part L's simulated users (D430 to D442), from each program's `workload_done`: what its users did,
+    counted by `action:outcome`, summed over programs. A program counts only actions started after its own
+    warm-up. A user joins and subscribes once, at its start, so after a warm-up `workload_register_ok` is
+    about 0. `peer_received:*` counts updates that reached the program, so it is not an action.
+
+    `workload_claim_refused_share` is the clients' view of conflicts: online claims refused, over online
+    claims granted or refused. A claim queued offline is answered at reconnect and is not in it;
+    `claim_conflicts_per_claim` has those. `workload_started` gives the roles and the cell's settings."""
+    clients = client_sources(events)
+    done = [e for es in clients.values() for e in es if e["ev"] == "workload_done"]
+    started = [e for es in clients.values() for e in es if e["ev"] == "workload_started"]
+    actions = Counter()
+    for e in done:
+        actions.update(e["actions"])
+    metrics = {f"workload_{key.replace(':', '_')}": actions[key] for key in WORKLOAD_ACTIONS}
+    for kind in PEER_RECEIVED_KINDS:
+        metrics[f"workload_peer_received_{kind}"] = actions[f"peer_received:{kind}"]
+    by_users = sum(n for key, n in actions.items() if not key.startswith("peer_received:"))
+    metrics["workload_actions"] = by_users
+    metrics["workload_actions_per_s"] = by_users / measured_s if done and measured_s else float("nan")
+    metrics["workload_other"] = by_users - sum(actions[key] for key in WORKLOAD_ACTIONS)
+    refused = actions["claim:refused"]
+    metrics["workload_claim_refused_share"] = ratio(refused, actions["claim:claimed"] + refused)
+    metrics["workload_programs"] = len(done)
+    metrics["workload_outages"] = sum(e["outages"] for e in done)
+    for role in ("ordinary", "responders", "providers"):
+        metrics[f"workload_{role}"] = sum(e[role] for e in started)
+    for setting in WORKLOAD_SETTINGS:
+        metrics[f"workload_{setting}"] = max((e[setting] for e in started), default=float("nan"))
+    return metrics
+
+
+def cloud_bytes_metrics(events, start_us, end_us):
+    """D435: P2P traffic runs between the client PCs only, and the cloud's bytes prove it. Over the
+    measured time, each process's rate from its own cumulative counters, on its own clock, summed:
+
+    - `cloud_udp_bytes_per_s`: the three nodes' client ports (node `udp_counters`), which carry every
+      client call to the cloud: reports, presence, discovery and claims;
+    - `cloud_net_bytes_per_s`: the node PCs' network cards (`resource_usage`), Raft included. The loopback
+      is not counted, so with every process on one PC it shows none of their traffic, only the PC's other
+      traffic;
+    - `client_cloud_socket_bytes_per_s`: the programs' sockets to the cloud (client `udp_counters`). Their
+      peer sockets are apart and logged nowhere;
+    - `p2p_sends_per_s` and `p2p_tries_per_s`: the P2P sends on the clients (`p2p_sent`), and the tries
+      in them. P2P bytes are not logged.
+
+    `cloud_udp_bytes_over_client` near 1 says the cloud carried what the programs' cloud sockets sent and
+    nothing more. Only the window's edges compare clocks, which moves each rate by up to a second's worth
+    over the measured time."""
+
+    def rate(samples, fields):
+        inside = [e for e in samples
+                  if start_us <= e["ts_us"] <= end_us and all(e.get(f) is not None for f in fields)]
+        if len(inside) < 2:
+            return None
+        # A process started again counts from 0, so a step down ends one life and adds nothing.
+        moved = sum(max(sum(b[f] - a[f] for f in fields), 0) for a, b in zip(inside, inside[1:]))
+        seconds = (inside[-1]["ts_us"] - inside[0]["ts_us"]) / 1_000_000
+        return moved / seconds if seconds > 0 else None
+
+    def total(logs, ev, fields):
+        rates = [rate([e for e in es if e["ev"] == ev], fields) for es in logs.values()]
+        rates = [r for r in rates if r is not None]
+        return sum(rates) if rates else float("nan")
+
+    nodes, clients = node_events(events), client_sources(events)
+    cloud = total(nodes, "udp_counters", ("rx_bytes", "tx_bytes"))
+    client = total(clients, "udp_counters", ("rx_bytes", "tx_bytes"))
+    seconds = (end_us - start_us) / 1_000_000
+    sends = [e for es in clients.values() for e in es if e["ev"] == "p2p_sent" and start_us <= e["ts_us"] <= end_us]
+    return {
+        "cloud_udp_bytes_per_s": cloud,
+        "cloud_net_bytes_per_s": total(nodes, "resource_usage", ("net_rx_bytes", "net_tx_bytes")),
+        "client_cloud_socket_bytes_per_s": client,
+        "cloud_udp_bytes_over_client": cloud / client if client > 0 else float("nan"),
+        "p2p_sends_per_s": len(sends) / seconds if seconds > 0 else float("nan"),
+        "p2p_tries_per_s": sum(e["tries"] for e in sends) / seconds if seconds > 0 else float("nan"),
+    }
 
 
 def sent_in_window(events, start_us):
@@ -1055,6 +1446,12 @@ def analyse_run(run_dir):
     metrics.update(refusal_metrics(events, start))
     metrics.update(convergence_metrics(events))
     metrics.update(presence_metrics(events, start))
+    metrics.update(p2p_metrics(events, start))
+    metrics.update(gossip_metrics(events, start))
+    metrics.update(offline_metrics(events, start))
+    metrics.update(claims_metrics(events, start))
+    metrics.update(workload_metrics(events, measured_s))
+    metrics.update(cloud_bytes_metrics(events, start, start + measured_s * 1_000_000))
     metrics.update(fault_election_metrics(events, start))
     metrics.update(message_metrics(events, start, len(done)))
     metrics.update(resource_metrics(events, start))
@@ -1206,7 +1603,8 @@ def clock_warnings(summary):
         if clients > CLIENT_CLOCK_SKEW_WARN_MS:
             warnings.append(
                 f"warning: {experiment}/{cell}: a client PC's clock was about {clients:.0f} ms from a node's, "
-                "so before_*, during_*, after_*, arrival_peak_* and priority_mean are off; say so"
+                "so before_*, during_*, after_*, arrival_peak_*, priority_mean, reconciliation_wait_* and "
+                "gossip_age_* (two client PCs, up to twice that) are off; say so"
             )
     return warnings
 
@@ -1343,6 +1741,78 @@ def plot_phases(plt, summary, out):
     plt.close(fig)
 
 
+def sweep_series(summary, experiment, metric):
+    """[(x, mean, half)] over one Phase 2 sweep's cells, by x: the last number in the cell's name, so "100",
+    "10" and "500ms" give users per PC, the chance offline and the claim delay (D434)."""
+    points = []
+    for (name, cell), metrics in summary.items():
+        numbers = re.findall(r"\d+", cell)
+        if name != experiment or not numbers or metric not in metrics:
+            continue
+        mean, half, _ = metrics[metric]
+        if not math.isnan(mean):
+            points.append((int(numbers[-1]), mean, 0.0 if math.isnan(half) else half))
+    return sorted(points)
+
+
+# The Phase 2 sweeps (D434, D447): experiment, file, x axis, log x, and panels of (title, unit, series).
+PHASE2_SWEEPS = (
+    ("ph2users", "ph2users_scale.png", "users per client PC", True, (
+        ("Report latency", "ms", (("p50_ms", "p50"), ("p95_ms", "p95"), ("p99_ms", "p99"))),
+        ("Throughput", "req/s", (("throughput_rps", "answered"),)),
+        ("Discovery latency p95", "ms", (("discover_client_p95_ms", "client"),)),
+        ("P2P latency p95", "ms", (("p2p_latency_p95_ms", "sender"),)),
+    )),
+    ("ph2offline", "ph2offline_reconciliation.png", "chance offline per minute (%)", False, (
+        ("Reconciliation delay", "ms", (("reconcile_mean_ms", "mean"), ("reconcile_max_ms", "max"))),
+        ("Peer updates held and dropped", "per run", (("peer_updates_held", "held"),
+                                                       ("peer_updates_dropped", "dropped"))),
+    )),
+    ("ph2conflict", "ph2conflict_claims.png", "responder's wait before claiming (ms)", False, (
+        ("Conflicts per claim", "share", (("claim_conflicts_per_claim", "node"),)),
+        ("Claim latency", "ms", (("claim_p50_ms", "p50"), ("claim_p95_ms", "p95"))),
+    )),
+)
+
+
+def plot_sweep(plt, summary, out, experiment, name, xlabel, log_x, panels):
+    """One Phase 2 sweep, one panel per figure, with no second y axis. Every panel has every cell on its x
+    axis, so a figure a cell lacks shows as a gap, as reconciliation does with no outages. No runs, no file."""
+    xs = sorted({x for _, _, series in panels for metric, _ in series
+                 for x, _, _ in sweep_series(summary, experiment, metric)})
+    if not xs:
+        return
+    if log_x:
+        margin = 10 ** (0.08 * (math.log10(xs[-1] / xs[0]) or 1))
+        limits = (xs[0] / margin, xs[-1] * margin)
+    else:
+        margin = 0.08 * ((xs[-1] - xs[0]) or 1)
+        limits = (xs[0] - margin, xs[-1] + margin)
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.3 * len(panels), 3.2), squeeze=False)
+    for ax, (title, unit, series) in zip(axes[0], panels):
+        drawn = 0
+        for color, (metric, label) in zip(SERIES, series):
+            points = sweep_series(summary, experiment, metric)
+            if not points:
+                continue
+            x, y, err = zip(*points)
+            drawn += 1
+            ax.errorbar(x, y, yerr=err, color=color, linewidth=2, elinewidth=1, marker="o", markersize=5,
+                        capsize=2, label=label)
+        if log_x:
+            ax.set_xscale("log")
+        ax.set_xticks(xs, [str(x) for x in xs])
+        ax.set_xlim(*limits)
+        ax.minorticks_off()
+        ax.set_ylim(bottom=0)
+        style(ax, title, xlabel, unit)
+        if drawn > 1:
+            ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out / name, dpi=160)
+    plt.close(fig)
+
+
 def write_plots(summary, out):
     import matplotlib
 
@@ -1352,6 +1822,8 @@ def write_plots(summary, out):
     plot_e1(plt, summary, out)
     plot_fairness(plt, summary, out)
     plot_phases(plt, summary, out)
+    for experiment, name, xlabel, log_x, panels in PHASE2_SWEEPS:
+        plot_sweep(plt, summary, out, experiment, name, xlabel, log_x, panels)
 
 
 def main():

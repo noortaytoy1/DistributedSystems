@@ -356,6 +356,11 @@ impl Lab {
 
     /// The real runner, on the one cell this lab has, with a short profile.
     fn run_the_cell(&self, more_env: &[(&str, &str)]) -> Output {
+        self.run_cell("e9-try", more_env)
+    }
+
+    /// The real runner on `cell`, which must be in this lab's `experiments/`, with a short profile.
+    fn run_cell(&self, cell: &str, more_env: &[(&str, &str)]) -> Output {
         let path = format!(
             "{}:{}",
             self.root.join("stubs").display(),
@@ -363,7 +368,7 @@ impl Lab {
         );
         Command::new("timeout")
             .args(["120", "bash", "scripts/run-experiments.sh"])
-            .args(["experiments/hosts", "quick", "e9-try"])
+            .args(["experiments/hosts", "quick", cell])
             .current_dir(self.root.join("control"))
             .env("PATH", path)
             .env("FAKE_LAB", &self.root)
@@ -480,6 +485,42 @@ fn a_whole_cell_runs_over_ssh_and_stops_everything_it_started() {
         r#"refuse_leftovers "$ALL_PROGRAMS" 10"#,
     );
     assert!(stopped.status.success(), "{stopped:?}");
+}
+
+/// A Phase 2 cell names its users per client machine, so the same cell means the same load per PC
+/// on two machines as on three (D446). This lab has three.
+#[test]
+fn users_per_pc_gives_each_client_machine_that_many_users() {
+    let lab = Lab::new();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cell = fs::read_to_string(repo.join("experiments/e3e4-300-follower.toml")).unwrap();
+    let (_, settings) = cell.split_once('\n').unwrap();
+    fs::write(
+        lab.root.join("control/experiments/e9-per.toml"),
+        format!("# run: users_per_pc=2 think_ms=200\n{settings}"),
+    )
+    .unwrap();
+
+    let run = lab.run_cell("e9-per", &[]);
+
+    assert!(run.status.success(), "{run:?}");
+    let meta = fs::read_to_string(lab.root.join("control/runs/e9/per/run-1/run.json")).unwrap();
+    assert!(
+        meta.contains(r#""users":6,"#),
+        "2 users on each of 3 machines: {meta}"
+    );
+    let clients = fs::read_dir(lab.root.join("control/runs/e9/per/run-1"))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("client-") && name.ends_with(".jsonl")
+        })
+        .count();
+    assert_eq!(
+        clients, 6,
+        "one program per user, 2 on each machine: {run:?}"
+    );
 }
 
 /// The analysis counts every run.json it finds, so a batch that stops halfway must leave none, not

@@ -1,0 +1,365 @@
+% ==============================================================================================
+\section{Results}
+\label{sec:results}
+% DRAFT (Noor). The methodology is written; every number is a \tbd{} until the full series runs.
+% Numbers are typed from docs/phase2-results.md, which is generated from analysis/analyze.py over
+% runs/ph2*/ (D266, D450). Each owner checks the numbers of their own scenario (plan section 10).
+% Metric names below are summary.csv names where the analysis has them already (Part G's and
+% Phase 1's); the others name the events they come from, for the Phase 2 analysis to add.
+
+All results in this section come from the six lab PCs, on the final Phase 2 build, with 5 runs per cell under the full profile, unless a table says otherwise. Section~\ref{sec:method} describes how the runs were made and counted.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Every run, in total.}
+\label{tab:totals}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & Phase 2 cells & Phase 1 scenarios again \\
+\midrule
+Runs & \tbd{} & \tbd{} \\
+Simulated users, most at once & \tbd{} & \tbd{} \\
+Requests sent & \tbd{} & \tbd{} \\
+Answered & \tbd{} & \tbd{} \\
+Gave up after all retries & \tbd{} & \tbd{} \\
+Unaccounted for & \tbd{} & \tbd{} \\
+Phase 2 actions & \tbd{} & -- \\
+Digest checkpoints compared & \tbd{} & \tbd{} \\
+Digest mismatches & \tbd{} & \tbd{} \\
+Directory digest mismatches & \tbd{} & -- \\
+Claims digest mismatches & \tbd{} & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor): runs = run.json files the analysis kept; users = client_users at the 5,000 cell;
+% requests, answered, gave up: count + gave_up summed over runs; Phase 2 actions = the sum of each
+% program's workload_done counts; digest checkpoints and mismatches: digest_checkpoints_compared,
+% digest_mismatches; directory_digest_mismatches; claims: claims_state digests at equal last_applied
+% (to add). TODO(Noor): "unaccounted" needs a per-request check the Phase 2 analysis does not have
+% yet (Phase 1 had it in its own scripts); add it or drop the row.
+
+The checks that must always hold are 0 requests unaccounted for and 0 digest mismatches, for the whole state, for the directory and for the claims.
+
+\subsection{Experimental methodology}
+\label{sec:method}
+
+Figure~\ref{fig:pipeline} shows how an experiment runs, from a cell's definition to the tables in this report. It is the Phase 1 process, with the Phase 2 workload switched on.
+
+\begin{figure}[!htb]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm, every node/.style={font=\scriptsize}]
+  \node[box, fill=white, text width=2.5cm] (cell) at (0,0) {\textbf{A cell}\\ users per PC, outage chance, claim delay};
+  \node[box, fill=mwgreen!12, text width=2.8cm] (run) at (3.5,0) {\textbf{Experiment runner}\\ a script over SSH from client PC 1};
+  \node[nodebox, text width=2.4cm] (nodes) at (7.4,1.0) {3 cloud nodes\\ one config, wiped state};
+  \node[clientbox, text width=2.4cm] (clients) at (7.4,-1.0) {3 client PCs\\ 10 load programs each};
+  \node[box, fill=libgray!10, text width=2.8cm] (logs) at (11.0,0) {\textbf{One folder per run}\\ every log and outbox, the config, the commit, the final status};
+  \node[box, fill=apppurple!10, text width=2.6cm] (an) at (11.0,-2.6) {\textbf{Analysis}\\ Python: percentiles, 95\% intervals};
+  \node[box, fill=notefill, text width=2.6cm] (rep) at (7.4,-3.2) {a results record, then the tables in this report};
+  \draw[flow] (cell) -- (run);
+  \draw[flow] (run) -- node[elabel, above, sloped]{start} (nodes);
+  \draw[flow] (run) -- node[elabel, below, sloped]{start} (clients);
+  \draw[flow] (clients) -- node[elabel, right]{calls} (nodes);
+  \draw[flow] (nodes.east) -- (logs.north west);
+  \draw[flow] (clients.east) -- (logs.south west);
+  \draw[flow] (logs) -- (an);
+  \draw[flow] (an) -- (rep);
+\end{tikzpicture}
+\caption{How a Phase 2 experiment runs. The runner refuses to start if any RescueMesh program is left running on any PC, and marks a run complete only when all its logs are in, so a stopped batch leaves nothing half-counted. Outages come from the load programs themselves; the runner injects no node faults in these cells.}
+\label{fig:pipeline}
+\end{figure}
+
+\textbf{The cells.} Table~\ref{tab:cells} lists the nine cells, in three sweeps. The first sweep grows the number of users, for discovery, gossip and scale. The second raises the chance of an outage, for offline operation. The third raises the injected claim delay, for conflicts. The second and third run at 1,000 users per client PC, and each sweep has a cell with nothing raised, so it carries its own baseline.
+% CONFIRM(Noor): against experiments/phase2.list on part-l-experiments (ph2users-100, -1000,
+% -5000; ph2offline-0, -10, -30; ph2conflict-0ms, -500ms, -2000ms). The run line's users key is the
+% total over the 3 client PCs (300, 3,000, 15,000). Check the think time and pattern of the
+% offline and conflict cells, and the programs per PC.
+
+\begin{table}[!htb]
+\centering\small
+\caption{The Phase 2 experiment cells. Users are per client PC and are split over its 10 load programs. Every cell runs the lifecycle, with think times drawn at random between 0 and 2 s, and every outage lasts 20 s.}
+\label{tab:cells}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+Sweep & Cell & Users per PC & Users in all & Outage chance a minute & Claim delay, ms \\
+\midrule
+Users & 100 users & 100 & 300 & 0\% & 0 \\
+ & 1,000 users & 1,000 & 3,000 & 0\% & 0 \\
+ & 5,000 users & 5,000 & 15,000 & 0\% & 0 \\
+\midrule
+Offline & 0\% a minute & 1,000 & 3,000 & 0\% & 0 \\
+ & 10\% a minute & 1,000 & 3,000 & 10\% & 0 \\
+ & 30\% a minute & 1,000 & 3,000 & 30\% & 0 \\
+\midrule
+Conflict & no delay & 1,000 & 3,000 & 0\% & 0 \\
+ & 500 ms & 1,000 & 3,000 & 0\% & 500 \\
+ & 2,000 ms & 1,000 & 3,000 & 0\% & 2,000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Profiles.} Each cell runs under one of two profiles. The \emph{quick} profile, used for tuning, is 3 runs per cell, each with 15 s of warm-up and 60 s measured. The \emph{full} profile, which every table in this section uses unless it says otherwise, is 5 runs per cell, each with 30 s of warm-up and 120 s measured.
+% CONFIRM(Noor): mark any table typed from quick runs in its caption.
+
+\begin{itemize}
+  \item \textbf{Design.} The nine cells ran one after another on 26 November 2026, each cell's three runs back to back, from 18:08 to 19:36 (88 minutes), under the quick profile. The full profile and the Phase~1 scenarios are to be run on the final build after the integration day.
+  % FILL (Noor): the order of the runs (each cell once per pass, then the pass repeated, as in
+  % Phase 1, or cell by cell), the dates, and how long the series took.
+  \item \textbf{Load.} Closed loop: each user waits a think time between its actions, drawn at random between 0 and 2 s, so the load grows with the number of users, not with a set rate. The cloud's capacity at a set rate was measured in Phase 1. Every client PC runs 10 load programs, and its users are split evenly over them. Each program has its own seed in each run (Section~\ref{sec:workload}).
+  \item \textbf{Settings.} One commit built on all six PCs, with the nodes' stored state wiped before each run. Leases of 10 s, with 5 s of grace and a tick every second; gossip with a fan-out of 3 and at most 7 forwards; peer ports 20000 to 20999 on the client PCs. Everything else as in the Phase 1 final runs: \tbd{}.
+  % FILL (Noor): planning work, responders, planning threads, bid window, detection time, score.
+  \item \textbf{Measured.} The warm-up of each run is left out. Every duration comes from one machine's monotonic timer. That covers discovery on the client and on the node; write and claim latency at the proposing node; convergence, each node's own wait; the peer-to-peer round trip on the sender, retries included; and the reconciliation delay on the returning client, from the start of its resend to the last answer. Report latency is measured on the client's clock, from when a report was due to go, as in Phase 1.
+  \item \textbf{Two clocks.} A few figures compare two machines' clocks. They are flagged where they appear: the age of a zone update when it arrives, the time a reconciliation entry waited before its owner resolved it, and the age of a held update when another program delivers it. They are given beside the clock skew measured from the traffic, and no target is judged from them.
+  \item \textbf{Statistics.} Means across runs with 95\% confidence intervals by Student's $t$; percentiles over all events of a run, then averaged over the runs. A maximum, a small count, or a count that stays at 0 gets no interval: the total over runs, or the worst run, is given instead.
+  \item \textbf{Runs left out.} The analysis names and leaves out a run with missing programs or logs, or a damaged log. None of the 27 runs was left out.
+  \item \textbf{The lab network.} Two node PCs and two client PCs shared one Wi-Fi subnet. The third node PC and the first client PC were on other Wi-Fi subnets that the first could not reach, so they took part through their wired addresses, which every PC could reach. The client PCs' receive buffers were at the operating system's default for this series.
+  \item \textbf{Analysis.} At 1,000 users per client PC a program logs about 1.4 million lines in a run, almost all of them one line per peer-to-peer copy, far more than one PC's memory holds at once. Each log was therefore read once, as a stream, with every figure defined as in the analysis of Phase~1; on a small run both ways gave the same figures. A separate pass checked every report: sent, answered or given up, or unaccounted for.
+  % FILL (Noor): how many runs were left out, and why.
+\end{itemize}
+
+\textbf{Raw data.} The raw logs of every run, from every program and every node, are kept on the lab PCs. The per-run and per-cell figures behind every table in this report are published with the project \cite{repo}.
+% CONFIRM(Noor): true once the results record and summary files are committed.
+
+\subsection{Peer discovery: scenario 5}
+\label{sec:s5}
+
+Simulated users register with the presence directory and look each other up by zone and by capability, at three sizes. Table~\ref{tab:s5} gives how long a discovery took, how long a registration took to show on every node, and whether the three directories ever differed.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 5: discovery and presence convergence, by users per client PC, 5 runs per row. Discovery is timed by the client, retries included, and by the node, from a call's arrival to its answer. Convergence is, for each registration, the slowest node's own wait from the call arriving to its directory showing it.}
+\label{tab:s5}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}rR{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.6cm}@{}}
+\toprule
+Users per PC & Discovery, client p50, ms & Discovery, client p99, ms & Discovery, node p50, ms & Register p50, ms & Converged p50, ms & Converged p99, ms & Directory mismatches \\
+\midrule
+100 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+1,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+5,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Omar): the ph2users cells. discover_client_p50_ms, discover_client_p99_ms,
+% discover_node_p50_ms, presence_register_p50_ms, presence_convergence_p50_ms,
+% presence_convergence_p99_ms, directory_digest_mismatches (a count: total over runs, no interval).
+% Text under the table: presence_writes_seen_by_all against _by_some, directory_records_max,
+% directory_expired, presence_renew_p50_ms. Discovery on the client also includes the gossip
+% agent's own zone lookups (discovered events); say so if the two are not split.
+% TODO(Noor): the analysis's directory_states_compared counts every index, not the ones two nodes
+% logged (read-analysis.md); fix it before quoting it.
+
+\subsection{Direct P2P exchange: scenario 6}
+\label{sec:s6}
+
+Programs send updates to each other directly, and every committed report spreads through its zone by gossip. Table~\ref{tab:s6} gives the peer link's round trip and how well the gossip covered each zone, at what cost. Table~\ref{tab:s6cloud} compares the cloud's own traffic with the peer traffic, to show the cloud is not on the peer path.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 6: the peer link and zone gossip, by users per client PC, 5 runs per row. The round trip is timed by the sender, from the first try to the acknowledgement. Coverage is the share of a zone's programs that an update reached.}
+\label{tab:s6}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}rR{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}@{}}
+\toprule
+Users per PC & Round trip p50, ms & Round trip p99, ms & Acknow\-ledged & Coverage & Duplicates per delivery & Sends per update & Hops, mean \\
+\midrule
+100 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+1,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+5,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Wahiba and Yahia): the ph2users cells. Round trip: p2p_sent.latency_us;
+% acknowledged: share of p2p_sent with ack accepted or duplicate; duplicates per delivery:
+% p2p_received duplicate plus gossip_received duplicate, over gossip_received new; sends per
+% update: p2p_sent lines per gossip update (or gossip_published.targets plus
+% gossip_received.forwarded); coverage: distinct receivers with gossip_received new, plus the
+% origin, over the zone's programs (the denominator is not logged; gossip_zone_refreshed.programs
+% is a capped proxy: say which); hops: gossip_received.hops. Obsolete and not-subscribed copies
+% go in the text, counted apart. If the time to reach is quoted, it is gossip_received.age_ms:
+% two clocks, give client_clock_skew_ms beside it (D233).
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 6: the cloud's client-port traffic against the peer traffic, by users per client PC, 5 runs per row. If peer updates passed through the cloud, its bytes per call would grow with them.}
+\label{tab:s6cloud}
+\begin{tabular}{@{}rR{1.9cm}R{1.9cm}R{1.9cm}R{1.9cm}R{1.9cm}@{}}
+\toprule
+Users per PC & Reports answered a second & Peer updates sent a second & Cloud bytes in, KB a second & Cloud bytes out, KB a second & Cloud bytes in per call \\
+\midrule
+100 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+1,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+5,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Wahiba): throughput_rps; p2p_sent per second; the nodes' udp_counters
+% rx_bytes and tx_bytes deltas over the measured window, and rx_bytes per rx_requests (D435).
+% Cross-check: the nodes' rx_bytes against the client programs' cloud-socket tx_bytes. Peer bytes
+% are not logged (each program's peer counters are read only by tests), so peer traffic is
+% counted in messages. TODO(Noor): one figure, cloud bytes and peer updates over time in one run
+% (D435), drawn by the Phase 2 plotting script into figures/.
+
+\subsection{Offline peer: scenario 7}
+\label{sec:s7}
+
+Programs go offline at random for 20 s, keep working, and reconcile when they return. Table~\ref{tab:s7} gives what happened to the reports made offline, and Table~\ref{tab:s7held} what happened to the peer updates held for later and to the claims made offline.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 7: reports made offline, by the chance of an outage a minute, 1,000 users per client PC, 5 runs per row. The reconciliation delay is timed by the returning program, from the start of its resend to the last answer.}
+\label{tab:s7}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}R{1.5cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.6cm}R{1.6cm}@{}}
+\toprule
+Outage chance a minute & Offline share, measured & Outages & Reports queued & Answered on return & Expired & Reconciliation p50, ms & Reconciliation p99, ms \\
+\midrule
+0\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+10\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+30\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Aabed): the ph2offline cells. Offline share: the sum of
+% client_online.offline_ms over programs, over programs times the run's length; outages: count of
+% client_offline (or workload_done.outages); queued: outbox_queued; answered and expired:
+% outbox_sent outcome; reconciliation: outbox_flushed.reconcile_us p50 and p99 (one clock). Per
+% report, outbox_sent.waited_ms. Expected offline share about chance x 20 s / 60 s (Section 8).
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 7: peer updates held for later, and claims made offline, by the chance of an outage a minute, 5 runs per row. An update is dropped when it gets too old, when its peer has too many held, when a newer version replaces it, or when the peer refuses it.}
+\label{tab:s7held}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}R{1.5cm}R{1.25cm}R{1.25cm}R{1.25cm}R{1.25cm}R{1.25cm}R{1.25cm}R{1.25cm}R{1.4cm}@{}}
+\toprule
+Outage chance a minute & Updates held & Delivered later & Dropped, too old & Dropped, limit & Dropped, obsolete & Dropped, refused & Claims queued & Reconciling on return \\
+\midrule
+0\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+10\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+30\% & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Aabed and Ahmed): peer_update_held, peer_update_forwarded,
+% peer_update_dropped by reason (age, limit, obsolete, refused), claim_queued, and the sum of
+% claims_flushed.reconciling. Counts: totals over runs or means without an interval when small.
+% peer_update_forwarded.since_made_ms compares two clocks when the holder did not make the update.
+
+\subsection{Conflicting claim: scenario 8}
+\label{sec:s8}
+
+Responders claim the resources they have heard of, and claim on older news as the injected delay grows. Table~\ref{tab:s8} gives how often a claim conflicted, of each kind, and how long a claim took.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 8: claims and conflicts, by the injected claim delay, 1,000 users per client PC, 5 runs per row. A claim over capacity from an online responder is refused at once; one first made offline opens a reconciliation entry. Claim latency is timed by the proposing node, from the call's arrival to its commit.}
+\label{tab:s8}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}rR{1.45cm}R{1.45cm}R{1.6cm}R{1.6cm}R{1.45cm}R{1.45cm}R{1.45cm}@{}}
+\toprule
+Claim delay, ms & Claims a second & Granted & Refused online, per 1,000 claims & Reconciling, per 1,000 claims & Claim p50, ms & Claim p99, ms & Claims mismatches \\
+\midrule
+0 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+500 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+2,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor, checked by Ahmed): the ph2conflict cells. claim_write with kind claim, by outcome;
+% claim_conflict by kind (online_refused, reconciliation_opened) per 1,000 claims; claim_write
+% latency_us p50 and p99 (one clock, the proposer); claims mismatches: claims_state digests at
+% equal last_applied (a count). Also: releases and stale releases, claims_state.reconciling at the
+% end (entries the load leaves open, Section 8), and the client-side claim outcomes from each
+% program's workload_done counts. The proposer-only events are lost if the proposer stops serving
+% after the commit; claims_state's cumulative counters are the cross-check.
+% TODO(Noor): the conflict cells have no outages, so their reconciliation entries come only from
+% claims queued after a timeout; the offline conflicts are in the ph2offline cells (tab:s7held).
+% Either give the conflict cells an outage chance, or quote the offline cells' claim rows here.
+
+\textbf{The deliberate conflict.} The page stages it with three of its own users: one offers a single unit, one claims it online, and one claims it while the page is offline. Rehearsed on three nodes on one PC with load running: the online claim was granted, the offline claim was queued, and on return it opened a reconciliation entry instead of a silent refusal. The owner resolved it once for the challenger, which took the unit from the incumbent, and once, in a second staging, for the incumbents, which changed nothing. Each answer named the log index the resolve committed at. The lab rehearsal is on the integration day.
+% FILL (Noor, checked by Ahmed): the page's staged conflict on the lab PCs (Section 8): the
+% incumbent's grant, the queued claim, the reconciliation entry and its token on return, the
+% owner's resolve (resolved at log index N), and the time the entry was open. On one clock that is
+% the resolving node's reconciliation_resolved minus its claim_conflict reconciliation_opened;
+% reconciliation_resolved.wait_ms compares two clocks (D378): give the skew beside it.
+
+\subsection{Scale and stress with P2P: scenario 9}
+\label{sec:s9}
+
+The number of users grows from 100 to 5,000 per client PC, with every part of Phase 2 working at once. Table~\ref{tab:s9} gives the throughput and latency of reports, and Table~\ref{tab:s9res} the CPU, memory, network and queues on the nodes and the client PCs.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 9: throughput and latency as users grow, with the peer-to-peer traffic on, 5 runs per row. Latency is measured on the client's clock, from when a report was due to go.}
+\label{tab:s9}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}rR{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.6cm}@{}}
+\toprule
+Users per PC & Users in all & Reports answered a second & Gave up & p50, ms & p95, ms & p99, ms & Phase 2 actions a second \\
+\midrule
+100 & 300 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+1,000 & 3,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+5,000 & 15,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/ph2users_scale.png}
+\caption{Scenario 9: report latency, throughput, discovery latency and peer-to-peer latency as users grow, mean of 3 runs per point under the quick profile.}
+\label{fig:s9}
+\end{figure}
+% FILL (Noor): the ph2users cells. throughput_rps, gave_up (a count), p50_ms, p95_ms, p99_ms;
+% Phase 2 actions a second from each program's workload_done counts over measured_s. Users in all
+% from client_users (check it matches the run line). Also in the text: the directory's renewal
+% load (about 0.3 commands a second per user, Section 8) against the reports.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Scenario 9: CPU, memory, network and queues. Node columns are means per node, except the highest values; client PC columns come from one sampling program per PC.}
+\label{tab:s9res}
+\footnotesize\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}rR{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.45cm}R{1.6cm}R{1.6cm}@{}}
+\toprule
+Users per PC & Node cores & Node cores, highest & Node memory, MB & Node network, MB/s & Queued, highest & Client PC CPU busy, p95 & Client PC memory free, lowest, MB \\
+\midrule
+100 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+1,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+5,000 & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+% FILL (Noor): cpu_cores_mean, the highest per-node value, rss_mb_max, net_bytes_per_s_mean (the
+% whole node PC, all traffic), queued_max, client_pc_cpu_busy_p95, client_pc_mem_available_min_mb.
+% The client PCs log no network or queue gauges of their own (no outbox or held-update gauge):
+% say so, or add one before the series.
+
+\subsection{Phase 1 scenarios on the Phase 2 build}
+\label{sec:regression}
+
+Phase 2 must not break Phase 1. The five Phase 1 scenarios are run again on the final Phase 2 build, with the lifecycle switched off. They are run the same way as in Phase 1, so the two builds are compared like with like (Table~\ref{tab:regression}).
+% TODO(Noor): choose and name the runs. The Phase 1 numbers came from the Phase 1 series runner
+% (open loop at set rates, planning work 0 and 1000), not from the generic cells; rerun the same
+% steps, at least the ones quoted below, or say what was run instead (read-runner.md).
+
+\begin{table}[!htb]
+\centering\small
+\caption{The Phase 1 scenarios on the Phase 2 build. The Phase 1 column is quoted from the Phase 1 report.}
+\label{tab:regression}
+\begin{tabularx}{\linewidth}{@{}P{2.4cm}LLp{1.1cm}@{}}
+\toprule
+Scenario & Phase 1 build \cite{phase1} & Phase 2 build & Same \\
+\midrule
+1. Normal cloud operation & Each node won 31.4\% to 34.5\% of the work at every load from 1,000 to 9,000 reports a second & \tbd{} & \tbd{} \\
+2. Load imbalance & The slowed node's share fell from 33.4\% to 4.9\% and came back to 33.3\% & \tbd{} & \tbd{} \\
+3. Server failure & The others went on without the silent node in about 1.04 s; nobody gave up up to 20,000 a second & \tbd{} & \tbd{} \\
+4. Server recovery & A full member again 0.8 s to 10.5 s after the fault, up to 20,000 a second; one digest at the end in all 45 runs & \tbd{} & \tbd{} \\
+9. Scale and stress & Held 12,000 reports a second with the planning load, and 30,000 with almost none & \tbd{} & \tbd{} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% FILL (Noor): share_node_<n> and the bid metrics per step (1); the slowed node's share before,
+% during and after (2); failover_gap_ms_max_worst_run and client_gap_pc_max_ms_worst_run, gave_up
+% (3); recovery_mean_ms and one digest at the end (4); throughput_rps, gave_up and p99_ms at the
+% rates quoted (9); with node_clock_skew_ms and client_clock_skew_ms beside any two-clock figure.

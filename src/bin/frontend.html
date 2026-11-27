@@ -135,6 +135,10 @@ tr.stale td { color: var(--muted); }
   main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   section { max-height: none; }
 }
+.node-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.node-column { border: 1px solid var(--line); border-radius: 6px; padding: 6px; min-width: 0; overflow-wrap: anywhere; }
+.node-column h3 { margin: 0 0 4px; font-size: 12px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -193,6 +197,44 @@ tr.stale td { color: var(--muted); }
     </div>
   </section>
 
+  <section id="offline-panel" aria-label="Offline switch">
+    <h2>Offline switch</h2>
+    <p class="small">Takes this page's client offline: reports wait in its outbox and go out, with their own IDs, when it is back.</p>
+    <button id="offline-toggle" type="button">Go offline</button>
+    <div id="offline-state" class="small line"></div>
+    <div id="offline-result" class="small line"></div>
+  </section>
+
+  <section id="directory-panel" aria-label="Who is online">
+    <h2>Who is online</h2>
+    <p class="small">Asks each node's directory on its own and shows the answers side by side (scenario 5).</p>
+    <form id="directory-form">
+      <label>Zone <select id="directory-zone"></select></label>
+      <label>or capability <select id="directory-capability"></select></label>
+      <button id="directory-ask" type="submit">Ask all three nodes</button>
+    </form>
+    <div id="directory-line" class="small line"></div>
+    <div class="scroll"><div id="directory-nodes" class="node-columns"></div></div>
+  </section>
+
+  <section id="zones-panel" aria-label="Zone updates">
+    <h2>Zone updates</h2>
+    <form id="follow-form">
+      <label>Zone <select id="follow-zone"></select></label>
+      <button id="follow-send" type="submit">Follow</button>
+    </form>
+    <div id="follow-line" class="small line"></div>
+    <div id="zone-updates" class="scroll"></div>
+  </section>
+
+  <section id="conflicts-panel" aria-label="Conflicting claim">
+    <h2>Conflicting claim</h2>
+    <p class="small">Plays scenario 8 with three users of this page: one offers a single unit, one claims it online, one claims it while the page is offline. Back online, the late claim opens a reconciliation entry that the offer's owner resolves here.</p>
+    <button id="conflict-stage" type="button">Stage a conflict</button>
+    <div id="conflicts-line" class="small line"></div>
+    <div id="conflicts-list" class="scroll"></div>
+  </section>
+
 </main>
 
 <script>
@@ -202,6 +244,7 @@ const STATUS_TIMEOUT_MS = 2000;
 const STATUS_PAUSE_MS = 500;
 const UNREACHABLE_AFTER_MS = 3000;
 const LOAD_POLL_MS = 1000;
+const CONFLICTS_POLL_MS = 5000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -255,6 +298,12 @@ function renderCard(r) {
   const card = el("article", "card");
   if (!r.ok) {
     card.append(el("div", "banner red", r.error));
+    return card;
+  }
+  if (r.queued) {
+    card.append(el("div", "banner amber", "QUEUED: offline, it goes out when the client is back"));
+    card.append(el("p", "", "Request " + r.request + ", kept in the outbox"));
+    card.append(el("p", "muted small", "Zone " + r.zone + ", severity " + r.severity + ", " + r.needs + ", from user " + r.who + ", valid for " + r.valid_for_s + " s"));
     return card;
   }
   if (r.provisional) {
@@ -463,6 +512,184 @@ async function stopLoad() {
   }
 }
 
+// --- offline switch
+
+let offline = false;
+
+function renderOffline(data) {
+  offline = data.offline;
+  $("offline-toggle").textContent = offline ? "Come back online" : "Go offline";
+  $("offline-state").textContent = (offline ? "OFFLINE. " : "Online. ") + plural(data.queued, "report") + " in the outbox, "
+    + plural(data.held_updates, "peer update") + " held.";
+  if (data.reconciled) {
+    const r = data.reconciled;
+    $("offline-result").textContent = "Back: sent " + r.sent + ", answered " + r.answered + ", expired " + r.expired
+      + ", no answer " + r.failed + ", in " + r.took_ms + " ms.";
+  }
+}
+
+async function pollOffline() {
+  try {
+    const data = await call("GET", "/api/offline", null, STATUS_TIMEOUT_MS);
+    if (data.ok) renderOffline(data);
+  } catch (error) {
+    // The local banner already says the program is not answering.
+  } finally {
+    setTimeout(pollOffline, LOAD_POLL_MS);
+  }
+}
+
+async function toggleOffline() {
+  $("offline-toggle").disabled = true;
+  $("offline-result").textContent = offline ? "Coming back and sending the outbox..." : "";
+  try {
+    const data = await call("POST", "/api/offline/set", { on: offline ? "false" : "true" });
+    if (data.ok) renderOffline(data); else $("offline-result").textContent = data.error;
+  } catch (error) {
+    $("offline-result").textContent = "Local program not answering.";
+  } finally {
+    $("offline-toggle").disabled = false;
+  }
+}
+
+// --- directory
+
+async function askDirectory(event) {
+  event.preventDefault();
+  const params = $("directory-capability").value
+    ? { capability: $("directory-capability").value }
+    : { zone: $("directory-zone").value };
+  $("directory-line").textContent = "Asking each node...";
+  $("directory-ask").disabled = true;
+  try {
+    const data = await call("GET", "/api/directory", params);
+    if (!data.ok) {
+      $("directory-line").textContent = data.error;
+      $("directory-nodes").replaceChildren();
+      return;
+    }
+    $("directory-line").textContent = data.verdict;
+    $("directory-nodes").replaceChildren(...data.nodes.map((n) => {
+      const column = el("div", "node-column");
+      column.append(el("h3", "", "Node " + n.node));
+      if (!n.answered) {
+        column.append(el("div", "small", n.note));
+        return column;
+      }
+      column.append(el("div", "small", plural(n.records.length, "user") + ", read at log index " + n.log_index
+        + ", in " + (n.latency_us / 1000).toFixed(1) + " ms"));
+      for (const r of n.records) {
+        column.append(el("div", "small", r.user + " " + r.role + ", zone " + r.zone
+          + (r.capabilities.length ? ", " + r.capabilities.join(", ") : "")));
+      }
+      return column;
+    }));
+  } catch (error) {
+    $("directory-line").textContent = "Local program not answering.";
+  } finally {
+    $("directory-ask").disabled = false;
+  }
+}
+
+// --- zone updates
+
+async function followZone(event) {
+  event.preventDefault();
+  $("follow-line").textContent = "Joining a user in zone " + $("follow-zone").value + "...";
+  try {
+    const data = await call("POST", "/api/zone/follow", { zone: $("follow-zone").value });
+    if (data.ok) renderUpdates(data); else $("follow-line").textContent = data.error;
+  } catch (error) {
+    $("follow-line").textContent = "Local program not answering.";
+  }
+}
+
+function renderUpdates(data) {
+  $("follow-line").textContent = data.followed.length
+    ? "Following zone " + data.followed.join(", ") + ". " + plural(data.updates.length, "update") + " kept, newest first."
+    : "Not following a zone.";
+  $("zone-updates").replaceChildren(...data.updates.map((u) => el("p", "small",
+    "Zone " + u.zone + ", " + u.kind + ": " + u.text + " (from user " + u.from + ", " + plural(u.hops, "hop") + ")")));
+}
+
+async function pollUpdates() {
+  try {
+    const data = await call("GET", "/api/zone/updates", null, STATUS_TIMEOUT_MS);
+    if (data.ok && data.followed.length) renderUpdates(data);
+  } catch (error) {
+    // The local banner already says so.
+  } finally {
+    setTimeout(pollUpdates, LOAD_POLL_MS);
+  }
+}
+
+// --- conflicts
+
+// The list is redrawn only when it changed, so a poll never swaps a button under a click.
+let shownConflicts = "";
+
+function renderConflicts(data) {
+  const shown = JSON.stringify(data.items);
+  if (shown === shownConflicts) return;
+  shownConflicts = shown;
+  $("conflicts-line").textContent = data.items.length
+    ? plural(data.items.length, "conflict") + " staged by this page, newest first."
+    : "None staged yet.";
+  $("conflicts-list").replaceChildren(...data.items.map((c) => {
+    const box = el("article", "card");
+    box.append(el("div", "", "Resource " + c.resource + ": owner " + c.owner + ", incumbent " + c.incumbent
+      + ", challenger " + c.challenger));
+    for (const step of c.steps) box.append(el("div", "small", step));
+    if (c.resolved) {
+      box.append(el("div", "small line", c.resolved));
+    } else if (c.token !== null) {
+      const row = el("div", "actions");
+      for (const [winner, label] of [["challenger", "Challenger wins"], ["incumbents", "Keep incumbents"]]) {
+        const button = el("button", "", label);
+        button.type = "button";
+        button.addEventListener("click", () => resolveConflict(c, winner));
+        row.append(button);
+      }
+      box.append(row);
+    }
+    return box;
+  }));
+}
+
+async function stageConflict() {
+  $("conflict-stage").disabled = true;
+  $("conflicts-line").textContent = "Offering, claiming, going offline and coming back...";
+  try {
+    const data = await call("POST", "/api/conflicts/stage");
+    if (data.ok) renderConflicts(data);
+    else $("conflicts-line").textContent = data.error + (data.steps ? " " + data.steps.join(" ") : "");
+  } catch (error) {
+    $("conflicts-line").textContent = "Local program not answering.";
+  } finally {
+    $("conflict-stage").disabled = false;
+  }
+}
+
+async function resolveConflict(c, winner) {
+  try {
+    const data = await call("POST", "/api/conflicts/resolve", { provider: c.provider, seq: c.seq, token: c.token, winner });
+    if (data.ok) renderConflicts(data); else $("conflicts-line").textContent = data.error;
+  } catch (error) {
+    $("conflicts-line").textContent = "Local program not answering.";
+  }
+}
+
+async function pollConflicts() {
+  try {
+    const data = await call("GET", "/api/conflicts", null, STATUS_TIMEOUT_MS);
+    if (data.ok) renderConflicts(data);
+  } catch (error) {
+    // The local banner already says so.
+  } finally {
+    setTimeout(pollConflicts, CONFLICTS_POLL_MS);
+  }
+}
+
 // --- start
 
 async function start() {
@@ -504,8 +731,19 @@ async function start() {
   $("load-form").addEventListener("submit", startLoad);
   $("load-stop").addEventListener("click", stopLoad);
 
+  setOptions($("directory-zone"), zones);
+  setOptions($("directory-capability"), [["", "(by zone)"], ...info.capabilities.map((c) => [c, c])]);
+  setOptions($("follow-zone"), zones);
+  $("offline-toggle").addEventListener("click", toggleOffline);
+  $("directory-form").addEventListener("submit", askDirectory);
+  $("follow-form").addEventListener("submit", followZone);
+  $("conflict-stage").addEventListener("click", stageConflict);
+
   pollStatus();
   pollLoad();
+  pollOffline();
+  pollUpdates();
+  pollConflicts();
 }
 
 start();

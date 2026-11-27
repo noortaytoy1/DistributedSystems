@@ -64,9 +64,9 @@ use crate::p2p::{Delivered, PeerError, PeerLink};
 use crate::presence::{self, Discovered, Presence, PresenceError};
 use crate::proto::{
     Capability, ClaimReply, ClientId, ClientReply, ClientRequest, ClientRpcClient, CommittedResult,
-    ControlReply, ControlRequest, Incident, IncidentStatus, MAX_DISCOVER_RECORDS, NodeId, P2pAck,
-    P2pBody, P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReconciliationWinner, ReplyBody,
-    RequestId, ResourceId, ResourceOffer, UserId, ZoneId,
+    ControlReply, ControlRequest, DiscoverReply, Incident, IncidentStatus, MAX_DISCOVER_RECORDS,
+    NodeId, P2pAck, P2pBody, P2pEnvelope, Plan, PresenceQuery, PresenceRole, ReconciliationWinner,
+    ReplyBody, RequestId, ResourceId, ResourceOffer, UserId, ZoneId,
 };
 
 /// Each wait varies by up to this share, in percent, so retries do not arrive together.
@@ -173,6 +173,21 @@ pub enum ClaimDelivery {
     NotQueued(String),
 }
 
+/// A claim of this client's that the cloud put into reconciliation when it was resent as
+/// speculative: `token` names the entry for the offer's owner to resolve (D376, D378, D444).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenReconciliation {
+    pub resource: ResourceId,
+    pub challenger: UserId,
+    pub token: u64,
+    /// The challenger's own clock when it first tried.
+    pub at_ms: u64,
+}
+
+/// How many of its reconciliation entries a client remembers (D444). A load program never reads
+/// them, so the list must not grow for good.
+pub const KEPT_RECONCILIATIONS: usize = 256;
+
 /// A request that got a reply.
 #[derive(Debug, Clone)]
 pub struct Submitted {
@@ -229,6 +244,9 @@ pub struct MeshClient {
     /// Claims first attempted while offline, resent as speculative on reconnect (Part J, D377).
     /// A second outbox of the reports' kind, so they survive a restart too (Part K, D414).
     claims_outbox: Outbox<QueuedClaim>,
+    /// This client's claims that went into reconciliation on reconnect, newest last, at most
+    /// [`KEPT_RECONCILIATIONS`] (D444).
+    reconciliations: std::sync::Mutex<std::collections::VecDeque<OpenReconciliation>>,
     /// Each stub's dispatch and the reporter. Dropped with the client, which aborts them.
     _tasks: JoinSet<()>,
 }
@@ -326,6 +344,7 @@ impl MeshClient {
             outbox: Outbox::new(Outbox::path_for(config.metrics.dir.as_deref(), id)),
             offline_since: std::sync::Mutex::new(None),
             claims_outbox: Outbox::new(Outbox::claims_path_for(config.metrics.dir.as_deref(), id)),
+            reconciliations: std::sync::Mutex::new(std::collections::VecDeque::new()),
             _tasks: tasks,
         }
     }
@@ -722,6 +741,29 @@ impl MeshClient {
         .await
     }
 
+    /// This client's claims that went into reconciliation when they were resent on reconnect,
+    /// oldest first: what the offer's owner needs to resolve one (D378, D444). Nothing in the cloud
+    /// lists these entries to clients, so a program learns only of its own.
+    pub fn reconciliations(&self) -> Vec<OpenReconciliation> {
+        self.reconciliations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    fn remember_reconciliation(&self, entry: OpenReconciliation) {
+        let mut kept = self
+            .reconciliations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        kept.push_back(entry);
+        while kept.len() > KEPT_RECONCILIATIONS {
+            kept.pop_front();
+        }
+    }
+
     /// Claims queued while offline, waiting to be resent.
     pub async fn pending_claims(&self) -> usize {
         self.claims_outbox.len().await
@@ -753,7 +795,15 @@ impl MeshClient {
                 .await;
             match reply {
                 Ok(ClaimReply::Claimed { .. }) => done.claimed += 1,
-                Ok(ClaimReply::Reconciling { .. }) => done.reconciling += 1,
+                Ok(ClaimReply::Reconciling { token, .. }) => {
+                    done.reconciling += 1;
+                    self.remember_reconciliation(OpenReconciliation {
+                        resource: claim.resource,
+                        challenger: claim.claimant,
+                        token,
+                        at_ms: claim.at_ms,
+                    });
+                }
                 Ok(_) => done.other += 1,
                 Err(_) => {
                     done.failed += 1;
@@ -1091,6 +1141,37 @@ pub async fn control(
                 })
             }
             // Ends when the node closes the connection, and then the call cannot end any other way.
+            () = dispatch => Err(ClientError::Closed),
+        }
+    };
+    tokio::time::timeout(timeout, exchange)
+        .await
+        .map_err(|_| ClientError::Timeout)?
+}
+
+/// Ask one node for its directory's answer over TCP, as `ctl discover` does, so a page can show
+/// the nodes side by side (D443). Client traffic like `MeshClient::discover`: a node that is
+/// silenced or not serving stays quiet, which ends at `timeout`.
+pub async fn discover_at(
+    addr: &str,
+    query: PresenceQuery,
+    timeout: Duration,
+) -> Result<DiscoverReply, ClientError> {
+    let exchange = async {
+        let NewClient { client, dispatch } =
+            connect_client(addr)
+                .await
+                .map_err(|source| ClientError::Connect {
+                    addr: addr.to_string(),
+                    source,
+                })?;
+        tokio::select! {
+            reply = client.discover(context_for(timeout), query) => {
+                reply.map_err(|e| match e {
+                    RpcError::DeadlineExceeded => ClientError::Timeout,
+                    _ => ClientError::Closed,
+                })
+            }
             () = dispatch => Err(ClientError::Closed),
         }
     };

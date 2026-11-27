@@ -357,7 +357,25 @@ rounds a number above 2^53.
 | `POST /api/load/stop` | none | `{ok, stopping}` |
 | `GET /api/load` | none | `{ok, running_users, running_programs, rows:[{client_id, pid, users, think_ms, pattern, state, exit_code, summary}]}`; state is running, stopping, finished, stopped or failed |
 
-There are no zone routes, because publish-subscribe is Phase 2 (D209).
+Phase 2 panels (Part L, D437–D444):
+
+| Route | Parameters | Answer |
+|-------|------------|--------|
+| `GET /api/offline` | none | `{ok, offline, queued, held_updates, reconciled:null}` |
+| `POST /api/offline/set` | `on` = `true` or `false` | the same; with `false` it waits for the outbox and `reconciled` is `{sent, answered, expired, failed, took_ms}` (D438) |
+| `GET /api/directory` | `zone` or `capability`, exactly one | `{ok, nodes:[{node, answered:true, log_index, latency_us, records:[{user, role, zone, peer_addr, capabilities}]} or {node, answered:false, note}], verdict}`: each node asked on its own with `middleware::discover_at`, 2 s each; `verdict` is `ctl discover`'s last line (D437, D443) |
+| `POST /api/zone/follow` | `zone` | joins user 1,000,000 + zone of this page, which subscribes it to the zone; answers as `GET /api/zone/updates`; 502 if the join is refused (D439) |
+| `GET /api/zone/updates` | none | `{ok, followed:[zones], updates:[{id, from, zone, hops, version, kind, text, received_at_ms}]}`, newest 50 |
+| `GET /api/conflicts` | none | `{ok, items:[{resource, provider, seq, owner, incumbent, challenger, token, claimed_at_ms, staged_at_ms, steps, resolved}]}`, newest first: the conflicts this page staged (D444) |
+| `POST /api/conflicts/stage` | none | plays scenario 8 with users 2,000,000 + 3n to + 3n + 2 of this page, then answers as `GET /api/conflicts`; 409 while offline or while another staging runs, 502 with `{error, steps}` if a step fails (D444) |
+| `POST /api/conflicts/resolve` | `provider`, `seq`, `token`, `winner` = `challenger` or `incumbents` | resolves as the offer's owner, then answers as `GET /api/conflicts`; 404 for a resource this page did not stage (D444) |
+
+Two middleware calls serve these panels (D443, D444): `discover_at(addr, query, timeout)` asks one node's directory over TCP,
+as `ctl discover` does, and `MeshClient::reconciliations()` lists this client's claims that went into reconciliation when they
+were resent on reconnect, with the token the owner resolves them by (at most 256 kept).
+
+`POST /api/report` made while offline answers `{ok, queued:true, request, zone, severity, needs, who, valid_for_s}` (D438). The
+Phase 1 zone routes stay gone (D209); following a zone is the publish-subscribe of Part I.
 
 Constants in `bin/frontend.rs`, not config keys, because no experiment varies them: request head 8 KiB, 5 s to send it,
 64 connections, status 800 ms per node, 1000 running users, 1500 offered reports a second, 200 ms least think time,
@@ -568,3 +586,24 @@ not Aabed's incident outbox) and resends it with `speculative: true` on `go_onli
 Demo scenario 8 (`tests/claims.rs`): an online claimant takes a one-capacity resource; a second claimant goes offline,
 queues its claim, and reconnects, surfacing a reconciliation entry instead of a silent refusal; the resource's owner
 resolves it for the challenger.
+
+## The Phase 2 workload (Part L, D430–D442)
+
+No message changes. `loadgen` reads `[workload]` from the config; nodes ignore it.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `workload.lifecycle` | false | true: each user registers, subscribes to its home zone, then does one action per think time as its role says: report, discover, send to a peer, offer, claim or move zone. Needs the closed loop and `--think-ms` above 0 (D430) |
+| `workload.ordinary_percent`, `responder_percent`, `provider_percent` | 80, 15, 5 | Users per role; they must add up to 100. Fixed by position, so 100 users are exactly 80, 15 and 5 (D431) |
+| `workload.offline_chance_per_min_percent` | 0 | Each whole minute, the chance a program goes offline through Part K's switch (D432). Not with `--offline-at-s` |
+| `workload.offline_for_ms` | 20000 | How long each outage lasts; under 60000, so it ends inside its minute |
+| `workload.claim_delay_ms` | 0 | A responder's wait between picking an offer and claiming it, so it claims on older news: the conflict sweep's injected delay. Under 60000 (D442) |
+
+| Event | When |
+|-------|------|
+| `workload_started` | At the start: users per role, the outage settings and `claim_delay_ms` |
+| `workload_done` | At the end: `actions`, keyed `action:outcome`, and `outages` (D433, D441) |
+
+Outcomes (D436, D441): presence calls `ok`, `rejected` (a node refused, D325), `gave_up`, `offline`, `not_joined`, `no_endpoint`; peer sends `delivered`, `duplicate`, `refused`, `held`, `offline`, `gave_up`, `failed`, `no_peer`, `nothing_to_send`; `subscribe:with_join` (D359); offers `offered` (a new resource), `renewed`; claims `claimed`, `refused` (an online conflict), `reconciling`, `queued` (in Part J's claims outbox), `not_queued`, `no_offer`; releases `released`, `nothing_held`; any claims call also `rejected`, `offline`, `timeout`. Updates other programs delivered count as `peer_received:<kind>`.
+
+A provider keeps one resource on offer: 1 to 3 units, 60 s, renewed in place and replaced by a new ID once half its time is left; a renewal keeps the end time, so no claim outlives it. A responder claims one unit of an offer its program heard of (its own providers', or a peer's `ResourceOffer` update), and gives it back the next time it would claim (D441).

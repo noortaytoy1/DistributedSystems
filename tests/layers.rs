@@ -348,7 +348,9 @@ fn frontend_goes_through_the_interface_too() {
         "the page opened a connection of its own"
     );
     assert!(code.contains("rescuemesh::middleware::"));
-    assert!(code.contains("client.submit("));
+    // As loadgen: `submit_or_queue` is `submit` while online (D400); the page uses it since its
+    // offline switch (D438).
+    assert!(code.contains("client.submit(") || code.contains(".submit_or_queue("));
 }
 
 /// D126 and D210: this is the client middleware's send to all of the cloud nodes. It stays private,
