@@ -92,6 +92,12 @@ fn columns(zones: ZoneId) -> u32 {
     c
 }
 
+/// Centre of `zone`, where a volunteer from the presence directory is placed: its record names a
+/// zone and no position (D492).
+pub fn zone_centre(zones: ZoneId, zone: ZoneId) -> Point {
+    offset(zone_corner(zones, zone), ZONE_SIZE_M / 2, ZONE_SIZE_M / 2)
+}
+
 /// South-west corner of `zone`.
 fn zone_corner(zones: ZoneId, zone: ZoneId) -> Point {
     let cols = columns(zones);

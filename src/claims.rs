@@ -124,6 +124,19 @@ impl Claims {
     /// Claim `attempt.quantity` units of `attempt.resource`, in log order (D374, D376).
     /// `clock_ms` is the directory's log clock (D371).
     pub fn claim(&mut self, index: u64, clock_ms: u64, attempt: ClaimAttempt) -> ClaimOutcome {
+        self.claim_beside(index, clock_ms, attempt, 0)
+    }
+
+    /// [`claim`](Self::claim), with `reserved` units of the offer already held by the planner,
+    /// which a claim must leave alone (Part I, D494). Units are counted the same whether a claim
+    /// or a plan took them, so the two together never pass the capacity.
+    pub fn claim_beside(
+        &mut self,
+        index: u64,
+        clock_ms: u64,
+        attempt: ClaimAttempt,
+        reserved: u32,
+    ) -> ClaimOutcome {
         let ClaimAttempt {
             resource,
             claimant,
@@ -140,7 +153,9 @@ impl Claims {
             return ClaimOutcome::Unknown { log_index: index };
         }
         let capacity = offer.capacity;
-        let held = self.held_by_others(resource, claimant);
+        let held = self
+            .held_by_others(resource, claimant)
+            .saturating_add(reserved);
         if held.saturating_add(quantity) <= capacity {
             let entry = ClaimEntry {
                 quantity,

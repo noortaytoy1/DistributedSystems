@@ -553,7 +553,11 @@ claimant, kind, log_index }` alongside a `Refused` (`kind: online_refused`) or `
 reconciliation_opened`) outcome; `reconciliation_resolved { resource, challenger, winner, wait_ms, log_index }` for each
 `resolve_reconciliation` committed, `wait_ms` from the challenger's own clock when it first tried to the resolving node's
 clock. Once a second each node logs `claims_state { last_applied, digest, offers, reconciling, claimed, refused, resolved
-}`, `digest` being the claims' own (D380).
+}`, `digest` being the claims' own (D380). Beside it, from the same loop, `phase2_rows { last_applied, volunteers, volunteers_live,
+volunteers_held, offer_units, offer_units_live, offer_units_held }`: Part I's rows of the responder table for online volunteers
+and offer units (D497). The executor logs `phase2_assigned { request, responder, kind, source }` when its committed result sends
+one, `kind` being `volunteer` or `offer` and `source` the user (`client/user`) or the resource (`provider/seq`). A claim counts
+the planner's held units of the offer against its capacity, as it counts other claimants' units (D494).
 
 **Claims calls**, four new `ClientRpc` methods sent to every node like `submit` and the presence calls. They are client
 traffic too: a silenced node drops them (D324, D375).

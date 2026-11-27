@@ -11,6 +11,7 @@
 //!                                               node/directory.rs, discovery.rs: the presence
 //!                                               service and its directory (Part G)
 //!              bin/frontend.rs: the web page    node/release.rs, planner.rs, state.rs: its rules
+//!                                               phase2.rs: Phase 2 rows of the responder table
 //!              campus.rs                        campus.rs
 //! -----------  middleware.rs, the one interface the application may use  ------------------------
 //! middleware   client.rs: MeshClient, with      node/group.rs: CloudGroup, the who's-alive list
@@ -43,6 +44,7 @@ pub mod middleware;
 pub mod node;
 pub mod offline;
 pub mod p2p;
+pub mod phase2;
 pub mod planner;
 pub mod presence;
 pub mod proto;

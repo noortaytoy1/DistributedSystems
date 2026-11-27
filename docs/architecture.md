@@ -319,7 +319,7 @@ flowchart TB
     subgraph CS["Compute and state layer"]
         direction LR
         C3["C3 Load inputs<br/>WorkerPool::load: built<br/>bidding::LoadInputs, node/cpu.rs: built"]
-        C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs: built"]
+        C6["C6 Worker pool + planner<br/>workers.rs: built<br/>planner.rs, campus.rs, phase2.rs: built"]
         RL["Responder release (application)<br/>node/release.rs<br/>built"]
         C8["C8 Replicated state machine<br/>state.rs CloudState<br/>built"]
         C7["C7 Raft log and vote<br/>raft/store.rs, raft/wal.rs, on disk<br/>built"]
@@ -350,7 +350,7 @@ flowchart TB
 | C5  | Raft                      | `raft/mod.rs`, `raft/network.rs`            | A     | built    | openraft behind `Consensus` (D14): votes, copying the log, forwarding (D26), Raft events. The elected node orders the log and decides nothing else (D163). |
 | not numbered | Queue in front of Raft | `raft/proposals.rs`                         | A     | built    | A node's one way into `client_write`. One write in flight, and one write carries a group of up to 2000 commands of what waited, in one log line and one save. A proposal leaves at 3 s (D133). A leader stepping aside can hold it, and it times each write, which the busy-leader check reads (D218, D228). |
 | not numbered | Busy-leader check | `node/step_aside.rs`                        | A     | built    | Once a second, the leader compares its load with its peers' bids. Its load is its bid, or one write's time if that is slow. Overloaded for 5 s and safe to: it goes quiet, so that followers' timers run out and a normal vote picks a new leader (D218, D228). |
-| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs` | E    | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, if none is free, severe or old reports fall back to any capability, CPU knob (D49, D93, D94, D95, D96, D101); seeded campus (D97, D98). |
+| C6  | Worker pool and planner   | `node/workers.rs`, `planner.rs`, `campus.rs`, `phase2.rs` (I) | E, I | built    | Plans off the async runtime with a bounded queue, refusing work when full (D48, D71, D72); deterministic planner: nearest free responder with the needed capability, +200 m for another zone, if none is free, severe or old reports fall back to any capability, CPU knob (D49, D93, D94, D95, D96, D101); seeded campus (D97, D98). Online volunteers and offer units are planned with too, as rows of the same table (section 13.6, D491–D499). |
 | C7  | Raft log and vote         | `raft/store.rs::LogStore`, `raft/wal.rs`    | A     | built    | On disk in `node-<id>.wal` when `storage.dir` is set, which every lab run does; in memory for tests. Never purged, no snapshots (D118, which supersedes D24). |
 | C8  | Replicated state machine  | `state.rs::CloudState`, `raft/store.rs::StateMachineStore` | A | built | Responders, results, counters, digest (D27–D31). Logs its digest at every log index that is a multiple of 100 (`state_checkpoint`, D138). |
 | C9  | Rejoin gate               | `node/rejoin.rs`, `NodeContext::serving`    | D     | built    | Not serving and no elections from silence start until the applied index reaches the target learned after the silence (D46, D75, D5). A wait that runs out after 1 s asks the leader again and keeps the lowest answer (D135). Elections come back on 3 s after the node returns, in case no leader is there, and it still serves nothing until it is current (D125). |
@@ -428,6 +428,10 @@ flowchart TD
     DATAGRAM --> PROTO
     TRANSPORT --> PROTO["proto.rs (wire contract)"]
     STATE --> PROTO
+    STATE --> PHASE2["phase2.rs (Part I)"]
+    STATE --> PLANNER
+    PHASE2 --> CAMPUS
+    PHASE2 --> PROTO
     PLANNER --> PROTO
     BIDDING --> PROTO
     CAMPUS --> PROTO
@@ -1610,6 +1614,7 @@ stateDiagram-v2
 ```
 
 The node that planned frees the responder after `service_ms_per_severity` x severity, and any other serving node after twice that (D39, D111).
+A Phase 2 row (an online volunteer or an offer unit) has the same hold and release, and a life of its own around it: section 13.6 (D491, D495).
 
 ### 7.5 An incident's status (built, D142, D143)
 
@@ -2099,6 +2104,7 @@ The report should say what changed between the submitted design and the built sy
 | Worker threads = cores − 1                             | `workers.threads`, default 4, set per PC in the lab config | D48 |
 | External busy loop for LB-2                            | Planner CPU knob, `ctl skew`; E6 case (b) still uses an outside busy loop | D49, D83 |
 | Planner: weighted scoring or matching (§13.3, open)    | Nearest matching responder, own zone preferred; severe or old falls back. It also returns a priority in points, which does not change who goes | D49, D93–D95, D101, D148 |
+| The planner plans over the synthetic campus only        | Phase 2: online volunteers and offer units are rows of the same table, beside the campus, so Phase 1 is unchanged | D352, D491–D499 |
 | Capabilities: medical, fire, security, rescue          | `Security` is now `Technical`, and each report also has a category from the spec's list of events | D141 |
 | Nothing said how long a report is valid                | `ttl_ms` on every report, 60 s by default. Too old is not planned: the node answers `Expired` and sends nobody | D143 |
 | No group communication layer                           | The client middleware's send to all nodes is the group send; `CloudGroup` holds the membership, a who's-alive list on each node. Bids and fault bids follow it, peer heartbeats do not | D152–D155, D210 |
@@ -2496,10 +2502,73 @@ Measured (D380): `claim_conflict`'s `kind` (`online_refused` or `reconciliation_
 Demo scenario 8 drives exactly the online-refusal and speculative-reconciliation paths above, under Aabed's offline switch
 (D402).
 
-**Left out on purpose.** The P2P `ResourceOffer` gossip announcement (Part I, D373) is not wired to this state yet: Part I's
-planner reading resource availability from it is its own `TODO(I)` (D352), not Part J's. The offline claims queue is
+**Left out on purpose.** The P2P `ResourceOffer` gossip announcement (Part I, D373) is not wired to this state: the planner
+reads offers from this committed state instead, as rows of the responder table whose units it shares with claims (section
+13.6, D494). The offline claims queue is
 in-memory only, unlike Aabed's incident outbox (D377): a crash mid-outage drops a queued claim. No `ctl` subcommand reads
 claims state yet.
+
+### 13.6 The planner's Phase 2 inputs (built, Part I, D491–D499)
+
+The planner sends a `ResponderId`, and everything after it reads one. So an online volunteer (Part G's directory) and each
+unit of a resource offer (Part J's claims) become rows of the same replicated responder table, with IDs from 2^31 up minted in
+log order (D491). `src/phase2.rs` keeps which row is whose; `CloudState` makes, updates and frees the rows as it applies the
+presence and offer commands, and decides from the directory and the claims whether a row may be sent now. `Plan`, the wire, the
+holds, `ReleaseResponder`, the choice made again at apply, status and gossip's assignment updates are unchanged.
+
+- **A volunteer** (role `VolunteerResponder`, at least one capability) is one row at its zone's centre (D492, D499), holding
+  every capability it lists. The planner sees one entry per capability with the row's ID, next to each other, and counts IDs
+  for availability, so one person is one hold and one free responder (D493).
+- **An offer** is one row per unit, at most 16, where the offer is. A unit is free only while planner holds plus claimed units
+  are below the capacity, and a claim counts the planner's holds (`Claims::claim_beside`), so neither side can over-commit (D494).
+- **Gone** means a record no longer live, or an offer past its `available_until_ms`, at the directory's log clock (D495).
+  A gone row is never sent; a hold already made stays until its release; a row both gone and free is removed.
+- **Two parts** (D496). The campus is sampled exactly as in Phase 1, over IDs below 2^31; Phase 2 rows are sampled in their own
+  range with the same salt and sizes. The executor, the choice at apply and degraded mode join the two.
+
+```mermaid
+flowchart LR
+    PR["PresenceRegister, PresenceDeregister"] --> SV["sync_volunteer: one row, every skill, zone centre"]
+    OR["OfferResource"] --> SO["sync_offer: min(capacity, 16) unit rows"]
+    TK["PresenceTick"] --> SW["sweep: remove rows gone and free"]
+    SV --> TBL["responder table: campus below 2^31, Phase 2 from 2^31"]
+    SO --> TBL
+    SW --> TBL
+    TBL --> CAMP["campus part, as Phase 1"]
+    TBL --> P2["Phase 2 part, same salt: live, free, units left"]
+    CAMP --> PLAN["planner.rs: one list, availability counts IDs"]
+    P2 --> PLAN
+    PLAN --> CR["CommitResult: hold at apply, or choose again if taken or gone"]
+    CR --> TBL
+    CL["ClaimResource"] --> CLM["claims.rs: claim_beside counts the planner's held units"]
+    TBL --> CLM
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Free: "PresenceRegister as volunteer, or OfferResource"
+    Free --> Held: "CommitResult sends it, source live, a unit left"
+    Held --> Free: "ReleaseResponder by the holding report"
+    Free --> Hidden: "lease ends, or offer ends, at the log clock"
+    Hidden --> Free: "PresenceRenew within the grace"
+    Held --> HeldGone: "source gone while held"
+    HeldGone --> Hidden: "ReleaseResponder"
+    Hidden --> [*]: "PresenceTick sweep once the record is gone or the offer ended"
+    Free --> [*]: "PresenceDeregister, or no longer a volunteer"
+```
+
+| Question | What the planner does | Test |
+|----------|-----------------------|------|
+| Does Phase 1 change? | No: every Phase 1 read stops below 2^31, and a Phase 1 log gives `main`'s digest and parts | `phase2::tests::a_phase1_log_gives_what_it_gave_before_phase2_rows` |
+| A volunteer with three skills | One row, matched by any skill, counted once | `phase2::tests::a_volunteer_with_three_skills_counts_as_one_free_responder` |
+| Planner and claims on one capacity | Each counts the other in log order | `phase2::tests::claims_leave_the_planner_only_the_units_left`, `the_planners_holds_leave_claims_only_the_units_left` |
+| A volunteer leaves while planned | Chosen again at apply | `phase2::tests::a_plan_for_a_volunteer_who_left_is_chosen_again` |
+| End to end | A volunteer and a unit sent on three real nodes, the unit then refused to a claim | `tests/planner_phase2.rs` |
+
+Measured (D497): `phase2_assigned { request, responder, kind, source }` from the executor, and `phase2_rows` once a second.
+**Limitations:** a volunteer's position is its zone's centre, up to 500 m off (D492); at most 16 units of one offer are planned
+at once (D494). **Open (D500):** the volunteer is not told it was sent; gossip, the frontend and `ctl` show a Phase 2 row as
+its bare ID; loadgen makes no volunteers or offers, so no experiment exercises this yet.
 
 ## 14. What remains
 
@@ -2508,7 +2577,7 @@ recordings decide (Noor's rule, D213). What remains is for people to confirm or 
 
 - **Picks to confirm.** D125, D129, D130, and most of D134 to D208, D214, D215, D219, D220 and D222 to D228, were decided by the agent on Noor's instruction to
   finish without more questions. Their entries give the options and reasons, and Noor can overrule any of them.
-- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built with Part G's directory (D340–D369, D490); loadgen does not join its users yet, so load runs publish to nobody (Part L). Resource claims are built (Part J, section 13.5, D370–D381); the planner reading resource availability from Part I's gossip (D373) and a `ctl` surface for claims both wait on later PRs.
+- **Left out on purpose.** Publish-subscribe is Phase 2 (D209). Zone gossip is built with Part G's directory (D340–D369, D490); loadgen does not join its users yet, so load runs publish to nobody (Part L). Resource claims are built (Part J, section 13.5, D370–D381), and the planner sends online volunteers and offer units (Part I, section 13.6, D491–D499), with telling the volunteer, showing the row by name and loading it from loadgen Open (D500); a `ctl` surface for claims waits on a later PR.
 - **Rests on a spoken report.** A busy leader stepping aside (D218) rests on a teammate's report of what Dr Amr said in class. The written notes and Lectures 8 and 9 do not say it, and the
   report must state that.
 - **Lab results.** Nothing has run on the six PCs; see [runbook.md](runbook.md). Every number in these docs is from tests or from

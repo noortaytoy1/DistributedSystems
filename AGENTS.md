@@ -102,7 +102,7 @@ Your review pair reviews your PRs and must be able to explain your part at the d
 | F    | Client and scale         | `client.rs`, `bin/loadgen.rs`, `bin/frontend.rs`, `scripts/start-users.sh` | E1 scaling sweep, E7  |       |
 | G    | Discovery directory (Phase 2) | `discovery.rs` (new); directory commands in `state.rs`, with A | discovery query latency, presence convergence | Omar |
 | H    | Client presence and P2P link (Phase 2) | `presence.rs` (new), the presence agent (D326); `p2p.rs` (new), the P2P link (D336); their calls on `MeshClient` in `client.rs`, with F; peer plumbing in `node/transport.rs`, with C | P2P delivery latency | Wahiba |
-| I    | Zone publish-subscribe (Phase 2) | `gossip.rs` (new); Phase 2 inputs to `planner.rs`, with E | duplicate rate, forwarding overhead | Yahia |
+| I    | Zone publish-subscribe (Phase 2) | `gossip.rs` (new); `phase2.rs` (new), Phase 2 rows of the responder table (D491); Phase 2 inputs to `planner.rs`, with E | duplicate rate, forwarding overhead | Yahia |
 | J    | Offers, leases and conflicts (Phase 2) | `claims.rs` (new) | conflicts, claim latency | Ahmed |
 | K    | Offline operation (Phase 2) | `offline.rs` (new) | reconciliation delay, pending updates | Aabed |
 | L    | Phase 2 workload, demo and experiments | Phase 2 parts of `bin/loadgen.rs` and `bin/frontend.rs`, with F; `experiments/`, `analysis/`, `docs/report/` | Phase 2 scale sweep | Noor |
