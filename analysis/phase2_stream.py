@@ -255,15 +255,24 @@ def main():
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     per_cell = defaultdict(list)
-    with Pool(args.jobs) as pool:
+    cache = args.out / "runs"
+    cache.mkdir(exist_ok=True)
+    with Pool(args.jobs, maxtasksperchild=1) as pool:
         for meta_path in sorted(args.runs.glob("*/*/*/run.json")):
-            meta, metrics = analyse_run(meta_path.parent, pool)
+            run = meta_path.parent
+            # Each run's figures are kept as it finishes, so a stopped analysis resumes where it was.
+            saved = cache / f"{run.parent.parent.name}-{run.parent.name}-{run.name}.json"
+            if saved.exists():
+                meta, metrics = json.loads(saved.read_text(encoding="utf-8"))
+            else:
+                meta, metrics = analyse_run(run, pool)
+                saved.write_text(json.dumps([meta, metrics], default=float), encoding="utf-8")
             problem = analyze.run_problem(meta, metrics)
             if problem:
                 print(f"left out {meta_path.parent}: {problem}", file=sys.stderr)
                 continue
             per_cell[(meta["experiment"], meta["cell"])].append(metrics)
-            print(f"{meta_path.parent}: {metrics.get('count', 0)} answered, "
+            print(f"{run}: {metrics.get('count', 0)} answered, "
                   f"{metrics.get('p2p_sent', 0)} P2P sends", flush=True)
     summary = {}
     for cell, runs in per_cell.items():
